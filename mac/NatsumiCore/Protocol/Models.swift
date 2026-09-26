@@ -170,10 +170,12 @@ public struct Snapshot: Equatable, Sendable {
     public let readState: ReadState
     /// Slack posts waiting for the owner, oldest first.
     public let pendingApprovals: [Approval]
+    /// The model routes; nil from a server that does not say them.
+    public let modelRoutes: ModelRoutes?
 
     public init(
         deviceId: String, messages: [ShownMessage], pendingEvents: [PendingEvent], expression: Expression,
-        readState: ReadState = ReadState(), pendingApprovals: [Approval] = []
+        readState: ReadState = ReadState(), pendingApprovals: [Approval] = [], modelRoutes: ModelRoutes? = nil
     ) {
         self.deviceId = deviceId
         self.messages = messages
@@ -181,6 +183,7 @@ public struct Snapshot: Equatable, Sendable {
         self.expression = expression
         self.readState = readState
         self.pendingApprovals = pendingApprovals
+        self.modelRoutes = modelRoutes
     }
 }
 
@@ -199,8 +202,8 @@ public struct EventCompletion: Codable, Equatable, Sendable {
 }
 
 /// `command.accepted`: a recorded `conversation.send`, a `session.sync` that replayed what was missed, the read
-/// position after `conversation.read`, the notice `notification.ack` checked, or the state `approval.decide` left an
-/// approval in.
+/// position after `conversation.read`, the notice `notification.ack` checked, the state `approval.decide` left an
+/// approval in, the routes `model.list` asked for, or the route `model.use` chose.
 public struct CommandAccepted: Decodable, Equatable, Sendable {
     public let messageId: String?
     public let eventId: String?
@@ -214,11 +217,17 @@ public struct CommandAccepted: Decodable, Equatable, Sendable {
     public let revision: Int?
     /// `state` on an answer to `approval.decide`, which shares the field with the conversation's.
     public let approvalOutcome: ApprovalOutcome?
+    /// The whole of the routes, on an answer to `model.list`.
+    public let modelRoutes: ModelRoutes?
+    /// `chosen` on an answer to `model.use`. Its `current` is not kept: `model.routes` says when she moves, and may
+    /// come before this answer.
+    public let chosenRoute: String?
 
     public init(
         messageId: String? = nil, eventId: String? = nil, state: EventState? = nil, deviceId: String? = nil, mode: String? = nil,
         readThroughMessageId: String? = nil, unreadReplyCount: Int? = nil, notificationId: String? = nil,
-        approvalId: String? = nil, revision: Int? = nil, approvalOutcome: ApprovalOutcome? = nil
+        approvalId: String? = nil, revision: Int? = nil, approvalOutcome: ApprovalOutcome? = nil,
+        modelRoutes: ModelRoutes? = nil, chosenRoute: String? = nil
     ) {
         self.messageId = messageId
         self.eventId = eventId
@@ -231,10 +240,13 @@ public struct CommandAccepted: Decodable, Equatable, Sendable {
         self.approvalId = approvalId
         self.revision = revision
         self.approvalOutcome = approvalOutcome
+        self.modelRoutes = modelRoutes
+        self.chosenRoute = chosenRoute
     }
 
     private enum CodingKeys: String, CodingKey {
         case messageId, eventId, state, deviceId, mode, readThroughMessageId, unreadReplyCount, notificationId, approvalId, revision
+        case chosen
     }
 
     public init(from decoder: Decoder) throws {
@@ -250,7 +262,9 @@ public struct CommandAccepted: Decodable, Equatable, Sendable {
             notificationId: try values.decodeIfPresent(String.self, forKey: .notificationId),
             approvalId: try values.decodeIfPresent(String.self, forKey: .approvalId),
             revision: try values.decodeIfPresent(Int.self, forKey: .revision),
-            approvalOutcome: state.flatMap(ApprovalOutcome.init(rawValue:)))
+            approvalOutcome: state.flatMap(ApprovalOutcome.init(rawValue:)),
+            modelRoutes: try? ModelRoutes(from: decoder),
+            chosenRoute: try? values.decodeIfPresent(String.self, forKey: .chosen))
     }
 }
 

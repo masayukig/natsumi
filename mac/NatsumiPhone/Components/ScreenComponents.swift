@@ -106,9 +106,12 @@ final class ImageViewerComponent: PhoneComponent {
 final class SettingsComponent: PhoneComponent {
     /// Logging out, and connecting again when the connection offers it.
     let buttons = PhoneComponent(name: "settings.buttons")
+    /// The model routes to choose from (ADR 0046).
+    let routes = PhoneComponent(name: "settings.routes")
 
     init() {
         super.init(name: "settings")
         adopt(buttons)
+        adopt(routes)
     }
 }

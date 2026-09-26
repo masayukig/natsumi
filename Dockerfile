@@ -64,8 +64,10 @@ FROM node:24.12.0-bookworm-slim
 ENV NODE_ENV=production
 # git commits the memory repository (ADR 0018). Committing is the server's alone: natsumi has git in the workspace
 # container above, but there /memory/.git is mounted read-only, so she can read the history and not write it.
+# ripgrep and fd-find are for Pi's CLI, run here to log in: it looks for rg and fd (fdfind is one of fd's names to it)
+# as it starts, and warns when it cannot fetch them offline. The thinking loop keeps Pi's own grep and find off.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git \
+  && apt-get install -y --no-install-recommends git ripgrep fd-find \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./

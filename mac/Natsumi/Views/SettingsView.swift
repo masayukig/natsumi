@@ -32,6 +32,7 @@ struct SettingsView: View {
                             .disabled(!props.canLogout)
                     }
                 }
+                ModelRoutesSection(props: props.modelRoutes, send: send)
                 Section("キャラクター") {
                     LabeledContent("大きさ") {
                         HStack {
@@ -84,6 +85,50 @@ struct SettingsView: View {
             // What was saved is what the fields show; a rejected URL leaves what was typed alone.
             .onChange(of: props.serverOrigin) { server = props.serverOrigin }
             .onChange(of: props.avatarDirectory) { avatarPath = props.avatarDirectory }
+        }
+    }
+}
+
+/// The model routes: what she talks with now, and the others to move her to from her next turn (ADR 0046).
+struct ModelRoutesSection: View {
+    let props: ModelRoutesProps
+    let send: EventSink
+
+    var body: some View {
+        Section("モデル") {
+            Text(props.summary)
+                .fontWeight(props.isSilent ? .bold : .regular)
+                .foregroundStyle(props.isSilent ? .red : .primary)
+            if let pending = props.pending {
+                Label(pending, systemImage: "arrow.forward.circle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            ForEach(props.rows) { row in
+                HStack(spacing: 10) {
+                    Image(systemName: row.isChosen ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(row.isChosen ? Color.accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.name)
+                        Text(row.detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    ForEach(row.tags, id: \.self) { tag in
+                        Text(tag)
+                            .font(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                    }
+                    Button("切り替える") { send(.modelRouteChosen(row.name)) }
+                        .disabled(!row.isEnabled)
+                }
+            }
+            if let message = props.message {
+                Text(message).font(.caption).foregroundStyle(props.isFailure ? .red : .secondary)
+            }
+            Text("切り替えは次のターンから効きます。会話の履歴も思考の記録もそのまま続きます。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

@@ -145,5 +145,7 @@ public enum UIEvent: Equatable, Sendable {
     case hotKeyRecordingCancelled
     case hotKeyCleared
     case hotKeyResetRequested
+    /// A model route, in the settings or the menu: natsumi moves to it from her next turn (ADR 0046).
+    case modelRouteChosen(String)
     case quitRequested
 }

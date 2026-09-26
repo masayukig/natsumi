@@ -180,7 +180,12 @@ public struct PhoneMediator {
             state.page = .settings
             state.isComposing = false
             state.visibleHistoryIds = []
-            return []
+            // The routes come with the sync and every change after it; opening the settings looks at them afresh.
+            return apply(state.session.listRoutes())
+
+        case .modelRouteChosen(let name):
+            guard state.hasSession else { return [] }
+            return apply(state.session.chooseRoute(name))
 
         case .pageClosed:
             closePage()

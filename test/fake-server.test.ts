@@ -37,7 +37,7 @@ async function connect(port: number) {
 
 async function withServer(fn: (port: number) => Promise<void>, options: Partial<FakeServerOptions> = {}) {
   const server = await startFakeServer({
-    port: 0, replyDelayMs: 0, short: true, approvalDelayMs: 0, sendDelayMs: 0, log: false, ...options,
+    port: 0, replyDelayMs: 0, short: true, approvalDelayMs: 0, sendDelayMs: 0, switchDelayMs: 0, log: false, ...options,
   });
   try { await fn(server.port); } finally { await server.close(); }
 }
@@ -208,5 +208,72 @@ test('the conversation holds a reply with images, and a message asking for a pic
   client.send('conversation.send', { text: 'ありがとう' });
   const plain = await client.next(e => e.type === 'conversation.message' && e.payload.kind === 'reply' && e.payload.text.includes('ありがとう'), from);
   assert.equal('images' in plain.payload, false);
+  client.close();
+}));
+
+// docs/client-contract.md「モデルの経路」(ADR 0046): the routes in the snapshot, model.list and model.use.
+test('the snapshot and model.list carry the routes, one of them not ready', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  const routes = snapshot.payload.modelRoutes;
+  assert.equal(routes.defaultRoute, 'local');
+  assert.equal(routes.current, 'local');
+  assert.equal(routes.chosen, 'local');
+  assert.deepEqual(routes.routes.map((r: any) => [r.name, r.ready]), [['local', true], ['plus', true], ['spare', false]]);
+  for (const route of routes.routes) assert.deepEqual(Object.keys(route).sort(), ['model', 'name', 'provider', 'ready']);
+  const list = client.send('model.list', {});
+  const answer = await client.next(e => e.requestId === list);
+  assert.equal(answer.type, 'command.accepted');
+  assert.deepEqual(answer.payload, routes);
+  client.close();
+}));
+
+test('model.use is accepted with the route before the old one, and model.routes follows when it moves', () => withServer(async port => {
+  const { client } = await synced(port);
+  const from = client.received.length;
+  const use = client.send('model.use', { route: 'plus' });
+  const accepted = await client.next(e => e.requestId === use, from);
+  assert.equal(accepted.type, 'command.accepted');
+  assert.deepEqual(accepted.payload, { chosen: 'plus', current: 'local' });
+  const moved = await client.next(e => e.type === 'model.routes', from);
+  assert.equal(moved.payload.current, 'plus');
+  assert.equal(moved.payload.chosen, 'plus');
+  assert.ok(moved.seq > accepted.seq);
+
+  // The choice stays for the next sync, and choosing the route in use again changes nothing.
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  assert.equal(snapshot.payload.modelRoutes.current, 'plus');
+  const after = client.received.length;
+  const again = client.send('model.use', { route: 'plus' });
+  assert.deepEqual((await client.next(e => e.requestId === again, after)).payload, { chosen: 'plus', current: 'plus' });
+  const list = client.send('model.list', {});
+  await client.next(e => e.requestId === list, after);
+  assert.equal(client.received.slice(after).some(e => e.type === 'model.routes'), false);
+  client.close();
+}));
+
+test('model.use refuses a route not in the list, one not ready, and a route that is not a name', () => withServer(async port => {
+  const { client } = await synced(port);
+  for (const [payload, code] of [
+    [{ route: 'nowhere' }, 'unknown-route'], [{ route: 'spare' }, 'route-unavailable'], [{ route: '' }, 'invalid-request'],
+    [{ route: 3 }, 'invalid-request'], [{}, 'invalid-request'],
+  ] as const) {
+    const request = client.send('model.use', payload);
+    const answer = await client.next(e => e.requestId === request);
+    assert.equal(answer.type, 'command.rejected', JSON.stringify(payload));
+    assert.equal(answer.payload.code, code, JSON.stringify(payload));
+  }
+  client.close();
+}));
+
+test('logging out puts the routes back to the default', () => withServer(async port => {
+  const { client } = await synced(port);
+  client.send('model.use', { route: 'plus' });
+  await client.next(e => e.type === 'model.routes');
+  await fetch(`http://localhost:${port}/auth/logout`, { method: 'POST' });
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  assert.equal(snapshot.payload.modelRoutes.current, 'local');
+  assert.equal(snapshot.payload.modelRoutes.chosen, 'local');
   client.close();
 }));

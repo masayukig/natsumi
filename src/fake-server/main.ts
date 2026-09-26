@@ -1,7 +1,7 @@
 /**
  * A stand-in for the natsumi server, for looking at a client without GitHub, a model or real memory.
  *
- *   npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8]
+ *   npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2]
  *
  * It listens on http://localhost only (clients allow plain http for loopback), skips GitHub by redirecting
  * `/auth/github/start` straight to `natsumi://oauth/callback`, hands out a session to anyone, and speaks enough of
@@ -10,8 +10,10 @@
  * the start, one more arriving `--approval-delay` seconds after the first sync (0 for none), and `approval.decide`
  * answered the way the contract says. The post to a channel carries two images, served at `/v1/images/<imageId>` to
  * the fake token (the faces of the avatar stand in for pictures she drew). The conversation holds a reply showing two
- * images the same way, and a message that asks for a picture (`絵` or `画像`) is answered with one. Logging out puts
- * the approvals back as they were at the start. Everything it says is fictional and kept in memory only.
+ * images the same way, and a message that asks for a picture (`絵` or `画像`) is answered with one. It lists three
+ * model routes (ADR 0046) — `local` in use, `plus` ready and `spare` not — and `model.use` moves to the chosen one
+ * `--switch-delay` seconds after accepting it, the way the server moves between turns. Logging out puts the
+ * approvals and the routes back as they were at the start. Everything it says is fictional and kept in memory only.
  */
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -30,6 +32,8 @@ export interface FakeServerOptions {
   approvalDelayMs: number;
   /** Between taking an approval or an edit and saying it was sent. */
   sendDelayMs: number;
+  /** Between accepting `model.use` and moving to the route chosen. */
+  switchDelayMs: number;
   /** Whether to print the requests and commands it receives. */
   log: boolean;
 }
@@ -82,6 +86,15 @@ interface Approval {
 }
 
 type Outcome = 'approved' | 'edited' | 'rejected' | 'expired';
+
+interface RouteView { name: string; provider: string; model: string; ready: boolean }
+
+/** The routes as the config would list them, with made-up models; `spare` has no key to read. */
+const ROUTES: RouteView[] = [
+  { name: 'local', provider: 'natsumi-compatible', model: 'example-model', ready: true },
+  { name: 'plus', provider: 'openai-codex', model: 'example-plus-model', ready: true },
+  { name: 'spare', provider: 'natsumi-spare', model: 'example-spare-model', ready: false },
+];
 
 interface ClientEnvelope {
   requestId: string;
@@ -179,6 +192,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
   /** How each approval closed, so that a decision on a closed one is answered with it (the contract's idempotence). */
   let closed = new Map<string, Outcome>();
   let laterScheduled = false;
+  let currentRoute = 'local';
+  let chosenRoute = 'local';
   const timers = new Set<NodeJS.Timeout>();
   const sockets = new Set<WebSocket>();
   const log = (...args: unknown[]) => { if (options.log) console.log(...args); };
@@ -201,6 +216,10 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     return new Date(Date.now() + 30 * 24 * 3600_000).toISOString();
   }
 
+  function routeStatus() {
+    return { defaultRoute: 'local', current: currentRoute, chosen: chosenRoute, routes: ROUTES };
+  }
+
   function unreadReplies(): number {
     const read = readThrough === null ? -1 : messages.findIndex((m) => m.messageId === readThrough);
     return messages.slice(read + 1).filter((m) => m.kind === 'reply').length;
@@ -213,7 +232,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         broadcast('session.snapshot', {
           deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
           readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
-          pendingApprovals: approvals, sessionExpiresAt: sessionEnd(),
+          pendingApprovals: approvals, modelRoutes: routeStatus(), sessionExpiresAt: sessionEnd(),
         }, requestId);
         if (!laterScheduled && options.approvalDelayMs > 0) {
           laterScheduled = true;
@@ -241,6 +260,12 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         return;
       case 'approval.decide':
         decide(payload, requestId);
+        return;
+      case 'model.list':
+        broadcast('command.accepted', routeStatus(), requestId);
+        return;
+      case 'model.use':
+        useRoute(payload.route, requestId);
         return;
       default:
         broadcast('command.rejected', { code: 'unsupported' }, requestId);
@@ -279,6 +304,23 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     later(options.sendDelayMs, () => broadcast('approval.resolved', {
       ...resolved, resolvedAt: new Date().toISOString(), delivery: 'sent', sentText,
     }));
+  }
+
+  /** `model.use` as the contract has it: the choice is taken at once, and the move follows between turns. */
+  function useRoute(name: unknown, requestId: string): void {
+    const reject = (code: string) => broadcast('command.rejected', { code }, requestId);
+    if (typeof name !== 'string' || name === '') return reject('invalid-request');
+    const route = ROUTES.find((r) => r.name === name);
+    if (!route) return reject('unknown-route');
+    if (!route.ready) return reject('route-unavailable');
+    chosenRoute = name;
+    broadcast('command.accepted', { chosen: chosenRoute, current: currentRoute }, requestId);
+    if (currentRoute === chosenRoute) return;
+    later(options.switchDelayMs, () => {
+      if (currentRoute === chosenRoute) return;
+      currentRoute = chosenRoute;
+      broadcast('model.routes', routeStatus());
+    });
   }
 
   function converse(text: string, requestId: string): void {
@@ -328,6 +370,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       approvals = startingApprovals();
       closed = new Map();
       laterScheduled = false;
+      currentRoute = 'local';
+      chosenRoute = 'local';
       response.writeHead(204).end();
     } else {
       response.writeHead(404).end();
@@ -362,10 +406,12 @@ if (import.meta.main) {
     'reply-delay': { type: 'string', default: '5' },
     short: { type: 'boolean', default: false },
     'approval-delay': { type: 'string', default: '8' },
+    'switch-delay': { type: 'string', default: '2' },
   } });
   const server = await startFakeServer({
     port: Number(values.port), replyDelayMs: Number(values['reply-delay']) * 1000, short: values.short,
-    approvalDelayMs: Number(values['approval-delay']) * 1000, sendDelayMs: 1000, log: true,
+    approvalDelayMs: Number(values['approval-delay']) * 1000, sendDelayMs: 1000,
+    switchDelayMs: Number(values['switch-delay']) * 1000, log: true,
   });
   console.log(`fake natsumi server on http://localhost:${server.port}`);
 }

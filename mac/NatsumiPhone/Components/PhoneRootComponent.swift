@@ -45,7 +45,7 @@ final class PhoneRootComponent: PhoneComponent {
             login: login.sink, main: main.sink, status: main.status.sink, header: main.header.sink,
             notices: main.notices.sink, balloon: main.balloon.sink, input: main.input.sink,
             failures: main.failures.sink, historyRows: history.rows.sink, historyInput: history.input.sink,
-            historyOutgoing: history.outgoing.sink, settings: settings.buttons.sink, approvalsEntry: main.approvals.sink,
+            historyOutgoing: history.outgoing.sink, settings: settings.buttons.sink, settingsRoutes: settings.routes.sink, approvalsEntry: main.approvals.sink,
             approvalRows: approvals.rows.sink, approval: approval.sink, approvalPlacement: approval.placement.sink,
             approvalActions: approval.actions.sink, approvalEditor: approval.editor.sink,
             historyImages: history.images.sink, approvalImages: approval.images.sink, viewer: viewer.sink)
@@ -274,6 +274,7 @@ struct ScreenSinks {
     var historyInput: PhoneEventSink = .ignored
     var historyOutgoing: PhoneEventSink = .ignored
     var settings: PhoneEventSink = .ignored
+    var settingsRoutes: PhoneEventSink = .ignored
     var approvalsEntry: PhoneEventSink = .ignored
     var approvalRows: PhoneEventSink = .ignored
     var approval: PhoneEventSink = .ignored

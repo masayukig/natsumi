@@ -27,6 +27,8 @@ public enum ServerEvent: Equatable, Sendable {
     case approvalPending(Approval)
     /// `approval.resolved`: an approval was closed, and what came of it.
     case approvalResolved(ApprovalResolution)
+    /// `model.routes`: which route natsumi uses, which the owner chose, or which can be used changed (ADR 0046).
+    case modelRoutes(ModelRoutes)
     case accepted(CommandAccepted)
     case rejected(code: String)
     case unavailable(code: String, deviceId: String?)
@@ -66,7 +68,7 @@ public struct ServerEnvelope: Equatable, Sendable {
                     readState: ReadState(
                         readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount ?? 0,
                         unacknowledgedNotificationIds: $0.unacknowledgedNotificationIds ?? []),
-                    pendingApprovals: $0.pendingApprovals?.elements ?? []))
+                    pendingApprovals: $0.pendingApprovals?.elements ?? [], modelRoutes: $0.modelRoutes?.value))
             }
         case "conversation.message": payload(ShownMessage.self).map { .message($0) }
         case "avatar.expression": payload(ExpressionPayload.self).map { .expression($0.expression) }
@@ -78,6 +80,7 @@ public struct ServerEnvelope: Equatable, Sendable {
         case "session.renewed": payload(RenewedPayload.self).flatMap { parseTimestamp($0.expiresAt) }.map { .sessionRenewed(expiresAt: $0) }
         case "approval.pending": payload(Approval.self).map { .approvalPending($0) }
         case "approval.resolved": payload(ApprovalResolution.self).map { .approvalResolved($0) }
+        case "model.routes": payload(ModelRoutes.self).map { .modelRoutes($0) }
         case "command.accepted": payload(CommandAccepted.self).map { .accepted($0) }
         case "command.rejected": payload(CodePayload.self).map { .rejected(code: $0.code) }
         case "service.unavailable": payload(CodePayload.self).map { .unavailable(code: $0.code, deviceId: $0.deviceId) }
@@ -113,6 +116,16 @@ public struct ServerEnvelope: Equatable, Sendable {
         let unreadReplyCount: Int?
         let unacknowledgedNotificationIds: [String]?
         let pendingApprovals: Lossy<Approval>?
+        let modelRoutes: Lenient<ModelRoutes>?
+    }
+
+    /// A field that is left out when it cannot be read, rather than losing the whole payload with it.
+    private struct Lenient<Value: Decodable>: Decodable {
+        let value: Value?
+
+        init(from decoder: Decoder) throws {
+            value = try? Value(from: decoder)
+        }
     }
 
     private struct ExpressionPayload: Decodable { let expression: Expression }
@@ -145,6 +158,10 @@ public enum ClientCommand: Equatable, Sendable {
     case pushRegister(PushRegistration)
     /// The owner's answer to an approval, for the revision they saw.
     case approvalDecide(approvalId: String, revision: Int, decision: ApprovalDecision)
+    /// Asks for the model routes as they are now.
+    case modelList
+    /// The owner's choice of a model route, followed from her next turn (ADR 0046).
+    case modelUse(route: String)
 }
 
 /// One command to the server.
@@ -199,6 +216,12 @@ public struct ClientEnvelope: Equatable, Sendable {
                 payload["decision"] = "reject"
             }
             object["payload"] = payload
+        case .modelList:
+            object["type"] = "model.list"
+            object["payload"] = [String: Any]()
+        case .modelUse(let route):
+            object["type"] = "model.use"
+            object["payload"] = ["route": route]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }

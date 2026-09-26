@@ -366,12 +366,14 @@ public struct SettingsProps: Equatable, Sendable {
     public var hotKeyMessage: String?
     public var canClearHotKey: Bool
     public var canResetHotKey: Bool
+    public var modelRoutes: ModelRoutesProps
 
     public init(
         serverOrigin: String, message: String?, statusText: String, lastError: String?, canLogin: Bool,
         canLogout: Bool, scale: CharacterScale, avatarDirectory: String, avatarDescription: String,
         hotKey: String = HotKey.default.displayName, isRecordingHotKey: Bool = false, hotKeyMessage: String? = nil,
-        canClearHotKey: Bool = true, canResetHotKey: Bool = false
+        canClearHotKey: Bool = true, canResetHotKey: Bool = false,
+        modelRoutes: ModelRoutesProps = ModelRoutesProps(summary: "経路はまだ分かりません", menuTitle: "モデル: 不明")
     ) {
         self.serverOrigin = serverOrigin
         self.message = message
@@ -387,6 +389,7 @@ public struct SettingsProps: Equatable, Sendable {
         self.hotKeyMessage = hotKeyMessage
         self.canClearHotKey = canClearHotKey
         self.canResetHotKey = canResetHotKey
+        self.modelRoutes = modelRoutes
     }
 }
 
@@ -396,15 +399,18 @@ public struct MenuProps: Equatable, Sendable {
     public var canAcknowledgeAllNotices: Bool
     public var showsLogin: Bool
     public var canLogout: Bool
+    public var modelRoutes: ModelRoutesProps
 
     public init(
-        statusText: String, canReadAllReplies: Bool, canAcknowledgeAllNotices: Bool, showsLogin: Bool, canLogout: Bool
+        statusText: String, canReadAllReplies: Bool, canAcknowledgeAllNotices: Bool, showsLogin: Bool, canLogout: Bool,
+        modelRoutes: ModelRoutesProps = ModelRoutesProps(summary: "経路はまだ分かりません", menuTitle: "モデル: 不明")
     ) {
         self.statusText = statusText
         self.canReadAllReplies = canReadAllReplies
         self.canAcknowledgeAllNotices = canAcknowledgeAllNotices
         self.showsLogin = showsLogin
         self.canLogout = canLogout
+        self.modelRoutes = modelRoutes
     }
 }
 
@@ -707,14 +713,16 @@ public enum UIProps {
             avatarDescription: state.avatarDescription,
             hotKey: state.hotKey?.displayName ?? "なし", isRecordingHotKey: state.isRecordingHotKey,
             hotKeyMessage: state.hotKeyMessage, canClearHotKey: state.hotKey != nil,
-            canResetHotKey: state.hotKey != .default)
+            canResetHotKey: state.hotKey != .default,
+            modelRoutes: modelRoutes(state.session.modelRoutes, isConnected: state.status == .connected))
     }
 
     static func menu(_ state: UIState) -> MenuProps {
         MenuProps(
             statusText: state.status.text, canReadAllReplies: !state.conversation.unreadReplies.isEmpty,
             canAcknowledgeAllNotices: !state.conversation.unacknowledgedNotificationIds.isEmpty,
-            showsLogin: state.status == .needsLogin, canLogout: state.hasSession)
+            showsLogin: state.status == .needsLogin, canLogout: state.hasSession,
+            modelRoutes: modelRoutes(state.session.modelRoutes, isConnected: state.status == .connected))
     }
 
     /// The connection and what to do about it. The window says where it stands either way (ADR 0021).

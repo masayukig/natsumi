@@ -38,7 +38,7 @@ enum Fixture {
         seq: Int, stream: String = stream, requestId: String? = nil, deviceId: String = "device-example",
         messages: [[String: Any]] = [], pending: [[String: Any]] = [], expression: String = "neutral",
         readThrough: String? = nil, unreadReplyCount: Int = 0, unacknowledged: [String] = [],
-        approvals: [[String: Any]]? = nil
+        approvals: [[String: Any]]? = nil, modelRoutes: [String: Any]? = nil
     ) -> Data {
         var payload: [String: Any] = [
             "deviceId": deviceId, "messages": messages, "pendingEvents": pending, "avatar": ["expression": expression],
@@ -46,6 +46,7 @@ enum Fixture {
             "unacknowledgedNotificationIds": unacknowledged,
         ]
         if let approvals { payload["pendingApprovals"] = approvals }
+        if let modelRoutes { payload["modelRoutes"] = modelRoutes }
         return envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: payload)
     }
 
@@ -71,6 +72,26 @@ enum Fixture {
         ]
         if let expression { approval["expression"] = expression }
         return approval
+    }
+
+    /// The model routes as the server writes them (client-contract「モデルの経路」), with made-up models: `local` and
+    /// `plus` ready, `spare` not. `current` nil is written as null: natsumi cannot talk.
+    static func modelRoutes(
+        current: String? = "local", chosen: String = "local", defaultRoute: String = "local",
+        ready: [String: Bool] = ["local": true, "plus": true, "spare": false]
+    ) -> [String: Any] {
+        let routes: [[String: Any]] = [
+            ["name": "local", "provider": "natsumi-compatible", "model": "example-model"],
+            ["name": "plus", "provider": "openai-codex", "model": "example-plus-model"],
+            ["name": "spare", "provider": "natsumi-spare", "model": "example-spare-model"],
+        ].map { route in
+            var route = route
+            route["ready"] = ready[route["name"] as! String] ?? false
+            return route
+        }
+        return [
+            "defaultRoute": defaultRoute, "current": current.map { $0 as Any } ?? NSNull(), "chosen": chosen, "routes": routes,
+        ]
     }
 
     static func approvalPending(_ approval: [String: Any], seq: Int) -> Data {

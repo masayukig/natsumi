@@ -43,6 +43,17 @@ test('the entrypoint runs a file that the image has copied in', async () => {
   assert.ok(roots.some(root => main.startsWith(`${root}/`)), `${main} is outside ${roots.join(' ')}`);
 });
 
+// Pi's CLI, run in the server's container to log in, looks for rg and fd (as fd or fdfind) when it starts, and warns
+// when it cannot download them offline. The thinking loop leaves Pi's own grep and find off; this only quiets the CLI.
+test('the image installs ripgrep and fd-find for Pi\'s CLI', async () => {
+  const stage = (await shippingStage()).join('\n');
+  const install = /apt-get install [^\n]*(?:\\\n[^\n]*)*/.exec(stage);
+  assert.ok(install, 'the shipping stage installs no packages');
+  const packages = install[0].split(/\s+/);
+  assert.ok(packages.includes('ripgrep'), install[0]);
+  assert.ok(packages.includes('fd-find'), install[0]);
+});
+
 // ADR 0044: natsumi draws with sdctl in the workspace, at a fixed version, with the default params baked in beside it.
 const workspaceStage = async () => {
   const text = await dockerfile();
@@ -210,4 +221,17 @@ test('through the runner, as run_shell runs it, sdctl draws through the relay wi
   const viaShell = await docker(['exec', '--env', `SDCTL_URL=${relay}`, container,
     'bash', '-c', 'sdctl txt2img --prompt /work/prompts/cat.yaml']);
   await drawn(viaShell);
+});
+
+// The same, in the image that ships: Pi finds the commands on PATH under these names.
+test('the server image has rg and fdfind on PATH', {
+  skip: hasDocker ? false : 'docker is not available',
+  timeout: 30 * 60_000,
+}, async () => {
+  const serverTag = 'natsumi-server:test';
+  await docker(['build', '--network', 'host', '--tag', serverTag, root]);
+  for (const command of ['rg', 'fdfind']) {
+    const version = await docker(['run', '--rm', '--network', 'none', '--entrypoint', command, serverTag, '--version']);
+    assert.match(version, /\d+\.\d+/, `${command} --version printed ${version}`);
+  }
 });

@@ -469,6 +469,8 @@ final class RootComponent: Component {
         checkAll.isEnabled = props.canAcknowledgeAllNotices
         menu.addItem(checkAll)
         menu.addItem(.separator())
+        menu.addItem(routesItem(props.modelRoutes))
+        menu.addItem(.separator())
         if props.showsLogin { menu.addItem(item("GitHub でログイン", .loginRequested)) }
         menu.addItem(item("設定…", .settingsOpenRequested))
         let logout = item("ログアウト", .logoutRequested)
@@ -478,6 +480,26 @@ final class RootComponent: Component {
         menu.addItem(item("終了", .quitRequested))
         menu.autoenablesItems = false
         return menu
+    }
+
+    /// The model routes as a submenu, the same as the menu bar's (ADR 0046).
+    private func routesItem(_ routes: ModelRoutesProps) -> NSMenuItem {
+        let parent = NSMenuItem(title: routes.menuTitle, action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for row in routes.rows {
+            let choose = item(([row.name] + row.tags).joined(separator: " · "), .modelRouteChosen(row.name))
+            choose.state = row.isChosen ? .on : .off
+            choose.isEnabled = row.isEnabled
+            submenu.addItem(choose)
+        }
+        for line in [routes.pending, routes.message].compactMap({ $0 }) {
+            let note = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            submenu.addItem(note)
+        }
+        submenu.autoenablesItems = false
+        parent.submenu = submenu
+        return parent
     }
 
     private func item(_ title: String, _ event: UIEvent) -> ActionMenuItem {

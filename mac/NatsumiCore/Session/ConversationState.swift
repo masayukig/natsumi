@@ -202,8 +202,8 @@ public struct ConversationState: Equatable, Sendable {
             readState.unreadReplyCount = count
         case .notificationAcked(let id):
             readState.unacknowledgedNotificationIds.removeAll { $0 == id }
-        case .sessionRenewed, .approvalPending, .approvalResolved:
-            // The session's and the approvals', not the conversation's.
+        case .sessionRenewed, .approvalPending, .approvalResolved, .modelRoutes:
+            // The session's, the approvals' and the routes', not the conversation's.
             break
         case .accepted(let accepted):
             if let index = changeIndex(requestId) {

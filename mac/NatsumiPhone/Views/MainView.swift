@@ -28,7 +28,7 @@ struct MainView: View {
                     case (_, .history(let history)):
                         HistoryView(props: history, sinks: sinks)
                     case (_, .settings(let settings)):
-                        SettingsView(props: settings, send: sinks.settings)
+                        SettingsView(props: settings, send: sinks.settings, chooseRoute: sinks.settingsRoutes)
                     case (_, .approvals(let list)), (.approvals, .approval(_, let list)):
                         ApprovalListView(props: list, send: sinks.approvalRows)
                     case (_, .approval(let approval, _)):

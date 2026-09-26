@@ -69,6 +69,8 @@ public enum PhoneEvent: Equatable, Sendable {
     /// What came of a `.fetchImage`.
     case imageFetched(imageId: String, ImageFetch)
     case logoutRequested
+    /// A model route in the settings: natsumi moves to it from her next turn (ADR 0046).
+    case modelRouteChosen(String)
 
     // MARK: The approvals
 

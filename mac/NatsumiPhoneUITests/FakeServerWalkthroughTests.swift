@@ -174,6 +174,35 @@ final class FakeServerWalkthroughTests: XCTestCase {
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
     }
 
+    /// The model routes (ADR 0046): the settings show the route in use and the list, `plus` is chosen, the settings
+    /// say it comes from the next turn, and the fake server moves to it a moment later. The route that is not ready
+    /// cannot be chosen. Logging out at the end puts the fake server's routes back, so this can run again.
+    func testModelRouteSwitch() throws {
+        app.launch()
+        logInIfAsked()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 15), "つながらない")
+
+        app.buttons["設定"].tap()
+        XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["local（example-model）で話しています"].waitForExistence(timeout: 5))
+        let plus = app.buttons["model.route.plus"]
+        XCTAssertTrue(plus.waitForExistence(timeout: 5), "plus の行が無い")
+        XCTAssertFalse(app.buttons["model.route.spare"].isEnabled)
+        XCTAssertFalse(app.buttons["model.route.local"].isEnabled)
+        shoot("m1-routes")
+
+        plus.tap()
+        XCTAssertTrue(app.staticTexts["次のターンから plus に切り替わります"].waitForExistence(timeout: 5))
+        shoot("m2-next-turn")
+        XCTAssertTrue(app.staticTexts["plus（example-plus-model）で話しています"].waitForExistence(timeout: 10), "移らない")
+        XCTAssertFalse(app.staticTexts["次のターンから plus に切り替わります"].exists)
+        XCTAssertTrue(app.buttons["model.route.local"].isEnabled)
+        shoot("m3-switched")
+
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+    }
+
     /// The row of the list for a channel.
     private func row(_ channel: String) -> XCUIElement {
         let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", channel)).firstMatch

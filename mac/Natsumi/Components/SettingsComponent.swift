@@ -24,12 +24,12 @@ final class SettingsComponent: Component {
 
     func render(_ props: SettingsProps) {
         guard props != applied else { return }
-        let first = applied == nil
+        // The panel is sized to what the form asks for: once, and again when the list of model routes changes length.
+        let resize = applied?.modelRoutes.rows.count != props.modelRoutes.rows.count
         applied = props
         hosting.rootView = SettingsView(props: props, send: sink)
         record(props.isRecordingHotKey)
-        // The panel is sized once, to what the form asks for.
-        if first { panel.setContentSize(hosting.fittingSize) }
+        if resize { panel.setContentSize(hosting.fittingSize) }
     }
 
     private func record(_ recording: Bool) {

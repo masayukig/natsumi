@@ -45,6 +45,16 @@ struct MenuContent: View {
         if props.showsLogin {
             Button("GitHub でログイン") { send(.loginRequested) }
         }
+        Menu(props.modelRoutes.menuTitle) {
+            ForEach(props.modelRoutes.rows) { row in
+                Toggle(isOn: Binding(get: { row.isChosen }, set: { _ in send(.modelRouteChosen(row.name)) })) {
+                    Text(([row.name] + row.tags).joined(separator: " · "))
+                }
+                .disabled(!row.isEnabled)
+            }
+            if let pending = props.modelRoutes.pending { Text(pending) }
+            if let message = props.modelRoutes.message { Text(message) }
+        }
         Button("設定…") { send(.settingsOpenRequested) }
             .keyboardShortcut(",")
         Button("ログアウト") { send(.logoutRequested) }

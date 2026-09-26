@@ -241,7 +241,11 @@ public struct UIMediator {
 
         case .settingsOpenRequested:
             state.isSettingsOpen = true
-            return [.showSettings]
+            // The routes come with the sync and every change after it; opening the settings looks at them afresh.
+            return [.showSettings] + apply(state.session.listRoutes())
+
+        case .modelRouteChosen(let name):
+            return apply(state.session.chooseRoute(name))
 
         case .settingsCloseRequested:
             state.isSettingsOpen = false

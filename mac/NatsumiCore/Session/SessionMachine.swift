@@ -43,6 +43,8 @@ public struct SessionMachine {
     public private(set) var conversation = ConversationState()
     /// The Slack posts waiting for the owner, and the owner's decisions on them.
     public private(set) var approvals = ApprovalBook()
+    /// The model routes, and the owner's choice of one on its way (ADR 0046).
+    public private(set) var modelRoutes = ModelRouteBook()
 
     /// Where this iPhone wants its notifications, sent after every sync (ADR 0029). The Mac has none.
     private var pushRegistration: PushRegistration?
@@ -120,6 +122,20 @@ public struct SessionMachine {
         return [.send(ClientEnvelope(requestId: sent.requestId, deviceId: deviceId, command: sent.command))]
     }
 
+    /// Records the owner's choice of a model route and sends it now when synced; otherwise it waits for the sync like
+    /// an unsent message. A second choice while the first is on its way sends nothing.
+    public mutating func chooseRoute(_ name: String) -> [SessionEffect] {
+        guard let choice = modelRoutes.choose(name, requestId: makeRequestId()) else { return [] }
+        guard phase == .ready, let deviceId else { return [] }
+        return [.send(ClientEnvelope(requestId: choice.requestId, deviceId: deviceId, command: .modelUse(route: choice.route)))]
+    }
+
+    /// Asks the server for the routes as they are now. Only when synced: the sync brings them anyway.
+    public mutating func listRoutes() -> [SessionEffect] {
+        guard phase == .ready, let deviceId else { return [] }
+        return [.send(ClientEnvelope(requestId: makeRequestId(), deviceId: deviceId, command: .modelList))]
+    }
+
     /// Keeps the registration and sends it now when synced. Every later sync sends it again, since the token can
     /// change and the server may have dropped it.
     public mutating func registerPush(_ registration: PushRegistration) -> [SessionEffect] {
@@ -165,6 +181,7 @@ public struct SessionMachine {
         guard isSyncAnswer else {
             conversation.apply(event, requestId: envelope.requestId)
             approvals.apply(event, requestId: envelope.requestId)
+            modelRoutes.apply(event, requestId: envelope.requestId)
             return []
         }
         var effects: [SessionEffect] = envelope.sessionExpiresAt.map { [.extendSession(until: $0)] } ?? []
@@ -173,6 +190,7 @@ public struct SessionMachine {
             syncRequestId = nil
             conversation.apply(event)
             approvals.apply(event)
+            modelRoutes.apply(event)
             effects += adopt(snapshot.deviceId)
             effects += becomeReady()
         case .accepted(let accepted) where accepted.mode == "resume":
@@ -190,6 +208,7 @@ public struct SessionMachine {
         default:
             conversation.apply(event, requestId: envelope.requestId)
             approvals.apply(event, requestId: envelope.requestId)
+            modelRoutes.apply(event, requestId: envelope.requestId)
         }
         return effects
     }
@@ -264,10 +283,14 @@ public struct SessionMachine {
         let decisions = approvals.unsent.map {
             SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
         }
+        // Choosing is idempotent too: choosing the route already chosen is taken and changes nothing.
+        let choice = modelRoutes.unsent.map {
+            [SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: .modelUse(route: $0.route)))]
+        } ?? []
         // Registering is idempotent on the server: the same device's registration is overwritten.
         let register = pushRegistration.map {
             [SessionEffect.send(ClientEnvelope(requestId: makeRequestId(), deviceId: deviceId, command: .pushRegister($0)))]
         } ?? []
-        return sends + changes + decisions + register
+        return sends + changes + decisions + choice + register
     }
 }

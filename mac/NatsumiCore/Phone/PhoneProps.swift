@@ -127,11 +127,17 @@ public struct PhoneSettingsProps: Equatable, Sendable {
     public var status: PhoneStatusProps
     /// The ID the server gave this iPhone; empty until it has one.
     public var device: String
+    /// The model routes, to see and to choose from (ADR 0046).
+    public var modelRoutes: ModelRoutesProps
 
-    public init(serverOrigin: String, status: PhoneStatusProps, device: String) {
+    public init(
+        serverOrigin: String, status: PhoneStatusProps, device: String,
+        modelRoutes: ModelRoutesProps = ModelRoutesProps(summary: "経路はまだ分かりません", menuTitle: "モデル: 不明")
+    ) {
         self.serverOrigin = serverOrigin
         self.status = status
         self.device = device
+        self.modelRoutes = modelRoutes
     }
 }
 
@@ -249,7 +255,8 @@ public enum PhoneProps {
         case .settings:
             .settings(PhoneSettingsProps(
                 serverOrigin: state.serverOrigin ?? "", status: status(state.status),
-                device: state.session.deviceId ?? ""))
+                device: state.session.deviceId ?? "",
+                modelRoutes: UIProps.modelRoutes(state.session.modelRoutes, isConnected: state.status == .connected)))
         case .approvals:
             .approvals(PhoneApprovalProps.list(state, time: time))
         case .approval(let id):
