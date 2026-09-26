@@ -32,8 +32,35 @@ export type SendResult =
   | { kind: 'task'; taskId: string; contextId: string; state: AgentTaskState; text: string }
   | { kind: 'message'; contextId: string; text: string };
 
-/** Where a task stands, and the text that goes with it: the answer, the failure, or the question. */
-export interface TaskView { state: AgentTaskState; text: string }
+/**
+ * Where a task stands, and the text that goes with it: the answer, the failure, or the question. A finished task may
+ * also hand back files, one artifact each; `files` is there only when it has some.
+ */
+export interface TaskView { state: AgentTaskState; text: string; files?: AgentFile[] }
+
+/**
+ * A file a finished task hands back: an artifact with a FilePart, which A2A 1.0 writes as `{ url, mediaType, filename }`
+ * (the contract with fraction-agents). Only named here; `fetchFile` brings it.
+ */
+export interface AgentFile { uri: string; mediaType: string; name: string; description: string }
+
+/**
+ * Why a file could not be fetched:
+ * - `elsewhere`: it is not at the agent's own origin, so it was not asked for, and the token went nowhere.
+ * - `no-token`: the token file could not be read, or is empty.
+ * - `unauthorized`: the agent refused the token (401 or 403).
+ * - `not-found`: the agent does not have it, or no longer does (404).
+ * - `too-large`: it is over the limit, by its Content-Length or as it arrived.
+ * - `unavailable`: the agent could not be reached, answered otherwise, or took too long.
+ */
+export class AgentFileError extends Error {
+  readonly kind: 'elsewhere' | 'no-token' | 'unauthorized' | 'not-found' | 'too-large' | 'unavailable';
+  constructor(kind: AgentFileError['kind'], message: string) {
+    super(message);
+    this.name = 'AgentFileError';
+    this.kind = kind;
+  }
+}
 
 /** What natsumi's list of agents says about one of them (ADR 0036). */
 export interface CardSummary {
@@ -47,6 +74,8 @@ export interface A2AClient {
   send(url: string, input: { text: string; contextId?: string; taskId?: string }): Promise<SendResult>;
   getTask(url: string, taskId: string): Promise<TaskView>;
   card(url: string): Promise<CardSummary>;
+  /** A file a task handed back, from the agent at `url` only, and no larger than `maxBytes`. */
+  fetchFile(url: string, fileUri: string, maxBytes: number): Promise<Buffer>;
 }
 
 export interface SdkA2AClientOptions {
@@ -99,6 +128,50 @@ export class SdkA2AClient implements A2AClient {
       return await response.json() as unknown;
     });
     return summarizeCard(body);
+  }
+
+  async fetchFile(url: string, fileUri: string, maxBytes: number): Promise<Buffer> {
+    let target: URL;
+    try { target = new URL(fileUri); } catch { throw new AgentFileError('elsewhere', 'the file URI is not a URL'); }
+    // The token goes only where the owner said it may: the origin of the configured URL, which serves the card too.
+    if (target.origin !== new URL(url).origin) throw new AgentFileError('elsewhere', 'the file is not at the agent\'s origin');
+    let token: string;
+    try { token = await this.token(); } catch (error) { throw new AgentFileError('no-token', (error as Error).message); }
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const limit = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new AgentFileError('unavailable', `no file within ${this.timeoutMs} ms`));
+      }, this.timeoutMs);
+    });
+    try {
+      return await Promise.race([this.download(target, token, maxBytes, controller.signal), limit]);
+    } catch (error) {
+      if (error instanceof AgentFileError) throw error;
+      throw new AgentFileError('unavailable', error instanceof Error ? error.message : String(error));
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+  /** One GET, never redirected: a redirect could carry the token to another origin. */
+  private async download(target: URL, token: string, maxBytes: number, signal: AbortSignal): Promise<Buffer> {
+    const response = await this.fetch(target, { headers: { authorization: `Bearer ${token}` }, redirect: 'error', signal });
+    if (response.status === 401 || response.status === 403) throw new AgentFileError('unauthorized', `the agent answered ${response.status}`);
+    if (response.status === 404) throw new AgentFileError('not-found', 'the agent answered 404');
+    if (!response.ok || !response.body) throw new AgentFileError('unavailable', `the agent answered ${response.status}`);
+    const length = Number(response.headers.get('content-length'));
+    if (Number.isFinite(length) && length > maxBytes) throw new AgentFileError('too-large', `the file is ${length} bytes`);
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of response.body) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) throw new AgentFileError('too-large', `the file is over ${maxBytes} bytes`);
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 
   private async call<T>(url: string, run: (client: Client, signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -161,7 +234,9 @@ function view(task: Task): TaskView {
   const said = partsText(task.status?.message?.parts ?? []);
   if (state === TaskState.TASK_STATE_COMPLETED) {
     const answer = task.artifacts.map(artifact => partsText(artifact.parts)).filter(Boolean).join('\n\n');
-    return { state: 'completed', text: answer || said };
+    const files = task.artifacts.flatMap(artifact => artifact.parts.flatMap(part => part.content?.$case === 'url'
+      ? [{ uri: part.content.value, mediaType: part.mediaType, name: part.filename, description: artifact.description }] : []));
+    return { state: 'completed', text: answer || said, ...(files.length > 0 ? { files } : {}) };
   }
   if (state === TaskState.TASK_STATE_INPUT_REQUIRED) return { state: 'input-required', text: said };
   if (state === TaskState.TASK_STATE_FAILED || state === TaskState.TASK_STATE_CANCELED || state === TaskState.TASK_STATE_REJECTED
@@ -171,7 +246,7 @@ function view(task: Task): TaskView {
   return { state: 'waiting', text: '' };
 }
 
-/** The text of a message or an artifact. Files and data are not natsumi's to read here (ADR 0025). */
+/** The text of a message or an artifact. Files are brought separately (`fetchFile`), and data is not natsumi's to read. */
 function partsText(parts: Part[]): string {
   return parts.map(part => part.content?.$case === 'text' ? part.content.value : '').filter(Boolean).join('\n');
 }

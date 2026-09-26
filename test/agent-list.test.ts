@@ -16,6 +16,7 @@ function cards(byUrl: Record<string, CardSummary>): A2AClient {
   return {
     send: () => { throw new Error('the list never sends'); },
     getTask: () => { throw new Error('the list never fetches a task'); },
+    fetchFile: () => { throw new Error('the list never fetches a file'); },
     card: async url => {
       const card = byUrl[url];
       if (!card) throw new A2ACallError('unavailable', 'connect ECONNREFUSED');

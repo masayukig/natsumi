@@ -318,6 +318,7 @@ export class ThinkingLoop {
       db: options.db, now: this.now, config: a2a,
       client: options.a2aClient ?? (a2a ? new SdkA2AClient({ tokenFile: a2a.tokenFile }) : undefined),
       raise: record => this.raiseAgentReply(record), log: line => this.log(line),
+      images: this.images, workDirectory: join(options.dataDirectory, WORK_DIRECTORY),
     });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };

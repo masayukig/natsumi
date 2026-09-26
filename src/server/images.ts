@@ -95,6 +95,22 @@ export async function takeImages(paths: string[], options: { workDirectory: stri
   return { ok: true, images: images.map(({ data: _data, ...image }) => image) };
 }
 
+/**
+ * Copies one image the server already holds in memory, such as one an outside agent handed back (ADR 0048), into
+ * `destination` under a new ID. `source` is the path the workspace knows it by.
+ */
+export async function keepImage(data: Buffer, mimeType: PostImageType, source: string, destination: string): Promise<TakenImage> {
+  const imageId = `image-${randomUUID()}`;
+  const file = join(destination, `${imageId}.${EXTENSIONS[mimeType]}`);
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  await writeFile(file, data, { flag: 'wx', mode: 0o600 });
+  return { imageId, source, file, mimeType, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex'),
+    ...imageSize(data, mimeType) };
+}
+
+/** The extension a copy of this type is given. */
+export function imageExtension(mimeType: PostImageType): string { return EXTENSIONS[mimeType]; }
+
 /** Removes copies that were taken and then not kept. */
 export async function discardImages(images: { file: string }[]): Promise<void> {
   await Promise.all(images.map(image => rm(image.file, { force: true })));

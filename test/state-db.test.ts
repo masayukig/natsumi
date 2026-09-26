@@ -422,3 +422,11 @@ test('schema 18 keeps one row of numbers per turn, folded or not, with no room f
   const columns = (db.prepare('PRAGMA table_info(turn_stats)').all() as { name: string }[]).map(column => column.name);
   for (const name of columns) assert.doesNotMatch(name, /(^|_)(text|memo|message|body|reply)(_|$)/, name);
 }));
+
+test('schema 19 gives an agent reply what it says of the images the agent handed back, empty for the replies before', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 18));
+  db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES ('event-1', 'agent-reply', 'queued', 'x', 'x')`).run();
+  db.prepare(`INSERT INTO agent_replies (event_id, agent, status, text, created_at) VALUES ('event-1', 'wiki', 'completed', '答え', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 19)).applied, [19]);
+  assert.deepEqual({ ...db.prepare("SELECT files FROM agent_replies WHERE event_id = 'event-1'").get() as object }, { files: '' });
+}));

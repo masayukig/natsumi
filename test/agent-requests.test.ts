@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -10,7 +10,8 @@ import { LOOP_DEFAULTS, type A2AConfig } from '../src/server/config.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent } from '../src/server/thinking-loop.ts';
-import { FakeAgent } from './support/fake-agent.ts';
+import { FakeAgent, type FakeFile } from './support/fake-agent.ts';
+import { PNG } from './support/fake-slack.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
 
@@ -25,7 +26,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
   const agentDirectory = join(root, 'pi', 'agent');
-  await mkdir(data);
+  await mkdir(join(data, 'work'), { recursive: true });
   await mkdir(sessionDirectory, { recursive: true });
   await mkdir(agentDirectory, { recursive: true });
   const tokenFile = join(root, 'a2a-token');
@@ -40,7 +41,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   };
   const opened: ThinkingLoop[] = [];
   const f = {
-    agent, model, clock, db, tokenFile,
+    agent, model, clock, db, tokenFile, root, work: join(data, 'work'),
     async open() {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
@@ -352,4 +353,142 @@ test('an agent that answers at once with a message reaches her as a finished rep
   await loop.idle();
   assert.deepEqual(replies(g.model).map(r => [r.status, r.text]), [['completed', 'すぐ答えます。']]);
   assert.equal(agent.received.length, 1);
+});
+
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32, 2)]);
+
+/** Asks, lets the agent finish with `files` beside its text, and hands her the reply. */
+async function finishWithFiles(f: Awaited<ReturnType<typeof setup>>, loop: ThinkingLoop, files: FakeFile[]) {
+  f.script(ask('wiki', 'スクリーンショットを撮って', false));
+  await turn(f, loop);
+  f.agent.settle(f.agent.lastTask().id, 'completed', '撮りました。', { files });
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const reply = replies(f.model).at(-1);
+  assert.ok(reply, 'no agent_reply reached her');
+  return reply;
+}
+
+// The contract with fraction-agents: an image comes back as a FilePart, and the server brings it into /work for her.
+test('an image an agent hands back is put in /work/agents/<agent>, kept as a copy, and named in the event with its description', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  const reply = await finishWithFiles(f, loop, [
+    { name: 'screenshot-1.png', mimeType: 'image/png', description: 'example.com のトップページ', data: PNG },
+    { name: 'photo.png', mimeType: 'image/png', description: '写真', data: JPEG },
+  ]);
+  assert.equal(reply.text, '撮りました。');
+  assert.equal(reply.status, 'completed');
+  // Named by the time it was taken and the agent's name for it; the extension follows the bytes.
+  assert.deepEqual(reply.images, [
+    { path: '/work/agents/wiki/20260924T030000Z-screenshot-1.png', description: 'example.com のトップページ' },
+    { path: '/work/agents/wiki/20260924T030000Z-photo.jpg', description: '写真' },
+  ]);
+  assert.equal(reply.images_not_taken, undefined);
+  assert.deepEqual(await readFile(join(f.work, 'agents', 'wiki', '20260924T030000Z-screenshot-1.png')), PNG);
+  assert.deepEqual(await readFile(join(f.work, 'agents', 'wiki', '20260924T030000Z-photo.jpg')), JPEG);
+  assert.deepEqual(f.agent.fileRequests.map(r => r.authorization), ['Bearer fake-agent-token', 'Bearer fake-agent-token']);
+  // The server keeps its own copy, as it does of every image she hands it (ADR 0044).
+  const rows = f.db.prepare('SELECT source, mime_type, bytes FROM images ORDER BY source DESC').all().map(row => ({ ...row }));
+  assert.deepEqual(rows, [
+    { source: '/work/agents/wiki/20260924T030000Z-screenshot-1.png', mime_type: 'image/png', bytes: PNG.length },
+    { source: '/work/agents/wiki/20260924T030000Z-photo.jpg', mime_type: 'image/jpeg', bytes: JPEG.length },
+  ]);
+  // What the event said is not kept twice once it is in the Pi session (ADR 0008).
+  assert.deepEqual(f.db.prepare('SELECT text, files FROM agent_replies').all().map(row => ({ ...row })), [{ text: '', files: '' }]);
+});
+
+test('a name that is not safe as a file name is made safe, and two images of one name do not overwrite each other', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  const reply = await finishWithFiles(f, loop, [
+    { name: '../../secret/shot.png', mimeType: 'image/png', data: PNG },
+    { name: 'shot.png', mimeType: 'image/png', data: PNG },
+    { name: 'スクショ', mimeType: 'image/png', data: PNG },
+  ]);
+  assert.deepEqual((reply.images as { path: string }[]).map(image => image.path), [
+    '/work/agents/wiki/20260924T030000Z-shot.png',
+    '/work/agents/wiki/20260924T030000Z-shot-2.png',
+    '/work/agents/wiki/20260924T030000Z-image-3.png',
+  ]);
+  assert.deepEqual((await readdir(join(f.work, 'agents', 'wiki'))).sort(),
+    ['20260924T030000Z-image-3.png', '20260924T030000Z-shot-2.png', '20260924T030000Z-shot.png']);
+});
+
+test('an image elsewhere than the agent is not fetched, and the event says it was not taken', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  const port = new URL(f.agent.url).port;
+  const reply = await finishWithFiles(f, loop, [
+    { name: 'a.png', mimeType: 'image/png', data: PNG },
+    { name: 'b.png', mimeType: 'image/png', uri: `http://localhost:${port}/artifacts/b` },
+  ]);
+  assert.equal(reply.text, '撮りました。');
+  assert.deepEqual((reply.images as unknown[]).length, 1);
+  assert.deepEqual(reply.images_not_taken, [{ name: 'b.png', reason: '相手とは別の場所を指していたので、取りませんでした。' }]);
+  assert.equal(f.agent.fileRequests.length, 1);
+});
+
+test('an image the agent refuses or no longer has is told as not taken, and the text still reaches her', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.agent.fileFailWith = 401;
+  let reply = await finishWithFiles(f, loop, [{ name: 'a.png', mimeType: 'image/png', data: PNG }]);
+  assert.equal(reply.text, '撮りました。');
+  assert.equal(reply.images, undefined);
+  assert.deepEqual(reply.images_not_taken, [{ name: 'a.png', reason: '画像を取れませんでした（相手に断られました、401）。' }]);
+
+  f.agent.fileFailWith = undefined;
+  reply = await finishWithFiles(f, loop, [{ name: 'b.png', mimeType: 'image/png', uri: f.agent.fileUrl('gone') }]);
+  assert.deepEqual(reply.images_not_taken, [{ name: 'b.png', reason: '画像を取れませんでした（相手のところにありません、404。期限が過ぎたのかもしれません）。' }]);
+
+  f.agent.fileFailWith = 503;
+  reply = await finishWithFiles(f, loop, [{ name: 'c.png', mimeType: 'image/png', data: PNG }]);
+  assert.deepEqual(reply.images_not_taken, [{ name: 'c.png', reason: '画像を取れませんでした（相手につながりませんでした）。' }]);
+  assert.deepEqual(await readdir(join(f.work)), [], 'nothing is put in /work');
+});
+
+test('an image over the size limit, one that is not an image by its bytes, and those past eight are not taken', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  const big = Buffer.concat([PNG, Buffer.alloc(10 * 1024 * 1024)]);
+  const files: FakeFile[] = [
+    { name: 'big.png', mimeType: 'image/png', data: big },
+    { name: 'page.png', mimeType: 'image/png', data: Buffer.from('<html>not an image</html>') },
+    ...Array.from({ length: 9 }, (_, i) => ({ name: `shot-${i + 1}.png`, mimeType: 'image/png', data: PNG })),
+  ];
+  const reply = await finishWithFiles(f, loop, files);
+  // Eight are looked at, in order; the two refused among them leave six taken.
+  assert.deepEqual((reply.images as { path: string }[]).map(image => image.path.split('-').slice(1).join('-')),
+    ['shot-1.png', 'shot-2.png', 'shot-3.png', 'shot-4.png', 'shot-5.png', 'shot-6.png']);
+  assert.deepEqual(reply.images_not_taken, [
+    { name: 'big.png', reason: '画像を取れませんでした（10 MB を超えていました）。' },
+    { name: 'page.png', reason: '画像を取れませんでした（PNG・JPEG・WebP のどれでもありませんでした。中身で見分けます）。' },
+    { name: 'shot-7.png', reason: '1 回の返事から取る画像は 8 枚までです。' },
+    { name: 'shot-8.png', reason: '1 回の返事から取る画像は 8 枚までです。' },
+    { name: 'shot-9.png', reason: '1 回の返事から取る画像は 8 枚までです。' },
+  ]);
+  assert.equal(f.agent.fileRequests.some(r => f.agent.fileRequests.indexOf(r) >= 8), false, 'those past eight are not fetched');
+});
+
+test('a /work/agents that leads out of /work is not written through', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  const outside = join(f.root, 'outside');
+  await mkdir(outside);
+  await symlink(outside, join(f.work, 'agents'));
+  const reply = await finishWithFiles(f, loop, [{ name: 'a.png', mimeType: 'image/png', data: PNG }]);
+  assert.equal(reply.text, '撮りました。');
+  assert.equal(reply.images, undefined);
+  assert.deepEqual(reply.images_not_taken, [{ name: 'a.png', reason: '画像を取れませんでした（/work/agents/wiki が /work の外を指しています）。' }]);
+  assert.deepEqual(await readdir(outside), []);
+});
+
+test('a reply of text only carries no image fields', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  const reply = await finishWithFiles(f, loop, []);
+  assert.deepEqual(Object.keys(reply).sort(), ['agent', 'received_at', 'status', 'text', 'type']);
+  assert.deepEqual(f.agent.fileRequests, []);
 });

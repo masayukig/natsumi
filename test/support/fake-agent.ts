@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { AgentCard, Role, TaskState, type Message, type Task } from '@a2a-js/sdk';
 import { RequestMalformedError, TaskNotFoundError, UnsupportedOperationError } from '@a2a-js/sdk/errors';
@@ -36,6 +36,18 @@ export interface FakeAgentOptions {
 }
 
 /**
+ * A file a finished task hands back as an artifact of its own, with one FilePart (the contract with fraction-agents).
+ * With `data` the agent serves it at `/artifacts/<ID>`, under the same token as the calls; `uri` points it elsewhere.
+ */
+export interface FakeFile {
+  name: string;
+  mimeType: string;
+  description?: string;
+  data?: Buffer;
+  uri?: string;
+}
+
+/**
  * A stand-in for an agent of `yuanying/fraction-agents`, served through the SDK's own JSON-RPC handler so what goes
  * over the wire is the real protocol. It keeps the rules the real host has: contexts are numbered by the agent, a
  * contextId must be one it gave out, a taskId is accepted only on a task waiting for input, and one context runs
@@ -50,6 +62,13 @@ export class FakeAgent {
   readonly polls: string[] = [];
   /** While set, every JSON-RPC call gets this HTTP status instead of an answer. */
   failWith: number | undefined;
+  /** Requests for the files of artifacts, by ID, and the Authorization header each carried. */
+  readonly fileRequests: { id: string; authorization: string | undefined }[] = [];
+  /** While set, every request for a file gets this HTTP status instead of the file. */
+  fileFailWith: number | undefined;
+  /** Leaves Content-Length off the files, as a host streaming them might. */
+  chunkedFiles = false;
+  private readonly files = new Map<string, { data: Buffer; mimeType: string }>();
   token: string;
   private readonly options: FakeAgentOptions;
   private readonly server: Server;
@@ -69,6 +88,10 @@ export class FakeAgent {
           this.cardRequests.push(request.headers.authorization);
           response.writeHead(200, { 'content-type': 'application/json' });
           response.end(JSON.stringify(AgentCard.toJSON(this.card())));
+          return;
+        }
+        if (request.method === 'GET' && path.startsWith('/artifacts/')) {
+          this.serveFile(path.slice('/artifacts/'.length), request.headers.authorization, response);
           return;
         }
         if (request.method !== 'POST' || (path !== '/agent/' && path !== '/agent')) {
@@ -110,14 +133,29 @@ export class FakeAgent {
   /** Where the agent answers, as a config names it. */
   get url(): string { return `http://127.0.0.1:${this.port}/agent/`; }
 
-  /** Moves a task on, as the agent's work would. `text` is the answer, the failure, or the question. */
-  settle(taskId: string, state: FakeTaskState, text = ''): void {
+  /** Where the agent serves the file of an artifact with this ID. */
+  fileUrl(id: string): string { return `http://127.0.0.1:${this.port}/artifacts/${id}`; }
+
+  /**
+   * Moves a task on, as the agent's work would. `text` is the answer, the failure, or the question. A finished task
+   * also hands back `files`, each as an artifact of its own after the text.
+   */
+  settle(taskId: string, state: FakeTaskState, text = '', options: { files?: FakeFile[] } = {}): void {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`no task ${taskId}`);
     const message = text && state !== 'completed' ? agentMessage(text, task) : undefined;
     task.status = { state: STATES[state], message, timestamp: new Date().toISOString() };
     if (state === 'completed' && text) {
       task.artifacts = [{ artifactId: randomUUID(), name: 'response', description: '', parts: [textPart(text)], metadata: undefined, extensions: [] }];
+    }
+    if (state === 'completed') {
+      for (const file of options.files ?? []) {
+        const id = `${randomUUID()}${randomUUID()}`.replaceAll('-', '');
+        if (file.data) this.files.set(id, { data: file.data, mimeType: file.mimeType });
+        task.artifacts.push({ artifactId: randomUUID(), name: file.name, description: file.description ?? '', metadata: undefined,
+          extensions: [], parts: [{ content: { $case: 'url', value: file.uri ?? this.fileUrl(id) }, metadata: undefined,
+            filename: file.name, mediaType: file.mimeType }] });
+      }
     }
   }
 
@@ -131,6 +169,27 @@ export class FakeAgent {
   async close(): Promise<void> {
     this.server.closeAllConnections();
     await new Promise<void>(resolve => this.server.close(() => resolve()));
+  }
+
+  /** `GET /artifacts/<ID>`: the file itself, under the token of the calls; 401 without it, 404 for an ID it does not know. */
+  private serveFile(id: string, authorization: string | undefined, response: ServerResponse): void {
+    this.fileRequests.push({ id, authorization });
+    if (authorization !== `Bearer ${this.token}`) {
+      response.writeHead(401, { 'www-authenticate': 'Bearer realm="a2a"' }).end();
+      return;
+    }
+    if (this.fileFailWith) {
+      response.writeHead(this.fileFailWith).end();
+      return;
+    }
+    const file = this.files.get(id);
+    if (!file) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': file.mimeType,
+      ...(this.chunkedFiles ? {} : { 'content-length': String(file.data.length) }) });
+    response.end(file.data);
   }
 
   private card(): AgentCard {

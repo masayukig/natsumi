@@ -92,3 +92,12 @@ test('the page on images says how to show the owner a picture with reply_to_mac'
   const page = await read('manual/images.md');
   for (const word of ['reply_to_mac', 'images', '/work/', 'notify_owner']) assert.ok(page.includes(word), word);
 });
+
+// ADR 0048: an image an agent hands back is in /work/agents; she looks at it with view and shows it with reply_to_mac.
+test('the page on asking agents says where an image in a reply is and how to look at it and show it', async () => {
+  const page = await read('manual/ask-agent.md');
+  for (const word of ['/work/agents/', 'images_not_taken', 'description', 'view', 'reply_to_mac', '/manual/images.md']) {
+    assert.ok(page.includes(word), word);
+  }
+  assert.ok((await read('manual/images.md')).includes('/work/agents/'));
+});

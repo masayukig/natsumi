@@ -1,7 +1,7 @@
 # 0035. 外のエージェントに頼むツールと、返事の受け取り方
 
 - Date: 2026-09-24
-- Status: Accepted（「まだ決めていないこと」の 2 点、頼める相手の名前をどこで知るかと返事を待ち続ける上限は [ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md) で決定）
+- Status: Accepted（「まだ決めていないこと」の 2 点、頼める相手の名前をどこで知るかと返事を待ち続ける上限は [ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md) で決定、`agent_reply` の出来事に相手が返した画像の `images` と `images_not_taken` を足すことは [ADR 0048](0048-bringing-in-images-an-agent-hands-back.md) で追加）
 
 ## Context
 

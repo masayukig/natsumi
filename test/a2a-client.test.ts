@@ -3,8 +3,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { A2ACallError, SdkA2AClient } from '../src/server/a2a-client.ts';
+import { A2ACallError, AgentFileError, SdkA2AClient } from '../src/server/a2a-client.ts';
 import { FakeAgent } from './support/fake-agent.ts';
+import { PNG } from './support/fake-slack.ts';
 
 async function setup(t: test.TestContext, options: ConstructorParameters<typeof SdkA2AClient>[0] extends infer O ? Partial<O> : never = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'natsumi-a2a-'));
@@ -123,4 +124,78 @@ test('a call that hangs is given up after the time limit', async t => {
   const hanging = new SdkA2AClient({ tokenFile: '/dev/null', timeoutMs: 50,
     fetch: () => new Promise<Response>(() => {}) });
   await assert.rejects(hanging.card(agent.url), (error: unknown) => error instanceof A2ACallError && error.kind === 'unavailable');
+});
+
+// The contract with fraction-agents: a finished task hands each image back as an artifact of its own with one FilePart,
+// which A2A 1.0 writes as `{ url, mediaType, filename }`. The file is fetched later, under the same token.
+test('a finished task reads back the files of its artifacts, each with its URL, type, name and description', async t => {
+  const { agent, client } = await setup(t);
+  const sent = await client.send(agent.url, { text: 'スクリーンショットを撮って' });
+  assert.equal(sent.kind, 'task');
+  agent.settle(sent.taskId, 'completed', '撮りました。', { files: [
+    { name: 'screenshot-1.png', mimeType: 'image/png', description: 'トップページ', data: PNG },
+    { name: 'elsewhere.png', mimeType: 'image/png', uri: 'https://elsewhere.example/artifacts/x' },
+  ] });
+  const view = await client.getTask(agent.url, sent.taskId);
+  assert.equal(view.state, 'completed');
+  assert.equal(view.text, '撮りました。', 'the files are not read as text');
+  assert.equal(view.files?.length, 2);
+  assert.match(view.files![0]!.uri, /^http:\/\/127\.0\.0\.1:\d+\/artifacts\/[0-9a-f]{64}$/);
+  assert.deepEqual({ ...view.files![0], uri: undefined },
+    { uri: undefined, mediaType: 'image/png', name: 'screenshot-1.png', description: 'トップページ' });
+  assert.deepEqual(view.files![1], { uri: 'https://elsewhere.example/artifacts/x', mediaType: 'image/png', name: 'elsewhere.png',
+    description: '' });
+});
+
+test('a file of an artifact is fetched with the token of the calls', async t => {
+  const { agent, client } = await setup(t);
+  const sent = await client.send(agent.url, { text: '撮って' });
+  assert.equal(sent.kind, 'task');
+  agent.settle(sent.taskId, 'completed', '撮りました。', { files: [{ name: 'a.png', mimeType: 'image/png', data: PNG }] });
+  const [file] = (await client.getTask(agent.url, sent.taskId)).files!;
+  assert.deepEqual(await client.fetchFile(agent.url, file!.uri, 1024), PNG);
+  assert.deepEqual(agent.fileRequests.map(r => r.authorization), ['Bearer first-token']);
+
+  agent.chunkedFiles = true;
+  assert.deepEqual(await client.fetchFile(agent.url, file!.uri, 1024), PNG, 'a file without Content-Length is read too');
+});
+
+test('a file is refused before any request when it is elsewhere, and its failures are told apart', async t => {
+  const { agent, client, tokenFile } = await setup(t);
+  const sent = await client.send(agent.url, { text: '撮って' });
+  assert.equal(sent.kind, 'task');
+  const big = Buffer.concat([PNG, Buffer.alloc(2048)]);
+  agent.settle(sent.taskId, 'completed', '撮りました。', { files: [{ name: 'a.png', mimeType: 'image/png', data: PNG },
+    { name: 'big.png', mimeType: 'image/png', data: big }] });
+  const [small, large] = (await client.getTask(agent.url, sent.taskId)).files!;
+  const kind = async (call: Promise<unknown>) => {
+    try { await call; } catch (error) {
+      assert.ok(error instanceof AgentFileError, String(error));
+      return error.kind;
+    }
+    assert.fail('the fetch did not fail');
+  };
+  // Another origin never sees the token: not another host, not another port, not another scheme.
+  const port = new URL(agent.url).port;
+  for (const uri of [`http://localhost:${port}/artifacts/x`, `http://127.0.0.1:${Number(port) + 1}/artifacts/x`,
+    `https://127.0.0.1:${port}/artifacts/x`, 'file:///etc/passwd']) {
+    assert.equal(await kind(client.fetchFile(agent.url, uri, 1024)), 'elsewhere', uri);
+  }
+  assert.equal(agent.fileRequests.length, 0);
+
+  assert.equal(await kind(client.fetchFile(agent.url, large!.uri, 1024)), 'too-large');
+  agent.chunkedFiles = true;
+  assert.equal(await kind(client.fetchFile(agent.url, large!.uri, 1024)), 'too-large', 'counted as it arrives, too');
+  assert.equal(await kind(client.fetchFile(agent.url, agent.fileUrl('no-such-file'), 1024)), 'not-found');
+  agent.fileFailWith = 401;
+  assert.equal(await kind(client.fetchFile(agent.url, small!.uri, 1024)), 'unauthorized');
+  agent.fileFailWith = 503;
+  assert.equal(await kind(client.fetchFile(agent.url, small!.uri, 1024)), 'unavailable');
+  agent.fileFailWith = undefined;
+  await rm(tokenFile);
+  assert.equal(await kind(client.fetchFile(agent.url, small!.uri, 1024)), 'no-token');
+  await writeFile(tokenFile, 'first-token');
+  const url = agent.url;
+  await agent.close();
+  assert.equal(await kind(client.fetchFile(url, small!.uri, 1024)), 'unavailable');
 });

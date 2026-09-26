@@ -1,7 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { A2ACallError, type A2AClient, type AgentTaskState, type SendResult } from './a2a-client.ts';
+import { A2ACallError, type A2AClient, type AgentFile, type AgentTaskState, type SendResult } from './a2a-client.ts';
+import { bringAgentImages, discardBrought, type BroughtImages } from './agent-files.ts';
 import type { A2AConfig } from './config.ts';
 import type { Transaction } from './conversation-store.ts';
+import type { ImageStore } from './images.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -14,6 +16,9 @@ export const AGENT_LIST_PATH = '/manual/agents/INDEX.md';
 
 /** How an exchange ended, as the event names it. */
 type ReplyStatus = 'completed' | 'failed' | 'input-required' | 'gave-up';
+
+/** What an event says of the images an agent handed back, as the `files` column keeps it until the event is taken. */
+interface ReplyFiles { images: { path: string; description: string }[]; not_taken: { name: string; reason: string }[] }
 
 interface TaskRow { agent: string; task_id: string; context_id: string; state: string; sent_at: string }
 interface ContextRow { agent: string; context_id: string; task_id: string | null }
@@ -31,6 +36,10 @@ export interface AgentRequestsOptions {
   config: A2AConfig | undefined;
   client: A2AClient | undefined;
   raise: RaiseAgentReply;
+  /** Where the images an agent hands back are copied and recorded (ADR 0048). Without it they are not brought. */
+  images?: ImageStore;
+  /** `/work` as the server sees it, where those images are put for her. */
+  workDirectory?: string;
   log?: (line: string) => void;
 }
 
@@ -112,16 +121,19 @@ export class AgentRequests {
    * kept twice (ADR 0008). An event is handed to Pi only once, so nothing ever asks for the line again.
    */
   takeEventLine(eventId: string, receivedAt: string): Record<string, unknown> {
-    const row = this.db.prepare('SELECT agent, status, text FROM agent_replies WHERE event_id = ?').get(eventId) as
-      { agent: string; status: ReplyStatus; text: string } | undefined;
+    const row = this.db.prepare('SELECT agent, status, text, files FROM agent_replies WHERE event_id = ?').get(eventId) as
+      { agent: string; status: ReplyStatus; text: string; files: string } | undefined;
     if (!row) return { type: 'agent_reply', received_at: receivedAt, status: 'failed' };
-    this.db.prepare(`UPDATE agent_replies SET text = '' WHERE event_id = ?`).run(eventId);
+    this.db.prepare(`UPDATE agent_replies SET text = '', files = '' WHERE event_id = ?`).run(eventId);
+    const files = row.files ? JSON.parse(row.files) as ReplyFiles : { images: [], not_taken: [] };
     const characters = [...row.text];
     const cut = characters.length > MAX_AGENT_REPLY_CHARS;
     return {
       type: 'agent_reply', received_at: receivedAt, agent: row.agent, status: row.status.replace('-', '_'),
       ...(row.text ? { text: cut ? characters.slice(0, MAX_AGENT_REPLY_CHARS).join('') : row.text } : {}),
       ...(cut ? { truncated: true } : {}),
+      ...(files.images.length > 0 ? { images: files.images } : {}),
+      ...(files.not_taken.length > 0 ? { images_not_taken: files.not_taken } : {}),
     };
   }
 
@@ -143,8 +155,9 @@ export class AgentRequests {
       if (!target) { this.settle(task, 'failed', ''); continue; }
       let state: AgentTaskState;
       let text: string;
+      let files: AgentFile[] | undefined;
       try {
-        ({ state, text } = await client.getTask(target.url, task.task_id));
+        ({ state, text, files } = await client.getTask(target.url, task.task_id));
       } catch (error) {
         const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
         if (kind === 'not-found') {
@@ -157,18 +170,36 @@ export class AgentRequests {
         continue;
       }
       if (this.failing.delete(task.agent)) this.log(`a2a: ${task.agent} answers again`);
-      if (state !== 'waiting') this.settle(task, state, text);
+      if (state === 'waiting') continue;
+      const brought = state === 'completed' && files ? await this.bring(task.agent, target.url, files) : undefined;
+      if (this.closed) {
+        // The task is fetched again after the restart, and brings its images again.
+        if (brought) await discardBrought(brought);
+        return;
+      }
+      this.settle(task, state, text, brought);
     }
   }
 
-  /** A task has ended, or is asking: its state and the event that tells her are written together. */
-  private settle(task: TaskRow, status: ReplyStatus, text: string): void {
+  /** The images a finished task handed back, brought into /work (ADR 0048). */
+  private async bring(agent: string, url: string, files: AgentFile[]): Promise<BroughtImages | undefined> {
+    const { client, images, workDirectory } = this.options;
+    if (!client || !images || !workDirectory) return undefined;
+    const brought = await bringAgentImages({ agent, url, files, client, workDirectory, imageDirectory: images.directory,
+      at: this.options.now() });
+    this.log(`a2a: brought ${brought.images.length} image(s) from ${agent}${brought.notTaken.length ? `, ${brought.notTaken.length} not taken` : ''}`);
+    return brought;
+  }
+
+  /** A task has ended, or is asking: its state and the event that tells her are written together, with its images. */
+  private settle(task: TaskRow, status: ReplyStatus, text: string, brought?: BroughtImages): void {
     if (this.closed) return;
     this.options.raise((eventId, _transaction) => {
       const now = this.iso();
       this.db.prepare(`UPDATE agent_tasks SET state = ?, updated_at = ? WHERE agent = ? AND task_id = ?`)
         .run(status, now, task.agent, task.task_id);
-      this.insertReply(eventId, task.agent, status, text);
+      if (brought) this.options.images?.record(brought.taken, now);
+      this.insertReply(eventId, task.agent, status, text, brought);
     });
   }
 
@@ -199,9 +230,11 @@ export class AgentRequests {
     }
   }
 
-  private insertReply(eventId: string, agent: string, status: ReplyStatus, text: string): void {
-    this.db.prepare('INSERT INTO agent_replies (event_id, agent, status, text, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(eventId, agent, status, text, this.iso());
+  private insertReply(eventId: string, agent: string, status: ReplyStatus, text: string, brought?: BroughtImages): void {
+    const files: ReplyFiles | undefined = brought && (brought.images.length > 0 || brought.notTaken.length > 0)
+      ? { images: brought.images, not_taken: brought.notTaken } : undefined;
+    this.db.prepare('INSERT INTO agent_replies (event_id, agent, status, text, files, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(eventId, agent, status, text, files ? JSON.stringify(files) : '', this.iso());
   }
 
   private lastContext(agent: string): ContextRow | undefined {
