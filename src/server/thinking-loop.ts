@@ -18,8 +18,7 @@ import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownIm
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
-import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
-  WORKSPACE_SECTION } from './prompts.ts';
+import { COMPACTION_INSTRUCTIONS, composeSystemPrompt, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS } from './prompts.ts';
 import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
 import { TurnStats, type Confusion, type TokenCounts } from './turn-stats.ts';
@@ -724,17 +723,9 @@ export class ThinkingLoop {
     const read = async (file: string) => {
       try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
-    const personality = await read(PERSONALITY_FILE);
-    const always = await read(ALWAYS_FILE);
-    const handoff = await read(HANDOFF_FILE);
-    const instruction = BASE_INSTRUCTION(this.shell ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
-    let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
-    if (always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${always}`;
-    if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${handoff}`;
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
-    const notice = this.takeMemoryNotice();
-    if (notice) prompt += `\n\n# 記憶の検査\n\n${notice}`;
-    return prompt;
+    return composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
+      always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice() });
   }
 
   /** The note about reverted files, taken once: whoever writes the next prompt carries it. */

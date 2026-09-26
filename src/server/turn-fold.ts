@@ -99,7 +99,7 @@ function foldResult(result: ToolResult, args: Record<string, unknown>, kept: Set
 }
 
 /** The memo as a fold keeps it: on one line, empty when it says there is nothing, and cut past the limit. */
-function memoLine(text: string): string {
+export function memoLine(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim();
   if (NOTHING.test(line)) return '';
   const characters = [...line];
