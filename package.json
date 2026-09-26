@@ -13,7 +13,8 @@
     "start": "node dist/src/server/main.js serve",
     "probe:live": "node src/probe/live.ts",
     "fake-server": "node src/fake-server/main.ts",
-    "probe:jev": "node src/probe/jev-eval.ts"
+    "probe:jev": "node src/probe/jev-eval.ts",
+    "probe:fold": "node src/probe/fold-live.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
