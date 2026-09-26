@@ -51,6 +51,11 @@ export interface WorkspaceShellOptions {
   memoryChanges?: () => Promise<string>;
 }
 
+/** A command the server itself sends, answered with its raw output rather than a sentence for natsumi. */
+export type Capture =
+  | { ok: true; exitCode: number | null; stdout: string; stdoutTruncated: boolean }
+  | { ok: false; text: string };
+
 const RUNNER = '作業環境の実行役（runner）';
 const UNREACHABLE = 'いまは記憶も作業場も読み書きできません。';
 
@@ -65,6 +70,32 @@ export class WorkspaceShell {
     const run = this.tail.then(() => this.runNow(command), () => this.runNow(command));
     this.tail = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * A command of the server's own, such as the reads of the `read` tool (ADR 0047): the same way in, in the same line
+   * as her commands, but with the output handed back as it came. No memory line is added: nothing it runs writes.
+   */
+  capture(command: string): Promise<Capture> {
+    const run = this.tail.then(() => this.captureNow(command), () => this.captureNow(command));
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async captureNow(command: string): Promise<Capture> {
+    const timeoutMs = this.options.timeoutMs ?? DEFAULT_SHELL_WAIT_SECONDS * 1000;
+    const exchange = await ask(this.options.socketPath, command, this.options.timeZone, timeoutMs);
+    switch (exchange.kind) {
+      case 'answer': {
+        const { answer } = exchange;
+        if (answer.stillRunning) return { ok: false, text: `${RUNNER}の応答の上限までに読み終わりませんでした。` };
+        return { ok: true, exitCode: answer.exitCode, stdout: answer.stdout, stdoutTruncated: answer.stdoutTruncated };
+      }
+      case 'refused': return { ok: false, text: `${RUNNER}が受け付けませんでした（${exchange.error}）。` };
+      case 'unreachable': return { ok: false, text: `${RUNNER}に接続できません。${UNREACHABLE}` };
+      case 'no-answer': return { ok: false, text: `${RUNNER}から応答がありません。${UNREACHABLE}` };
+      case 'unreadable': return { ok: false, text: `${RUNNER}の応答を読めませんでした。${UNREACHABLE}` };
+    }
   }
 
   private async runNow(command: string): Promise<ToolOutcome> {

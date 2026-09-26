@@ -31,7 +31,8 @@
  */
 export const WORKSPACE_SECTION = `## 記憶と作業場
 - あなたには自分の作業環境があります。run_shell でコマンドを動かして、記憶を読み書きし、調べものも下書きも集計もそこで行います。
-- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、まず run_shell で探して読みます。
+- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、まず run_shell の rg や ls で探し、read で読みます。
+- /manual と /memory のファイルを読むときは read を使います。read で読んだものは後のターンにも残るので、同じファイルを読み直さずに済みます。書き換えと検索は run_shell で行います。
 - 本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束は、/memory のファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
 - 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
@@ -67,6 +68,21 @@ ${workspace}
 - slack_mention: Slack であなたへのメンションか DM（via が dm）が届きました。channel・from・text がその発言、context が直前の流れ、file がそのチャンネルの記録です。reference はその発言を指す参照で、返すときはそのまま写します。画像が付いていれば一緒に届きます。Slack での振る舞い方は /manual/slack.md を読みます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
 
+/**
+ * The system prompt from its parts, each already read and stripped of its opening heading: the base instruction, the
+ * personality, the always-memory, the handoff, and what the last commit put back. Sections stand steadiest first, so
+ * a change to one leaves as much of the prefix as possible in front of it. Pure, so that the loop and the replay of
+ * past sessions (ADR 0047) build the same prompt from the same memory.
+ */
+export function composeSystemPrompt(parts: { workspace: boolean; personality: string; always: string; handoff: string; notice?: string }): string {
+  const instruction = BASE_INSTRUCTION(parts.workspace ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
+  let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
+  if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
+  if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;
+  if (parts.notice) prompt += `\n\n# 記憶の検査\n\n${parts.notice}`;
+  return prompt;
+}
+
 // ── On the prefix: the tool descriptions, in the order `createLoopTools` registers them ──
 
 /**
@@ -91,6 +107,17 @@ export const RUN_SHELL_DESCRIPTION = 'あなたの作業環境でコマンドを
   + '残ったプロセスは ps で見て、要らなくなったら kill する。\n'
   + 'コマンドの長さは 8000 文字まで。超えると実行されずに返るので、長いものは /work にファイルとして書いて bash で動かす。\n'
   + '時間と出力の大きさにも上限がある。当たったときは結果の文で知らせる。';
+
+/**
+ * Pi's own `read`, pointed at the workspace (ADR 0047), with its description in natsumi's words. Fixed like every
+ * description here; the one number in it is the limit `read-tool.ts` enforces, a decision rather than a deployment's,
+ * and a test holds the two together.
+ */
+export const READ_DESCRIPTION = '/manual と /memory の下のファイルを読む。マニュアルと記憶を読むときは、run_shell の cat ではなくこれを使う。'
+  + 'read で読んだものは、ターンが終わっても思考の記録に残るので、同じファイルを何度も読み直さなくてよい。\n'
+  + 'path は絶対パスか、/work からの相対パス。1 回に読めるのは 400 行（または 50KB）まで。'
+  + '続きは offset（何行目から。1 から数える）と limit（何行）で読む。\n'
+  + '画像やバイナリは読めない（画像は run_shell の view で見る）。/work やほかの場所のファイルは run_shell で読む。';
 
 /**
  * The feeling of a line, in the same fixed words for both tools (ADR 0026). The choices are the parameter's own, so
@@ -163,6 +190,22 @@ export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思�
   + '・/work と /home/natsumi を片づける。ここは検査もコミットもされないので、残したいものがあれば /memory に移します。'
   + '全部をやる必要はありません。今夜できなかったことは引き継ぎに書いておいてください。明日の自分がそこから拾えます。'
   + '済んだら、ツールを呼ばずに終えてください。';
+
+/**
+ * What the server asks for once a turn has ended, in the same session (ADR 0047). One fixed text, both because it is
+ * how a memo is found again when the turn is folded, and because it follows the turn it asks about on the prefix: the
+ * request itself costs only its own tokens. It is asked whether folding is on or off, so that the two differ only in
+ * the folding. The memo is what the turn leaves behind once its thinking and its tools are folded, and what the night
+ * reads back, so it asks for facts and failures rather than for what she said.
+ */
+export const REFLECTION_REQUEST = '<turn_memo>\n'
+  + 'このターンはここまでです。このターンで分かったこと・うまくいかなかったことを、1〜2 文、合わせて 100 字以内のメモにしてください。長くなりそうなら、いちばん大事な 1 点だけにします。'
+  + '途中の考えやツールの結果は後で見えなくなることがあり、このメモがその代わりに残ります。夜の振り返りでも読み返します。\n'
+  + '書くのは、調べて分かった事実（予定・数字・名前・ファイルの場所など）か、試してうまくいかなかったこと（何を試して、なぜだめだったか）です。'
+  + '本人に言ったことの繰り返しは要りません。前置きや見出しは付けず、メモの文だけを書きます。\n'
+  + '書くことがなければ「なし」と一語だけ書いてください。\n'
+  + '長く考えずに書いてください。ツールは使えません。このメモは本人には届きません。\n'
+  + '</turn_memo>';
 
 export const COMPACTION_INSTRUCTIONS = 'これは natsumi（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。'
   + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（/memory に書いたかどうか）を必ず残してください。'

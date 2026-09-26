@@ -34,7 +34,7 @@ RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yu
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep python3 git procps tzdata \
+       bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata \
   && rm -rf /var/lib/apt/lists/*
 # A name for the default UID, and the mount points of the four writable places.
 RUN groupadd --gid 1000 natsumi \

@@ -34,6 +34,7 @@ const SCHEDULE_DEFAULTS = {
   reviewTimeoutMinutes: 30,
   eventModelCalls: 8,
   eventTimeoutMinutes: 10,
+  turnFold: 'off',
 };
 const base = () => ({ pi: pi(), publicOrigin: 'https://natsumi.example.test', listen: listen(), github: github() });
 
@@ -134,6 +135,13 @@ test('the loop section sets the nightly review limits, each with a default (ADR 
   assert.deepEqual([set.reviewModelCalls, set.reviewTimeoutMinutes], [12, 5]);
   for (const calls of [0, -1, 1.5, '40', true]) rejects({ ...base(), loop: { reviewModelCalls: calls } }, 'loop.reviewModelCalls');
   for (const minutes of [0, -1, 2.5, '30', false]) rejects({ ...base(), loop: { reviewTimeoutMinutes: minutes } }, 'loop.reviewTimeoutMinutes');
+});
+
+// ADR 0047: folding is off until the owner turns it on, in the config or on the command line.
+test('the loop section says whether ended turns are folded, off by default', () => {
+  assert.equal(parseConfig(base()).loop.turnFold, 'off');
+  assert.equal(parseConfig({ ...base(), loop: { turnFold: 'on' } }).loop.turnFold, 'on');
+  for (const value of [true, 'yes', 1]) rejects({ ...base(), loop: { turnFold: value } }, 'loop.turnFold', /"on" or "off"/);
 });
 
 test('the loop section sets an ordinary turn\'s limits, each with a default', () => {

@@ -1,7 +1,7 @@
 # 0004. Pi のツール・認証・音声の境界
 
 - Date: 2026-09-14
-- Status: Accepted（思考ループに登録するツールは [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え、記憶のツールは [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で追加、「任意 shell を許可しない」は閉じ込めたコンテナの中に限り [ADR 0011](0011-memory-shell-in-a-confined-container.md) で置き換え、同僚へ話しかけるツールと同僚ごとのモデルの選択は [ADR 0012](0012-slack-and-colleagues.md) で追加・具体化、記憶の読み書きを独自ツールとする点は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で置き換え、Wiki の読み書きを独自ツールとする点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で置き換え、外の特化エージェントに頼むツールは同 ADR で追加、ネットワークの到達先制限は出口の許可リストとして [ADR 0034](0034-an-allow-list-for-the-way-out.md) で具体化、モデルの経路を名前付きで複数並べ、本人が手で切り替えることは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で追加。自動の fallback をしない点は変わらない）
+- Status: Accepted（思考ループに登録するツールは [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え、記憶のツールは [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で追加、「任意 shell を許可しない」は閉じ込めたコンテナの中に限り [ADR 0011](0011-memory-shell-in-a-confined-container.md) で置き換え、同僚へ話しかけるツールと同僚ごとのモデルの選択は [ADR 0012](0012-slack-and-colleagues.md) で追加・具体化、記憶の読み書きを独自ツールとする点は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で置き換え、Wiki の読み書きを独自ツールとする点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で置き換え、外の特化エージェントに頼むツールは同 ADR で追加、ネットワークの到達先制限は出口の許可リストとして [ADR 0034](0034-an-allow-list-for-the-way-out.md) で具体化、モデルの経路を名前付きで複数並べ、本人が手で切り替えることは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で追加、「既定の read/bash/edit/write を有効にしない」は、作業環境の /manual と /memory に向けて範囲を絞った read だけを有効にする形に [ADR 0047](0047-folding-ended-turns-with-a-memo.md) で改め、Pi の拡張はコードから渡すものだけを読み込むことも同 ADR で追加。自動の fallback をしない点は変わらない）
 
 ## Context
 

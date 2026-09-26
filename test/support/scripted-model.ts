@@ -3,6 +3,7 @@ import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/e
 import { getCurrentSystemPrompt } from '@earendil-works/pi-ai/utils/transcript';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../../src/probe/session.ts';
+import { REFLECTION_REQUEST } from '../../src/server/prompts.ts';
 
 /** Carried by every failed reply. It must never reach a client. */
 export const PRIVATE_DETAIL = 'synthetic private provider detail';
@@ -10,7 +11,14 @@ export const PRIVATE_DETAIL = 'synthetic private provider detail';
 export interface ScriptedCall { name: string; arguments: Record<string, unknown> }
 
 /** What one model call produces at once: hidden thinking, visible text (inner monologue) and tool calls, in that order. */
-export interface ScriptedStep { thinking?: string; text?: string; calls?: ScriptedCall[]; finish?: 'stop' | 'length' | 'error' }
+export interface ScriptedStep {
+  thinking?: string; text?: string; calls?: ScriptedCall[]; finish?: 'stop' | 'length' | 'error';
+  /** The tokens the reply reports, as a provider's usage does. Zero when omitted. */
+  usage?: { input?: number; cacheRead?: number; output?: number };
+}
+
+/** A call that asked for the turn's memo (ADR 0047): answered by `memo`, and kept apart from the turn's calls. */
+export interface ReflectionCall { context: Context; reasoning: string | undefined }
 
 export interface ScriptedReply {
   context: Context;
@@ -35,7 +43,15 @@ export class ScriptedModel {
    * functions.
    */
   readonly contexts: Context[] = [];
+  /** The thinking level each call in `contexts` was made with; undefined when thinking was off. */
+  readonly reasonings: (string | undefined)[] = [];
   auto: ((context: Context) => ScriptedStep | string) | undefined;
+  /**
+   * Every memo request the loop made after a turn. They are answered at once by `memo` and never counted in `calls`
+   * nor handed out by `next()`, so a test about something else sees the turns it scripted and nothing more.
+   */
+  readonly reflections: ReflectionCall[] = [];
+  memo: (context: Context) => ScriptedStep | string = () => 'メモ: 特になし';
   private readonly waiting: ((reply: ScriptedReply) => void)[] = [];
   private readonly pending: ScriptedReply[] = [];
 
@@ -56,7 +72,11 @@ export class ScriptedModel {
   readonly streamFunction: AgentSession['agent']['streamFunction'] = (_model, context, options) => {
     const seen: Context = { systemPrompt: getCurrentSystemPrompt(context.messages),
       messages: structuredClone(context.messages.filter(message => message.role !== 'system')) };
-    this.contexts.push(seen);
+    const last = seen.messages.at(-1);
+    const reflecting = last?.role === 'user' && (typeof last.content === 'string' ? last.content
+      : last.content.map(part => part.type === 'text' ? part.text : '').join('')) === REFLECTION_REQUEST;
+    if (reflecting) this.reflections.push({ context: seen, reasoning: options?.reasoning });
+    else { this.contexts.push(seen); this.reasonings.push(options?.reasoning); }
     const stream = createAssistantMessageEventStream();
     const message: AssistantMessage = { role: 'assistant', api: 'openai-codex-responses', provider: SUBSCRIPTION_TARGET.provider,
       model: SUBSCRIPTION_TARGET.model, content: [], stopReason: 'stop', timestamp: Date.now(),
@@ -117,13 +137,19 @@ export class ScriptedModel {
     };
     if (options?.signal?.aborted) fail('aborted');
     else options?.signal?.addEventListener('abort', () => fail('aborted'), { once: true });
-    if (this.auto) {
-      const answer = this.auto(seen);
-      const step = typeof answer === 'string' ? { text: answer } : answer;
+    const answering = reflecting ? this.memo : this.auto;
+    if (answering) {
+      const answer = answering(seen);
+      const step: ScriptedStep = typeof answer === 'string' ? { text: answer } : answer;
+      if (step.usage) {
+        const { input = 0, cacheRead = 0, output = 0 } = step.usage;
+        Object.assign(message.usage, { input, cacheRead, output, totalTokens: input + cacheRead + output });
+      }
       if (step.thinking) reply.think(step.thinking);
       if (step.text) reply.delta(step.text);
       for (const call of step.calls ?? []) reply.call(call.name, call.arguments);
       reply.finish(step.finish ?? 'stop');
+      if (reflecting) return stream;
     }
     const waiter = this.waiting.shift();
     if (waiter) waiter(reply); else this.pending.push(reply);

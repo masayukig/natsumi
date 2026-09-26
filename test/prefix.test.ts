@@ -48,7 +48,8 @@ function toolHost(workspace: boolean): LoopToolHost {
     listSelfChecks: () => outcome('listed'),
     cancelSelfCheck: () => outcome('cancelled'),
     askAgent: () => outcome('asked'),
-    ...(workspace ? { runShell: () => outcome('ran') } : {}),
+    ...(workspace ? { runShell: () => outcome('ran'),
+      capture: async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false }) } : {}),
   };
 }
 
@@ -97,6 +98,8 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
     // Pi appends a section of its own, the working directory. Splitting it off keeps the temporary path out of the
     // fixture and pins the shape of what Pi adds: an upgrade that adds more would move the prefix just as a reworded
     // instruction would.
+    // Pi's read carries a snippet and a guideline for Pi's own prompt; with natsumi's prompt neither goes in (ADR 0047).
+    assert.doesNotMatch(session.systemPrompt, /Use read to examine files|Read file contents/);
     const split = session.systemPrompt.indexOf('\n\n<cwd>\n');
     assert.ok(split > 0, 'Pi no longer appends the working directory; the prefix has moved');
     return {

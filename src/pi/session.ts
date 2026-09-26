@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime,
+import { AgentSession, createAgentSession, DefaultResourceLoader, type ExtensionFactory, ModelRuntime,
   SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 
 /** A model inside Pi. Choosing one selects where Pi sends requests; it is not a backend switch. */
@@ -29,6 +29,11 @@ export interface PiSessionOptions {
   tools?: { names: string[]; definitions: CreateOptions['customTools'] };
   /** How much recent context a compaction keeps unsummarized. Pi's default when omitted. */
   keepRecentTokens?: number;
+  /**
+   * Extensions given here, in code. They are the only ones: Pi's discovery of extensions on disk stays off, so nothing
+   * in the agent or data directory is ever loaded as one (ADR 0004, ADR 0047).
+   */
+  extensions?: ExtensionFactory[];
 }
 
 /**
@@ -64,7 +69,7 @@ export async function openPiSession(options: PiSessionOptions): Promise<AgentSes
     retry: { enabled: false },
   });
   const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
-    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    noExtensions: true, extensionFactories: options.extensions ?? [], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     systemPrompt: options.systemPrompt,
   });
   await resourceLoader.reload();

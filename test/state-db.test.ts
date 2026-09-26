@@ -408,10 +408,25 @@ test('schema 17 gives the images a size when it is known, and a reply its images
   assert.throws(() => link.run('message-1', 2, 'image-missing'), /constraint/i);
 }));
 
-test('schema 18 gives an agent reply what it says of the images the agent handed back, empty for the replies before', () => withDb(db => {
+test('schema 18 keeps one row of numbers per turn, folded or not, with no room for words', () => withDb(db => {
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 17));
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 18)).applied, [18]);
+  const insert = db.prepare(`INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, first_out_ms, turn_ms,
+    model_calls, input_tokens, cache_read_tokens, output_tokens, context_tokens, reflection_ms, reflection_input_tokens,
+    reflection_cache_read_tokens, reflection_output_tokens, compacted, repeated_calls, tool_errors, dove_refusals, unanswered_messages)
+    VALUES (?, 'x', ?, 'local', 'mac_message', 'ok', NULL, 10, 1, 1, 1, 1, NULL, NULL, NULL, NULL, NULL, ?, 0, 0, 0, 0)`);
+  insert.run('turn-1', 'on', 0);
+  insert.run('turn-2', 'off', 1);
+  assert.throws(() => insert.run('turn-3', 'maybe', 0), /constraint/i, 'folded or not');
+  assert.throws(() => insert.run('turn-4', 'on', 2), /constraint/i);
+  const columns = (db.prepare('PRAGMA table_info(turn_stats)').all() as { name: string }[]).map(column => column.name);
+  for (const name of columns) assert.doesNotMatch(name, /(^|_)(text|memo|message|body|reply)(_|$)/, name);
+}));
+
+test('schema 19 gives an agent reply what it says of the images the agent handed back, empty for the replies before', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 18));
   db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES ('event-1', 'agent-reply', 'queued', 'x', 'x')`).run();
   db.prepare(`INSERT INTO agent_replies (event_id, agent, status, text, created_at) VALUES ('event-1', 'wiki', 'completed', '答え', 'x')`).run();
-  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 18)).applied, [18]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 19)).applied, [19]);
   assert.deepEqual({ ...db.prepare("SELECT files FROM agent_replies WHERE event_id = 'event-1'").get() as object }, { files: '' });
 }));

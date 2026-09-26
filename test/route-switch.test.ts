@@ -33,6 +33,8 @@ async function until<T>(check: () => T | undefined | false, timeout = 5_000): Pr
 }
 
 const isSummary = (context: Context) => /summar|要約/i.test(JSON.stringify(context.messages.at(-1)));
+/** The memo asked for after every turn (ADR 0047) is not one of the turn's calls. */
+const isMemo = (context: Context) => JSON.stringify(context.messages.at(-1)).includes('<turn_memo>');
 
 async function setup() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-routes-')));
@@ -47,7 +49,7 @@ async function setup() {
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
   /** The model each call went to, and whether it was a compaction's summary, in order. */
-  const calls: { model: string; summary: boolean }[] = [];
+  const calls: { model: string; summary: boolean; memo: boolean }[] = [];
   const logs: string[] = [];
   const opened: ThinkingLoop[] = [];
   let counter = 0;
@@ -60,7 +62,7 @@ async function setup() {
         runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 4, ...settings }, log: line => { logs.push(line); },
         configureSession: session => {
           session.agent.streamFunction = (target, context, streamOptions) => {
-            calls.push({ model: target.id, summary: isSummary(context) });
+            calls.push({ model: target.id, summary: isSummary(context), memo: isMemo(context) });
             return model.streamFunction(target, context, streamOptions);
           };
         },
@@ -92,7 +94,7 @@ async function setup() {
 
 const completed = (events: LoopClientEvent[], eventId: string) =>
   until(() => events.find(e => e.type === 'conversation.event.completed' && e.payload.eventId === eventId));
-const turnModels = (calls: { model: string; summary: boolean }[]) => calls.filter(c => !c.summary).map(c => c.model);
+const turnModels = (calls: { model: string; summary: boolean; memo: boolean }[]) => calls.filter(c => !c.summary && !c.memo).map(c => c.model);
 
 test('a switch asked for during a turn waits for it to end; the next turn is on the new route, in the same session', async () => {
   const f = await setup();
@@ -223,6 +225,6 @@ test('after a switch to a route with a lower threshold, the session is compacted
     assert.ok(summary >= 0, 'compacted after the switch');
     assert.equal(f.calls[summary]!.model, 'gpt-5.6-sol');
     await completed(events, f.send(loop, 'つぎ').eventId);
-    assert.ok(f.calls.findIndex((c, i) => i > summary && !c.summary) > summary);
+    assert.ok(f.calls.findIndex((c, i) => i > summary && !c.summary && !c.memo) > summary);
   } finally { await f.cleanup(); }
 });
