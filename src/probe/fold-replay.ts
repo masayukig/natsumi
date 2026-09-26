@@ -24,7 +24,8 @@ import { classify, contextAt, foldedContextAt, findTurns, lookups, memoContext, 
  *
  * Everything written — responses, memos, numbers, the pairs for the owner to read and their key — goes under
  * `--output`, which is meant to sit beside the copies in a directory outside every repository. Only numbers are
- * printed. Responses and memos are kept there, so a run that stops picks up where it was.
+ * printed. Responses and memos are kept there, so a run that stops picks up where it was; a failed call stops the
+ * run and is not kept.
  */
 
 type AgentMessage = ContextEvent['messages'][number];
@@ -104,6 +105,10 @@ async function call(prompt: string, tools: typeof TOOLS, messages: AgentMessage[
   const stream = runtime.streamSimple(model!, { systemPrompt: prompt, tools, messages: convertToLlm(messages) },
     { reasoning: 'medium', apiKey, signal: AbortSignal.timeout(20 * 60_000) });
   const message = await stream.result();
+  // A failed call is never kept: the run stops, and the next run makes it again from where this one was.
+  if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+    throw new Error(`the endpoint failed (${message.stopReason}): ${(message.errorMessage ?? '').replace(/https?:\/\/\S+/g, '<url>').slice(0, 200)}`);
+  }
   return { content: message.content as Response['content'], stopReason: message.stopReason, ms: Date.now() - started,
     usage: { input: message.usage.input, cacheRead: message.usage.cacheRead, output: message.usage.output } };
 }
