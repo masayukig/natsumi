@@ -393,7 +393,7 @@ test('schema 17 gives the images a size when it is known, and a reply its images
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 16));
   db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
     VALUES ('image-old', '/work/old.png', 'image-old.png', 'image/png', 10, 'ab', 'x')`).run();
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [17]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 17)).applied, [17]);
   assert.deepEqual({ ...db.prepare("SELECT width, height FROM images WHERE image_id = 'image-old'").get() as object },
     { width: null, height: null }, 'an image taken before has no size');
   db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, width, height, created_at)
@@ -406,4 +406,19 @@ test('schema 17 gives the images a size when it is known, and a reply its images
   assert.throws(() => link.run('message-1', 1, 'image-new'), /constraint/i, 'one image in each place');
   assert.throws(() => link.run('message-missing', 2, 'image-new'), /constraint/i);
   assert.throws(() => link.run('message-1', 2, 'image-missing'), /constraint/i);
+}));
+
+test('schema 18 keeps one row of numbers per turn, folded or not, with no room for words', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 17));
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 18)).applied, [18]);
+  const insert = db.prepare(`INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, first_out_ms, turn_ms,
+    model_calls, input_tokens, cache_read_tokens, output_tokens, context_tokens, reflection_ms, reflection_input_tokens,
+    reflection_cache_read_tokens, reflection_output_tokens, compacted, repeated_calls, tool_errors, dove_refusals, unanswered_messages)
+    VALUES (?, 'x', ?, 'local', 'mac_message', 'ok', NULL, 10, 1, 1, 1, 1, NULL, NULL, NULL, NULL, NULL, ?, 0, 0, 0, 0)`);
+  insert.run('turn-1', 'on', 0);
+  insert.run('turn-2', 'off', 1);
+  assert.throws(() => insert.run('turn-3', 'maybe', 0), /constraint/i, 'folded or not');
+  assert.throws(() => insert.run('turn-4', 'on', 2), /constraint/i);
+  const columns = (db.prepare('PRAGMA table_info(turn_stats)').all() as { name: string }[]).map(column => column.name);
+  for (const name of columns) assert.doesNotMatch(name, /(^|_)(text|memo|message|body|reply)(_|$)/, name);
 }));

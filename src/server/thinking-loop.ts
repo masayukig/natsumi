@@ -18,8 +18,10 @@ import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownIm
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
-import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
-  WORKSPACE_SECTION } from './prompts.ts';
+import { COMPACTION_INSTRUCTIONS, composeSystemPrompt, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS } from './prompts.ts';
+import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
+import { turnFoldExtension } from './turn-fold.ts';
+import { TurnStats, type Confusion, type TokenCounts } from './turn-stats.ts';
 import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
@@ -39,6 +41,8 @@ export const SNAPSHOT_MESSAGE_LIMIT = 500;
 export const THINKING_LINE_MAX_CHARS = 120;
 /** The least time between two lines of thinking. What is written in between is thinned out. */
 export const THINKING_MIN_INTERVAL_MS = 250;
+/** The longest the memo after a turn may take (ADR 0047). It is one short line. */
+export const REFLECTION_TIMEOUT_MS = 120_000;
 
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
 export type { EventKind, EventState };
@@ -194,6 +198,10 @@ interface Handling { eventId: string; messageId?: string; replied: boolean; show
 interface Turn {
   kind: 'events' | 'review';
   calls: number; maxCalls: number; limited: boolean; timedOut: boolean; notices: number;
+  /** When it started, and her first reply to the owner or request to the dove in it (ADR 0047). */
+  startedAt: number; firstOutAt?: number;
+  /** Requests the dove turned back in it (ADR 0047). */
+  doveRefusals: number;
   /** The review's rotation, whether it wrote its handoff, and what it said about the night (ADR 0020). */
   rotationId?: string; handoffWritten?: true; changeNote?: string;
 }
@@ -265,6 +273,13 @@ export class ThinkingLoop {
   private refusedRoute: string | undefined;
   /** A choice came in: the next unit of work follows it even when no event is waiting. */
   private routeWanted = false;
+  /** Whether ended turns are folded now (ADR 0047). Read before every turn, so it changes only between them. */
+  private fold: Fold;
+  /** The fold status last written for the command line. */
+  private foldPublished = '';
+  /** The model call in progress is the memo after a turn: it ends after one call and may use no tool. */
+  private reflecting = false;
+  private readonly turnStats: TurnStats;
 
   private constructor(options: LoopOptions) {
     this.options = options;
@@ -310,6 +325,8 @@ export class ThinkingLoop {
       compactionThreshold: loop.compactionThreshold,
       compatible: options.target.provider === COMPATIBLE_PROVIDER || options.target.provider.startsWith(`${COMPATIBLE_PROVIDER}-`) }] };
     this.chosen = this.routes.defaultRoute;
+    this.fold = loop.turnFold;
+    this.turnStats = new TurnStats(options.db);
   }
 
   /**
@@ -603,6 +620,7 @@ export class ThinkingLoop {
       return this.fail('pi-unavailable');
     }
     this.route = route;
+    await this.followFold();
     this.closeInterruptedReviews();
     const row = this.store.conversation();
     let created: AgentSession | undefined;
@@ -645,10 +663,16 @@ export class ThinkingLoop {
     return {
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target: this.route!.target,
       systemPrompt: await this.systemPrompt(),
-      thinkingLevel: this.options.thinking === 'on' ? 'medium' as const : 'off' as const,
+      thinkingLevel: this.thinkingLevel(),
       tools: { names: tools.map(tool => tool.name), definitions: tools },
       keepRecentTokens: this.options.loop.compactionKeepRecent,
+      extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting })],
     };
+  }
+
+  /** natsumi's thinking level, the one configured, on every route and for the memo after a turn too. */
+  private thinkingLevel(): 'medium' | 'off' {
+    return this.options.thinking === 'on' ? 'medium' : 'off';
   }
 
   private attach(session: AgentSession) {
@@ -667,6 +691,8 @@ export class ThinkingLoop {
     const finish = session.agent.finishTurn;
     session.agent.finishTurn = async (turn, signal) => {
       const decision = await finish?.(turn, signal) ?? undefined;
+      // The memo is one call, whatever it did (ADR 0047).
+      if (this.reflecting) return { action: 'end' };
       if (turn.message.stopReason === 'error' || turn.message.stopReason === 'aborted') return decision;
       return this.shouldStop(turn) ? { action: 'end' } : decision;
     };
@@ -697,17 +723,9 @@ export class ThinkingLoop {
     const read = async (file: string) => {
       try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
-    const personality = await read(PERSONALITY_FILE);
-    const always = await read(ALWAYS_FILE);
-    const handoff = await read(HANDOFF_FILE);
-    const instruction = BASE_INSTRUCTION(this.shell ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
-    let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
-    if (always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${always}`;
-    if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${handoff}`;
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
-    const notice = this.takeMemoryNotice();
-    if (notice) prompt += `\n\n# 記憶の検査\n\n${notice}`;
-    return prompt;
+    return composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
+      always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice() });
   }
 
   /** The note about reverted files, taken once: whoever writes the next prompt carries it. */
@@ -766,9 +784,13 @@ export class ThinkingLoop {
     // Every unit of work starts on the chosen route, so a switch always falls between turns (ADR 0046).
     const work = (async () => {
       await this.followRoute();
+      await this.followFold();
       if (!eventId) return;
-      if (this.store.eventKind(eventId) === 'nightly-review') await this.runRotation(eventId);
-      else { await this.runTurn([eventId], 'events'); await this.maintain(); }
+      if (this.store.eventKind(eventId) === 'nightly-review') { await this.runRotation(eventId); return; }
+      const turn = await this.runTurn([eventId], 'events');
+      const reflection = await this.reflect(turn);
+      const compacted = await this.maintain();
+      this.recordTurn(turn, reflection, compacted);
     })();
     this.running = work.finally(() => {
       this.running = undefined;
@@ -789,13 +811,13 @@ export class ThinkingLoop {
   }
 
   /** Runs one turn and records how its events ended. Returns the turn, with the failure if it did not end cleanly. */
-  private async runTurn(eventIds: string[], kind: Turn['kind'], rotationId?: string): Promise<Turn & { failure?: string }> {
+  private async runTurn(eventIds: string[], kind: Turn['kind'], rotationId?: string): Promise<EndedTurn> {
     const session = this.session!;
     // The review reads and rewrites memory file by file, so it has limits of its own (ADR 0018).
     const { loop } = this.options;
     const maxCalls = kind === 'review' ? loop.reviewModelCalls : loop.eventModelCalls;
     const timeoutMs = (kind === 'review' ? loop.reviewTimeoutMinutes : loop.eventTimeoutMinutes) * 60_000;
-    const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId };
+    const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt: this.now(), doveRefusals: 0 };
     this.turn = turn;
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);
     const before = session.messages.length;
@@ -827,10 +849,14 @@ export class ThinkingLoop {
     await this.commitMemory(eventIds, turn);
     await this.checkWorkspaceSize();
 
-    const last = session.messages.slice(before).filter(message => message.role === 'assistant').at(-1) as { stopReason?: string } | undefined;
+    const endedAt = this.now();
+    const replies = assistantMessages(session.messages.slice(before));
+    const last = replies.at(-1);
     const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
       : !last || (last.stopReason !== 'stop' && last.stopReason !== 'toolUse') ? 'model-error' : undefined;
+    let unanswered = 0;
     for (const handling of this.handling.values()) {
+      if (handling.messageId !== undefined && handling.shown && !handling.replied) unanswered += 1;
       const status: EventState = handling.replied ? 'replied' : !failure ? 'no-reply' : 'failed';
       this.store.setEventState(handling.eventId, status, status === 'failed' ? failure : undefined);
       if (!handling.messageId) continue;
@@ -843,7 +869,83 @@ export class ThinkingLoop {
     this.turn = undefined;
     // Thinking ends with the handling, whoever set it (ADR 0014); other expressions return to neutral with time.
     if (this.avatar.expression === 'thinking' && this.queue.length === 0) this.setAvatar('neutral', 'server');
-    return { ...turn, ...(failure ? { failure } : {}) };
+    const first = replies[0]?.usage;
+    const confusion = { repeatedCalls: repeatedCalls(session.messages, before), unansweredMessages: unanswered,
+      toolErrors: session.messages.slice(before).filter(message => message.role === 'toolResult' && message.isError).length,
+      doveRefusals: turn.doveRefusals };
+    return { ...turn, ...(failure ? { failure } : {}), eventIds, endedAt, usage: sumUsage(replies),
+      contextTokens: first ? first.input + first.cacheRead + first.cacheWrite : null, confusion };
+  }
+
+  /**
+   * The memo after a turn (ADR 0047): the same session is asked for one line on what the turn found out and what did
+   * not work, which is what stays of the turn once it is folded. It is asked whether folding is on or off, so that the
+   * two differ only in the folding, and after a turn cut short at a limit too; not after one that failed or was
+   * stopped, nor after the nightly review, which the session ends with.
+   *
+   * The request follows the turn on the prefix, and thinking stays as configured: turning it off for this call made
+   * the owner's Qwen endpoint render the turn anew and lose the cache back to the turn's start or further (measured
+   * with `probe:fold`), which costs more than the short thought it saves. The tools stay declared, since removing them would move the prefix, but a call to one is refused and the memo
+   * ends after its one call. Messages arriving meanwhile wait for a turn of their own: no turn is open to steer into.
+   */
+  private async reflect(turn: EndedTurn): Promise<(TokenCounts & { ms: number }) | undefined> {
+    const session = this.session;
+    if (!session || this.closing || turn.kind !== 'events') return undefined;
+    if (turn.failure && turn.failure !== 'model-call-limit' && turn.failure !== 'timeout') return undefined;
+    const startedAt = this.now();
+    const before = session.messages.length;
+    this.reflecting = true;
+    const timer = setTimeout(() => { void session.abort(); }, REFLECTION_TIMEOUT_MS);
+    try {
+      await session.prompt(REFLECTION_REQUEST, { expandPromptTemplates: false });
+    } catch {
+      // A memo that fails leaves the turn without one; the fold then waits for the next turn's.
+    } finally {
+      clearTimeout(timer);
+      this.reflecting = false;
+      this.endThinking();
+    }
+    const answers = assistantMessages(session.messages.slice(before));
+    if (answers.at(-1)?.stopReason !== 'stop') this.log('thinking loop: the memo after a turn was not written');
+    return { ms: this.now() - startedAt, ...sumUsage(answers) };
+  }
+
+  /** One row of numbers for the turn; a row that cannot be written is logged, never thrown (ADR 0047). */
+  private recordTurn(turn: EndedTurn, reflection: (TokenCounts & { ms: number }) | undefined, compacted: boolean) {
+    try {
+      const rows = turn.eventIds.map(eventId => this.store.eventRow(eventId));
+      this.turnStats.record({
+        turnId: `turn-${randomUUID()}`, startedAt: turn.startedAt, endedAt: turn.endedAt,
+        receivedAt: Math.min(...rows.map(row => Date.parse(row.created_at))),
+        ...(turn.firstOutAt === undefined ? {} : { firstOutAt: turn.firstOutAt }),
+        fold: this.fold, route: this.route?.name ?? this.chosen, eventKinds: this.eventLabel(turn.eventIds),
+        outcome: turn.failure ?? 'ok', modelCalls: turn.calls, usage: turn.usage, contextTokens: turn.contextTokens,
+        ...(reflection ? { reflection } : {}), compacted, confusion: turn.confusion,
+      });
+    } catch {
+      this.log('thinking loop: the numbers of a turn could not be recorded');
+    }
+  }
+
+  /**
+   * Between turns: follows the fold the command line chose, or the config's while none was chosen, and writes what is
+   * in use for the command line. A change moves the prefix once, from the first turn it folds or unfolds.
+   */
+  private async followFold() {
+    const chosen = await readFoldChoice(this.options.dataDirectory);
+    const fold = chosen ?? this.options.loop.turnFold;
+    if (fold !== this.fold) this.log(`thinking loop: folding ended turns is now ${fold}`);
+    this.fold = fold;
+    const status = { inUse: fold, defaultFold: this.options.loop.turnFold, chosen: chosen ?? null };
+    const text = JSON.stringify(status);
+    if (text === this.foldPublished) return;
+    try {
+      await writeFoldStatus(this.options.dataDirectory, status, this.now());
+      this.foldPublished = text;
+    } catch (error) {
+      // A data directory without the server's state directory is a test's; the server always has one.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.log('thinking loop: the fold status could not be written for the command line');
+    }
   }
 
   /**
@@ -982,7 +1084,7 @@ export class ThinkingLoop {
       return;
     }
     // Pi picks a thinking level for the model it moves to; natsumi's is the configured one on every route.
-    session.setThinkingLevel(this.options.thinking === 'on' ? 'medium' : 'off');
+    session.setThinkingLevel(this.thinkingLevel());
     this.route = next;
     this.refusedRoute = undefined;
     this.compactionRetryAbove = undefined;
@@ -1026,22 +1128,27 @@ export class ThinkingLoop {
     if (!first) this.emit('model.routes', status);
   }
 
-  /** Between turns: compacts a session past its limit, so compaction never cuts into a turn (ADR 0009). */
-  private async maintain() {
+  /**
+   * Between turns: compacts a session past its limit, so compaction never cuts into a turn (ADR 0009). Returns whether
+   * it did. The size is Pi's, from the last call's usage, so with folding on it is the folded context's.
+   */
+  private async maintain(): Promise<boolean> {
     const session = this.session;
-    if (this.closing || !session) return;
+    if (this.closing || !session) return false;
     const tokens = session.getContextUsage()?.tokens;
     const limit = this.route!.compactionThreshold;
-    if (tokens === undefined || tokens === null || tokens <= limit) return;
-    if (this.compactionRetryAbove !== undefined && tokens <= this.compactionRetryAbove) return;
+    if (tokens === undefined || tokens === null || tokens <= limit) return false;
+    if (this.compactionRetryAbove !== undefined && tokens <= this.compactionRetryAbove) return false;
     try {
       await session.compact(COMPACTION_INSTRUCTIONS);
       this.compactionRetryAbove = undefined;
       this.log('thinking loop: the session was compacted');
+      return true;
     } catch (error) {
       // The session is unchanged; try again once the context has grown further.
       this.compactionRetryAbove = tokens + Math.floor(limit / 10);
       this.log(`thinking loop: compaction failed (${failureReason(error)})`);
+      return false;
     }
   }
 
@@ -1111,9 +1218,19 @@ export class ThinkingLoop {
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
       // The dove is one of the agents she can ask, and lives in the server: its name never reaches A2A (ADR 0040).
       askAgent: (agent, message, goOn) => agent === DOVE_NAME && this.options.dove
-        ? this.options.dove.ask(message) : this.agents.ask(agent, message, goOn),
-      ...(this.shell ? { runShell: (command: string) => this.runShell(command) } : {}),
+        ? this.askDove(message) : this.agents.ask(agent, message, goOn),
+      ...(this.shell ? { runShell: (command: string) => this.runShell(command),
+        capture: (command: string) => this.shell!.capture(command) } : {}),
     };
+  }
+
+  /** A request to the dove; one it took is, for the numbers, the turn's first word out if nothing went before (ADR 0047). */
+  private async askDove(message: string): Promise<ToolOutcome> {
+    const turn = this.turn;
+    const outcome = await this.options.dove!.ask(message);
+    if (outcome.ok && turn) turn.firstOutAt ??= this.now();
+    if (!outcome.ok && turn) turn.doveRefusals += 1;
+    return outcome;
   }
 
   /**
@@ -1177,6 +1294,7 @@ export class ThinkingLoop {
       throw error;
     }
     for (const handling of open) handling.replied = true;
+    if (this.turn) this.turn.firstOutAt ??= this.now();
     this.emit('conversation.message', shown(row, taken.length > 0 ? taken.map(image => shownImage(image)) : undefined));
     return { ok: true, text: `本人の Mac にセリフ${taken.length > 0 ? `と画像 ${taken.length} 枚` : ''}を送りました。このセリフは確定しました。`
       + (target ? 'ここまでに届いた本人のメッセージには返事を済ませました。' : '')
@@ -1352,6 +1470,43 @@ function failureReason(error: unknown): string {
   const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
   const characters = [...message];
   return `${kind}: ${characters.length <= 200 ? message : `${characters.slice(0, 199).join('')}…`}`;
+}
+
+/** A turn once it has ended: its events, how it ended, and what it cost (ADR 0047). */
+type EndedTurn = Turn & { failure?: string; eventIds: string[]; endedAt: number; usage: TokenCounts; contextTokens: number | null;
+  confusion: Confusion };
+
+/**
+ * The run_shell commands and read paths of the turn (from `start`) that were already used before, in the session's
+ * context or earlier in the turn (ADR 0047). A command is compared with its spaces normalized; nothing is parsed.
+ */
+function repeatedCalls(messages: AgentSession['messages'], start: number): number {
+  const seen = new Set<string>();
+  let repeated = 0;
+  messages.forEach((message, index) => {
+    if (message.role !== 'assistant') return;
+    for (const block of message.content) {
+      if (block.type !== 'toolCall') continue;
+      const args = block.arguments as Record<string, unknown>;
+      const key = block.name === 'run_shell' && typeof args.command === 'string' ? `run_shell ${args.command.trim().replace(/\s+/g, ' ')}`
+        : block.name === 'read' && typeof args.path === 'string' ? `read ${args.path.trim()}` : undefined;
+      if (!key) continue;
+      if (index >= start && seen.has(key)) repeated += 1;
+      seen.add(key);
+    }
+  });
+  return repeated;
+}
+
+type Reply = { stopReason?: string; usage: { input: number; cacheRead: number; cacheWrite: number; output: number } };
+
+function assistantMessages(messages: AgentSession['messages']): Reply[] {
+  return messages.filter(message => message.role === 'assistant') as unknown as Reply[];
+}
+
+function sumUsage(replies: Reply[]): TokenCounts {
+  return replies.reduce((sum, { usage }) => ({ input: sum.input + (usage?.input ?? 0), cacheRead: sum.cacheRead + (usage?.cacheRead ?? 0),
+    output: sum.output + (usage?.output ?? 0) }), { input: 0, cacheRead: 0, output: 0 });
 }
 
 function shown(row: MessageRow, images?: ShownImage[]): ShownMessage {

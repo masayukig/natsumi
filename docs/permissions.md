@@ -85,6 +85,10 @@ Slack は Socket Mode で natsumi から外へつなぐので、Slack から届�
 （[ADR 0019](adr/0019-a-workspace-not-a-memory-tool.md)、[ADR 0034](adr/0034-an-allow-list-for-the-way-out.md)）。
 Docker では `network_mode: none`、Kubernetes では作業環境の UID の外向きを全部拒否します。
 
+なつみのツールのうち作業環境に届くのは `run_shell` と `read` の 2 つで、どちらもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)）。
+`read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
+サーバーのコンテナのファイル（ログインのファイルや secret）は、どちらからも見えません。Pi の組み込みの bash・edit・write・grep・find・ls は有効にしません。
+
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
 
 - 作業環境の sdctl は、image の `/etc/sdctl/config.yaml` の指す loopback の中継（`127.0.0.1:17860`、同じ Pod の出口の proxy）にだけ、平文の HTTP で話します。名前解決は要りません。

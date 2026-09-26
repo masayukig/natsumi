@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
+import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, READ_TOOL_NAME, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
 import { ASK_AGENT_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
@@ -36,6 +36,17 @@ test('run_shell is registered with a runner, and the old memory tools are regist
   // Everything else is as ADR 0008 left it, with the night's change note added by ADR 0020.
   assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['ask_agent', 'cancel_self_check', 'list_self_checks', 'notify_owner',
     'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_change_note', 'write_handoff_note']);
+});
+
+// ADR 0047: Pi's read comes with the runner, pointed at the workspace, and last, so every definition before it stays put.
+test('read is registered with a runner, after every other tool, and never without one', () => {
+  const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
+  const withShell = names(host({ runShell: () => ok('ran'), capture }));
+  assert.equal(READ_TOOL_NAME, 'read');
+  assert.equal(withShell.at(-1), READ_TOOL_NAME);
+  assert.deepEqual(withShell.slice(0, -1), names(host({ runShell: () => ok('ran') })));
+  assert.equal(names(host()).includes(READ_TOOL_NAME), false);
+  for (const builtIn of ['bash', 'edit', 'write', 'grep', 'find', 'ls']) assert.equal(withShell.includes(builtIn), false, builtIn);
 });
 
 /**

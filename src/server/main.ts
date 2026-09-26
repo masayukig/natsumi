@@ -1,10 +1,12 @@
 import { homedir } from 'node:os';
 import { parseCli, UsageError } from './cli.ts';
 import { resolveDataDirectory } from './data-directory.ts';
+import { runFoldCommand } from './fold-setting.ts';
 import { runModelCommand } from './model-routes.ts';
 import { SERVER_UMASK } from './permissions.ts';
 import { startServer } from './server.ts';
 import { checkHealth, readStatus } from './status.ts';
+import { runStatsCommand } from './turn-stats.ts';
 
 // The workspace may run as another UID in a shared group (ADR 0033); see permissions.ts for what stays private.
 process.umask(SERVER_UMASK);
@@ -18,6 +20,13 @@ try {
   } else if (cli.command === 'model') {
     // Reaches a running server through the data directory: it reads the choice before its next turn (ADR 0046).
     process.exitCode = await runModelCommand(cli, await resolveDataDirectory(cli.dataDir, process.cwd()),
+      line => { process.stdout.write(`${line}\n`); });
+  } else if (cli.command === 'fold') {
+    // Like the model route: the server reads the choice before its next turn (ADR 0047).
+    process.exitCode = await runFoldCommand(cli, await resolveDataDirectory(cli.dataDir, process.cwd()),
+      line => { process.stdout.write(`${line}\n`); });
+  } else if (cli.command === 'stats') {
+    process.exitCode = await runStatsCommand(cli, await resolveDataDirectory(cli.dataDir, process.cwd()),
       line => { process.stdout.write(`${line}\n`); });
   } else {
     const server = await startServer({
