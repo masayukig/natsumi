@@ -16,12 +16,13 @@ const user = (text: string): AgentMessage => ({ role: 'user', content: text, tim
 const events = (text: string) => user(`<events>\n{"type":"mac_message","text":"${text}"}\n</events>`);
 type Block = { type: 'thinking'; thinking: string } | { type: 'text'; text: string }
   | { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> };
-const assistant = (...content: Block[]): AgentMessage => ({ role: 'assistant', content, api: 'openai-completions',
+const assistant = (...content: Block[]): AgentMessage => ({ role: 'assistant', content: blocks(content), api: 'openai-completions',
   provider: 'natsumi-compatible', model: 'fixture', usage: USAGE,
   stopReason: content.some(block => block.type === 'toolCall') ? 'toolUse' : 'stop', timestamp: ++clock });
 const think = (thinking: string): Block => ({ type: 'thinking', thinking });
 const say = (text: string): Block => ({ type: 'text', text });
 const call = (id: string, name: string, args: Record<string, unknown>): Block => ({ type: 'toolCall', id, name, arguments: args });
+const blocks = (content: Block[]) => content as Extract<AgentMessage, { role: 'assistant' }>['content'];
 const result = (id: string, name: string, text: string, isError = false): AgentMessage => ({ role: 'toolResult', toolCallId: id,
   toolName: name, content: [{ type: 'text', text }], isError, timestamp: ++clock });
 const reflection = (memo: string): AgentMessage[] => [user(REFLECTION_REQUEST), assistant(think('振り返りの思考'), say(memo))];

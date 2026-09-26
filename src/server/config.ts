@@ -140,6 +140,11 @@ export interface LoopConfig {
   eventModelCalls: number;
   /** Minutes an ordinary turn may take. */
   eventTimeoutMinutes: number;
+  /**
+   * Whether ended turns are folded before each model call, until the command line chooses otherwise (ADR 0047). The
+   * memo is asked for after every turn either way, so that on and off differ only in the folding.
+   */
+  turnFold: 'on' | 'off';
 }
 
 // The turns' limits live here rather than in the thinking loop, which loads Pi's SDK on import.
@@ -158,6 +163,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
   reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
   eventModelCalls: DEFAULT_EVENT_MODEL_CALLS, eventTimeoutMinutes: DEFAULT_EVENT_TIMEOUT_MINUTES,
+  turnFold: 'off',
 };
 
 /** The shortest ping interval, so a typo cannot make natsumi think all day. */
@@ -831,7 +837,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
     'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'awakeHours',
     'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
-    'eventModelCalls', 'eventTimeoutMinutes']);
+    'eventModelCalls', 'eventTimeoutMinutes', 'turnFold']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -876,6 +882,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(eventCalls, 1)) throw new ConfigError(`${path}.eventModelCalls`, 'must be a positive integer');
   const eventMinutes = loop.eventTimeoutMinutes ?? LOOP_DEFAULTS.eventTimeoutMinutes;
   if (!positiveInteger(eventMinutes, 1)) throw new ConfigError(`${path}.eventTimeoutMinutes`, 'must be a positive integer');
+  const turnFold = loop.turnFold ?? LOOP_DEFAULTS.turnFold;
+  if (turnFold !== 'on' && turnFold !== 'off') throw new ConfigError(`${path}.turnFold`, 'must be "on" or "off"');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
     ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
@@ -886,7 +894,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),
     expressionResetMinutes: reset as number,
     reviewModelCalls: reviewCalls as number, reviewTimeoutMinutes: reviewMinutes as number,
-    eventModelCalls: eventCalls as number, eventTimeoutMinutes: eventMinutes as number,
+    eventModelCalls: eventCalls as number, eventTimeoutMinutes: eventMinutes as number, turnFold,
   };
 }
 

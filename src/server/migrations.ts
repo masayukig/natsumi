@@ -538,4 +538,42 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX conversation_message_images_image ON conversation_message_images (image_id);
     `,
   },
+  {
+    version: 18,
+    name: 'turn stats',
+    sql: `
+      -- One row of numbers per ordinary turn, to compare turns folded and not (ADR 0047). Nothing anyone said is here:
+      -- the kinds of the events, the route's name, times in milliseconds and Pi's token counts. first_out_ms runs from
+      -- the earliest event of the turn to her first reply_to_mac or request to the dove, NULL when there was none; the
+      -- reflection columns are NULL when no memo was asked for. The tokens are summed over the turn's model calls;
+      -- context_tokens is what its first call was sent. The last four count signs of her losing her way: run_shell
+      -- commands and read paths she had already used in the session's context, tool results that were errors, requests
+      -- the dove turned back, and owner messages the turn was shown and ended without answering.
+      CREATE TABLE turn_stats (
+        turn_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        fold TEXT NOT NULL CHECK (fold IN ('on', 'off')),
+        route TEXT NOT NULL,
+        event_kinds TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        first_out_ms INTEGER CHECK (first_out_ms >= 0),
+        turn_ms INTEGER NOT NULL CHECK (turn_ms >= 0),
+        model_calls INTEGER NOT NULL CHECK (model_calls >= 0),
+        input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+        cache_read_tokens INTEGER NOT NULL CHECK (cache_read_tokens >= 0),
+        output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+        context_tokens INTEGER CHECK (context_tokens >= 0),
+        reflection_ms INTEGER CHECK (reflection_ms >= 0),
+        reflection_input_tokens INTEGER CHECK (reflection_input_tokens >= 0),
+        reflection_cache_read_tokens INTEGER CHECK (reflection_cache_read_tokens >= 0),
+        reflection_output_tokens INTEGER CHECK (reflection_output_tokens >= 0),
+        compacted INTEGER NOT NULL CHECK (compacted IN (0, 1)),
+        repeated_calls INTEGER NOT NULL CHECK (repeated_calls >= 0),
+        tool_errors INTEGER NOT NULL CHECK (tool_errors >= 0),
+        dove_refusals INTEGER NOT NULL CHECK (dove_refusals >= 0),
+        unanswered_messages INTEGER NOT NULL CHECK (unanswered_messages >= 0)
+      ) STRICT;
+      CREATE INDEX turn_stats_started ON turn_stats (started_at);
+    `,
+  },
 ];
