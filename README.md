@@ -561,7 +561,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - natsumi に Docker のソケットは渡しません。
   - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
 - 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
-  `ripgrep`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、画像を作る `sdctl`、それに runner です。
+  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、画像を作る `sdctl`、それに runner です。
   **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
 - 書ける場所は 4 つです。ルートは読み取り専用のままです。
 

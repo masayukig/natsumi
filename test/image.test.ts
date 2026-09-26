@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { promisify } from 'node:util';
 
 const dockerfile = () => readFile(new URL('../Dockerfile', import.meta.url).pathname, 'utf8');
@@ -99,6 +99,13 @@ test('the workspace image gives sdctl its defaults in a config file that the sdc
   assert.match(config, /^output_dir: \/work\/images$/m);
 });
 
+// natsumi reads and shapes JSON in the workspace (ADR 0019): jq, beside python3.
+test('the workspace image installs jq', async () => {
+  const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(await workspaceStage());
+  assert.ok(install, 'the workspace stage installs no packages');
+  assert.ok(install[0].split(/\s+/).includes('jq'), install[0]);
+});
+
 // What natsumi runs reaches the runner, and the runner gives a command only PATH, HOME, LANG and TZ (ADR 0019): none of
 // the container's environment. So sdctl's defaults are checked where she uses it, through the runner of the built
 // workspace image, against a fake image server on the relay's address. It needs docker, and skips without it.
@@ -133,6 +140,25 @@ type RunnerResult = { exitCode: number | null; stdout: string; stderr: string };
 async function throughRunner(container: string, command: string): Promise<RunnerResult> {
   const answer = await docker(['exec', '-i', container, 'python3', '-c', runnerClient], `${JSON.stringify({ command })}\n`);
   return JSON.parse(answer) as RunnerResult;
+}
+
+// Builds the workspace image and runs it the way the Pod does, with no network, until its runner answers.
+async function startWorkspace(t: TestContext, name: string) {
+  // The host network only for the build: some hosts resolve no names on the default bridge.
+  await docker(['build', '--network', 'host', '--target', 'workspace', '--tag', workspaceTag, root]);
+  const container = `natsumi-workspace-test-${name}-${process.pid}`;
+  await docker(['run', '--detach', '--rm', '--name', container, '--network', 'none', '--read-only', '--init',
+    '--tmpfs', '/tmp:mode=1777', '--tmpfs', '/run/natsumi-workspace:uid=1000,gid=1000,mode=755',
+    '--tmpfs', '/work:uid=1000,gid=1000,mode=755', '--tmpfs', '/home/natsumi:uid=1000,gid=1000,mode=755',
+    workspaceTag, 'serve']);
+  t.after(() => docker(['rm', '--force', container]).catch(() => undefined));
+  for (let attempt = 0; ; attempt++) {
+    const ready = await docker(['exec', container, '/usr/libexec/natsumi-workspace-runner', 'check']).then(() => true, () => false);
+    if (ready) break;
+    assert.ok(attempt < 50, 'the runner never answered');
+    await new Promise(wait => setTimeout(wait, 100));
+  }
+  return container;
 }
 
 // Answers what `sdctl txt2img` asks with default params that name modules, and writes down every request.
@@ -171,20 +197,7 @@ test('through the runner, as run_shell runs it, sdctl draws through the relay wi
   skip: hasDocker ? false : 'docker is not available',
   timeout: 30 * 60_000,
 }, async t => {
-  // The host network only for the build: some hosts resolve no names on the default bridge.
-  await docker(['build', '--network', 'host', '--target', 'workspace', '--tag', workspaceTag, root]);
-  const container = `natsumi-workspace-test-${process.pid}`;
-  await docker(['run', '--detach', '--rm', '--name', container, '--network', 'none', '--read-only', '--init',
-    '--tmpfs', '/tmp:mode=1777', '--tmpfs', '/run/natsumi-workspace:uid=1000,gid=1000,mode=755',
-    '--tmpfs', '/work:uid=1000,gid=1000,mode=755', '--tmpfs', '/home/natsumi:uid=1000,gid=1000,mode=755',
-    workspaceTag, 'serve']);
-  t.after(() => docker(['rm', '--force', container]).catch(() => undefined));
-  for (let attempt = 0; ; attempt++) {
-    const ready = await docker(['exec', container, '/usr/libexec/natsumi-workspace-runner', 'check']).then(() => true, () => false);
-    if (ready) break;
-    assert.ok(attempt < 50, 'the runner never answered');
-    await new Promise(wait => setTimeout(wait, 100));
-  }
+  const container = await startWorkspace(t, 'sdctl');
 
   const started = await throughRunner(container, [
     'mkdir -p /tmp/fake-sd',
@@ -221,6 +234,18 @@ test('through the runner, as run_shell runs it, sdctl draws through the relay wi
   const viaShell = await docker(['exec', '--env', `SDCTL_URL=${relay}`, container,
     'bash', '-c', 'sdctl txt2img --prompt /work/prompts/cat.yaml']);
   await drawn(viaShell);
+});
+
+test('through the runner, as run_shell runs it, jq is on PATH', {
+  skip: hasDocker ? false : 'docker is not available',
+  timeout: 30 * 60_000,
+}, async t => {
+  const container = await startWorkspace(t, 'jq');
+  const version = await throughRunner(container, 'jq --version');
+  assert.equal(version.exitCode, 0, `jq failed through the runner: ${version.stderr}`);
+  assert.match(version.stdout, /^jq-\d+\.\d+/);
+  const filtered = await throughRunner(container, `printf '{"a":[1,2]}' | jq -c '.a | map(. * 2)'`);
+  assert.equal(filtered.stdout, '[2,4]\n');
 });
 
 // The same, in the image that ships: Pi finds the commands on PATH under these names.

@@ -83,6 +83,7 @@
 - 土台は debian-slim。
 - 標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）。
 - 検索に `ripgrep`。
+- JSON を読み書きする `jq`。
 - **`python3`**（標準ライブラリのみ。ネットワークが無いので、追加のパッケージは事実上入れられない）。
 - **`git`**。`/memory` では `.git` が読み取り専用なので、読む操作（`log`・`diff`・`show`）だけができる。
   「いつこう書いたか」をなつみ自身が追えることは、記憶として価値が高い。`/work` では自由に使える。
