@@ -88,7 +88,7 @@ function replying(thinking: string): (context: Context) => ScriptedStep {
 }
 const serialized = (context: Context) => JSON.stringify(context.messages);
 
-test('after a turn the same session is asked for a one-line memo, without thinking and without tools', async () => {
+test('after a turn the same session is asked for a one-line memo, with thinking as configured and without tools', async () => {
   const f = await setup();
   try {
     f.model.auto = replying('考えA');
@@ -103,9 +103,9 @@ test('after a turn the same session is asked for a one-line memo, without thinki
     assert.deepEqual(reflection!.context.messages.slice(0, lastTurnCall.messages.length), lastTurnCall.messages);
     assert.equal(reflection!.context.messages.at(-1)!.role, 'user');
     assert.equal(reflection!.context.systemPrompt, lastTurnCall.systemPrompt);
-    // Thinking is off for the memo alone.
+    // Thinking stays as configured: turning it off re-renders the turn on a Qwen template and loses the cache.
     assert.deepEqual(f.model.reasonings, ['medium', 'medium']);
-    assert.equal(reflection!.reasoning, undefined);
+    assert.equal(reflection!.reasoning, 'medium');
     assert.equal(f.sessions[0]!.thinkingLevel, 'medium');
 
     f.send(loop, 'もう一度');

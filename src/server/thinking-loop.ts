@@ -42,7 +42,7 @@ export const SNAPSHOT_MESSAGE_LIMIT = 500;
 export const THINKING_LINE_MAX_CHARS = 120;
 /** The least time between two lines of thinking. What is written in between is thinned out. */
 export const THINKING_MIN_INTERVAL_MS = 250;
-/** The longest the memo after a turn may take (ADR 0047). It is one short line, asked without thinking. */
+/** The longest the memo after a turn may take (ADR 0047). It is one short line. */
 export const REFLECTION_TIMEOUT_MS = 120_000;
 
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
@@ -671,7 +671,7 @@ export class ThinkingLoop {
     };
   }
 
-  /** natsumi's thinking level, the one configured, on every route. Only the memo after a turn goes without. */
+  /** natsumi's thinking level, the one configured, on every route and for the memo after a turn too. */
   private thinkingLevel(): 'medium' | 'off' {
     return this.options.thinking === 'on' ? 'medium' : 'off';
   }
@@ -892,8 +892,9 @@ export class ThinkingLoop {
    * two differ only in the folding, and after a turn cut short at a limit too; not after one that failed or was
    * stopped, nor after the nightly review, which the session ends with.
    *
-   * Thinking is turned off for this one call: a line needs none, and the request follows the turn on the prefix.
-   * The tools stay declared, since removing them would move the prefix, but a call to one is refused and the memo
+   * The request follows the turn on the prefix, and thinking stays as configured: turning it off for this call made
+   * the owner's Qwen endpoint render the turn anew and lose the cache back to the turn's start or further (measured
+   * with `probe:fold`), which costs more than the short thought it saves. The tools stay declared, since removing them would move the prefix, but a call to one is refused and the memo
    * ends after its one call. Messages arriving meanwhile wait for a turn of their own: no turn is open to steer into.
    */
   private async reflect(turn: EndedTurn): Promise<(TokenCounts & { ms: number }) | undefined> {
@@ -903,7 +904,6 @@ export class ThinkingLoop {
     const startedAt = this.now();
     const before = session.messages.length;
     this.reflecting = true;
-    session.setThinkingLevel('off');
     const timer = setTimeout(() => { void session.abort(); }, REFLECTION_TIMEOUT_MS);
     try {
       await session.prompt(REFLECTION_REQUEST, { expandPromptTemplates: false });
@@ -912,7 +912,6 @@ export class ThinkingLoop {
     } finally {
       clearTimeout(timer);
       this.reflecting = false;
-      session.setThinkingLevel(this.thinkingLevel());
       this.endThinking();
     }
     const answers = assistantMessages(session.messages.slice(before));
