@@ -46,6 +46,7 @@
     "eventTimeoutMinutes": 10,
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
     "memoryFileMaxChars": 32000,
-    "alwaysMemoryMaxChars": 2000
+    "alwaysMemoryMaxChars": 2000,
+    "turnFold": "off"
   }
 }

@@ -1,7 +1,7 @@
 # 0009. 長期記憶と、夜の session の切り替え
 
 - Date: 2026-09-15
-- Status: Accepted（記憶を shell で探すツールと、shell を許さないという点は [ADR 0011](0011-memory-shell-in-a-confined-container.md) で追加・置き換え、夜の切り替えと予約・合図の関係は [ADR 0014](0014-self-checks-and-pings.md) で具体化、記憶の置き方・記憶のツール・性格の扱い・引き継ぎの持ち方は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で大部分を置き換え、引き継ぎを SQLite に保存する点と、再起動のときに SQLite の記録から同じ system prompt を作り直せるという点は [ADR 0020](0020-limits-at-write-time-and-a-nightly-menu.md) で置き換え。2026-09-26: 互換エンドポイントの context の窓を設定にし、上限との組み合わせを起動時に検査することを「追記」の節に加えた。compaction の上限を経路ごとに持つこと、その検査を経路ごとに行うこと、経路を切り替えた直後に新しい経路の上限を超えていればターンの前に compaction することは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で追加）
+- Status: Accepted（記憶を shell で探すツールと、shell を許さないという点は [ADR 0011](0011-memory-shell-in-a-confined-container.md) で追加・置き換え、夜の切り替えと予約・合図の関係は [ADR 0014](0014-self-checks-and-pings.md) で具体化、記憶の置き方・記憶のツール・性格の扱い・引き継ぎの持ち方は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で大部分を置き換え、引き継ぎを SQLite に保存する点と、再起動のときに SQLite の記録から同じ system prompt を作り直せるという点は [ADR 0020](0020-limits-at-write-time-and-a-nightly-menu.md) で置き換え。2026-09-26: 互換エンドポイントの context の窓を設定にし、上限との組み合わせを起動時に検査することを「追記」の節に加えた。compaction の上限を経路ごとに持つこと、その検査を経路ごとに行うこと、経路を切り替えた直後に新しい経路の上限を超えていればターンの前に compaction することは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で追加。終わったターンの途中経過をモデルに送る直前に畳み、ターンごとの一行メモを残すこと、畳み込みが on のとき夜の振り返りも畳んだ文脈で行うことは [ADR 0047](0047-folding-ended-turns-with-a-memo.md) で追加。compaction の仕組みは変わらない）
 
 ## Context
 
