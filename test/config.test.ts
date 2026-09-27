@@ -60,7 +60,7 @@ test('a valid config becomes a typed server config', () => {
       allowedUserId: 4242001,
     },
     loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
-    sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60 }, historyDays: 7 },
+    sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 },
   });
   const { clientSecretEnv: _, ...rest } = github();
   assert.deepEqual(parseConfig({ ...base(), github: { ...rest, clientSecretFile: '/run/secrets/github-client-secret' } }).github.clientSecret,
@@ -527,11 +527,17 @@ test('slack.mentionContext and slack.updates, no longer read (ADR 0050), are let
 });
 
 test('the sources section tunes how often a changed directory is shown and how much history is kept, with defaults', () => {
-  assert.deepEqual(parseConfig(base()).sources, { activity: { k: 3, minMinutes: 3, maxMinutes: 60 }, historyDays: 7 });
-  assert.deepEqual(parseConfig({ ...base(), sources: { activity: { k: 1.5, minMinutes: 5, maxMinutes: 120 }, historyDays: 3 } }).sources,
-    { activity: { k: 1.5, minMinutes: 5, maxMinutes: 120 }, historyDays: 3 });
+  assert.deepEqual(parseConfig(base()).sources,
+    { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 });
+  assert.deepEqual(parseConfig({ ...base(), sources: { activity: { k: 1.5, minMinutes: 5, maxMinutes: 120, windowMinutes: 30, quietMeanMinutes: 20 },
+    historyDays: 3 } }).sources,
+    { activity: { k: 1.5, minMinutes: 5, maxMinutes: 120, windowMinutes: 30, quietMeanMinutes: 20 }, historyDays: 3 });
   rejects({ ...base(), sources: { activity: { k: 0 } } }, 'sources.activity.k');
   rejects({ ...base(), sources: { activity: { minMinutes: 10, maxMinutes: 5 } } }, 'sources.activity.maxMinutes');
+  rejects({ ...base(), sources: { activity: { windowMinutes: 0 } } }, 'sources.activity.windowMinutes');
+  // The quiet mean lies between the shortest and the longest wait.
+  rejects({ ...base(), sources: { activity: { quietMeanMinutes: 2 } } }, 'sources.activity.quietMeanMinutes');
+  rejects({ ...base(), sources: { activity: { quietMeanMinutes: 61 } } }, 'sources.activity.quietMeanMinutes');
   rejects({ ...base(), sources: { historyDays: 0 } }, 'sources.historyDays');
   rejects({ ...base(), sources: { interval: 3 } }, 'sources.interval');
 });

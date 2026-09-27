@@ -7,14 +7,14 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { ConversationStore } from '../src/server/conversation-store.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { SOURCES_DEFAULTS, Sources } from '../src/server/sources.ts';
+import { drawWait, SOURCES_DEFAULTS, Sources } from '../src/server/sources.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { DECODABLE_PNG } from './support/fake-slack.ts';
 
 /**
- * The core of what natsumi reads (ADR 0050): `/sources` as one git work tree, a `sources_updated` event when a
- * directory has changed and its time has come, sooner for a busy one, never at night unless something is for her,
- * and `sources-diff` to read what changed. Nothing here knows Slack.
+ * The core of what natsumi reads (ADR 0050, ADR 0053): `/sources` as one git work tree, a `sources_updated` event when
+ * a directory has changed and the wait drawn at its first change is up, sooner on the whole for a busy one, never at
+ * night unless something is for her, and `sources-diff` to read what changed. Nothing here knows Slack.
  */
 
 const run = promisify(execFile);
@@ -24,13 +24,16 @@ const MINUTE = 60_000;
 const MORNING = Date.parse('2026-09-27T01:00:00Z');
 /** 02:00 in Tokyo: asleep. */
 const NIGHT = Date.parse('2026-09-26T17:00:00Z');
+/** A draw that makes the wait exactly its mean: -ln(1 - u) = 1. */
+const AT_MEAN = 1 - Math.exp(-1);
 const SCRIPT = join(import.meta.dirname, '..', 'docker', 'sources-diff', 'sources-diff');
 
 /**
  * `under` puts the two directories one level down, as the server's data directory holds them (`<under>/sources`,
  * `<under>/sources.git`), so a test can move them where the workspace sees them.
  */
-async function setup(t: test.TestContext, start = MORNING, options: { historyDays?: number; under?: string } = {}) {
+async function setup(t: test.TestContext, start = MORNING,
+  options: { historyDays?: number; under?: string; random?: () => number } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-sources-')));
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
@@ -43,7 +46,7 @@ async function setup(t: test.TestContext, start = MORNING, options: { historyDay
   const sources = new Sources({
     db, directory, gitDirectory, timeZone: TIME_ZONE, awakeHours: { start: '08:00', end: '23:00' },
     activity: SOURCES_DEFAULTS.activity, historyDays: options.historyDays ?? SOURCES_DEFAULTS.historyDays, now,
-    raise: () => { raised += 1; },
+    raise: () => { raised += 1; }, random: options.random ?? (() => AT_MEAN),
   });
   sources.register({ name: 'chat', depth: 2, exclude: ['INDEX.md', '*/*/files/'] });
   t.after(async () => {
@@ -86,7 +89,7 @@ test('a directory seen for the first time is taken in silently: its past is not 
   assert.equal((await f.take()).ready, false);
 });
 
-test('a changed directory raises once its time comes, and the event names the files without the diff', async t => {
+test('a changed directory raises once the wait drawn at its first change is up, and the event names the files', async t => {
   const f = await setup(t);
   await f.write('chat/work/dev/2026-09-27.jsonl', '{"text":"一"}\n');
   await f.write('chat/INDEX.md', '# 目次\n');
@@ -95,10 +98,12 @@ test('a changed directory raises once its time comes, and the event names the fi
   await f.append('chat/work/dev/2026-09-27.jsonl', '{"text":"秘密の本文"}\n');
   await f.write('chat/INDEX.md', '# 目次が変わった\n');
   await f.sources.tick();
-  // One write in the hour: the longest interval, counted from the last look.
-  assert.equal(f.sources.interval('chat/work/dev'), 60 * MINUTE);
+  // One write in the window: the quiet mean, drawn from the first change.
+  assert.equal(f.sources.deadline('chat/work/dev'), MORNING + 11 * MINUTE);
+  f.advance(9 * MINUTE);
+  await f.sources.tick();
   assert.equal(f.raised(), 0);
-  f.advance(60 * MINUTE);
+  f.advance(MINUTE);
   await f.sources.tick();
   assert.equal(f.raised(), 1);
   const { ready, line } = await f.take();
@@ -109,36 +114,98 @@ test('a changed directory raises once its time comes, and the event names the fi
     diff: 'sources-diff /sources/chat/work/dev' }]);
   assert.equal(line!.attention, undefined);
   assert.doesNotMatch(JSON.stringify(line), /秘密の本文|INDEX/);
-  // Shown: nothing is due again until it changes again.
+  // Shown: no wait is left, and nothing is due again until it changes again.
+  assert.equal(f.sources.deadline('chat/work/dev'), undefined);
   f.advance(120 * MINUTE);
   await f.sources.tick();
   assert.equal(f.raised(), 1);
 });
 
-test('the interval shrinks with the rate of writes in the last hour, within the shortest and the longest', async t => {
+test('the wait is drawn once, at the first change after the last look: later writes do not move it', async t => {
+  const draws = [AT_MEAN, 0.5];
+  const f = await setup(t, MORNING, { random: () => draws.shift() ?? AT_MEAN });
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"n":0}\n');
+  await f.sources.tick();
+  const first = f.sources.deadline('chat/work/dev');
+  assert.equal(first, MORNING + 11 * MINUTE);
+  for (let n = 1; n < 20; n += 1) {
+    f.advance(10_000);
+    await f.append('chat/work/dev/a.jsonl', `{"n":${n}}\n`);
+    await f.sources.tick();
+  }
+  assert.equal(f.sources.deadline('chat/work/dev'), first);
+  f.at(first!);
+  await f.sources.tick();
+  await f.take();
+  // The next change draws again, now from a busy window: 20 writes in 15 minutes is a mean of the shortest, 3 minutes.
+  f.advance(MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"n":20}\n');
+  await f.sources.tick();
+  assert.equal(f.sources.deadline('chat/work/dev'), first! + MINUTE + Math.round(3 * MINUTE * Math.LN2));
+});
+
+test('the mean wait shortens with the rate of writes over the last 15 minutes, between the shortest and the quiet mean', async t => {
   const f = await setup(t);
   await f.write('chat/work/dev/a.jsonl', '');
   await f.write('chat/work/quiet/a.jsonl', '');
   await f.sources.prepare();
-  assert.equal(f.sources.interval('chat/work/quiet'), 60 * MINUTE);
-  for (let n = 0; n < 6; n += 1) {
-    f.advance(MINUTE);
+  // No write, or one, in the window: the quiet mean.
+  assert.equal(f.sources.mean('chat/work/quiet'), 10 * MINUTE);
+  const write = async (n: number, step: number) => {
+    f.advance(step);
     await f.append('chat/work/dev/a.jsonl', `{"n":${n}}\n`);
     await f.sources.tick();
-  }
-  // Six writes an hour: k ÷ rate = 3 ÷ (6 / 60 min) = 30 minutes.
-  assert.equal(f.sources.interval('chat/work/dev'), 30 * MINUTE);
-  for (let n = 6; n < 60; n += 1) {
-    f.advance(30_000);
-    await f.append('chat/work/dev/a.jsonl', `{"n":${n}}\n`);
-    await f.sources.tick();
-  }
-  // Sixty and more: held at the shortest.
-  assert.equal(f.sources.interval('chat/work/dev'), 3 * MINUTE);
-  // An hour on with nothing written, the writes have aged out and it is back to the longest.
-  f.advance(61 * MINUTE);
+  };
+  await write(0, MINUTE);
+  assert.equal(f.sources.mean('chat/work/dev'), 10 * MINUTE);
+  // Two writes in 15 minutes: k ÷ rate = 3 ÷ (2 / 15 min) = 22.5 minutes, held at the quiet mean. Never slower than quiet.
+  await write(1, MINUTE);
+  assert.equal(f.sources.mean('chat/work/dev'), 10 * MINUTE);
+  for (let n = 2; n < 6; n += 1) await write(n, MINUTE);
+  // Six: 3 ÷ (6 / 15 min) = 7.5 minutes.
+  assert.equal(f.sources.mean('chat/work/dev'), 7.5 * MINUTE);
+  for (let n = 6; n < 40; n += 1) await write(n, 10_000);
+  // Fifteen and more: held at the shortest.
+  assert.equal(f.sources.mean('chat/work/dev'), 3 * MINUTE);
+  // Fifteen minutes on with nothing written, the writes have aged out and it is quiet again.
+  f.advance(16 * MINUTE);
   await f.sources.tick();
-  assert.equal(f.sources.interval('chat/work/dev'), 60 * MINUTE);
+  assert.equal(f.sources.mean('chat/work/dev'), 10 * MINUTE);
+});
+
+test('a wait is exponential around its mean and cut at the longest: mostly sooner than the mean, now and then long', () => {
+  const mean = 10 * MINUTE;
+  const longest = 60 * MINUTE;
+  assert.equal(drawWait(mean, longest, 0), 0);
+  assert.equal(drawWait(mean, longest, AT_MEAN), mean);
+  assert.equal(drawWait(mean, longest, 0.5), Math.round(mean * Math.LN2));
+  assert.equal(drawWait(mean, longest, 0.999999), longest);
+  // A fixed sequence of draws, many of them.
+  let seed = 12345;
+  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const waits = Array.from({ length: 20_000 }, () => drawWait(mean, longest, random()));
+  const average = waits.reduce((sum, wait) => sum + wait, 0) / waits.length;
+  // The cut barely moves the mean of 10 minutes: 10 × (1 - e^-6) ≈ 9.98.
+  assert.ok(Math.abs(average - mean * (1 - Math.exp(-6))) < 0.03 * mean, `average ${average / MINUTE} min`);
+  assert.ok(Math.max(...waits) <= longest);
+  assert.ok(waits.some(wait => wait === longest), 'never cut at the longest');
+  const sooner = waits.filter(wait => wait < mean).length / waits.length;
+  // 1 - e^-1 ≈ 63% come sooner than the mean.
+  assert.ok(Math.abs(sooner - AT_MEAN) < 0.02, `sooner ${sooner}`);
+  assert.ok(waits.filter(wait => wait < 3 * MINUTE).length / waits.length > 0.2, 'a quiet directory is seldom told of early');
+});
+
+test('the draw comes from the random source given, and a long draw is cut at the longest', async t => {
+  const f = await setup(t, MORNING, { random: () => 0.999999 });
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"n":0}\n');
+  await f.sources.tick();
+  assert.equal(f.sources.deadline('chat/work/dev'), MORNING + 61 * MINUTE);
 });
 
 test('a busy directory is looked at sooner, and another close to its time rides along', async t => {
@@ -147,29 +214,54 @@ test('a busy directory is looked at sooner, and another close to its time rides 
   await f.write('chat/work/ops/a.jsonl', '');
   await f.write('chat/work/far/a.jsonl', '');
   await f.sources.prepare();
-  // far is looked at on the half hour, so its time is far off when the others' come.
-  f.advance(30 * MINUTE);
-  await f.append('chat/work/far/a.jsonl', '{"n":0}\n');
-  f.sources.attention({ source: 'chat', kind: 'dm', file: '/sources/chat/work/far/a.jsonl', path: '.[0]' });
-  await f.take();
-  f.advance(10 * MINUTE);
-  await f.append('chat/work/far/a.jsonl', '{"n":1}\n');
-  f.advance(18 * MINUTE);
+  // ops changes first: the quiet mean, due at 11 minutes.
+  f.advance(MINUTE);
   await f.append('chat/work/ops/a.jsonl', '{"n":0}\n');
   await f.sources.tick();
-  const raised = f.raised();
-  let writes = 0;
-  while (f.raised() === raised) {
+  // dev is busy, and shown (by an attention) at once.
+  for (let n = 0; n < 15; n += 1) {
     f.advance(10_000);
-    await f.append('chat/work/dev/a.jsonl', `{"n":${writes}}\n`);
+    await f.append('chat/work/dev/a.jsonl', `{"n":${n}}\n`);
     await f.sources.tick();
-    writes += 1;
-    assert.ok(writes < 30, 'dev never became due');
   }
-  // dev came due by its writes, well before its hour; ops, an hour from the last look, is a minute or two away.
-  assert.ok(writes < 10);
+  f.sources.attention({ source: 'chat', kind: 'dm', file: '/sources/chat/work/dev/a.jsonl', path: '.[0]' });
+  const { line: first } = await f.take();
+  assert.deepEqual((first!.changed as { dir: string }[]).map(entry => entry.dir), ['/sources/chat/work/dev']);
+  // far changes later: due at 16 minutes.
+  f.at(MORNING + 6 * MINUTE);
+  await f.append('chat/work/far/a.jsonl', '{"n":0}\n');
+  await f.sources.tick();
+  // dev's next change draws from its busy window: the shortest mean, due at 9.5 minutes.
+  f.at(MORNING + 6.5 * MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"n":15}\n');
+  await f.sources.tick();
+  assert.equal(f.sources.deadline('chat/work/dev'), MORNING + 9.5 * MINUTE);
+  const raised = f.raised();
+  f.at(MORNING + 9 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), raised);
+  f.at(MORNING + 9.5 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), raised + 1);
+  // ops, a minute and a half from its time, rides along; far, six and a half away, does not.
   const { line } = await f.take();
   assert.deepEqual((line!.changed as { dir: string }[]).map(entry => entry.dir), ['/sources/chat/work/dev', '/sources/chat/work/ops']);
+  assert.equal(f.sources.deadline('chat/work/far'), MORNING + 16 * MINUTE);
+});
+
+test('a change left unshown by an earlier process gets a fresh wait as the server starts', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"n":0}\n');
+  const later = MORNING + 30 * MINUTE;
+  const again = new Sources({ db: f.db, directory: f.directory, gitDirectory: f.gitDirectory, timeZone: TIME_ZONE,
+    awakeHours: { start: '08:00', end: '23:00' }, activity: SOURCES_DEFAULTS.activity, historyDays: 7, now: () => later,
+    random: () => AT_MEAN });
+  again.register({ name: 'chat', depth: 2 });
+  await again.prepare();
+  assert.equal(again.deadline('chat/work/dev'), later + 10 * MINUTE);
 });
 
 test('at night nothing but what is for her raises; the night comes together in the morning\'s first look', async t => {
@@ -246,11 +338,13 @@ test('sources-diff shows what the last event showed, one directory of it, or a r
   f.advance(61 * MINUTE);
   await f.append('chat/work/dev/a.jsonl', '{"text":"一回目"}\n');
   await f.sources.tick();
+  f.advance(10 * MINUTE);
   await f.take();
   f.advance(24 * 60 * MINUTE);
   await f.append('chat/work/dev/a.jsonl', '{"text":"二回目"}\n');
   await f.append('chat/work/ops/a.jsonl', '{"text":"運用"}\n');
   await f.sources.tick();
+  f.advance(10 * MINUTE);
   await f.take();
   const last = await f.diff();
   assert.match(last, /^\+\+\+ \/sources\/chat\/work\/dev\/a\.jsonl$/m);
@@ -278,11 +372,13 @@ test('sources-diff reads the history where the workspace sees it, though the ser
   f.advance(61 * MINUTE);
   await f.append('chat/work/dev/a.jsonl', '{"text":"一回目"}\n');
   await f.sources.tick();
+  f.advance(10 * MINUTE);
   await f.take();
   f.advance(24 * 60 * MINUTE);
   await f.append('chat/work/dev/a.jsonl', '{"text":"二回目"}\n');
   await f.append('chat/work/ops/a.jsonl', '{"text":"運用"}\n');
   await f.sources.tick();
+  f.advance(10 * MINUTE);
   await f.take();
   // A history made by an earlier server names the server's work tree in its config; it must read all the same.
   await run('git', ['--git-dir', f.gitDirectory, 'config', 'core.worktree', f.directory]);
@@ -358,6 +454,7 @@ test('the nightly pruning keeps N days, and every ref still works after it', asy
     f.advance(24 * 60 * MINUTE);
     await f.append('chat/work/dev/a.jsonl', `{"day":${day}}\n`);
     await f.sources.tick();
+    f.advance(10 * MINUTE);
     await f.take();
   }
   const count = async () => Number((await run('git', ['--git-dir', f.gitDirectory, 'rev-list', '--count', 'HEAD'])).stdout.trim());
@@ -371,6 +468,7 @@ test('the nightly pruning keeps N days, and every ref still works after it', asy
   await f.append('chat/work/ops/a.jsonl', '{"text":"その後"}\n');
   await f.append('chat/work/dev/a.jsonl', '{"day":5}\n');
   await f.sources.tick();
+  f.advance(10 * MINUTE);
   const { line } = await f.take();
   assert.deepEqual((line!.changed as { dir: string }[]).map(entry => entry.dir), ['/sources/chat/work/dev', '/sources/chat/work/ops']);
   const shown = await f.diff();
