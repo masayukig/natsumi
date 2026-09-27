@@ -26,15 +26,17 @@ const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 /**
  * Runs git in `directory`. Hooks never run and no user, system or environment configuration is read, so a file
- * left in the repository cannot change what committing does. A failing command throws unless `allowFailure`.
+ * left in the repository cannot change what committing does. A failing command throws unless `allowFailure`. `env`
+ * adds to the environment, such as the dates a commit is to carry; it cannot take the identity's place.
  */
-export function runGit(directory: string, args: string[], options: { allowFailure?: boolean } = {}): Promise<GitResult> {
+export function runGit(directory: string, args: string[], options: { allowFailure?: boolean; env?: Record<string, string> } = {}): Promise<GitResult> {
   const full = ['-C', directory, '-c', 'core.hooksPath=/dev/null', '-c', `safe.directory=${directory}`,
     '-c', 'core.quotePath=false', '-c', 'commit.gpgsign=false', ...args];
   return new Promise((resolve, reject) => {
     execFile('git', full, {
       encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true,
       env: {
+        ...options.env,
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         LC_ALL: 'C',
         // Only the identity below decides who commits.

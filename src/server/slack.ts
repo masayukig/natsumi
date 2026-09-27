@@ -1,7 +1,7 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { Transaction } from './conversation-store.ts';
 import type { ArchivedMessage, ArchivedReaction, ChannelRow, Reactor, SlackArchive } from './slack-archive.ts';
+import type { Attention } from './sources.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
 import { imageType } from './view.ts';
 
@@ -10,8 +10,8 @@ const IMAGE_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 
 /** The subtypes that are someone saying something. Joins, topic changes and the like are not recorded. */
 const SPOKEN = new Set([undefined, 'file_share', 'thread_broadcast', 'bot_message', 'me_message']);
 
-/** Hands the loop a mention as a new event; the caller's rows go into the event's own transaction. */
-export type RaiseSlackMention = (record: (eventId: string, transaction: Transaction) => void) => void;
+/** Tells the core of the sources that a message is for her (ADR 0050). */
+export type TellAttention = (attention: Attention) => void;
 
 export interface SlackWorkspaceOptions {
   /** The workspace's name in the config, and in every path and reference natsumi reads. */
@@ -19,7 +19,7 @@ export interface SlackWorkspaceOptions {
   api: SlackApi;
   socket: SlackSocket;
   archive: SlackArchive;
-  raise: RaiseSlackMention;
+  attention: TellAttention;
   /** Put on a mention or a DM as it arrives, by the server alone (ADR 0039). */
   reaction: string;
   backfillDays: number;
@@ -29,10 +29,10 @@ export interface SlackWorkspaceOptions {
 }
 
 /**
- * One Slack workspace, received (ADR 0012, ADR 0039). Every message of the channels the bot is in goes into the
- * archive; a real mention of the bot, or a DM, also becomes an event, and gets the server's reaction as it arrives.
- * Slack's own retries and its twin `app_mention` event make no second event: one message makes one, whichever way
- * and however often it comes.
+ * One Slack workspace, received (ADR 0012, ADR 0039, ADR 0050). Every message of the channels the bot is in goes into
+ * the archive; a real mention of the bot, or a DM, is also told to the core as an attention (`mention` or `dm`), and
+ * gets the server's reaction as it arrives. Slack's own retries and its twin `app_mention` event tell nothing twice:
+ * one message is told once, whichever way and however often it comes.
  *
  * A reaction put on or taken off a recorded message is recorded too (ADR 0043); one on anything else is let go.
  *
@@ -100,8 +100,8 @@ export class SlackWorkspace {
     const channel = await this.channel(channelId);
     if (subtype === 'message_changed') {
       const changed = event.message && typeof event.message === 'object' ? toSlackMessage(event.message as Record<string, unknown>) : undefined;
-      // An edit changes the file, never raises: what she was handed once is not handed again.
-      if (changed?.ts) await archive.record(name, channelId, { ...await this.archived(channel, changed), edited: true }, true);
+      // An edit changes the file and is told nothing more: what she was told of once is not told again.
+      if (changed?.ts) await archive.record(name, channelId, { ...await this.archived(channel, changed), edited: true });
       return;
     }
     if (!SPOKEN.has(subtype)) return;
@@ -124,7 +124,7 @@ export class SlackWorkspace {
 
   /**
    * Fills in every channel from its last recorded message, and one never recorded from `backfillDays` back. Nothing
-   * recorded is removed. A first fill-in raises no mention: they are old news, and natsumi finds them in the files.
+   * recorded is removed. A first fill-in tells of no mention: they are old news, and natsumi finds them in the files.
    */
   private async backfill(): Promise<void> {
     const conversations = await this.options.api.conversations();
@@ -186,7 +186,7 @@ export class SlackWorkspace {
     }
   }
 
-  /** Records one message and, when it is for her, raises it once. Returns whether it was new. */
+  /** Records one message and, when it is for her, tells the core once. Returns whether it was new. */
   private async receive(channel: ChannelRow, message: SlackMessage, how: { live: boolean; mayRaise: boolean }): Promise<boolean> {
     const { archive, name } = this.options;
     if (!message.ts) return false;
@@ -197,27 +197,33 @@ export class SlackWorkspace {
     }
     // What the Web API answers says every reaction; a live event says none.
     const fetched = how.live ? message : { ...message, reactions: message.reactions ?? [] };
-    const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, fetched), ...(reply ? { threadTs: reply } : {}) }, true);
+    const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, fetched), ...(reply ? { threadTs: reply } : {}) });
     if (!how.mayRaise || !(isNew || how.live) || !this.forHer(channel, message)) return isNew;
-    if (archive.hasMention(name, channel.channel_id, message.ts)) return isNew;
-    this.options.raise((eventId, transaction) => archive.recordMention(eventId, name, channel.channel_id, message.ts, transaction));
+    // Its line is written by now, so the place told is where natsumi finds it.
+    const place = archive.markForHer(name, channel.channel_id, message.ts);
+    if (!place) return isNew;
+    this.options.attention({ source: 'slack', kind: channel.is_im ? 'dm' : 'mention', file: place.file, path: place.path,
+      ...(place.images.length > 0 ? { images: place.images } : {}) });
     try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
       this.report('the reaction could not be added', error);
     }
     return isNew;
   }
 
-  /** A reply to a thread recorded nowhere: its parent is fetched and recorded, not counted, so the reply has a place. */
+  /**
+   * A reply to a thread recorded nowhere: its parent is fetched and recorded first, so the reply has a place and the
+   * thread can be read from the file — the flow around a mention is never sent with it (ADR 0050).
+   */
   private async fetchParent(channel: ChannelRow, threadTs: string, except: string): Promise<void> {
     const thread = await this.options.api.replies(channel.channel_id, threadTs);
     const parent = thread.find(message => message.ts === threadTs);
     if (parent && parent.ts !== except) {
       await this.options.archive.record(this.options.name, channel.channel_id,
-        await this.archived(channel, { ...parent, reactions: parent.reactions ?? [] }), false);
+        await this.archived(channel, { ...parent, reactions: parent.reactions ?? [] }));
     }
   }
 
-  /** A real mention of the bot, or a DM, from a person. No bot raises an event, her own least of all. */
+  /** A real mention of the bot, or a DM, from a person. No bot is for her, her own least of all. */
   private forHer(channel: ChannelRow, message: SlackMessage): boolean {
     const self = this.self!;
     if (message.botId || !message.user || message.user === self.userId) return false;

@@ -212,6 +212,8 @@ export interface SchedulerOptions {
   expressionResetMinutes: number;
   /** The local time of the nightly session switch, or false to leave the session alone (ADR 0009). */
   nightlyRotationAt: string | false;
+  /** What natsumi reads (ADR 0050): looked at on every tick, whatever the hour; it raises its own events. */
+  sources?: { tick(): Promise<void> };
   tickMs?: number;
   log?: (line: string) => void;
 }
@@ -229,6 +231,8 @@ export class Scheduler {
   private switchedFor: number | undefined;
   /** A switch resolves only once its review turn is over; until then nothing asks for another. */
   private switching = false;
+  /** A look at the sources still going is not joined by another. */
+  private lookingAtSources = false;
 
   constructor(options: SchedulerOptions) {
     this.options = options;
@@ -255,6 +259,7 @@ export class Scheduler {
     const now = this.now();
     // The switch happens in the night, outside the awake hours, and waits for no quiet: it is looked at before both.
     this.switchSession(now);
+    this.lookAtSources();
     if (!loop.quiet || !isAwake(now, awakeHours, timeZone)) return undefined;
     if (loop.deliverDueSelfChecks()) return 'self-check';
     if (pingIntervalMinutes !== false && now - loop.lastActivityAt >= pingIntervalMinutes * MINUTE && loop.ping()) return 'ping';
@@ -278,6 +283,14 @@ export class Scheduler {
       outcome => { log?.(`thinking loop: nightly switch ${outcome.result}${'reason' in outcome ? ` (${outcome.reason})` : ''}`); },
       () => {},
     ).finally(() => { this.switching = false; });
+  }
+
+  /** The sources decide for themselves what the hour allows; a failure is logged and the next tick looks again. */
+  private lookAtSources(): void {
+    const { sources, log } = this.options;
+    if (!sources || this.lookingAtSources) return;
+    this.lookingAtSources = true;
+    void sources.tick().catch(() => { log?.('sources: a look failed'); }).finally(() => { this.lookingAtSources = false; });
   }
 
   private safeTick() {

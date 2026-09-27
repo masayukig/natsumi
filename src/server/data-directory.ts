@@ -1,7 +1,7 @@
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
-import { findCodeCheckout, HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
+import { findCodeCheckout, HOME_DIRECTORY, SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { makeSharedDirectory } from './permissions.ts';
 
 export class DataDirectoryError extends Error {
@@ -29,12 +29,14 @@ export async function resolveDataDirectory(flag: string | undefined, cwd: string
  * `work/` and `home/` are the workspace container's `/work` and `/home/natsumi` (ADR 0019): the server makes them
  * and then looks inside only to copy an image she asks the dove to post from /work (ADR 0044). `agents/` holds the list of agents the
  * server writes on every start, which the workspace sees read-only as `/manual/agents` (ADR 0036). `sources/` holds
- * what she reads besides memory, such as the Slack channels, which the workspace sees read-only as `/sources` (ADR 0039).
+ * what she reads besides memory, such as the Slack channels, which the workspace sees read-only as `/sources` (ADR 0039),
+ * and `sources.git/` its history, seen read-only as `/sources.git` (ADR 0050).
  */
 export async function initializeDataDirectory(dir: string): Promise<void> {
-  for (const name of ['memory', WORK_DIRECTORY, HOME_DIRECTORY, AGENT_LIST_DIRECTORY, SOURCES_DIRECTORY, STATE_DIRECTORY]) {
+  for (const name of ['memory', WORK_DIRECTORY, HOME_DIRECTORY, AGENT_LIST_DIRECTORY, SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY,
+    STATE_DIRECTORY]) {
     const path = join(dir, name);
-    // The three the workspace mounts are shared with its group; the server's own state stays with its owner (ADR 0033).
+    // Those the workspace mounts are shared with its group; the server's own state stays with its owner (ADR 0033).
     const made = name === STATE_DIRECTORY ? await makePrivateDirectory(path) : await makeSharedDirectory(path);
     if (!made && !(await stat(path)).isDirectory()) throw new DataDirectoryError(`${name} exists but is not a directory`);
   }

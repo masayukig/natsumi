@@ -1,35 +1,33 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { ImageContent } from '@earendil-works/pi-ai';
-import type { Transaction } from './conversation-store.ts';
 import type { ParsedReference } from './dove-request.ts';
 import { isoAt } from './nightly.ts';
 import { writeFileAtomically } from './paths.ts';
-import type { UpdateCounts, UpdateSource } from './updates.ts';
-import { imageType, SOURCES_PATH } from './view.ts';
+import type { SourceRegistration } from './sources.ts';
+import { SOURCES_PATH } from './view.ts';
 
 /**
- * What natsumi reads of Slack (ADR 0039): every message of every channel the bot is in, kept in SQLite and written
- * out as one Markdown file a day under `sources/slack/<workspace>/<channel>/`, which the workspace sees read-only as
- * `/sources/slack/`. A change to a message writes its day's file again from the rows, so an edit or a deletion is
- * never a patch on the file. Nothing is removed from disk: the owner clears old files by hand.
+ * What natsumi reads of Slack (ADR 0039, ADR 0050): every message of every channel the bot is in, kept in SQLite and
+ * written out as one JSON Lines file a day under `sources/slack/<workspace>/<channel>/`, which the workspace sees
+ * read-only as `/sources/slack/`. One line is one message, a reply in a thread included, in the order they were
+ * recorded: a line never moves, so a `jq -s` path keeps pointing at its message. A change to a message writes its day's
+ * file again from the rows, so an edit, a deletion or a reaction (ADR 0043) is never a patch on the file; a deleted
+ * message stays as a line that says so. Nothing is removed from disk: the owner clears old files by hand.
  *
- * The reactions on a message are written under it, by name (ADR 0043). Putting one on or taking it off writes the day
- * again, and those others put on her own posts are counted in the updates.
- *
- * It is also Slack's update source — what came since natsumi was last shown it — and what a mention event is made
- * of when it is handed to her. No Slack ID (ts, channel, user) is ever written where she reads it (ADR 0024): a
- * message is named by its workspace, channel, local time to the second, and speaker.
+ * The core of the sources notices the files change (ADR 0050). A message for her — a real mention, or a DM — is told
+ * to it as an attention, with the line it is on. No Slack ID (ts, channel, user) is ever written where she reads it
+ * (ADR 0024): a message is named by its workspace, channel, local time to the second, and speaker.
  */
 
 export const SLACK_SOURCE = 'slack';
 /** Where natsumi sees this source. */
 export const SLACK_PATH = `${SOURCES_PATH}/${SLACK_SOURCE}`;
-/** The images of a mention handed to the model with its event, at most. */
-export const MAX_MENTION_IMAGES = 4;
-/** The longest a mention's own text is in its event. */
-export const MAX_MENTION_CHARS = 4000;
+/**
+ * How the core measures Slack: by channel (`slack/<workspace>/<channel>`). The index changes with every message and
+ * the fetched images are named in the lines, so neither is kept in the history.
+ */
+export const SLACK_REGISTRATION: SourceRegistration = { name: SLACK_SOURCE, depth: 2, exclude: ['INDEX.md', '*/*/files/'] };
 
 /** A message as it is recorded: the speaker's name is resolved and Slack's markup already turned into text. */
 export interface ArchivedMessage {
@@ -77,8 +75,11 @@ interface ReactionRow { ts: string; name: string; user_id: string; reactor: stri
 
 interface MessageRow {
   workspace: string; channel_id: string; ts: string; thread_ts: string | null; speaker: string; own: number; text: string;
-  files: string; edited: number; deleted: number; file_date: string; counted: number;
+  files: string; edited: number; deleted: number; file_date: string; line: number;
 }
+
+/** A message for her, as the core is told of it: the file and the `jq -s` path of its line, and its images. */
+export interface ForHer { file: string; path: string; images: string[] }
 
 export interface SlackArchiveOptions {
   db: DatabaseSync;
@@ -86,15 +87,12 @@ export interface SlackArchiveOptions {
   directory: string;
   timeZone: string;
   now: () => number;
-  /** The messages before a mention its event carries, and the characters each keeps. */
-  mentionContext: { messages: number; chars: number };
 }
 
 /** A file natsumi can read: the group reads it, and nobody writes it through the workspace (ADR 0033). */
 const FILE_MODE = 0o640;
 
-export class SlackArchive implements UpdateSource {
-  readonly name = SLACK_SOURCE;
+export class SlackArchive {
   private readonly options: SlackArchiveOptions;
   private readonly db: DatabaseSync;
   private readonly clock: Intl.DateTimeFormat;
@@ -157,10 +155,10 @@ export class SlackArchive implements UpdateSource {
   }
 
   /**
-   * Records a message, or what changed in one already recorded, and writes its day's file and the index again.
-   * `counted` says whether a new message waits to be shown in the updates. Returns whether it was new.
+   * Records a message, or what changed in one already recorded, and writes its day's file and the index again. A new
+   * one takes the next line of its day's file. Returns whether it was new.
    */
-  async record(workspace: string, channelId: string, message: ArchivedMessage, counted: boolean): Promise<boolean> {
+  async record(workspace: string, channelId: string, message: ArchivedMessage): Promise<boolean> {
     const existing = this.row(workspace, channelId, message.ts);
     const now = this.iso();
     const files = JSON.stringify(message.files);
@@ -171,23 +169,24 @@ export class SlackArchive implements UpdateSource {
     } else {
       const parent = message.threadTs ? this.row(workspace, channelId, message.threadTs) : undefined;
       const fileDate = parent?.file_date ?? this.local(message.ts).date;
+      const { next } = this.db.prepare(`SELECT COALESCE(MAX(line) + 1, 0) AS next FROM slack_messages
+        WHERE workspace = ? AND channel_id = ? AND file_date = ?`).get(workspace, channelId, fileDate) as { next: number };
       this.db.prepare(`INSERT INTO slack_messages (workspace, channel_id, ts, thread_ts, speaker, own, text, files, edited, deleted,
-        file_date, counted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`)
+        file_date, counted, line, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?)`)
         .run(workspace, channelId, message.ts, message.threadTs ?? null, message.speaker, message.own ? 1 : 0, message.text, files,
-          message.edited ? 1 : 0, fileDate, counted && !message.own ? 1 : 0, now, now);
+          message.edited ? 1 : 0, fileDate, next, now, now);
     }
-    if (message.reactions) this.matchReactions(workspace, channelId, message.ts, message.reactions, (existing?.own ?? (message.own ? 1 : 0)) === 1);
+    if (message.reactions) this.matchReactions(workspace, channelId, message.ts, message.reactions);
     await this.write(workspace, channelId, (existing ?? this.row(workspace, channelId, message.ts)!).file_date);
     return !existing;
   }
 
-  /** A message deleted in Slack: its day's file is written again without it. */
+  /** A message deleted in Slack: its line stays, saying only that it was deleted, so no line after it moves. */
   async remove(workspace: string, channelId: string, ts: string): Promise<void> {
     const row = this.row(workspace, channelId, ts);
     if (!row || row.deleted) return;
-    this.db.prepare(`UPDATE slack_messages SET deleted = 1, counted = 0, updated_at = ? WHERE workspace = ? AND channel_id = ? AND ts = ?`)
+    this.db.prepare(`UPDATE slack_messages SET deleted = 1, updated_at = ? WHERE workspace = ? AND channel_id = ? AND ts = ?`)
       .run(this.iso(), workspace, channelId, ts);
-    this.db.prepare('UPDATE slack_reactions SET counted = 0 WHERE workspace = ? AND channel_id = ? AND ts = ?').run(workspace, channelId, ts);
     await this.write(workspace, channelId, row.file_date);
   }
 
@@ -198,18 +197,14 @@ export class SlackArchive implements UpdateSource {
   async react(workspace: string, channelId: string, ts: string, name: string, reactor: Reactor): Promise<boolean> {
     const row = this.row(workspace, channelId, ts);
     if (!row) return false;
-    const counted = reactor.countable && row.own === 1 && row.deleted === 0;
     const { changes } = this.db.prepare(`INSERT INTO slack_reactions (workspace, channel_id, ts, name, position, user_id, reactor, others,
-      counted, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT DO NOTHING`)
-      .run(workspace, channelId, ts, name, this.position(workspace, channelId, ts, name), reactor.userId, reactor.name, counted ? 1 : 0, this.iso());
+      counted, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?) ON CONFLICT DO NOTHING`)
+      .run(workspace, channelId, ts, name, this.position(workspace, channelId, ts, name), reactor.userId, reactor.name, this.iso());
     if (Number(changes) > 0) await this.write(workspace, channelId, row.file_date);
     return true;
   }
 
-  /**
-   * A reaction taken off: gone from the file, and from the count if it had not been shown yet. Someone Slack only
-   * counted comes off the number.
-   */
+  /** A reaction taken off: gone from the file. Someone Slack only counted comes off the number. */
   async unreact(workspace: string, channelId: string, ts: string, name: string, userId: string): Promise<void> {
     const row = this.row(workspace, channelId, ts);
     if (!row) return;
@@ -224,96 +219,23 @@ export class SlackArchive implements UpdateSource {
     if (Number(changes) > 0) await this.write(workspace, channelId, row.file_date);
   }
 
-  hasMention(workspace: string, channelId: string, ts: string): boolean {
-    return this.db.prepare('SELECT 1 FROM slack_mentions WHERE workspace = ? AND channel_id = ? AND ts = ?')
-      .get(workspace, channelId, ts) !== undefined;
-  }
-
   /**
-   * Ties a message to the event that hands it to natsumi, inside the event's own transaction. The event shows it, so
-   * it no longer waits to be counted in the updates.
+   * Marks a recorded message as for her, once: returns where it is — its day's file and the `jq -s` path of its line —
+   * and its images, or undefined when it was marked before (Slack sent it again, or it was a mention event before).
    */
-  recordMention(eventId: string, workspace: string, channelId: string, ts: string, _transaction: Transaction): void {
-    this.db.prepare('INSERT INTO slack_mentions (event_id, workspace, channel_id, ts) VALUES (?, ?, ?, ?)').run(eventId, workspace, channelId, ts);
-    this.db.prepare('UPDATE slack_messages SET counted = 0 WHERE workspace = ? AND channel_id = ? AND ts = ?').run(workspace, channelId, ts);
-  }
-
-  /**
-   * The line a mention or a DM becomes inside `<events>` (ADR 0039): the message, who said it, where, a reference
-   * she can copy as it is to name it, the file it is in, and the flow before it — the thread's latest messages in a
-   * thread, the channel's otherwise. Built from what is recorded now.
-   */
-  eventLine(eventId: string, receivedAt: string): Record<string, unknown> {
-    const mention = this.db.prepare('SELECT workspace, channel_id, ts FROM slack_mentions WHERE event_id = ?').get(eventId) as
-      { workspace: string; channel_id: string; ts: string } | undefined;
-    const row = mention && this.row(mention.workspace, mention.channel_id, mention.ts);
-    const channel = mention && this.channel(mention.workspace, mention.channel_id);
-    if (!mention || !row || !channel) return { type: 'slack_mention', received_at: receivedAt };
-    const { date, time } = this.local(row.ts);
-    const where = `${mention.workspace}/${channel.label}`;
-    const { messages, chars } = this.options.mentionContext;
-    const before = row.thread_ts
-      ? this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0
-          AND (ts = ? OR thread_ts = ?) AND CAST(ts AS REAL) < CAST(? AS REAL) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`)
-        .all(mention.workspace, mention.channel_id, row.thread_ts, row.thread_ts, row.ts, messages)
-      : this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0 AND thread_ts IS NULL
-          AND CAST(ts AS REAL) < CAST(? AS REAL) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`)
-        .all(mention.workspace, mention.channel_id, row.ts, messages);
-    const images = parseFiles(row.files).flatMap(file => file.path ? [file.path] : []);
+  markForHer(workspace: string, channelId: string, ts: string): ForHer | undefined {
+    const row = this.row(workspace, channelId, ts);
+    const channel = this.channel(workspace, channelId);
+    if (!row || !channel) return undefined;
+    const { changes } = this.db.prepare(`INSERT INTO slack_attention (workspace, channel_id, ts, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT DO NOTHING`).run(workspace, channelId, ts, this.iso());
+    if (Number(changes) === 0) return undefined;
+    const { index } = this.db.prepare(`SELECT COUNT(*) AS "index" FROM slack_messages WHERE workspace = ? AND channel_id = ? AND file_date = ?
+      AND (line < ? OR (line = ? AND CAST(ts AS REAL) < CAST(? AS REAL)))`)
+      .get(workspace, channelId, row.file_date, row.line, row.line, row.ts) as { index: number };
     return {
-      type: 'slack_mention', received_at: receivedAt, via: channel.is_im ? 'dm' : 'mention', channel: where, from: row.speaker,
-      text: cut(row.text, MAX_MENTION_CHARS), reference: `${where} ${date} ${time} ${row.speaker}`,
-      file: `${SLACK_PATH}/${mention.workspace}/${channel.directory}/${row.file_date}.md`,
-      ...(row.thread_ts ? { in_thread: true } : {}),
-      context: (before as unknown as MessageRow[]).reverse().map(item => {
-        const at = this.local(item.ts);
-        return { at: at.date === date ? at.time : `${at.date} ${at.time}`, from: item.speaker, text: cut(item.text, chars) };
-      }),
-      ...(images.length > 0 ? { images } : {}),
-    };
-  }
-
-  /** The images of a mention, read now, as the model is given them beside its event. */
-  async images(eventId: string): Promise<ImageContent[]> {
-    const mention = this.db.prepare('SELECT workspace, channel_id, ts FROM slack_mentions WHERE event_id = ?').get(eventId) as
-      { workspace: string; channel_id: string; ts: string } | undefined;
-    const row = mention && this.row(mention.workspace, mention.channel_id, mention.ts);
-    if (!row) return [];
-    const images: ImageContent[] = [];
-    for (const file of parseFiles(row.files).filter(file => file.path).slice(0, MAX_MENTION_IMAGES)) {
-      try {
-        const data = await readFile(join(this.options.directory, file.path!.slice(SLACK_PATH.length + 1)));
-        const mimeType = imageType(data);
-        if (mimeType) images.push({ type: 'image', mimeType, data: data.toString('base64') });
-      } catch { /* a file cleared by hand is simply not shown */ }
-    }
-    return images;
-  }
-
-  /**
-   * What came since the updates were last shown, per channel: new messages, and the reactions others put on her own
-   * posts (ADR 0043). With them the files to read: the newest one with a new message, and the newest one with a
-   * reacted post. Then counts from now.
-   */
-  take(): UpdateCounts | undefined {
-    type Counted = { workspace: string; label: string; directory: string; n: number; latest: string };
-    const messages = this.db.prepare(`SELECT m.workspace, c.label, c.directory, COUNT(*) AS n, MAX(m.file_date) AS latest
-      FROM slack_messages m JOIN slack_channels c ON c.workspace = m.workspace AND c.channel_id = m.channel_id
-      WHERE m.counted = 1 GROUP BY m.workspace, m.channel_id ORDER BY m.workspace, c.label`).all() as Counted[];
-    const reactions = this.db.prepare(`SELECT m.workspace, c.label, c.directory, COUNT(*) AS n, MAX(m.file_date) AS latest
-      FROM slack_reactions r JOIN slack_messages m ON m.workspace = r.workspace AND m.channel_id = r.channel_id AND m.ts = r.ts
-      JOIN slack_channels c ON c.workspace = m.workspace AND c.channel_id = m.channel_id
-      WHERE r.counted = 1 GROUP BY m.workspace, m.channel_id ORDER BY m.workspace, c.label`).all() as Counted[];
-    if (messages.length === 0 && reactions.length === 0) return undefined;
-    this.db.prepare('UPDATE slack_messages SET counted = 0 WHERE counted = 1').run();
-    this.db.prepare('UPDATE slack_reactions SET counted = 0 WHERE counted = 1').run();
-    const where = (row: Counted) => `${row.workspace}/${row.label}`;
-    const files = [...messages, ...reactions].sort((a, b) => where(a) < where(b) ? -1 : where(a) > where(b) ? 1 : 0)
-      .map(row => `${SLACK_PATH}/${row.workspace}/${row.directory}/${row.latest}.md`);
-    return {
-      ...(messages.length > 0 ? { new: Object.fromEntries(messages.map(row => [where(row), row.n])) } : {}),
-      ...(reactions.length > 0 ? { reactions_on_mine: Object.fromEntries(reactions.map(row => [where(row), row.n])) } : {}),
-      files: [...new Set(files)],
+      file: `${SLACK_PATH}/${workspace}/${channel.directory}/${row.file_date}.jsonl`, path: `.[${index}]`,
+      images: parseFiles(row.files).flatMap(file => file.path ? [file.path] : []),
     };
   }
 
@@ -339,7 +261,7 @@ export class SlackArchive implements UpdateSource {
       .filter(row => row.speaker === reference.speaker && (({ date: d, time: t }) => d === date && t === time)(this.local(row.ts)))
       .filter(row => reference.begins === undefined || oneLine(row.text).startsWith(reference.begins));
     const named = `${where} ${date} ${time} ${reference.speaker}${reference.begins === undefined ? '' : ` 「${reference.begins}」`}`;
-    if (rows.length === 0) return { ok: false, text: `${named} の発言が記録に見つかりません。ファイルの見出しの時刻と発言者を、そのまま写してください。` };
+    if (rows.length === 0) return { ok: false, text: `${named} の発言が記録に見つかりません。ファイルの行の at（日付と時刻）と from（発言者）を、そのまま写してください。` };
     if (rows.length > 1) {
       const heads = rows.map(row => `「${cut(oneLine(row.text), 30)}」`).join('、');
       return { ok: false, text: `${named} の発言が ${rows.length} 件あり、どれか決められません（${heads}）。`
@@ -381,10 +303,38 @@ export class SlackArchive implements UpdateSource {
     return row !== undefined && row.deleted === 0;
   }
 
-  /** Makes the directory natsumi sees and the index, so an empty source still says so. */
+  /**
+   * Makes the directory natsumi sees and the index, so an empty source still says so. Day files still in Markdown
+   * (before ADR 0050) are written again as JSON Lines from every row recorded, and then removed.
+   */
   async prepare(): Promise<void> {
     await mkdir(this.options.directory, { recursive: true, mode: 0o750 });
-    await this.enqueue(() => this.writeIndex());
+    await this.enqueue(async () => {
+      const markdown = await this.markdownDays();
+      if (markdown.length > 0) {
+        const days = this.db.prepare('SELECT DISTINCT workspace, channel_id, file_date FROM slack_messages').all() as
+          { workspace: string; channel_id: string; file_date: string }[];
+        for (const day of days) await this.writeDay(day.workspace, day.channel_id, day.file_date);
+        for (const path of markdown) await rm(path, { force: true });
+      }
+      await this.writeIndex();
+    });
+  }
+
+  /** The day files written in Markdown, under every workspace and channel. */
+  private async markdownDays(): Promise<string[]> {
+    const found: string[] = [];
+    const list = async (path: string) => { try { return await readdir(path, { withFileTypes: true }); } catch { return []; } };
+    for (const workspace of await list(this.options.directory)) {
+      if (!workspace.isDirectory()) continue;
+      for (const channel of await list(join(this.options.directory, workspace.name))) {
+        if (!channel.isDirectory()) continue;
+        for (const file of await list(join(this.options.directory, workspace.name, channel.name))) {
+          if (file.isFile() && /^\d{4}-\d{2}-\d{2}\.md$/.test(file.name)) found.push(join(this.options.directory, workspace.name, channel.name, file.name));
+        }
+      }
+    }
+    return found;
   }
 
   private row(workspace: string, channelId: string, ts: string): MessageRow | undefined {
@@ -392,11 +342,8 @@ export class SlackArchive implements UpdateSource {
       MessageRow | undefined;
   }
 
-  /**
-   * Makes a message's recorded reactions what Slack said they are: what is no longer there goes, what is new comes,
-   * and a new one someone else put on her own post is counted.
-   */
-  private matchReactions(workspace: string, channelId: string, ts: string, reactions: ArchivedReaction[], own: boolean): void {
+  /** Makes a message's recorded reactions what Slack said they are: what is no longer there goes, what is new comes. */
+  private matchReactions(workspace: string, channelId: string, ts: string, reactions: ArchivedReaction[]): void {
     const key = (name: string, userId: string) => `${name}\u0000${userId}`;
     const wanted = new Set(reactions.flatMap(reaction => [
       ...reaction.people.map(person => key(reaction.name, person.userId)), ...(reaction.others > 0 ? [key(reaction.name, '')] : [])]));
@@ -409,9 +356,8 @@ export class SlackArchive implements UpdateSource {
     const now = this.iso();
     for (const [position, reaction] of reactions.entries()) {
       for (const person of reaction.people) {
-        put.run(workspace, channelId, ts, reaction.name, position, person.userId, person.name, 0, person.countable && own ? 1 : 0, now);
+        put.run(workspace, channelId, ts, reaction.name, position, person.userId, person.name, 0, 0, now);
       }
-      // Those Slack only counted are not counted in the updates: who they are, and so whether they are new, is not known.
       if (reaction.others > 0) put.run(workspace, channelId, ts, reaction.name, position, '', '', reaction.others, 0, now);
     }
   }
@@ -436,45 +382,46 @@ export class SlackArchive implements UpdateSource {
     return run;
   }
 
-  /** One day of one channel, from the rows: parents in order, each with its replies indented under it. */
+  /** One day of one channel, from the rows: one line a message, in the order they were recorded. */
   private async writeDay(workspace: string, channelId: string, date: string): Promise<void> {
     const channel = this.channel(workspace, channelId)!;
     const rows = (this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND file_date = ?
-      ORDER BY CAST(ts AS REAL)`).all(workspace, channelId, date) as unknown as MessageRow[]);
+      ORDER BY line, CAST(ts AS REAL)`).all(workspace, channelId, date) as unknown as MessageRow[]);
     const reactions = new Map<string, ReactionRow[]>();
     for (const reaction of this.db.prepare(`SELECT r.ts, r.name, r.user_id, r.reactor, r.others FROM slack_reactions r
       JOIN slack_messages m ON m.workspace = r.workspace AND m.channel_id = r.channel_id AND m.ts = r.ts
       WHERE m.workspace = ? AND m.channel_id = ? AND m.file_date = ? ORDER BY r.position, r.rowid`).all(workspace, channelId, date) as unknown as ReactionRow[]) {
       reactions.set(reaction.ts, [...reactions.get(reaction.ts) ?? [], reaction]);
     }
-    const parents = new Set(rows.filter(row => !row.thread_ts).map(row => row.ts));
-    const replies = new Map<string, MessageRow[]>();
-    for (const row of rows) {
-      if (row.thread_ts && parents.has(row.thread_ts)) replies.set(row.thread_ts, [...replies.get(row.thread_ts) ?? [], row]);
-    }
-    const lines = [`# ${workspace}/${channel.label} ${date}`];
-    for (const row of rows) {
-      if (row.thread_ts && parents.has(row.thread_ts)) continue;
-      const thread = (replies.get(row.ts) ?? []).filter(reply => !reply.deleted);
-      if (row.deleted && thread.length === 0) continue;
-      lines.push('', ...this.entry(row, date, '', reactions.get(row.ts) ?? []));
-      for (const reply of thread) lines.push('', ...this.entry(reply, date, '  ', reactions.get(reply.ts) ?? []));
-    }
-    const path = join(this.options.directory, workspace, channel.directory, `${date}.md`);
+    const index = new Map(rows.map((row, at) => [row.ts, at]));
+    const lines = rows.map(row => JSON.stringify(this.entry(row, index, reactions.get(row.ts) ?? [])));
+    const path = join(this.options.directory, workspace, channel.directory, `${date}.jsonl`);
     await mkdir(join(this.options.directory, workspace, channel.directory), { recursive: true, mode: 0o750 });
-    await writeFileAtomically(path, `${lines.join('\n')}\n`, FILE_MODE);
+    await writeFileAtomically(path, lines.length > 0 ? `${lines.join('\n')}\n` : '', FILE_MODE);
   }
 
-  private entry(row: MessageRow, fileDate: string, indent: string, reactions: ReactionRow[]): string[] {
+  /**
+   * One message as its line: when (local, to the second) and who, which are what a reference to it is written from;
+   * `mine` on her own; `reply_to` the line of its thread's parent in the same file (`in_thread` when the parent is not
+   * recorded); then the text, images, attachments not taken in, `edited`, and the reactions. A deleted one keeps only
+   * when, who, its place in a thread, and `deleted`.
+   */
+  private entry(row: MessageRow, index: Map<string, number>, reactions: ReactionRow[]): Record<string, unknown> {
     const { date, time } = this.local(row.ts);
-    const heading = `${indent}${indent ? '###' : '##'} ${date === fileDate ? time : `${date} ${time}`} ${row.speaker}`;
-    if (row.deleted) return [heading, '', `${indent}（この発言は削除されました）`];
-    // A line opening like a heading would pass for a message of its own, so it is escaped.
-    const body = row.text.split('\n').map(line => `${indent}${/^\s*#/.test(line) ? '\\' : ''}${line}`);
-    const files = parseFiles(row.files).map(file => `${indent}- ${file.path ? `画像: ${file.path}` : `添付あり（取り込まず）: ${oneLine(file.name)}`}`);
-    const reacted = reactionLine(reactions);
-    return [heading, '', ...(row.text ? body : []), ...files, ...(row.edited ? [`${indent}（編集済み）`] : []),
-      ...(reacted ? [`${indent}${reacted}`] : [])];
+    const parent = row.thread_ts ? index.get(row.thread_ts) : undefined;
+    const base = {
+      at: `${date} ${time}`, from: row.speaker, ...(row.own ? { mine: true } : {}),
+      ...(row.thread_ts ? parent !== undefined ? { reply_to: parent } : { in_thread: true } : {}),
+    };
+    if (row.deleted) return { ...base, deleted: true };
+    const files = parseFiles(row.files);
+    const images = files.flatMap(file => file.path ? [file.path] : []);
+    const attachments = files.flatMap(file => file.path ? [] : [oneLine(file.name)]);
+    const reacted = reactionList(reactions);
+    return {
+      ...base, text: row.text, ...(images.length > 0 ? { images } : {}), ...(attachments.length > 0 ? { attachments } : {}),
+      ...(row.edited ? { edited: true } : {}), ...(reacted.length > 0 ? { reactions: reacted } : {}),
+    };
   }
 
   /** `INDEX.md`: every channel with when it last changed and its newest file. */
@@ -495,7 +442,7 @@ export class SlackArchive implements UpdateSource {
       lines.push('| チャンネル | 最後の発言 | いちばん新しいファイル |', '| --- | --- | --- |');
       for (const row of rows) {
         const last = row.latest === null ? '（まだなし）' : (({ date, time }) => `${date} ${time}`)(this.localMs(row.latest * 1000));
-        const file = row.file_date ? `${SLACK_PATH}/${row.workspace}/${row.directory}/${row.file_date}.md` : '';
+        const file = row.file_date ? `${SLACK_PATH}/${row.workspace}/${row.directory}/${row.file_date}.jsonl` : '';
         lines.push(`| ${row.workspace}/${row.label} | ${last} | ${file} |`);
       }
     }
@@ -517,21 +464,17 @@ export class SlackArchive implements UpdateSource {
 }
 
 /**
- * `リアクション: :+1: 山田・佐藤、:tada: 田中・ほか 3 人`: each reaction in its place, with who put it on, in the order
- * they did. Undefined when there is none.
+ * Each reaction in its place, with who put it on in the order they did, and how many more Slack only counted:
+ * `[{ name: '+1', by: ['山田', '佐藤'] }, { name: 'tada', by: ['田中'], others: 3 }]`.
  */
-function reactionLine(rows: ReactionRow[]): string | undefined {
+function reactionList(rows: ReactionRow[]): { name: string; by: string[]; others?: number }[] {
   const byName = new Map<string, { people: string[]; others: number }>();
   for (const row of rows) {
     const reaction = byName.get(row.name) ?? { people: [], others: 0 };
     if (row.user_id === '') reaction.others += row.others; else reaction.people.push(oneLine(row.reactor) || 'someone');
     byName.set(row.name, reaction);
   }
-  if (byName.size === 0) return undefined;
-  return `リアクション: ${[...byName].map(([name, { people, others }]) => {
-    const who = others === 0 ? people : people.length === 0 ? [`${others} 人`] : [...people, `ほか ${others} 人`];
-    return `:${oneLine(name)}: ${who.join('・')}`;
-  }).join('、')}`;
+  return [...byName].map(([name, { people, others }]) => ({ name: oneLine(name), by: people, ...(others > 0 ? { others } : {}) }));
 }
 
 function parseFiles(json: string): { name: string; path?: string }[] {

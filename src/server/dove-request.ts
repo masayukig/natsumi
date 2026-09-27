@@ -104,7 +104,7 @@ export function parseDoveRequest(message: string): ParsedRequest {
  * `work/#dev`, or `work/#dev 2026-09-25 14:32:05 山田`: a string when it cannot be read, saying what is wrong with it.
  */
 export function parseReference(text: string): ParsedReference | string {
-  const example = '発言は `work/#dev 2026-09-25 14:32:05 山田`、チャンネルそのものは `work/#dev` の形で書きます（出来事の reference をそのまま写せます）。';
+  const example = '発言は `work/#dev 2026-09-25 14:32:05 山田`、チャンネルそのものは `work/#dev` の形で書きます（ファイルの行の at と from を並べて書きます）。';
   const match = REFERENCE.exec(text.trim());
   if (!match) return `返信先「${text}」を読めません。${example}`;
   const [, workspace, channel, date, time, speaker] = match as unknown as [string, string, string, string?, string?, string?];

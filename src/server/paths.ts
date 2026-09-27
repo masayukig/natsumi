@@ -10,6 +10,11 @@ export const WORK_DIRECTORY = 'work';
 export const HOME_DIRECTORY = 'home';
 /** What natsumi reads besides memory, one directory per source; the workspace sees it read-only as `/sources` (ADR 0039). */
 export const SOURCES_DIRECTORY = 'sources';
+/**
+ * The git directory of `sources/`, kept outside it (ADR 0050). The server commits and moves its refs; the workspace
+ * sees it read-only as `/sources.git`, for `sources-diff`.
+ */
+export const SOURCES_GIT_DIRECTORY = 'sources.git';
 
 /** Real path of `path`, following symlinks of the longest existing prefix; the rest need not exist yet. */
 export async function realPathAllowingMissing(path: string): Promise<string> {

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { SlackCallError, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from '../../src/server/slack-api.ts';
 
 /** A PNG's first bytes, enough for the server to take a file for an image. */
@@ -153,4 +155,19 @@ export class FakeSlack implements SlackApi, SlackSocket {
     if (!body) throw new Error('not found');
     return body.length > maxBytes ? undefined : body;
   }
+}
+
+/**
+ * What natsumi does with a `sources_updated` that has an attention in Slack (ADR 0050), done by a scripted model: reads
+ * the line its path names in the day file (`jq -s '.[N]' <file>`) and writes the reference to it from its time and
+ * speaker. Undefined when the prompt carries no attention. `text` is the prompt as JSON; `data` is the data directory.
+ */
+export function referenceFromAttention(text: string, data: string): string | undefined {
+  const match = /\\"file\\":\\"\/sources\/slack\/([^/"\\]+)\/([^/"\\]+)\/([^"\\]+\.jsonl)\\",\\"path\\":\\"\.\[(\d+)\]\\"/.exec(text);
+  if (!match) return undefined;
+  const [, workspace, directory, file, index] = match;
+  const lines = readFileSync(join(data, 'sources', 'slack', workspace!, directory!, file!), 'utf8').split('\n').filter(Boolean);
+  const line = JSON.parse(lines[Number(index)]!) as { at: string; from: string };
+  const label = directory!.startsWith('@') ? directory! : `#${directory!}`;
+  return `${workspace}/${label} ${line.at} ${line.from}`;
 }

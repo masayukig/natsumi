@@ -10,14 +10,14 @@ import { LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME } from '../src/server/loop-tools.t
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop } from '../src/server/thinking-loop.ts';
-import type { UpdateSource } from '../src/server/updates.ts';
 import { DECODABLE_PNG, PNG } from './support/fake-slack.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { ScriptedModel } from './support/scripted-model.ts';
 
 /**
- * What the loop makes of Slack (ADR 0039): a mention is an event of its own with its images beside it, and the
- * `updates` of a ping carry what every source counted since it was last shown — and nothing when nothing came.
+ * What the loop makes of what natsumi reads (ADR 0039, ADR 0050): a `sources_updated` event whose line the sources make
+ * as its turn begins, with the images of its attentions beside it; one waiting at most; none when nothing is there to
+ * show. A ping is a quiet moment's cue and nothing more.
  */
 
 async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
@@ -30,16 +30,20 @@ async function until<T>(check: () => T | undefined | false, timeout = 5_000): Pr
   }
 }
 
-/** A source that counts what the test tells it to, and forgets it once shown. */
-class CountingSource implements UpdateSource {
-  readonly name = 'slack';
-  pending: Record<string, number> = {};
-  take() {
-    if (Object.keys(this.pending).length === 0) return undefined;
-    const shown = { new: this.pending, files: ['/sources/slack/work/dev/2026-09-25.md'] };
-    this.pending = {};
-    return shown;
+/** Sources that show what the test put in, once, and nothing after. */
+class FakeSources {
+  next: Record<string, unknown> | undefined;
+  readonly taken: string[] = [];
+  readonly lines = new Map<string, Record<string, unknown>>();
+  async take(eventId: string) {
+    this.taken.push(eventId);
+    if (!this.next) return false;
+    this.lines.set(eventId, this.next);
+    this.next = undefined;
+    return true;
   }
+  eventLine(eventId: string, receivedAt: string) { return { type: 'sources_updated', received_at: receivedAt, ...this.lines.get(eventId) }; }
+  async images() { return [{ type: 'image' as const, mimeType: 'image/png', data: DECODABLE_PNG.toString('base64') }]; }
 }
 
 /** A dove that takes every request and answers with the line the test put in for each event. */
@@ -67,19 +71,14 @@ async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
   model.auto = () => ({ text: '' });
-  const source = new CountingSource();
-  const lines = new Map<string, Record<string, unknown>>();
+  const sources = new FakeSources();
   const dove = new FakeDove();
   const loop = await ThinkingLoop.open({
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
     runtime: fixtureRuntime,
     loop: { ...LOOP_DEFAULTS, eventModelCalls: 4, ...(options.shell ? { workspaceSocket: join(root, 'no-runner.sock') } : {}) },
     configureSession: session => { session.agent.streamFunction = model.streamFunction; },
-    updates: [source],
-    slack: {
-      eventLine: eventId => lines.get(eventId) ?? { type: 'slack_mention' },
-      images: async () => [{ type: 'image', mimeType: 'image/png', data: DECODABLE_PNG.toString('base64') }],
-    },
+    sources,
     dove,
   });
   t.after(async () => {
@@ -87,7 +86,7 @@ async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
     db.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { root, data, db, loop, model, source, lines, dove };
+  return { root, data, db, loop, model, sources, dove };
 }
 
 const userMessages = (context: Context) => context.messages.filter(message => message.role === 'user');
@@ -97,43 +96,64 @@ const textOf = (message: Context['messages'][number]) => {
   return (content as { type: string; text?: string }[]).filter(part => part.type === 'text').map(part => part.text).join('');
 };
 
-test('a Slack mention is handed to natsumi as its own event, with its images beside it', async t => {
+test('what the sources show is an event of its own, with the images of its attentions beside it', async t => {
   const f = await setup(t);
-  f.loop.raise('slack-mention', eventId => {
-    f.lines.set(eventId, { type: 'slack_mention', text: '@natsumi これ見て', reference: 'work/#dev 2026-09-25 14:32:05 山田' });
-  });
+  f.sources.next = { changed: [{ dir: '/sources/slack/work/dev', files: ['/sources/slack/work/dev/2026-09-25.jsonl'], writes: 2,
+    attention: [{ source: 'slack', kind: 'mention', file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[4]' }] }] };
+  assert.equal(f.loop.raiseSourcesUpdated(), true);
   const context = await until(() => f.model.contexts[0]);
   const prompt = userMessages(context).at(-1)!;
-  assert.match(textOf(prompt), /"type":"slack_mention"/);
-  assert.match(textOf(prompt), /work\/#dev 2026-09-25 14:32:05 山田/);
+  assert.match(textOf(prompt), /"type":"sources_updated"/);
+  assert.match(textOf(prompt), /"kind":"mention","file":"\/sources\/slack\/work\/dev\/2026-09-25\.jsonl","path":"\.\[4\]"/);
   const parts = (prompt as { content: { type: string; data?: string }[] }).content;
   assert.deepEqual(parts.filter(part => part.type === 'image').map(part => part.data), [DECODABLE_PNG.toString('base64')]);
   await f.loop.idle();
   const row = f.db.prepare(`SELECT kind, state FROM loop_events`).get() as { kind: string; state: string };
-  assert.deepEqual({ ...row }, { kind: 'slack-mention', state: 'no-reply' });
+  assert.deepEqual({ ...row }, { kind: 'sources-updated', state: 'no-reply' });
 });
 
-test('a ping carries the updates once, and none when nothing came since', async t => {
+test('one sources_updated waits at most: asking again while one is queued adds none', async t => {
   const f = await setup(t);
-  f.source.pending = { 'work/#dev': 3 };
-  assert.equal(f.loop.ping(), true);
-  await f.loop.idle();
-  const first = textOf(userMessages(f.model.contexts.at(-1)!).at(-1)!);
-  assert.match(first, /"updates":\{"slack":\{"new":\{"work\/#dev":3\},"files":\["\/sources\/slack\/work\/dev\/2026-09-25\.md"\]\}\}/);
-  assert.equal(f.loop.ping(), true);
-  await f.loop.idle();
-  const second = textOf(userMessages(f.model.contexts.at(-1)!).at(-1)!);
-  assert.match(second, /"type":"ping"/);
-  assert.doesNotMatch(second, /updates/);
-});
-
-test('an owner message carries no updates: they wait for the next ping', async t => {
-  const f = await setup(t);
-  f.source.pending = { 'work/#dev': 1 };
+  f.model.takeOver();
   f.loop.send({ requestId: 'r1', deviceId: 'd1', text: 'こんにちは' });
+  const first = await f.model.next();
+  // While the owner's turn runs, the sources ask three times.
+  f.sources.next = { changed: [{ dir: '/sources/slack/work/dev', files: [], writes: 1 }] };
+  assert.equal(f.loop.raiseSourcesUpdated(), true);
+  assert.equal(f.loop.raiseSourcesUpdated(), false);
+  assert.equal(f.loop.raiseSourcesUpdated(), false);
+  first.finish();
+  const second = await f.model.next();
+  assert.match(textOf(userMessages(second.context).at(-1)!), /sources_updated/);
+  second.finish();
   await f.loop.idle();
-  assert.doesNotMatch(textOf(userMessages(f.model.contexts.at(-1)!).at(-1)!), /updates/);
-  assert.deepEqual(f.source.pending, { 'work/#dev': 1 });
+  const rows = f.db.prepare(`SELECT COUNT(*) AS n FROM loop_events WHERE kind = 'sources-updated'`).get() as { n: number };
+  assert.equal(rows.n, 1);
+  // Once it has begun, the next ask queues a new one.
+  f.model.auto = () => ({ text: '' });
+  assert.equal(f.loop.raiseSourcesUpdated(), true);
+  await f.loop.idle();
+});
+
+test('a sources_updated with nothing to show ends without a turn', async t => {
+  const f = await setup(t);
+  f.loop.raiseSourcesUpdated();
+  await f.loop.idle();
+  assert.equal(f.model.contexts.length, 0);
+  assert.equal(f.sources.taken.length, 1);
+  const row = f.db.prepare(`SELECT state FROM loop_events`).get() as { state: string };
+  assert.equal(row.state, 'no-reply');
+});
+
+test('a ping carries no updates: it is only the quiet moment\'s cue', async t => {
+  const f = await setup(t);
+  f.sources.next = { changed: [] };
+  assert.equal(f.loop.ping(), true);
+  await f.loop.idle();
+  const line = textOf(userMessages(f.model.contexts.at(-1)!).at(-1)!);
+  assert.match(line, /"type":"ping"/);
+  assert.doesNotMatch(line, /updates|sources/);
+  assert.equal(f.sources.taken.length, 0);
 });
 
 test('view in the shell answers with the image, from the server, without the runner', async t => {

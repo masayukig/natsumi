@@ -8,6 +8,7 @@ import { isLoopbackHost } from '../pi/loopback.ts';
 import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
+import { SOURCES_DEFAULTS } from './sources.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
   type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
@@ -226,10 +227,11 @@ export interface SlackConfig {
   backfillDays: number;
   /** The largest image fetched; a larger one, or a file that is not an image, is only noted. */
   maxImageBytes: number;
-  /** The messages before a mention its event carries, and the characters each keeps. */
-  mentionContext: { messages: number; chars: number };
-  /** Whether Slack is counted in the `updates` of pings and self-checks. */
-  updates: boolean;
+  /**
+   * Settings still written but no longer read (ADR 0050): `mentionContext` and `updates`. They do not stop the start,
+   * which logs them.
+   */
+  ignored: string[];
   /**
    * The dove's judge (ADR 0040), resolved against `pi`: the logprobs of pi's own compatible model unless told otherwise.
    * Absent when there is nothing to judge with; every draft is then "no verdict" and goes to the owner.
@@ -265,7 +267,7 @@ export interface JudgeConfig {
 }
 
 export const SLACK_DEFAULTS = {
-  reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+  reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024,
   approvalExpiryDays: 7, placementFollowing: 2,
   judgeContext: { messages: 5, chars: 500 }, postImages: { maxBytes: 10 * 1024 * 1024, maxCount: 4 },
 };
@@ -291,8 +293,19 @@ const MAX_SLACK_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_POST_IMAGE_BYTES = 50 * 1024 * 1024;
 /** The most files one message is given here: as many as a Slack message is usually seen with. */
 const MAX_POST_IMAGES = 10;
-const MAX_MENTION_CONTEXT_MESSAGES = 20;
-const MIN_MENTION_CONTEXT_CHARS = 50;
+const MIN_JUDGE_CONTEXT_CHARS = 50;
+/** Settings of `slack` ADR 0050 made unused: the server builds no mention context, and nothing rides on pings. */
+const IGNORED_SLACK_KEYS = ['mentionContext', 'updates'];
+
+/** How the updates of what natsumi reads are told (ADR 0050). */
+export interface SourcesConfig {
+  /** interval = k ÷ (writes in the last hour ÷ 60 minutes), held between minMinutes and maxMinutes. */
+  activity: { k: number; minMinutes: number; maxMinutes: number };
+  /** The days of history kept when it is cut back at night. */
+  historyDays: number;
+}
+const MAX_SOURCES_INTERVAL_MINUTES = 24 * 60;
+const MAX_SOURCES_HISTORY_DAYS = 90;
 /** Slack's emoji names: lower case, digits and a few marks, without the colons. */
 const EMOJI_NAME = /^[a-z0-9_+'-]+$/;
 
@@ -306,6 +319,7 @@ export interface ServerConfig {
   apns?: ApnsConfig;
   a2a?: A2AConfig;
   slack?: SlackConfig;
+  sources: SourcesConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -325,6 +339,7 @@ const SECTIONS = {
   apns: parseApns,
   a2a: parseA2A,
   slack: parseSlack,
+  sources: parseSources,
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -362,6 +377,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
+    sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
   };
   if (config.slack) {
     const judge = parseJudge((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
@@ -693,8 +709,9 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   // `judge` is read by parseJudge once pi is known: by default it borrows pi's compatible endpoint.
   // The list of reactions was dropped (ADR 0042); one still written would promise a limit that is no longer there.
   if ('reactions' in slack) throw new ConfigError(`${path}.reactions`, 'was removed: any emoji that exists may be asked for (ADR 0042); delete it');
-  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates', 'judge', 'approvalExpiryDays',
+  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', ...IGNORED_SLACK_KEYS, 'judge', 'approvalExpiryDays',
     'placementFollowing', 'judgeContext', 'postImages']);
+  const ignored = IGNORED_SLACK_KEYS.filter(key => key in slack).map(key => `${path}.${key}`);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
   const workspaces: SlackConfig['workspaces'] = {};
@@ -719,19 +736,6 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   if (!positiveInteger(bytes, 1024) || (bytes as number) > MAX_SLACK_IMAGE_BYTES) {
     throw new ConfigError(`${path}.maxImageBytes`, `must be an integer from 1024 to ${MAX_SLACK_IMAGE_BYTES}`);
   }
-  const contextPath = `${path}.mentionContext`;
-  const context = object(slack.mentionContext ?? {}, contextPath);
-  onlyKeys(context, contextPath, ['messages', 'chars']);
-  const messages = context.messages ?? SLACK_DEFAULTS.mentionContext.messages;
-  if (!(typeof messages === 'number' && Number.isInteger(messages) && messages >= 0 && messages <= MAX_MENTION_CONTEXT_MESSAGES)) {
-    throw new ConfigError(`${contextPath}.messages`, `must be an integer from 0 to ${MAX_MENTION_CONTEXT_MESSAGES}`);
-  }
-  const chars = context.chars ?? SLACK_DEFAULTS.mentionContext.chars;
-  if (!positiveInteger(chars, MIN_MENTION_CONTEXT_CHARS)) {
-    throw new ConfigError(`${contextPath}.chars`, `must be an integer of at least ${MIN_MENTION_CONTEXT_CHARS}`);
-  }
-  const updates = slack.updates ?? SLACK_DEFAULTS.updates;
-  if (typeof updates !== 'boolean') throw new ConfigError(`${path}.updates`, 'must be true or false');
   const expiry = slack.approvalExpiryDays ?? SLACK_DEFAULTS.approvalExpiryDays;
   if (!positiveInteger(expiry, 1) || (expiry as number) > MAX_APPROVAL_EXPIRY_DAYS) {
     throw new ConfigError(`${path}.approvalExpiryDays`, `must be an integer from 1 to ${MAX_APPROVAL_EXPIRY_DAYS}`);
@@ -748,8 +752,8 @@ function parseSlack(value: unknown, path: string): SlackConfig {
     throw new ConfigError(`${judgePath}.messages`, `must be an integer from 1 to ${MAX_JUDGE_CONTEXT_MESSAGES}`);
   }
   const judgeChars = judge.chars ?? SLACK_DEFAULTS.judgeContext.chars;
-  if (!positiveInteger(judgeChars, MIN_MENTION_CONTEXT_CHARS)) {
-    throw new ConfigError(`${judgePath}.chars`, `must be an integer of at least ${MIN_MENTION_CONTEXT_CHARS}`);
+  if (!positiveInteger(judgeChars, MIN_JUDGE_CONTEXT_CHARS)) {
+    throw new ConfigError(`${judgePath}.chars`, `must be an integer of at least ${MIN_JUDGE_CONTEXT_CHARS}`);
   }
   const imagesPath = `${path}.postImages`;
   const images = object(slack.postImages ?? {}, imagesPath);
@@ -763,10 +767,34 @@ function parseSlack(value: unknown, path: string): SlackConfig {
     throw new ConfigError(`${imagesPath}.maxCount`, `must be an integer from 1 to ${MAX_POST_IMAGES}`);
   }
   return { workspaces, reaction, backfillDays: days as number, maxImageBytes: bytes as number,
-    mentionContext: { messages, chars: chars as number }, updates,
+    ignored,
     approvalExpiryDays: expiry as number, placementFollowing: following,
     judgeContext: { messages: judgeMessages as number, chars: judgeChars as number },
     postImages: { maxBytes: imageBytes as number, maxCount: imageCount as number } };
+}
+
+function parseSources(value: unknown, path: string): SourcesConfig {
+  const sources = object(value, path);
+  onlyKeys(sources, path, ['activity', 'historyDays']);
+  const activityPath = `${path}.activity`;
+  const activity = object(sources.activity ?? {}, activityPath);
+  onlyKeys(activity, activityPath, ['k', 'minMinutes', 'maxMinutes']);
+  const defaults = SOURCES_DEFAULTS.activity;
+  const k = activity.k ?? defaults.k;
+  if (typeof k !== 'number' || !Number.isFinite(k) || k <= 0) throw new ConfigError(`${activityPath}.k`, 'must be a number above 0');
+  const least = activity.minMinutes ?? defaults.minMinutes;
+  if (!positiveInteger(least, 1) || (least as number) > MAX_SOURCES_INTERVAL_MINUTES) {
+    throw new ConfigError(`${activityPath}.minMinutes`, `must be an integer from 1 to ${MAX_SOURCES_INTERVAL_MINUTES}`);
+  }
+  const most = activity.maxMinutes ?? defaults.maxMinutes;
+  if (!positiveInteger(most, least as number) || (most as number) > MAX_SOURCES_INTERVAL_MINUTES) {
+    throw new ConfigError(`${activityPath}.maxMinutes`, `must be an integer from minMinutes to ${MAX_SOURCES_INTERVAL_MINUTES}`);
+  }
+  const days = sources.historyDays ?? SOURCES_DEFAULTS.historyDays;
+  if (!positiveInteger(days, 1) || (days as number) > MAX_SOURCES_HISTORY_DAYS) {
+    throw new ConfigError(`${path}.historyDays`, `must be an integer from 1 to ${MAX_SOURCES_HISTORY_DAYS}`);
+  }
+  return { activity: { k, minMinutes: least as number, maxMinutes: most as number }, historyDays: days as number };
 }
 
 /**

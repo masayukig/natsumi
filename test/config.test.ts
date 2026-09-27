@@ -60,6 +60,7 @@ test('a valid config becomes a typed server config', () => {
       allowedUserId: 4242001,
     },
     loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
+    sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60 }, historyDays: 7 },
   });
   const { clientSecretEnv: _, ...rest } = github();
   assert.deepEqual(parseConfig({ ...base(), github: { ...rest, clientSecretFile: '/run/secrets/github-client-secret' } }).github.clientSecret,
@@ -509,17 +510,30 @@ test('Slack is off unless the slack section is given, and has defaults for the r
   assert.equal('slack' in parseConfig(base()), false);
   assert.deepEqual(parseConfig({ ...base(), slack: slack() }).slack, {
     workspaces: { work: { botToken: { env: 'NATSUMI_SLACK_WORK_BOT_TOKEN' }, appToken: { file: '/run/secrets/slack-work-app-token' } } },
-    reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+    reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, ignored: [],
     approvalExpiryDays: 7, placementFollowing: 2,
     judgeContext: { messages: 5, chars: 500 }, postImages: { maxBytes: 10 * 1024 * 1024, maxCount: 4 },
   });
-  const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576,
-    mentionContext: { messages: 3, chars: 200 }, updates: false } }).slack;
+  const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576 } }).slack;
   assert.equal(tuned?.reaction, 'white_check_mark');
   assert.equal(tuned?.backfillDays, 1);
   assert.equal(tuned?.maxImageBytes, 1048576);
-  assert.deepEqual(tuned?.mentionContext, { messages: 3, chars: 200 });
-  assert.equal(tuned?.updates, false);
+});
+
+test('slack.mentionContext and slack.updates, no longer read (ADR 0050), are let through and named, whatever they hold', () => {
+  const old = parseConfig({ ...base(), slack: { ...slack(), mentionContext: { messages: 21 }, updates: 'yes' } }).slack;
+  assert.deepEqual(old?.ignored, ['slack.mentionContext', 'slack.updates']);
+  assert.equal('mentionContext' in old!, false);
+});
+
+test('the sources section tunes how often a changed directory is shown and how much history is kept, with defaults', () => {
+  assert.deepEqual(parseConfig(base()).sources, { activity: { k: 3, minMinutes: 3, maxMinutes: 60 }, historyDays: 7 });
+  assert.deepEqual(parseConfig({ ...base(), sources: { activity: { k: 1.5, minMinutes: 5, maxMinutes: 120 }, historyDays: 3 } }).sources,
+    { activity: { k: 1.5, minMinutes: 5, maxMinutes: 120 }, historyDays: 3 });
+  rejects({ ...base(), sources: { activity: { k: 0 } } }, 'sources.activity.k');
+  rejects({ ...base(), sources: { activity: { minMinutes: 10, maxMinutes: 5 } } }, 'sources.activity.maxMinutes');
+  rejects({ ...base(), sources: { historyDays: 0 } }, 'sources.historyDays');
+  rejects({ ...base(), sources: { interval: 3 } }, 'sources.interval');
 });
 
 test('the Slack tokens are referenced by environment variable or file, never written in the config', () => {
@@ -545,9 +559,6 @@ test('the Slack limits are checked', () => {
   for (const backfillDays of [0, 366, 1.5, '3']) rejects({ ...base(), slack: { ...slack(), backfillDays } }, 'slack.backfillDays');
   for (const maxImageBytes of [0, 1023, 20 * 1024 * 1024 + 1]) rejects({ ...base(), slack: { ...slack(), maxImageBytes } }, 'slack.maxImageBytes');
   assert.equal(parseConfig({ ...base(), slack: { ...slack(), backfillDays: 365 } }).slack?.backfillDays, 365);
-  rejects({ ...base(), slack: { ...slack(), mentionContext: { messages: 21 } } }, 'slack.mentionContext.messages');
-  rejects({ ...base(), slack: { ...slack(), mentionContext: { chars: 10 } } }, 'slack.mentionContext.chars');
-  rejects({ ...base(), slack: { ...slack(), updates: 'yes' } }, 'slack.updates');
   rejects({ ...base(), slack: { ...slack(), channels: ['dev'] } }, 'slack.channels', /unknown/);
 });
 

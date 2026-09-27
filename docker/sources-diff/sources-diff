@@ -1,0 +1,101 @@
+#!/bin/sh
+# sources-diff (ADR 0050): what changed under /sources, read from the history the server keeps of it.
+#
+#   sources-diff                     what the last sources_updated event showed, every directory of it
+#   sources-diff <dir>...            the same, for these directories only (as the event wrote them: /sources/…)
+#   sources-diff --since <when> [<dir>...]
+#                                    everything since then, such as "yesterday", "3 hours ago" or "2026-09-27 09:00"
+#
+# The runner gives a command none of the image's environment (ADR 0019), so where the history is mounted is written
+# here. The two variables are for the tests. The history is read-only: the server alone commits and moves the refs.
+set -u
+git_dir=${SOURCES_GIT_DIR:-/sources.git}
+root=${SOURCES_ROOT:-/sources}
+
+usage() {
+  echo "使い方: sources-diff [--since <いつから>] [<ディレクトリ>...]" >&2
+  echo "  引数なし: 直前の sources_updated で見せた分" >&2
+  echo "  --since: その時点からの分（例: yesterday、'3 hours ago'、'2026-09-27 09:00'）" >&2
+  exit 2
+}
+
+since=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --since) [ $# -ge 2 ] || usage; since=$2; shift 2 ;;
+    --since=*) since=${1#--since=}; shift ;;
+    -h|--help) usage ;;
+    --) shift; break ;;
+    -*) usage ;;
+    *) break ;;
+  esac
+done
+
+if [ ! -f "$git_dir/HEAD" ] || ! git --git-dir="$git_dir" -c safe.directory='*' rev-parse -q --verify HEAD >/dev/null 2>&1; then
+  echo "sources-diff: 読みものの履歴がまだありません（$git_dir が見えません）。ファイルを直接読んでください。" >&2
+  exit 1
+fi
+
+export GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_PAGER=cat PAGER=cat LESS=
+g() { git --git-dir="$git_dir" -c safe.directory='*' -c core.quotePath=false "$@"; }
+# Paths are shown as natsumi reads them (/sources/…). A prefix that starts with / makes git take the file for a new
+# one, so the prefix is relative and the header lines get their / back; a line of a JSON Lines file never starts so.
+show() {
+  prefix=${root#/}/
+  g diff --no-color --no-ext-diff -U0 --src-prefix="$prefix" --dst-prefix="$prefix" "$@" | sed \
+    -e "s#^diff --git $prefix\(.*\) $prefix#diff --git /$prefix\1 /$prefix#" -e "s#^--- $prefix#--- /$prefix#" -e "s#^+++ $prefix#+++ /$prefix#"
+}
+
+# Every path is checked here, in this shell, before anything is shown: relative() runs inside $(…), where an exit
+# would end only the subshell and leave the command going on with an empty path.
+for dir in "$@"; do
+  case $dir in
+    "$root"|"$root"/*|[!/]*) ;;
+    *) echo "sources-diff: $dir は $root の下ではありません。" >&2; exit 2 ;;
+  esac
+done
+
+# A directory as the history names it: relative to /sources, without a trailing slash. The paths are checked above.
+relative() {
+  case $1 in
+    "$root") printf '' ;;
+    "$root"/*) p=${1#"$root"/}; printf '%s' "${p%/}" ;;
+    *) p=$1; printf '%s' "${p%/}" ;;
+  esac
+}
+hex() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+
+if [ -n "$since" ]; then
+  base=$(g rev-list -1 --before="$since" HEAD 2>/dev/null) || base=
+  # Before everything kept: from the oldest the history still has.
+  [ -n "$base" ] || base=$(g rev-list --max-parents=0 HEAD | tail -n 1)
+  paths=
+  for dir in "$@"; do paths="$paths
+:(literal)$(relative "$dir")"; done
+  if [ $# -eq 0 ]; then out=$(show "$base" HEAD); else
+    old_ifs=$IFS; IFS='
+'
+    # shellcheck disable=SC2086
+    out=$(show "$base" HEAD -- $paths)
+    IFS=$old_ifs
+  fi
+  if [ -z "$out" ]; then echo "（$since から変わったものはありません）"; else printf '%s\n' "$out"; fi
+  exit 0
+fi
+
+if [ $# -eq 0 ]; then
+  if [ ! -f "$git_dir/natsumi-last-event" ]; then echo "（まだ見せた更新はありません）"; exit 0; fi
+  set --
+  while IFS= read -r dir; do [ -n "$dir" ] && set -- "$@" "$root/$dir"; done < "$git_dir/natsumi-last-event"
+fi
+
+for dir in "$@"; do
+  rel=$(relative "$dir")
+  name=$(hex "$rel")
+  if ! g rev-parse -q --verify "refs/before/$name" >/dev/null; then
+    echo "（$root/$rel はまだ更新として見せたことがありません）"
+    continue
+  fi
+  out=$(show "refs/before/$name" "refs/seen/$name" -- ":(literal)$rel")
+  if [ -z "$out" ]; then echo "（$root/$rel に変わったものはありません）"; else printf '%s\n' "$out"; fi
+done

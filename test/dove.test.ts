@@ -54,10 +54,9 @@ async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const clock = { now: Date.parse('2026-09-25T06:00:00Z') };
-  const archive = new SlackArchive({ db, directory: join(root, 'slack'), timeZone: 'Asia/Tokyo', now: () => clock.now,
-    mentionContext: { messages: 5, chars: 500 } });
+  const archive = new SlackArchive({ db, directory: join(root, 'slack'), timeZone: 'Asia/Tokyo', now: () => clock.now });
   archive.addChannel('work', 'C1', { name: 'dev', isIm: false });
-  await archive.record('work', 'C1', { ts: PARENT, speaker: '山田', own: false, text: '明日のレビュー、大丈夫そう？', files: [], edited: false }, false);
+  await archive.record('work', 'C1', { ts: PARENT, speaker: '山田', own: false, text: '明日のレビュー、大丈夫そう？', files: [], edited: false });
   // natsumi's /work, as the server sees it in the data directory, with one image she drew.
   const work = join(root, 'work');
   await mkdir(join(work, 'images'), { recursive: true });
@@ -213,7 +212,7 @@ test('with no verdict the draft goes to the owner, and the server places it: the
 test('with no verdict and more than a few messages after it, the server places the reply in the thread', async t => {
   const f = await setup(t, { jev: false });
   for (const [index, second] of ['10', '20', '30'].entries()) {
-    await f.archive.record('work', 'C1', { ts: tsAt(`2026-09-25T05:33:${second}Z`), speaker: '佐藤', own: false, text: `別の話 ${index}`, files: [], edited: false }, false);
+    await f.archive.record('work', 'C1', { ts: tsAt(`2026-09-25T05:33:${second}Z`), speaker: '佐藤', own: false, text: `別の話 ${index}`, files: [], edited: false });
   }
   await f.dove.ask(post('大丈夫です。'));
   await f.dove.idle();
@@ -283,7 +282,7 @@ test('a reference the record does not have, or an unknown workspace or channel, 
 
 test('two messages of the same second by the same speaker are turned back with how each begins, and no ts', async t => {
   const f = await setup(t);
-  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:32:05Z', '000200'), speaker: '山田', own: false, text: 'もう一つの発言です', files: [], edited: false }, false);
+  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:32:05Z', '000200'), speaker: '山田', own: false, text: 'もう一つの発言です', files: [], edited: false });
   const outcome = await f.dove.ask(post('大丈夫です。'));
   assert.equal(outcome.ok, false);
   assert.match(outcome.text, /明日のレビュー、大丈夫そう？/);
@@ -550,7 +549,7 @@ test('images alone are sent at once, with neither Jev nor the owner, placed by t
 test('images alone into a thread go to the thread, as the server\'s rule has it for a reply in one', async t => {
   const f = await setup(t);
   const reply = tsAt('2026-09-25T05:40:10Z');
-  await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: '絵をお願い', files: [], edited: false }, false);
+  await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: '絵をお願い', files: [], edited: false });
   await f.dove.ask(withImages('', ['/work/images/cat.png'], 'work/#dev 2026-09-25 14:40:10 佐藤'));
   await f.dove.idle();
   assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT }]);
