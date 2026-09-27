@@ -71,3 +71,17 @@ export async function makeFakeBackup(root: string): Promise<void> {
     } finally { db.close(); }
   }
 }
+
+/** A snapshot pulled from a fake backup with the fake kubectl, into `<root>/snapshots`; returns the store and the snapshot. */
+export async function pullFakeSnapshot(root: string): Promise<{ store: string; directory: string; name: string }> {
+  const { chmod } = await import('node:fs/promises');
+  const { pullSnapshot } = await import('../../src/eval/snapshot.ts');
+  await makeFakeBackup(join(root, 'backup'));
+  const kubectl = join(root, 'kubectl');
+  await writeFile(kubectl, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dirname, 'fake-kubectl.ts')}" "$@"\n`);
+  await chmod(kubectl, 0o755);
+  const store = join(root, 'snapshots');
+  const pulled = await pullSnapshot({ kubectl, env: { FAKE_KUBECTL_LOG: join(root, 'kubectl.log'), FAKE_KUBECTL_BACKUP: join(root, 'backup') },
+    namespace: 'natsumi', cronjob: 'natsumi-backup', store, keep: 3 });
+  return { store, directory: pulled.directory, name: pulled.name };
+}
