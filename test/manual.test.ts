@@ -91,10 +91,10 @@ test('the page on images says how to draw with the default params, where to put 
   assert.ok(page.includes([
     '<lora:kutara_aki_anima.v3:1> ,',
     'masterpiece, newest,',
-    'woman, low ponytail, freckles,',
+    'woman, low ponytail, freckles, large sagging breasts,',
     '',
     'black glasses,',
-    'black business suit,  collared white shirt, large breasts,',
+    'black business suit,  collared white shirt,',
   ].join('\n')));
 });
 
