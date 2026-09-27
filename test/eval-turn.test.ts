@@ -193,9 +193,13 @@ test('npm run eval runs, summarizes and compares; the model file key and endpoin
 
     const summary = await cli('summarize', join(out, 'a'));
     assert.match(summary.stdout, /replied/);
+    // The reply is the second call in every run, the shell the first.
+    assert.match(summary.stdout, /\| plain \| replied \| rule \| 2\/2 \| 100% \| [^|]+ \| 0 \| 2 \/ 2 \| /);
+    assert.match(summary.stdout, /\| plain \| looked \| rule \| 2\/2 \| 100% \| [^|]+ \| 0 \| 1 \/ 1 \| /);
     const compared = await cli('compare', join(out, 'a'), join(out, 'b'));
     assert.match(compared.stdout, /replied/);
     assert.match(compared.stdout, /\+0/);
+    assert.match(compared.stdout, /\| plain \| replied \| .* \| 2（2 回） \| 2（2 回） \| 0 \|/);
   });
 });
 

@@ -29,3 +29,13 @@ export function newcombe(a: Count, b: Count): { difference: number; low: number;
   const high = difference + Math.sqrt((second.high - second.rate) ** 2 + (first.rate - first.low) ** 2);
   return { difference, low: Math.max(-1, low), high: Math.min(1, high) };
 }
+
+/** The `q` quantile of the values, interpolated between the two around it (type 7 of Hyndman and Fan); undefined without one. */
+export function quantile(values: number[], q: number): number | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * q;
+  const below = Math.floor(position);
+  const above = Math.min(below + 1, sorted.length - 1);
+  return sorted[below]! + (sorted[above]! - sorted[below]!) * (position - below);
+}
