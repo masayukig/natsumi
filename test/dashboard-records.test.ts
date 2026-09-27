@@ -3,7 +3,9 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { listDovePosts, DOVE_POSTS_PER_PAGE, readDevices, readWaits, WAIT_ROWS } from '../src/server/dashboard-records.ts';
+import {
+  APPROVAL_STATES, APPROVALS_PER_PAGE, listApprovals, listDovePosts, DOVE_POSTS_PER_PAGE, readDevices, readWaits, WAIT_ROWS,
+} from '../src/server/dashboard-records.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { TurnStats, type TurnRecord } from '../src/server/turn-stats.ts';
@@ -273,5 +275,109 @@ test('the devices show when each was last seen, whether it is connected, its pus
     assert.deepEqual(sessions.counts, { live: 2, ended: 2 });
     const text = JSON.stringify({ devices, sessions });
     for (const secret of ['hash-of-', 'fixture-apns-token-secret', 'token', 'public']) assert.ok(!text.includes(secret), secret);
+  } finally { await f.cleanup(); }
+});
+
+// The approvals, past and pending (ADR 0040, ADR 0041): each with what the owner was shown, what she decided and on which
+// device, what the send came to, and the dove's post it was for.
+
+function decided(f: Awaited<ReturnType<typeof setup>>, approvalId: string, postId: string, at: number, fields: Record<string, string | null>) {
+  approval(f, approvalId, postId, fields.state ?? 'pending', DAY);
+  f.run(`UPDATE approvals SET created_at = ?, decision = ?, decided_text = ?, decided_placement = ?, device_id = ?, delivery = ?,
+    delivery_reason = ?, sent_text = ?, resolved_at = ? WHERE approval_id = ?`, iso(at), fields.decision ?? null, fields.decided_text ?? null,
+  fields.decided_placement ?? null, fields.device_id ?? null, fields.delivery ?? null, fields.delivery_reason ?? null, fields.sent_text ?? null,
+  fields.resolved_at ?? null, approvalId);
+}
+
+test('the approvals are listed newest first with what was asked, what the owner decided, where, and what the send came to', async () => {
+  const f = await setup();
+  try {
+    post(f, 'post-edited', { state: 'sent', sent_text: '本人が直した文', sent_placement: 'channel' }, -2 * MINUTE);
+    post(f, 'post-failed', { state: 'failed', failure: 'target-gone' }, -MINUTE);
+    post(f, 'post-waiting');
+    decided(f, 'approval-edited', 'post-edited', -2 * MINUTE, { state: 'edited', decision: 'edit', decided_text: '本人が直した文',
+      decided_placement: 'channel', device_id: 'device-0123456789abcdef', delivery: 'sent', sent_text: '本人が直した文', resolved_at: iso(-MINUTE) });
+    decided(f, 'approval-failed', 'post-failed', -MINUTE, { state: 'approved', decision: 'approve', device_id: 'device-phone', delivery: 'failed',
+      delivery_reason: 'target-gone', resolved_at: iso(0) });
+    decided(f, 'approval-waiting', 'post-waiting', 0, {});
+
+    const { rows, more } = listApprovals(f.db, { page: 1, now: T0 });
+    assert.equal(more, false);
+    assert.deepEqual(rows.map(row => [row.approvalId, row.state]),
+      [['approval-waiting', 'pending'], ['approval-failed', 'approved'], ['approval-edited', 'edited']]);
+    const [waiting, failed, edited] = rows;
+    assert.equal(waiting!.decision, null);
+    assert.equal(waiting!.expired, false);
+    assert.equal(waiting!.shown.channel, '#架空のチャンネル');
+    assert.equal(waiting!.shown.placement, 'thread');
+    assert.equal(waiting!.shown.text, '架空の下書き');
+    assert.equal(waiting!.shown.verdict, 'owner');
+    assert.deepEqual(waiting!.shown.scores, [{ label: '口調', score: 0.7, flagged: true }, { label: '事実', score: 0.1, flagged: false }]);
+    assert.equal(waiting!.post?.state, 'pending');
+
+    assert.equal(edited!.decision, 'edit');
+    assert.equal(edited!.decidedText, '本人が直した文');
+    assert.equal(edited!.decidedPlacement, 'channel');
+    assert.equal(edited!.deviceId, 'device-0123456789abcdef');
+    assert.equal(edited!.delivery, 'sent');
+    assert.equal(edited!.sentText, '本人が直した文');
+    assert.equal(edited!.resolvedAt, iso(-MINUTE));
+    assert.equal(edited!.createdAt, iso(-2 * MINUTE));
+    assert.deepEqual(edited!.post, { postId: 'post-edited', state: 'sent', failure: null, sentPlacement: 'channel', page: 1 });
+
+    assert.equal(failed!.delivery, 'failed');
+    assert.equal(failed!.deliveryReason, 'target-gone');
+    assert.equal(failed!.post?.failure, 'target-gone');
+  } finally { await f.cleanup(); }
+});
+
+test('the approvals can be narrowed to one outcome, and a pending one past its end is marked as run out', async () => {
+  const f = await setup();
+  try {
+    const states = ['pending', 'approved', 'edited', 'rejected', 'expired'] as const;
+    states.forEach(state => { post(f, `post-${state}`); approval(f, `approval-${state}`, `post-${state}`, state, state === 'pending' ? -MINUTE : DAY); });
+    for (const state of states) {
+      assert.deepEqual(listApprovals(f.db, { page: 1, now: T0, state }).rows.map(row => row.approvalId), [`approval-${state}`], state);
+    }
+    assert.equal(listApprovals(f.db, { page: 1, now: T0 }).rows.length, states.length);
+    assert.equal(listApprovals(f.db, { page: 1, now: T0, state: 'pending' }).rows[0]!.expired, true);
+    assert.equal(listApprovals(f.db, { page: 1, now: T0, state: 'expired' }).rows[0]!.expired, false, 'only a pending one is run out unsettled');
+    assert.deepEqual([...APPROVAL_STATES], [...states]);
+  } finally { await f.cleanup(); }
+});
+
+test('the approvals go a page at a time, and each knows which page of the dove’s posts shows its post', async () => {
+  const f = await setup();
+  try {
+    // The approval's post is the oldest of many, so it is on the dove's second page.
+    post(f, 'post-asked', {}, -DAY);
+    for (let i = 0; i < DOVE_POSTS_PER_PAGE; i++) post(f, `post-${i}`, { state: 'sent' }, i * MINUTE);
+    approval(f, 'approval-asked', 'post-asked', 'rejected', DAY);
+    for (let i = 0; i < APPROVALS_PER_PAGE; i++) {
+      post(f, `post-more-${i}`, {}, (DOVE_POSTS_PER_PAGE + i) * MINUTE);
+      decided(f, `approval-${i}`, `post-more-${i}`, i * MINUTE, { state: 'rejected', decision: 'reject', resolved_at: iso(i * MINUTE) });
+    }
+    const first = listApprovals(f.db, { page: 1, now: T0 });
+    assert.equal(first.rows.length, APPROVALS_PER_PAGE);
+    assert.equal(first.more, true);
+    assert.equal(first.rows[0]!.approvalId, `approval-${APPROVALS_PER_PAGE - 1}`);
+    const second = listApprovals(f.db, { page: 2, now: T0 });
+    assert.deepEqual(second.rows.map(row => row.approvalId), ['approval-asked']);
+    assert.equal(second.more, false);
+    assert.equal(second.rows[0]!.post?.page, 2);
+    assert.ok(listDovePosts(f.db, 2).rows.some(row => row.postId === 'post-asked'));
+  } finally { await f.cleanup(); }
+});
+
+test('an approval whose payload cannot be read is still listed, with nothing shown from it', async () => {
+  const f = await setup();
+  try {
+    post(f, 'post-1');
+    approval(f, 'approval-garbled', 'post-1', 'rejected', DAY, '{not json');
+    const [row] = listApprovals(f.db, { page: 1, now: T0 }).rows;
+    assert.equal(row!.approvalId, 'approval-garbled');
+    assert.equal(row!.shown.text, undefined);
+    assert.deepEqual(row!.shown.scores, []);
+    assert.deepEqual(row!.shown.flagged, []);
   } finally { await f.cleanup(); }
 });
