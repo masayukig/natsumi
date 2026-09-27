@@ -83,6 +83,9 @@ COPY --from=build /app/dist/src/pi ./dist/src/pi
 COPY assets/avatar/*.png ./assets/avatar/
 # The dashboard's style sheet and script, served at /dashboard/static/ (ADR 0049).
 COPY assets/dashboard/ ./assets/dashboard/
+# natsumi's manual (ADR 0036), the same as the workspace's /manual, read by the dashboard to show it (ADR 0054). The
+# list of agents is read from the data directory's agents/, as the workspace mounts it over /manual/agents.
+COPY manual/ ./manual/
 # Mount points for the data directory and the dedicated Pi state area. A new named volume inherits
 # this ownership and mode, so the unprivileged user can write without running as root.
 RUN mkdir -p /data /var/lib/natsumi-pi \
