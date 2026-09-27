@@ -212,3 +212,24 @@ test('a run deep in the results still reaches its runner: the socket is not made
     assert.equal(record.outcome, 'ok', record.error);
   });
 });
+
+// ADR 0050 is on this branch: the repository's sources_updated scene runs on the loop's real side for outside events.
+test('the sources-mention scene of the repository runs dry: the mention and its parent are read, and the dove is asked', { skip }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'natsumi-eval-sources-'));
+  try {
+    const scene = await loadScene(join(REPOSITORY, 'eval', 'scenes', 'sources-mention'));
+    assert.deepEqual(scene.requires, []);
+    const runner = await WorkspaceRunner.prepare({ repository: REPOSITORY, cache: join(root, 'cache') });
+    const all = conditions(scene);
+    for (const condition of [all.find(c => c.variant === 'P/with'), all.find(c => c.variant === 'P/without')]) {
+      assert.ok(condition, all.map(c => c.variant).join(','));
+      const record = await runCondition(condition, { run: 1, dryRun: true, repository: REPOSITORY, work: join(root, 'work', condition.variant), runner });
+      assert.equal(record.outcome, 'ok', record.error);
+      assert.match(record.prompt, /"type":"sources_updated"/);
+      assert.match(record.prompt, /"path":"\.\[36\]"/);
+      const passed = Object.fromEntries(record.checks.filter(check => check.by !== 'llm').map(check => [check.id, check.pass]));
+      assert.deepEqual(passed, { mention: true, 'mention-clean': true, parent: true, 'reply-target': true, 'random-once': true, finished: true },
+        condition.variant);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

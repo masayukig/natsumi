@@ -169,10 +169,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     // An event line written in the scene goes in through the loop's side for outside events, as the branch has it.
     let rawLine: Record<string, unknown> = {};
     const lineOf = (receivedAt: string) => ({ received_at: receivedAt, ...rawLine });
-    const features = detectFeatures();
-    const outside = features.has('sources-updated')
-      ? { sources: { take: async () => true, eventLine: (_id: string, receivedAt: string) => lineOf(receivedAt), images: async (): Promise<ImageContent[]> => [] } }
-      : { slack: { eventLine: (_id: string, receivedAt: string) => lineOf(receivedAt), images: async (): Promise<ImageContent[]> => [] } };
+    const sources = { take: async () => true, eventLine: (_id: string, receivedAt: string) => lineOf(receivedAt),
+      images: async (): Promise<ImageContent[]> => [] };
     const dove = {
       ask(message: string): ToolOutcome {
         const parsed = parseDoveRequest(message);
@@ -195,7 +193,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
         ...(limits.modelCalls === undefined ? {} : { eventModelCalls: limits.modelCalls }),
         ...(limits.minutes === undefined ? {} : { eventTimeoutMinutes: limits.minutes }) },
       ...(scene.dove ? { dove } : {}),
-      ...outside,
+      sources,
     } as LoopOptions;
     const loop = await ThinkingLoop.open(loopOptions);
     closers.unshift(() => loop.close());
@@ -210,9 +208,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
       else if (event.kind === 'ping') handed = loop.ping();
       else {
         rawLine = event.line;
-        if ('sources' in outside) handed = (loop as unknown as { raiseSourcesUpdated(): boolean }).raiseSourcesUpdated();
-        // Before ADR 0050 a Slack mention was the kind raised from outside with a line of its own.
-        else (loop as unknown as { raise(kind: string, record: () => void): void }).raise('slack-mention', () => undefined);
+        handed = loop.raiseSourcesUpdated();
       }
       if (!handed) throw new Error(`the loop did not take the ${event.kind} event`);
       await loop.idle();

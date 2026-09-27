@@ -5,7 +5,6 @@
 # 出来事は 15:08 に渡る（メンションは 14:32:05）ので、tail だけではメンションに届かない。
 # ファイル・履歴（/sources.git）・マニュアルの差し替えは scene.ts の setup が作る。
 description: メンション付きの sources_updated で、メンションと親を読み、正しい返信先でポッポさんに頼む
-requires: [sources-updated]
 runs: 10
 time: "2026-09-27T15:08:30+09:00"
 limits: { modelCalls: 12, minutes: 10 }
