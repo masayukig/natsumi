@@ -1,7 +1,7 @@
 # 0020. 上限は書くときに掛け、夜は手順ではなく候補にする
 
 - Date: 2026-09-20
-- Status: Accepted
+- Status: Accepted（夜の候補から重複・古いところの手直しとトピックの統合・分割・改名・フォルダの整理を外し、記憶の整理係の仕事にすることは [ADR 0055](0055-a-memory-curator-at-night.md) で置き換え）
 
 ## Context
 
