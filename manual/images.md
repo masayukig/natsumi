@@ -96,10 +96,10 @@ indoors, library, warm lighting               ← 背景と光
 ```
 <lora:kutara_aki_anima.v3:1> ,
 masterpiece, newest,
-woman, low ponytail, freckles,
+woman, low ponytail, freckles, large sagging breasts,
 
 black glasses,
-black business suit,  collared white shirt, large breasts,
+black business suit,  collared white shirt,
 ```
 
 その後に、人数・場面・表情・構図・背景を続けます。
@@ -109,10 +109,10 @@ cat > /work/prompts/me.yaml <<'EOF'
 prompt: |
   <lora:kutara_aki_anima.v3:1> ,
   masterpiece, newest,
-  woman, low ponytail, freckles,
+  woman, low ponytail, freckles, large sagging breasts,
 
   black glasses,
-  black business suit,  collared white shirt, large breasts,
+  black business suit,  collared white shirt,
   1girl, solo, upper body, smile, looking at viewer,
   indoors, office, window, soft daylight
 EOF
