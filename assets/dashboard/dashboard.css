@@ -9,6 +9,10 @@
   --accent: #b4532a;
   --ok: #2f7a3e;
   --bad: #b3261e;
+  /* The charts' series, in a fixed order (ADR 0049): blue, orange, aqua, checked for colour blindness on this surface. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
   font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
   line-height: 1.6;
 }
@@ -23,6 +27,9 @@
     --accent: #f08a5d;
     --ok: #7cc68a;
     --bad: #f2877e;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
   }
 }
 
@@ -185,6 +192,32 @@ section h3:first-of-type { margin-top: 0.75rem; }
 .card > p { margin: 0.2rem 0; }
 .card.memo { border-left: 4px solid var(--ok); }
 .card .facts > div { grid-template-columns: 6rem 1fr; padding: 0.25rem 0; }
+
+/* The statistics (ADR 0049): SVG drawn on the server, coloured here by class, sized by the page's width. */
+.periods { display: flex; gap: 0.5rem; margin: 0 0 0.5rem; }
+.periods a { padding: 0.1rem 0.7rem; border: 1px solid var(--line); border-radius: 999px; text-decoration: none; }
+.periods a[aria-current="true"] { border-color: var(--accent); font-weight: 600; }
+.summary { margin: 0.5rem 0; }
+svg.chart { display: block; width: 100%; height: auto; margin: 0.25rem 0; }
+svg.chart .grid { stroke: var(--line); stroke-width: 1; }
+svg.chart .axis { stroke: var(--muted); stroke-width: 1; }
+svg.chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+svg.chart .line { stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+svg.chart .point { stroke: var(--card); stroke-width: 1.5; }
+.s1 { --series: var(--series-1); }
+.s2 { --series: var(--series-2); }
+.s3 { --series: var(--series-3); }
+svg.chart .line { stroke: var(--series); }
+svg.chart .point, svg.chart .bar { fill: var(--series); }
+.legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0; padding: 0; list-style: none; font-size: 0.85rem; color: var(--muted); }
+.legend .swatch { display: inline-block; width: 1.1rem; height: 0; margin-right: 0.35rem; vertical-align: middle; border-top: 3px solid var(--series); }
+.legend .swatch.dashed { border-top-style: dashed; }
+table.stats td { text-align: right; font-variant-numeric: tabular-nums; }
+.picker { margin: 1.25rem 0 0; }
+.picker fieldset { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 1rem; margin: 0; padding: 0.4rem 0.8rem;
+  border: 1px solid var(--line); border-radius: 8px; font-size: 0.9rem; }
+.picker legend { color: var(--muted); padding: 0 0.3rem; }
+.picker label { white-space: nowrap; }
 
 @media (max-width: 36rem) {
   .facts > div { grid-template-columns: 1fr; gap: 0.1rem; }

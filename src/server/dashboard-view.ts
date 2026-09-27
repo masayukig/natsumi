@@ -18,6 +18,7 @@ export const WAITS_LIVE_PATH = '/dashboard/waits/live';
 export const MEMOS_PATH = '/dashboard/memos';
 export const DOVE_PATH = '/dashboard/dove';
 export const DEVICES_PATH = '/dashboard/devices';
+export const STATS_PATH = '/dashboard/stats';
 /** The fragments the script refreshes: without a live session they answer 401, as the script cannot follow a login. */
 export const REFRESHED_PATHS: ReadonlySet<string> = new Set([STATUS_PATH, WAITS_LIVE_PATH]);
 
@@ -32,7 +33,7 @@ const SECTIONS: { label: string; href?: string }[] = [
   { label: '一行メモ', href: MEMOS_PATH },
   { label: 'ポッポさん', href: DOVE_PATH },
   { label: '端末', href: DEVICES_PATH },
-  { label: '統計' },
+  { label: '統計', href: STATS_PATH },
 ];
 
 export interface DashboardStatus {

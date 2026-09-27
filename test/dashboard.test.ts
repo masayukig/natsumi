@@ -133,10 +133,10 @@ test('with the cookie, /dashboard shows the page under a strict CSP and the usua
   assert.ok(!/<style|\sstyle=|\son[a-z]+=/i.test(res.text));
   assert.match(res.text, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
 
-  // The frame: the sections, of which only the graphs are still to come, and the logout.
+  // The frame: every section, none still to come, and the logout.
   assert.match(res.text, /いまの状態/);
-  assert.match(res.text, /統計<small>準備中/);
-  for (const [label, href] of [['ターン', 'turns'], ['失敗と待ち', 'waits'], ['一行メモ', 'memos'], ['ポッポさん', 'dove'], ['端末', 'devices']]) {
+  assert.doesNotMatch(res.text, /準備中/);
+  for (const [label, href] of [['ターン', 'turns'], ['失敗と待ち', 'waits'], ['一行メモ', 'memos'], ['ポッポさん', 'dove'], ['端末', 'devices'], ['統計', 'stats']]) {
     assert.match(res.text, new RegExp(`<a href="/dashboard/${href}">${label}</a>`));
   }
   assert.match(res.text, /<form method="post" action="\/dashboard\/logout">/);
@@ -490,4 +490,55 @@ test('the devices page shows a connected device and the sessions, this browser�
     assert.match(res.text, /有効 2/, 'this browser’s session and the app’s');
     assert.ok(!res.text.includes(cookie), 'the token is never shown');
   } finally { ws.close(); }
+}));
+
+// The statistics (ADR 0049): charts of the ordinary turns, drawn on the server.
+
+test('the statistics need the cookie, take only the periods on the list, and show the ordinary turns of the period', () => withFixture(async f => {
+  assertLoginAgain(await f.fetch('/dashboard/stats'), f);
+  const cookie = await browserLogin(f);
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    const stats = new TurnStats(db);
+    const turn = (turnId: string, startedAt: number, overrides: Partial<Parameters<TurnStats['record']>[0]> = {}) => stats.record({
+      turnId, startedAt, endedAt: startedAt + 8_000, receivedAt: startedAt, firstOutAt: startedAt + 3_000, fold: 'on', route: 'local',
+      eventKinds: 'mac_message', outcome: 'ok', modelCalls: 4, usage: { input: 10, cacheRead: 900, output: 30 }, contextTokens: 1_000,
+      compacted: false, confusion: { repeatedCalls: 0, toolErrors: 0, doveRefusals: 0, unansweredMessages: 0 }, ...overrides,
+    });
+    turn('turn-recent', f.clock.now - 30 * MINUTE);
+    turn('turn-cut', f.clock.now - 90 * MINUTE, { outcome: 'model-call-limit' });
+    turn('turn-review', f.clock.now - 20 * MINUTE, { kind: 'review', modelCalls: 40 });
+    turn('turn-last-week', f.clock.now - 3 * DAY);
+  } finally { db.close(); }
+
+  const day = await f.fetch('/dashboard/stats', withCookie(cookie));
+  assert.equal(day.status, 200, day.text);
+  assert.equal(day.headers.get('content-security-policy')?.includes("style-src 'self'"), true);
+  assert.ok(!/<style|\sstyle=|\son[a-z]+=/i.test(day.text));
+  assert.match(day.text, /aria-current="page">統計/);
+  assert.match(day.text, /period=24h" aria-current="true"/);
+  assert.match(day.text, /ターン <strong>2<\/strong>/, 'the review and the turn of last week are not counted');
+  assert.match(day.text, /呼び出し <strong>8<\/strong>/);
+  assert.match(day.text, /打ち切り <strong>1<\/strong>/);
+  assert.equal(day.text.match(/<svg /g)?.length, 6);
+
+  const week = await f.fetch('/dashboard/stats?period=7d', withCookie(cookie));
+  assert.equal(week.status, 200);
+  assert.match(week.text, /ターン <strong>3<\/strong>/);
+  const month = await f.fetch('/dashboard/stats?period=30d', withCookie(cookie));
+  assert.equal(month.status, 200);
+  assert.match(month.text, /period=30d" aria-current="true"/);
+
+  // The form's GET: the chosen tokens in one chart, the period kept.
+  const chosen = await f.fetch('/dashboard/stats?period=7d&show=input&show=output', withCookie(cookie));
+  assert.equal(chosen.status, 200);
+  assert.match(chosen.text, /<h3 id="chart-tokens">tokens（input・output）/);
+  assert.match(chosen.text, /name="period" value="7d"/);
+  assert.equal(chosen.text.match(/<svg /g)?.length, 5);
+  assert.equal((await f.fetch('/dashboard/stats?show=cache-read', withCookie(cookie))).status, 200);
+
+  for (const path of ['/dashboard/stats?period=1y', '/dashboard/stats?period=', '/dashboard/stats?period=7d&period=30d', '/dashboard/stats/other',
+    '/dashboard/stats?show=bogus', '/dashboard/stats?period=7d&show=input,bogus', '/dashboard/stats?show=']) {
+    assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
+  }
 }));

@@ -6,8 +6,10 @@ import { devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } 
 import { listDovePosts, readDevices, readWaits } from './dashboard-records.ts';
 import {
   DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH, signedInPage,
-  signedOutPage, STATIC_FILES, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
+  signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
+import { statsPage, statsTokens } from './dashboard-charts.ts';
+import { readStats, statsPeriod } from './dashboard-stats.ts';
 import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
 import type { Html } from './html.ts';
@@ -139,6 +141,7 @@ export class Dashboard {
       const view = readDevices(this.options.db, { now: this.options.now(), isConnected: this.options.isConnected });
       return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone), renewed);
     }
+    if (path === STATS_PATH) return this.stats(response, url, renewed);
     const turn = TURN_ROUTE.exec(path);
     if (turn) return this.turn(response, turn[1]!, turn[2] === undefined ? undefined : Number(turn[2]), renewed);
     send(response, 404, messagePage('見つかりません', true), renewed);
@@ -174,6 +177,15 @@ export class Dashboard {
     const page = pageNumber(url);
     if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
     send(response, 200, dovePage({ ...listDovePosts(this.options.db, page), page }, this.options.timeZone), headers);
+  }
+
+  /** The charts of a period, from `turn_stats` alone and counted by SQLite (ADR 0049), with the series of tokens chosen. */
+  private stats(response: ServerResponse, url: URL, headers: Record<string, string>): void {
+    const period = statsPeriod(url);
+    const tokens = statsTokens(url);
+    if (!period || !tokens) return send(response, 404, messagePage('見つかりません', true), headers);
+    const { db, now, timeZone } = this.options;
+    send(response, 200, statsPage(readStats(db, { period, now: now(), timeZone }), timeZone, tokens), headers);
   }
 
   /** A turn read from the session record, recorded or still running; or one of its images. */
