@@ -1,15 +1,22 @@
-import { mkdir, readFile } from 'node:fs/promises';
+// First, before Pi's undici replaces it: the proxy dispatcher of an isolated run (ADR 0052).
+import { useProxyDispatcher } from './network.ts';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { routeReady } from '../pi/auth.ts';
+import { isWithin } from '../server/paths.ts';
+import { DEFAULT_ACTOR, PiActor, type ActorModel } from './actors.ts';
+import { refuseOnSecrets, SECRET_PLACES } from './guard.ts';
+import { endpointsOf, isolatedEnvironment, ISOLATED_ENV, RemoteRunner, runIsolated, serveRunner, startBridge, startRelay } from './isolation.ts';
+import { DEFAULT_KEEP, DEFAULT_SNAPSHOT_STORE, findSnapshot, listSnapshots, pullSnapshot } from './snapshot.ts';
 import { DEFAULT_JUDGE, PiJudge } from './judge.ts';
 import { modelRuntime, readModelFile, type ModelFile } from './model-file.ts';
 import type { RunRecord } from './record.ts';
 import { detectFeatures, runEvaluation } from './run.ts';
 import { conditions, loadScenes } from './scene.ts';
 import { compare, compareMarkdown, summarize, summaryMarkdown, type Summary } from './summary.ts';
-import type { Sandbox } from './workspace.ts';
+import { bwrapAvailable, WorkspaceRunner, type Sandbox, type WorkspaceStarter } from './workspace.ts';
 import type { Judge } from './checks.ts';
 
 /**
@@ -21,13 +28,20 @@ import type { Judge } from './checks.ts';
  *   summarize <result directory>
  *   compare <result directory a> <result directory b>
  *   list [--scenes <dir>]…
+ *   pull [--context C] [--namespace N] [--cronjob J] [--backup <stamp>|latest] [--snapshots <dir>] [--keep N] [--kubectl <path>]
+ *   snapshots [--snapshots <dir>]
  *
+ * A run with a scene that starts from a snapshot (ADR 0052) checks for secrets first, runs isolated from the network
+ * but for the models' endpoints, and keeps its results in a private directory outside the repository.
  * Keys are read from the files the model files name and are never printed or recorded.
  */
 
 const REPOSITORY = resolve(import.meta.dirname, '..', '..');
 const SCENES = join(REPOSITORY, 'eval', 'scenes');
 const RESULTS = join(REPOSITORY, 'eval', 'results');
+/** The results of runs on a snapshot: private, outside the repository, kept 30 days (ADR 0052). */
+const PRIVATE_RESULTS = join(homedir(), '.local', 'share', 'natsumi-eval', 'results');
+const KEEP_RESULTS_DAYS = 30;
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -35,7 +49,9 @@ async function main(argv: string[]): Promise<number> {
   if (command === 'summarize') return summarizeCommand(rest);
   if (command === 'compare') return compareCommand(rest);
   if (command === 'list') return list(rest);
-  process.stderr.write('usage: npm run eval -- run|summarize|compare|list …（README の「1 ターンの評価」）\n');
+  if (command === 'pull') return pull(rest);
+  if (command === 'snapshots') return snapshots(rest);
+  process.stderr.write('usage: npm run eval -- run|summarize|compare|list|pull|snapshots …（eval/README.md）\n');
   return 2;
 }
 
@@ -45,11 +61,71 @@ async function run(argv: string[]): Promise<number> {
     scenes: { type: 'string', multiple: true }, scene: { type: 'string', multiple: true }, variant: { type: 'string', multiple: true },
     runs: { type: 'string' }, label: { type: 'string' }, out: { type: 'string' }, concurrency: { type: 'string' },
     'max-calls': { type: 'string' }, minutes: { type: 'string' }, memo: { type: 'string' }, workspace: { type: 'string' },
-    'dry-run': { type: 'boolean' },
+    'dry-run': { type: 'boolean' }, actor: { type: 'string' }, 'actor-auth': { type: 'string' }, snapshots: { type: 'string' },
   } });
   const dryRun = values['dry-run'] === true;
+  const isolated = process.env[ISOLATED_ENV] ? JSON.parse(process.env[ISOLATED_ENV]) as { relay: string; runner: string } : undefined;
+  const sceneDirectories = (values.scenes ?? [SCENES]).map(dir => resolve(dir));
+  const snapshotStore = resolve(values.snapshots ?? DEFAULT_SNAPSHOT_STORE);
+  // The scenes of this run that start from a snapshot, and the snapshots they will use.
+  const onSnapshots = (await loadScenes(sceneDirectories)).filter(scene => scene.start && (!values.scene || values.scene.includes(scene.name)));
+  const usedSnapshots = (await Promise.all(onSnapshots.map(scene => findSnapshot(snapshotStore, scene.start!.snapshot))))
+    .filter(snapshot => snapshot !== undefined);
+  const needsActor = !dryRun && (await loadScenes(sceneDirectories)).some(scene => (!values.scene || values.scene.includes(scene.name))
+    && scene.follow && Object.values(scene.actors).some(actor => actor.replies.length === 0));
   if (!values.model && !dryRun) throw new Error('--model <file> is required (or --dry-run)');
   const file = values.model ? await readModelFile(resolve(values.model)) : undefined;
+  const judgeFile: ModelFile | undefined = dryRun || values['no-judge'] === true ? undefined : values.judge ? await readModelFile(resolve(values.judge)) : {
+    target: DEFAULT_JUDGE, compatible: false, thinking: 'on', shown: { provider: DEFAULT_JUDGE.provider, id: DEFAULT_JUDGE.model },
+    authPath: resolve(values['judge-auth'] ?? join(homedir(), '.pi', 'agent', 'auth.json')),
+  };
+  const actorFile: ModelFile | undefined = !needsActor ? undefined : values.actor ? await readModelFile(resolve(values.actor)) : {
+    target: DEFAULT_ACTOR, compatible: false, thinking: 'on', shown: { provider: DEFAULT_ACTOR.provider, id: DEFAULT_ACTOR.model },
+    authPath: resolve(values['actor-auth'] ?? join(homedir(), '.pi', 'agent', 'auth.json')),
+  };
+  // A scene whose snapshot is not there is skipped; only a run that will use a snapshot is guarded and isolated.
+  const onSnapshot = usedSnapshots.length > 0;
+  const out = resolve(values.out ?? (onSnapshot ? PRIVATE_RESULTS : RESULTS));
+
+  if (onSnapshot && !isolated) {
+    // Outside: the checks, then the same command again, isolated (ADR 0052).
+    if (isWithin(out, REPOSITORY)) throw new Error('the results of a run on a snapshot are kept outside the repository: give --out elsewhere');
+    await refuseOnSecrets({ env: process.env, files: SECRET_PLACES, snapshots: usedSnapshots.map(snapshot => snapshot.directory) });
+    if (!(await bwrapAvailable())) throw new Error('a run on a snapshot is isolated with bubblewrap, which cannot make a sandbox here');
+    await mkdir(out, { recursive: true, mode: 0o700 });
+    await chmod(out, 0o700);
+    await pruneResults(out, KEEP_RESULTS_DAYS);
+    const models = [file, judgeFile, actorFile].filter((model): model is ModelFile => model !== undefined && !dryRun);
+    const scratch = await mkdtemp(join(tmpdir(), 'natsumi-eval-'));
+    try {
+      const relaySocket = join(scratch, 'relay.sock');
+      const runnerSocket = join(scratch, 'runner.sock');
+      const relay = await startRelay({ socketPath: relaySocket, allow: endpointsOf(models) });
+      const runner = await WorkspaceRunner.prepare({ repository: REPOSITORY, cache: join(scratch, 'runner') });
+      const service = await serveRunner({ socketPath: runnerSocket, runner, roots: [out, scratch] });
+      const logins = models.flatMap(model => model.authPath ? [dirname(model.authPath)] : []);
+      const keys = Object.fromEntries(models.flatMap(model => model.endpoint && 'env' in model.endpoint.apiKey
+        ? [[model.endpoint.apiKey.env, process.env[model.endpoint.apiKey.env]]] : []));
+      try {
+        return await runIsolated({ command: [process.execPath, ...process.execArgv, join(REPOSITORY, 'src', 'eval', 'cli.ts'), 'run', ...argv,
+          ...(values.out ? [] : ['--out', out])],
+        writable: [out, scratch, ...new Set(logins)], cwd: process.cwd(),
+        env: isolatedEnvironment({ relaySocket, runnerSocket, tmp: scratch,
+          // A CA the owner trusts for their own endpoint goes in with the keys.
+          pass: { ...keys, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE } }) });
+      } finally {
+        await service.close();
+        await relay.close();
+        if (relay.refused.length > 0) process.stderr.write(`the relay turned back: ${[...new Set(relay.refused)].join(', ')}\n`);
+      }
+    } finally { await rm(scratch, { recursive: true, force: true }); }
+  }
+  let runner: WorkspaceStarter | undefined;
+  if (isolated) {
+    useProxyDispatcher();
+    await startBridge(isolated.relay);
+    runner = new RemoteRunner(isolated.runner);
+  }
   const scratch = join(tmpdir(), `natsumi-eval-${process.pid}`);
   await mkdir(scratch, { recursive: true });
   if (file && !dryRun) {
@@ -57,16 +133,20 @@ async function run(argv: string[]): Promise<number> {
     if (!(await routeReady(runtime, file.target, file.compatible))) throw new Error('the model to evaluate is not ready (its key or login is missing)');
   }
   let judge: Judge | undefined;
-  if (!dryRun && values['no-judge'] !== true) {
-    const judgeFile: ModelFile = values.judge ? await readModelFile(resolve(values.judge)) : {
-      target: DEFAULT_JUDGE, compatible: false, thinking: 'on', shown: { provider: DEFAULT_JUDGE.provider, id: DEFAULT_JUDGE.model },
-      authPath: resolve(values['judge-auth'] ?? join(homedir(), '.pi', 'agent', 'auth.json')),
-    };
+  if (judgeFile) {
     const runtime = await modelRuntime(judgeFile, join(scratch, 'judge'), process.env);
     if (!(await routeReady(runtime, judgeFile.target, judgeFile.compatible))) {
       throw new Error(`the judge ${judgeFile.shown.provider}/${judgeFile.shown.id} is not ready: give --judge <file>, --judge-auth <login file>, or --no-judge`);
     }
     judge = new PiJudge({ file: judgeFile, runtime, root: join(scratch, 'judge') });
+  }
+  let actor: ActorModel | undefined;
+  if (actorFile) {
+    const runtime = await modelRuntime(actorFile, join(scratch, 'actor'), process.env);
+    if (!(await routeReady(runtime, actorFile.target, actorFile.compatible))) {
+      throw new Error(`the actors' model ${actorFile.shown.provider}/${actorFile.shown.id} is not ready: give --actor <file> or --actor-auth <login file>`);
+    }
+    actor = new PiActor({ file: actorFile, runtime, root: join(scratch, 'actor') });
   }
   const number = (value: string | undefined, name: string) => {
     if (value === undefined) return undefined;
@@ -76,7 +156,8 @@ async function run(argv: string[]): Promise<number> {
   };
   const memo = values.memo;
   if (memo !== undefined && memo !== 'skip' && memo !== 'model') throw new Error('--memo must be skip or model');
-  const sandbox = values.workspace;
+  // Isolated, the runner is started outside, where bubblewrap was found to work; it is never tried from inside.
+  const sandbox = values.workspace ?? (isolated ? 'bwrap' : undefined);
   if (sandbox !== undefined && sandbox !== 'bwrap' && sandbox !== 'host') throw new Error('--workspace must be bwrap or host');
   const label = values.label ?? `${new Date().toISOString().replace(/[:.]/g, '-')}-${file?.shown.id ?? 'dry-run'}`;
   if (!/^[A-Za-z0-9._-]+$/.test(label)) throw new Error('--label is letters, digits, dots, hyphens and underscores');
@@ -85,7 +166,8 @@ async function run(argv: string[]): Promise<number> {
   const runs = number(values.runs, 'runs');
   const concurrency = number(values.concurrency, 'concurrency');
   const result = await runEvaluation({
-    scenes: (values.scenes ?? [SCENES]).map(dir => resolve(dir)), out: resolve(values.out ?? RESULTS), label, dryRun,
+    scenes: sceneDirectories, out, label, dryRun, snapshots: snapshotStore,
+    ...(runner ? { runner } : {}), ...(actor ? { actor } : {}),
     repository: REPOSITORY, log: line => process.stderr.write(`${line}\n`),
     ...(runs ? { runs } : {}), ...(concurrency ? { concurrency } : {}),
     ...(values.scene || values.variant ? { only: { ...(values.scene ? { scenes: values.scene } : {}), ...(values.variant ? { variants: values.variant } : {}) } } : {}),
@@ -96,6 +178,39 @@ async function run(argv: string[]): Promise<number> {
   process.stdout.write(summaryMarkdown(result.summary, label));
   process.stderr.write(`results: ${result.directory}\n`);
   return 0;
+}
+
+async function pull(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: {
+    context: { type: 'string' }, namespace: { type: 'string' }, cronjob: { type: 'string' }, backup: { type: 'string' },
+    snapshots: { type: 'string' }, keep: { type: 'string' }, kubectl: { type: 'string' },
+  } });
+  const keep = values.keep === undefined ? DEFAULT_KEEP : Number(values.keep);
+  if (!Number.isInteger(keep) || keep < 1) throw new Error('--keep must be a positive integer');
+  const store = resolve(values.snapshots ?? DEFAULT_SNAPSHOT_STORE);
+  if (isWithin(store, REPOSITORY)) throw new Error('snapshots are kept outside the repository: give --snapshots elsewhere');
+  const pulled = await pullSnapshot({ kubectl: values.kubectl ?? 'kubectl', ...(values.context ? { context: values.context } : {}),
+    namespace: values.namespace ?? 'natsumi', cronjob: values.cronjob ?? 'natsumi-backup', ...(values.backup ? { backup: values.backup } : {}),
+    store, keep, log: line => process.stderr.write(`${line}\n`) });
+  process.stdout.write(`${pulled.name}\t${pulled.directory}\n`);
+  return 0;
+}
+
+async function snapshots(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { snapshots: { type: 'string' } } });
+  for (const snapshot of await listSnapshots(resolve(values.snapshots ?? DEFAULT_SNAPSHOT_STORE))) {
+    process.stdout.write(`${snapshot.name}\t${snapshot.source}\tSQLite ${snapshot.sqlite}\t${snapshot.directory}\n`);
+  }
+  return 0;
+}
+
+/** Removes the results older than `days`, by when they were last written. */
+async function pruneResults(root: string, days: number): Promise<void> {
+  const limit = Date.now() - days * 86_400_000;
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const path = join(root, name);
+    try { if ((await stat(path)).mtimeMs < limit) await rm(path, { recursive: true, force: true }); } catch { /* gone already */ }
+  }
 }
 
 async function readResult(directory: string): Promise<Summary> {
@@ -120,11 +235,13 @@ async function compareCommand(argv: string[]): Promise<number> {
 }
 
 async function list(argv: string[]): Promise<number> {
-  const { values } = parseArgs({ args: argv, options: { scenes: { type: 'string', multiple: true } } });
+  const { values } = parseArgs({ args: argv, options: { scenes: { type: 'string', multiple: true }, snapshots: { type: 'string' } } });
   const features = detectFeatures();
   for (const scene of await loadScenes((values.scenes ?? [SCENES]).map(dir => resolve(dir)))) {
     const missing = scene.requires.filter(feature => !features.has(feature));
-    process.stdout.write(`${scene.name}${missing.length > 0 ? `（飛ばす: requires ${missing.join(', ')}）` : ''} — ${scene.description}\n`);
+    const notes = [...missing.length > 0 ? [`飛ばす: requires ${missing.join(', ')}`] : [],
+      ...scene.start ? [`写しから: ${scene.start.snapshot}${(await findSnapshot(resolve(values.snapshots ?? DEFAULT_SNAPSHOT_STORE), scene.start.snapshot)) ? '' : '（無いので飛ばす）'}`] : []];
+    process.stdout.write(`${scene.name}${notes.length > 0 ? `（${notes.join('、')}）` : ''} — ${scene.description}\n`);
     for (const condition of conditions(scene)) process.stdout.write(`  ${condition.variant}: ${condition.checks.map(check => check.id).join(', ')}\n`);
   }
   return 0;

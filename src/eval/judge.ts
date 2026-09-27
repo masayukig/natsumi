@@ -77,7 +77,12 @@ export function transcript(record: RunRecord): string {
     ? record.replies.map(reply => `- ${reply.kind === 'reply' ? '返事' : '知らせ'}（${reply.expression ?? '-'}）: ${reply.text}`) : ['- なし']));
   lines.push('', '### ポッポさんへの依頼', ...(record.dove.length > 0
     ? record.dove.map(request => `- ${request.ok ? '受け付けられた' : '断られた'}: ${request.message.replace(/\n/g, ' / ')}`) : ['- なし']));
-  lines.push('', `終わり方: ${record.outcome}（モデルの呼び出し ${record.modelCalls} 回）`);
+  const answered = (record.actors ?? []).filter(exchange => exchange.reply !== undefined);
+  if (answered.length > 0) {
+    lines.push('', '### 相手役の返事（評価のために立てた相手）', ...answered.map(exchange =>
+      `- ${exchange.agent}${exchange.result ? `（${exchange.result}）` : ''}: ${cut(exchange.reply ?? '', CUT).replace(/\n/g, ' / ')}`));
+  }
+  lines.push('', `終わり方: ${record.outcome}（${record.turns && record.turns > 1 ? `${record.turns} ターン、` : ''}モデルの呼び出し ${record.modelCalls} 回）`);
   return lines.join('\n');
 }
 

@@ -39,6 +39,17 @@ export interface Check {
   spec: Record<string, unknown>;
 }
 
+/** What the dove answers with (ADR 0040): what became of the request. */
+export const DOVE_RESULTS = ['sent', 'reacted', 'to_owner', 'returned', 'rejected', 'expired', 'not_sent'] as const;
+export type DoveResult = typeof DOVE_RESULTS[number];
+/** One reply of an actor, written in the scene; the dove's also says what became of the request. */
+export interface ActorReply { text: string; result?: DoveResult }
+/**
+ * Who plays an outside agent or the dove (ADR 0052): an LLM given the card and the instructions, or the replies
+ * written here, handed back in order (the last one again once they run out).
+ */
+export interface Actor { name: string; card: string; instructions?: string; replies: ActorReply[] }
+
 /** Everything a variant may change. */
 interface Layer {
   event?: SceneEvent;
@@ -62,6 +73,12 @@ export interface Scene {
   /** Requests to the dove (`ask_agent` poppo) are taken and recorded, as when Slack is configured. */
   dove: boolean;
   context: { session?: string; prelude: PreludeTurn[]; padding?: { turns: number; chars: number } };
+  /** The state the run starts from: a snapshot of production (ADR 0052), the newest or one by name. */
+  start?: { snapshot: string };
+  /** The actors' replies are handed back as events, turn after turn, up to `maxTurns` turns in all (ADR 0052). */
+  follow?: { maxTurns: number };
+  /** Who plays the outside agents and the dove, by the name `ask_agent` uses. */
+  actors: Record<string, Actor>;
   /** A function in `scene.ts` run on the data directory before the loop opens. */
   setup?: string;
   /** What the scripted model answers with in a dry run. */
@@ -75,8 +92,13 @@ export interface Scene {
 export type Condition = Required<Omit<Layer, 'event'>> & { event: SceneEvent; scene: Scene; variant: string };
 
 export const DEFAULT_RUNS = 5;
+export const DEFAULT_MAX_TURNS = 4;
+/** What an outside agent's card says when the scene gives it none. */
+export const DEFAULT_CARD = '頼まれたことを調べて答える、外のエージェントです。';
+const DOVE = 'poppo';
+const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const TOP_KEYS = ['description', 'requires', 'runs', 'time', 'timeZone', 'limits', 'dove', 'context', 'setup', 'dryRun', 'event',
-  'files', 'copy', 'edits', 'prompt', 'checks', 'variants', 'axes'];
+  'files', 'copy', 'edits', 'prompt', 'checks', 'variants', 'axes', 'start', 'follow', 'actors'];
 const LAYER_KEYS = ['event', 'files', 'copy', 'edits', 'prompt', 'checks'];
 /** The places of the workspace a scene may write, as natsumi sees them. */
 export const PLACES = ['/memory', '/work', '/home/natsumi', '/sources', '/manual'];
@@ -144,6 +166,18 @@ export async function loadScene(dir: string): Promise<Scene> {
   const time = scene.time === undefined ? undefined : Date.parse(text(scene.time, at('time')));
   if (time !== undefined && Number.isNaN(time)) throw new SceneError(at('time'), 'must be an ISO 8601 time');
   const module = await exists(join(root, 'scene.ts')) ? join(root, 'scene.ts') : undefined;
+  const start = scene.start === undefined ? undefined : (() => {
+    const fields = object(scene.start, at('start'));
+    onlyKeys(fields, at('start'), ['snapshot']);
+    return { snapshot: text(fields.snapshot, at('start.snapshot')) };
+  })();
+  if (start && context.session !== undefined) throw new SceneError(at('context.session'), 'cannot be given when the scene starts from a snapshot');
+  const follow = scene.follow === undefined ? undefined : scene.follow === true ? { maxTurns: DEFAULT_MAX_TURNS } : (() => {
+    const fields = object(scene.follow, at('follow'));
+    onlyKeys(fields, at('follow'), ['maxTurns']);
+    return { maxTurns: fields.maxTurns === undefined ? DEFAULT_MAX_TURNS : count(fields.maxTurns, at('follow.maxTurns'), 1) };
+  })();
+  const actors = actorsOf(scene.actors ?? {}, at('actors'));
   return {
     name: basename(root), dir: root,
     description: scene.description === undefined ? '' : text(scene.description, at('description')),
@@ -155,7 +189,7 @@ export async function loadScene(dir: string): Promise<Scene> {
       ...(limits.modelCalls === undefined ? {} : { modelCalls: count(limits.modelCalls, at('limits.modelCalls'), 1) }),
       ...(limits.minutes === undefined ? {} : { minutes: count(limits.minutes, at('limits.minutes'), 1) }),
     },
-    dove: scene.dove === undefined ? false : bool(scene.dove, at('dove')),
+    dove: DOVE in actors || (scene.dove === undefined ? false : bool(scene.dove, at('dove'))),
     context: {
       ...(context.session === undefined ? {} : { session: resolve(root, text(context.session, at('context.session'))) }),
       prelude: list(context.prelude ?? [], at('context.prelude')).map((turn, index) => {
@@ -166,6 +200,9 @@ export async function loadScene(dir: string): Promise<Scene> {
       }),
       ...(padding ? { padding } : {}),
     },
+    ...(start ? { start } : {}),
+    ...(follow ? { follow } : {}),
+    actors,
     ...(scene.setup === undefined ? {} : { setup: text(scene.setup, at('setup')) }),
     dryRun: list(scene.dryRun ?? [], at('dryRun')).map((answer, index) => {
       const path = at(`dryRun[${index}]`);
@@ -295,6 +332,34 @@ function layer(fields: Raw, root: string, where: string): Layer {
     result.checks = checks;
   }
   return result;
+}
+
+function actorsOf(raw: unknown, where: string): Record<string, Actor> {
+  const actors: Record<string, Actor> = {};
+  for (const [name, value] of Object.entries(object(raw, where))) {
+    const path = `${where}.${name}`;
+    if (!AGENT_NAME.test(name)) throw new SceneError(path, 'is not an agent name (lower case letters, digits and hyphens)');
+    const fields = object(value ?? {}, path);
+    const dove = name === DOVE;
+    onlyKeys(fields, path, dove ? ['instructions', 'replies'] : ['card', 'instructions', 'replies']);
+    const replies = list(fields.replies ?? [], `${path}.replies`).map((reply, index): ActorReply => {
+      const at = `${path}.replies[${index}]`;
+      if (typeof reply === 'string') return dove ? { text: nonEmpty(reply, at), result: 'sent' } : { text: nonEmpty(reply, at) };
+      if (!dove) throw new SceneError(at, 'must be the text of the reply');
+      const entry = object(reply, at);
+      onlyKeys(entry, at, ['result', 'text']);
+      const result = entry.result === undefined ? 'sent' : text(entry.result, `${at}.result`);
+      if (!DOVE_RESULTS.includes(result as DoveResult)) throw new SceneError(`${at}.result`, `must be one of ${DOVE_RESULTS.join(', ')}`);
+      return { text: nonEmpty(entry.text, `${at}.text`), result: result as DoveResult };
+    });
+    actors[name] = {
+      name,
+      card: dove ? '' : fields.card === undefined ? DEFAULT_CARD : text(fields.card, `${path}.card`),
+      ...(fields.instructions === undefined ? {} : { instructions: text(fields.instructions, `${path}.instructions`) }),
+      replies,
+    };
+  }
+  return actors;
 }
 
 function event(raw: unknown, where: string): SceneEvent {

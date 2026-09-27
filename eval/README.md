@@ -6,6 +6,8 @@
 - 通るのは本物の経路です。システム指示、ツールの定義と結果の文、イベントの行、打ち切り、マニュアル（`manual/`）は、評価するブランチのものがそのまま使われます。
 - workspace の shell は本物の runner（`runner/`）で、bubblewrap の中で本番のコンテナと同じ配置にして動かします。ネットワークはありません。
 - 外への作用は記録するだけです。Mac への返事と知らせは記録に残り、ポッポさんへの依頼は形を確かめて受け付けの文を返すだけで、Slack には何も送りません。
+- 外のエージェントとポッポさんには、場面に書いた相手役が答えます。本物にはつなぎません（下の「相手役と、続けるターン」）。
+- 本番の状態の写しから始めることもできます（下の「本番の写しから試す」、[ADR 0052](../docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)）。
 - 1 回ごとに新しいデータディレクトリ、SQLite、Pi の session で回します。
 
 ## 準備
@@ -46,6 +48,8 @@ npm run eval -- compare eval/results/qwen-before eval/results/qwen-after
 | `--concurrency N` | 並べて回す数。既定は 1。所要時間の比較が崩れるので、速さを測るときは 1 のままにします |
 | `--memo model` | ターンの後の一行メモも評価するモデルに頼みます。既定は決まった文で答え、呼び出しを使いません |
 | `--dry-run` | 偽のモデル（場面の `dryRun`）で回します。判定役も呼びません |
+| `--actor <file>` | LLM が演じる相手役のモデル。省くと ChatGPT Plus の経路（`openai-codex` の `gpt-6-sol`）で、ログインは `--actor-auth <file>`（既定は `~/.pi/agent/auth.json`）。返事を書いていない相手役がいて、`follow` の場面を回すときだけ使います |
+| `--snapshots <dir>` | 写しの置き場。既定は `~/.local/share/natsumi-eval/snapshots` |
 | `--workspace host` | bubblewrap を使わずに runner を手元で動かします。パスが本番と違い、閉じ込めもないので、ドライランでだけ使えます |
 
 回は、全部の条件を 1 周ずつ回してから次の周に進みます。エンドポイントの揺れが、どの条件にも同じように掛かるようにするためです。
@@ -54,6 +58,7 @@ npm run eval -- compare eval/results/qwen-before eval/results/qwen-after
 
 - `npm run eval -- list`: 場面と変種と項目の一覧。このブランチで回せない場面には、その理由が付きます
 - `npm run eval -- summarize <結果のディレクトリ>`: 集計し直します
+- `npm run eval -- pull …`・`npm run eval -- snapshots`: 本番の写しを取る・一覧する（下の「本番の写しから試す」）
 - `npm run eval -- compare <a> <b>`: 場面・変種・項目ごとに、合格数、率の差（b − a）、Newcombe の 95% 区間を並べます。その横に、着くまでの呼び出し回数の中央値（数えた回数つき）と、その差（b − a）を並べます
 
 ### 結果
@@ -61,7 +66,8 @@ npm run eval -- compare eval/results/qwen-before eval/results/qwen-after
 `<out>/<label>/` に次のものができます。
 
 - `runs.jsonl`: 1 行 1 回。渡した出来事、ターンのプロンプト、システム指示の大きさと SHA-256、モデルの呼び出しごとの時間・トークン・本文、ツールの呼び出しと結果、本人に見せたもの、ポッポさんへの依頼、項目ごとの判定（規則・関数・LLM のどれで判定したか）、終わり方。
-- `summary.md`・`summary.json`: 項目ごとの合格数と Wilson の 95% 区間、着くまでのステップ（下の「着くまでのステップ」）、副指標（呼び出し回数、秒、トークン、打ち切り、失敗）、飛ばした場面。
+- `summary.md`・`summary.json`: 項目ごとの合格数と Wilson の 95% 区間、着くまでのステップ（下の「着くまでのステップ」）、副指標（呼び出し回数、秒、トークン、打ち切り、失敗）、失敗の理由、飛ばした場面。
+  失敗は、回を作れなかった回（`error`）と、モデルの呼び出しが失敗して終わった回（`model-error`）です。理由は `runs.jsonl` の `error` と、呼び出しごとの `error`（プロバイダーのメッセージ。エンドポイントのホストは除きます）にも残ります。
 - `work/<場面>/<変種>/run-<N>/`: その回のデータディレクトリと Pi の session。ターンの中身を読み返せます。
 
 ### 着くまでのステップ
@@ -146,6 +152,9 @@ checks:
 | `dove` | `true` にすると、`ask_agent` の `poppo` を受け付けて記録します（Slack が設定されているときと同じ）。`/manual/agents/INDEX.md` にもポッポさんが載ります |
 | `setup` | `scene.ts` の関数の名前。ループを開く前に、データディレクトリとマニュアルの写しを受け取って準備をします（git の履歴を作るなど） |
 | `limits` | `{ modelCalls, minutes }`。打ち切り。省くと本番の既定です |
+| `start` | `{ snapshot: latest }` か `{ snapshot: <写しの名前> }`。本番の写しから始めます（下の「本番の写しから試す」）。写しが無ければ、その場面は飛ばして、集計に残します。`context.session` とは一緒に書けません |
+| `actors` | 相手役。下の「相手役と、続けるターン」 |
+| `follow` | `true` か `{ maxTurns: N }`。相手役の返事を出来事として積み、処理するターンまで続けます。上限の既定は 4 ターンです |
 | `requires` | 要る機能（いまは `sources-updated`）。ブランチに無ければ、その場面は飛ばして、集計に残します |
 | `dryRun` | ドライランで偽のモデルが答える内容。`{ thinking, text, calls }` の並びで、1 つが 1 回の呼び出しです |
 
@@ -184,6 +193,129 @@ checks:
 変種には `event`（置き換え）、`files`・`copy`（上書き）、`edits`・`prompt`（足す）、`checks`（同じ `id` は置き換え、ほかは足す）を書けます。
 `setup` の関数は変種の名前を受け取るので、変種ごとの準備もできます。
 
+## 相手役と、続けるターン
+
+`ask_agent` の相手は、場面の `actors` に書いた相手役です。名前は `ask_agent` の `agent` にそのまま使われます（`poppo` はポッポさん）。
+相手役がいれば、本番で設定があるときと同じく `/manual/agents/INDEX.md` に載り、依頼は受け付けられます。書いていない名前は、本番で設定に無い相手と同じく断られます。
+
+```yaml
+actors:
+  wiki-keeper:
+    card: Wiki の管理人。Wiki の記事を調べて答え、原文の追加を PR にする。   # Agent Card の説明（省くと決まった文）
+    instructions: デプロイは毎週木曜、と答える。                           # LLM が演じるときの場面の指示
+  researcher:
+    replies:                                                          # 書いた返事をそのまま返す（LLM を呼ばない）
+      - 調べました。候補は 3 つです。
+  poppo:
+    replies:
+      - ポッポ！ #dev に届けたよ。                                       # 届けた（result: sent）
+      - { result: returned, text: ポッポ、これは届けられないよ。 }          # 突き返した
+follow: true
+```
+
+- 既定は 1 ターンです。相手役は依頼を受け付けるだけで、返事はしません。
+- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は `agent_reply`（サーバーの返事の取りに行きの道筋を通ります）、ポッポさんの返事は `agent: poppo` の `agent_reply`（`result`・`reply_to`・`draft`・`text`）です。依頼が無くなるか、ターンが上限に達したら止まります。
+- `replies` を書いた相手役は、書いた順に返事を返します（使い切ったら最後のものを繰り返します）。ポッポさんの `result` は `sent`・`reacted`・`to_owner`・`returned`・`rejected`・`expired`・`not_sent` のどれかで、省くと `sent` です。
+- `replies` の無い相手役は LLM（`--actor`）が演じます。外のエージェントは Agent Card の説明と `instructions` を、ポッポさんは「判定と承認を経て投稿する係」という役と `instructions` を渡されます。ドライランでは決まった文で答えます。
+- 相手役への依頼と返事、返事が書いた文か LLM か（`by`）は、結果の `actors` に残ります。判定役にも見せます。ターン数は `turns`、呼び出し回数・トークン・時間は全ターンの合計です。
+- 相手役のぶれを除いて版を比べたいときは、`replies` を書いた場面を使います。
+
+## 本番の写しから試す
+
+Kubernetes で動いている本番の状態を手元に写し、修正したコードで、その状態から 1 ターン（`follow` なら返事を受けるまで）回します（[ADR 0052](../docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)）。
+
+### 写しを取る
+
+```sh
+# 今の状態: backup のジョブをその場で起こし、終わるのを待ってから持ってくる
+npm run eval -- pull --context <本番の context>
+# 毎日の backup の SQLite を使う（ファイルは常に最新の鏡）。stamp は backup の sqlite/state-<stamp>.sqlite の部分
+npm run eval -- pull --context <本番の context> --backup latest
+npm run eval -- pull --context <本番の context> --backup 20260927T203000Z
+npm run eval -- snapshots
+```
+
+| 指定 | 意味 |
+| --- | --- |
+| `--context C` | kubectl の context。省くと kubectl の今の選択 |
+| `--namespace N`・`--cronjob J` | 既定は `natsumi` と `natsumi-backup` |
+| `--backup <stamp>` | 毎日の backup の SQLite を選びます。`latest` はいちばん新しいもの。省くとジョブを起こします |
+| `--snapshots <dir>`・`--keep N` | 置き場（既定 `~/.local/share/natsumi-eval/snapshots`、0700）と、残す数（既定 3）。取るたびに古いものを消します |
+| `--kubectl <path>` | kubectl の場所 |
+
+取り方:
+
+1. backup の CronJob の定義を読み、NFS の場所と natsumi の image を知ります。
+2. （`--backup` が無ければ）`kubectl create job --from=cronjob/natsumi-backup` でジョブを起こし、終わるのを待ちます。
+3. なつみの PVC をマウントしない使い捨ての Pod を立て、backup の NFS を読み取り専用で読みます（root ですが、できるのは読むことだけです）。1 時間で自分で止まります。
+4. 許可リストの場所だけを tar で手元に流し、置き場に展開します。
+5. 使い捨ての Pod と、起こしたジョブを消します。なつみの Pod では何も動かしません。
+
+写すもの（許可リスト）:
+
+| 写しの中 | 本番のボリューム |
+| --- | --- |
+| `data/memory/` | 記憶（git の履歴を含む。人格と常時記憶もここ） |
+| `data/sources/`・`data/sources.git/` | `/sources` とその履歴 |
+| `data/work/` | `/work` |
+| `data/.natsumi/images/` | 返事に添えた画像 |
+| `data/.natsumi/state.sqlite` | SQLite の整合したコピー（backup の `sqlite/state-<stamp>.sqlite`） |
+| `pi/sessions/` | Pi の session |
+
+写さないもの: Pi のログイン（`auth.json`）と状態、設定、`/home/natsumi`、証明書、`data/.natsumi` のほかのファイル、そのほか許可リストに無いものすべて。
+SQLite の写しからは、端末の push の token（`push_registrations`）とログインの session（`client_sessions`）を空にし、空いた領域も消してから置きます。
+
+### 写しから始める場面
+
+```yaml
+start: { snapshot: latest }
+time: "2026-09-28T09:00:00+09:00"
+event:
+  mac_message: きのう頼んだ件、どうなった？
+actors:
+  wiki-keeper:
+    instructions: 頼まれた記事はまだ書いていない、と答える。
+follow: true
+checks:
+  - { id: replied, called: reply_to_mac }
+```
+
+- 回ごとに、写しを結果の `work/` の下にコピーしてから使います。写しそのものは変わりません。評価するブランチの migration は、そのコピーの SQLite に走ります。
+- session は、写しの SQLite が今の会話として指しているものを開きます。夜の切り替えより前の session は使いません。
+- 写しに残っていた未処理の出来事は失敗として閉じ、返事を待っていた外のエージェントへの依頼は待つのをやめた扱いにします（どちらも出来事は作りません）。評価するターンには、場面の出来事だけが渡ります。
+- `files`・`copy`・`edits`・`prompt`・`context.prelude` は、写しの上に重なります。
+- 渡す出来事は場面に手で書きます。本番の過去の出来事を再生することはしません。
+- 写しを使う場面はリポジトリの外（私的な場面）に置くのが基本です。`eval/scenes/replay-example` はリポジトリに置いた例で、写しが無ければ飛ばされます。
+
+### 外に作用させない仕組み
+
+写しを使う場面を回すときは、次の 3 つが必ず掛かります。
+
+1. **評価用の設定だけ。** 本番の設定は写さず、読みもしません。外のエージェントの相手は相手役（この process の中）で、token のファイルは存在しない場所を指します。Slack・APNs にはつながりません。
+2. **ネットワークからの隔離。** 評価のプロセス全体を bubblewrap の新しいネットワークの名前空間（loopback だけ）で動かし直します。
+   外へ出られるのは、外側の中継（HTTP の CONNECT）を通る道だけで、中継は評価するモデル・判定役・相手役のエンドポイントのホストとポートだけを通します（`openai-codex` は `chatgpt.com:443` と `auth.openai.com:443`）。
+   それ以外は名前の解決もされずに断られ、断った宛先は終わりに表示します。ファイルシステムは読み取り専用で、書けるのは結果の置き場、一時の置き場、ログインのファイルのあるディレクトリ（token の更新のため）だけです。
+   環境変数は、proxy の設定と、モデルのファイルが `apiKeyEnv` で名指しした変数、`NODE_EXTRA_CA_CERTS`・`SSL_CERT_FILE`（自前のエンドポイントの CA）のほかは渡しません。workspace の runner は外側で起動し、Unix socket で渡します。
+   中の Node は、起動時に環境の proxy から作った dispatcher を、Pi を読み込んだあとに戻します。Pi が読み込む undici は、proxy を知らない dispatcher に差し替えるからです。
+3. **起動時の拒否。** 次のものがあれば始めません。理由には場所だけを出し、値は出しません。
+   - 名前に `SLACK`・`APNS`・`A2A` を含む環境変数、または値が Slack の token・秘密鍵・JWT の形の環境変数
+   - 本番の秘密の置き場（`/run/secrets/natsumi`・`/run/secrets/natsumi-a2a` など）
+   - 使う写しの中の、Slack の token・秘密鍵・JWT の形の文字列（git のオブジェクトは圧縮されているので見ません）と、SQLite の push の token・ログインの session の行
+
+   手元の shell に `SLACK_WEBHOOK_URL` などがあると拒否されます。そのときは `env -u SLACK_WEBHOOK_URL npm run eval -- run …` のように外して回します。
+
+bubblewrap が user と network の名前空間を作れない環境では、写しを使う場面は回せません。
+
+### 結果の置き場
+
+写しを使う場面を含む回の結果は、既定で `~/.local/share/natsumi-eval/results/<label>/`（0700）に置きます。`--out` にリポジトリの中は指定できません。
+30 日より古い結果は、写しを使う回を始めるときに消します。集計と `compare` はほかの結果と同じです。
+
+```sh
+npm run eval -- run --scenes ~/natsumi-eval/scenes --model ~/natsumi-eval/qwen.json --judge ~/natsumi-eval/plus.json --runs 5 --label replay-before
+npm run eval -- compare ~/.local/share/natsumi-eval/results/replay-before ~/.local/share/natsumi-eval/results/replay-after
+```
+
 ## 私的な場面
 
 本番の文脈で試したいときは、リポジトリの外に場面のディレクトリを作り、`--scenes` で指定します。書き方はリポジトリの場面と同じです。
@@ -195,7 +327,7 @@ npm run eval -- run --scenes ~/natsumi-eval/scenes --model ~/natsumi-eval/qwen.j
 
 ### 本番の session の写しを取り出す
 
-評価の仕組みは本番に触れません。写しは本人が本番から取り出して置きます。
+本番の状態をまるごと使うなら、上の「本番の写しから試す」のほうが手軽です。session だけを手で写すときは、次のようにします。
 
 1. 本番の Pi の session は、設定の `pi.sessionDirectory` にある JSONL のファイルです。いま使っているものは、いちばん新しく書かれたものです（夜の切り替えで新しいファイルになります）。
    Kubernetes なら、たとえば `kubectl -n <namespace> exec <pod> -- ls -t <pi.sessionDirectory>` の先頭です。
@@ -210,5 +342,6 @@ npm run eval -- run --scenes ~/natsumi-eval/scenes --model ~/natsumi-eval/qwen.j
 
 - shell は手元のコマンドで動きます。本番の image にしか無いコマンド（`sdctl` の本体など）は動きません。image が `/usr/local/bin` に置くスクリプトは、Dockerfile の行を読んで同じ場所に置きます。
 - bubblewrap が pid namespace を作れない環境（コンテナの中など）では、手元の `/proc` を読み取り専用で見せます。`ps` に手元のプロセスが見え、回の後に残ったコマンドは止まりません。
-- 外のエージェント（A2A）にはつなぎません。`ask_agent` の相手がポッポさん以外なら、本番で設定が無いときと同じく断られます。
+- 外のエージェント（A2A）の本物にはつなぎません。相手役は本物の Wiki などを読みません。
+- 写しは許可リストの場所だけです。`/home/natsumi` などに頼るターンは、本番と違う動きをし得ます。
 - 生の Slack のメッセージから `sources_updated` の行を組み立てる形はまだありません。行を直接書きます。

@@ -1,3 +1,5 @@
+import type { ActorExchange } from './actors.ts';
+
 /**
  * One run of one scene, as a line of `runs.jsonl` (ADR 0051). It carries what the turn was handed and what it did, never
  * a key or an endpoint: the model is named by its provider and id alone.
@@ -15,7 +17,8 @@ export interface RunRecord {
   ms: number;
   /**
    * How the turn ended, as the loop records it (`ok`, `model-call-limit`, `timeout`, `model-error`), or `error` when the
-   * run itself could not be made; `error` then says why.
+   * run itself could not be made; `error` then says why. A turn that ended on a failed model call says why in `error`
+   * too, from the call's own message.
    */
   outcome: string;
   error?: string;
@@ -37,6 +40,12 @@ export interface RunRecord {
   replies: { kind: 'reply' | 'notice'; text: string; expression: string | null; call?: number }[];
   /** Requests to the dove, whether or not it took them. Nothing was sent anywhere. */
   dove: { message: string; ok: boolean }[];
+  /** How many turns were run (absent in results made before ADR 0052): 1, or more when the scene follows the actors' replies (ADR 0052). */
+  turns?: number;
+  /** What the actors were asked and answered: the stand-ins of the outside agents and the dove (ADR 0052). */
+  actors?: ActorExchange[];
+  /** The snapshot the run started from, by name, when it started from one. */
+  snapshot?: string;
   checks: CheckResult[];
   /** The run's own copy of the Pi session, outside the repository. */
   session?: string;
@@ -53,6 +62,8 @@ export interface ModelCallRecord {
   output: number;
   thinkingChars: number;
   text: string;
+  /** Why the call failed, as the provider said (`Connection error.`…), with the endpoint's host taken out. */
+  error?: string;
 }
 
 /** One tool call: the model call it was made in (1-based), what it was called with and what came back. */

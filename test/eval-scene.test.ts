@@ -153,3 +153,66 @@ test('the scenes kept in the repository all load', async () => {
   assert.deepEqual(sources?.requires, []);
   assert.equal(conditions(sources!).length, 10);
 });
+
+test('a scene may start from a snapshot, follow the replies for a few turns, and name who plays the agents', async () => {
+  await withScenes({
+    replay: `
+start: { snapshot: latest }
+follow: true
+actors:
+  wiki-keeper:
+    card: Wiki の管理人。記事を調べて答える。
+    instructions: デプロイは毎週木曜、と答える。
+  researcher:
+    replies:
+      - 調べました。架空の答えです。
+      - 二つ目の答えです。
+  poppo:
+    replies:
+      - ポッポ！ 届けたよ。
+      - { result: returned, text: ポッポ、これは届けられないよ。 }
+event: { mac_message: デプロイっていつ？ }
+`,
+    quiet: 'event: { ping: {} }\nfollow: { maxTurns: 2 }\n',
+  }, async root => {
+    const scene = await loadScene(join(root, 'replay'));
+    assert.deepEqual(scene.start, { snapshot: 'latest' });
+    assert.deepEqual(scene.follow, { maxTurns: 4 });
+    // Asking the dove is taken, as when Slack is configured, because a scene names someone to play it.
+    assert.equal(scene.dove, true);
+    assert.deepEqual(Object.keys(scene.actors).sort(), ['poppo', 'researcher', 'wiki-keeper']);
+    assert.deepEqual(scene.actors['wiki-keeper'], { name: 'wiki-keeper', card: 'Wiki の管理人。記事を調べて答える。',
+      instructions: 'デプロイは毎週木曜、と答える。', replies: [] });
+    assert.deepEqual(scene.actors.researcher!.replies, [{ text: '調べました。架空の答えです。' }, { text: '二つ目の答えです。' }]);
+    assert.ok(scene.actors.researcher!.card.length > 0, 'an agent without a card of its own still has one');
+    assert.deepEqual(scene.actors.poppo!.replies, [{ text: 'ポッポ！ 届けたよ。', result: 'sent' }, { text: 'ポッポ、これは届けられないよ。', result: 'returned' }]);
+
+    const quiet = await loadScene(join(root, 'quiet'));
+    assert.equal(quiet.start, undefined);
+    assert.deepEqual(quiet.follow, { maxTurns: 2 });
+    assert.deepEqual(quiet.actors, {});
+  });
+});
+
+test('a snapshot, a follow or an actor out of shape is refused with the place it went wrong', async () => {
+  const cases: [string, RegExp][] = [
+    ['event: { ping: {} }\nstart: { snapshot: "" }\n', /start\.snapshot/],
+    ['event: { ping: {} }\nstart: { snapshot: latest }\ncontext: { session: ./s.jsonl }\n', /context\.session/],
+    ['event: { ping: {} }\nfollow: { maxTurns: 0 }\n', /follow\.maxTurns/],
+    ['event: { ping: {} }\nfollow: false\n', /follow/],
+    ['event: { ping: {} }\nactors:\n  Wiki Keeper: { replies: [x] }\n', /actors\.Wiki Keeper/],
+    ['event: { ping: {} }\nactors:\n  poppo: { card: x }\n', /actors\.poppo: unknown key card/],
+    ['event: { ping: {} }\nactors:\n  poppo: { replies: [{ result: flew, text: x }] }\n', /actors\.poppo\.replies\[0\]\.result/],
+    ['event: { ping: {} }\nactors:\n  wiki: { replies: [{ result: sent, text: x }] }\n', /actors\.wiki\.replies\[0\]/],
+    ['event: { ping: {} }\nactors:\n  wiki: { voice: x }\n', /unknown key voice/],
+  ];
+  for (const [yaml, message] of cases) {
+    await withScenes({ bad: yaml }, async root => {
+      await assert.rejects(loadScene(join(root, 'bad')), (error: Error) => {
+        assert.ok(error instanceof SceneError, String(error));
+        assert.match(error.message, message);
+        return true;
+      });
+    });
+  }
+});
