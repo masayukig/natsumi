@@ -11,23 +11,25 @@ import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
 import { AgentRequests } from './agent-requests.ts';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
-import type { A2AConfig, LoopConfig } from './config.ts';
+import type { A2AConfig, CuratorConfig, LoopConfig } from './config.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
   type RotationRow, type Transaction } from './conversation-store.ts';
 import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
-import { COMPACTION_INSTRUCTIONS, composeSystemPrompt, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS } from './prompts.ts';
+import { COMPACTION_INSTRUCTIONS, composeSystemPrompt, CURATOR_SYSTEM_PROMPT, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS } from './prompts.ts';
 import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
-import { TurnStats, type Confusion, type TokenCounts, type TurnPlace } from './turn-stats.ts';
+import { TurnStats, type Confusion, type TokenCounts, type TurnKind, type TurnPlace } from './turn-stats.ts';
 import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
+import { chooseRotation, CURATOR_EVENT_KIND, CURATOR_SESSION_DIRECTORY, CurationRecord, curationBrief, curatorTools,
+  isRewritable } from './memory-curator.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
-import { isoAt, localDateTime } from './nightly.ts';
+import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 import { parseView, viewImage } from './view.ts';
@@ -135,7 +137,7 @@ export interface LoopDashboardState {
  */
 export interface TurnInProgress {
   turnId: string;
-  kind: 'events' | 'review';
+  kind: TurnKind;
   startedAt: string;
   eventKinds: string;
   eventIds: string[];
@@ -182,6 +184,11 @@ export interface LoopOptions {
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
    */
   loop: LoopConfig;
+  /**
+   * The memory curator that reorganizes memory after the nightly review (ADR 0055). Without it, or with it disabled, or
+   * without a workspace to work in, the night is the review alone.
+   */
+  curator?: CuratorConfig;
   /** The outside agents natsumi may ask (ADR 0035). Without it `ask_agent` is still there, and refuses. */
   a2a?: A2AConfig;
   /** Replaces the SDK client built from `a2a`. */
@@ -319,7 +326,11 @@ export class ThinkingLoop {
   /** For the dashboard (ADR 0049): the work in progress, the context as last measured, and the last compaction. */
   private working: NonNullable<LoopDashboardState['turn']> | undefined;
   /** Where the unit of work in progress began in the session record, and its events so far, for the dashboard. */
-  private workingPlace: { kind: 'events' | 'review'; mark: PlaceMark | undefined; eventIds: string[] } | undefined;
+  private workingPlace: { kind: TurnKind; mark: PlaceMark | undefined; eventIds: string[] } | undefined;
+  /** What is kept of the curator's nights (ADR 0055). */
+  private readonly curation: CurationRecord;
+  /** The curator's session while it runs, for a stop to abort it. */
+  private curatorSession: AgentSession | undefined;
   private measured: { tokens: number; at: number } | undefined;
   private compactedAt: number | undefined;
 
@@ -370,6 +381,7 @@ export class ThinkingLoop {
     this.chosen = this.routes.defaultRoute;
     this.fold = loop.turnFold;
     this.turnStats = new TurnStats(options.db);
+    this.curation = new CurationRecord(options.db, this.now);
     this.compactedAt = this.turnStats.lastCompactedTurnEnd();
   }
 
@@ -380,6 +392,7 @@ export class ThinkingLoop {
    */
   static async open(options: LoopOptions): Promise<ThinkingLoop> {
     const loop = new ThinkingLoop(options);
+    await loop.recoverCurator();
     await loop.memoryRepository.initialize(loop.store.carriedOverHandoff());
     // The repository holds it now, so the copy schema 8 set aside goes: the handoff lives in one place (ADR 0020).
     loop.store.clearCarriedOverHandoff();
@@ -413,7 +426,7 @@ export class ThinkingLoop {
     this.activityAt = this.now();
     let state: EventState = 'queued';
     const session = this.session!;
-    const reviewing = this.turn?.kind === 'review' || this.isRotationQueuedFirst();
+    const reviewing = this.rotating || this.turn?.kind === 'review' || this.isRotationQueuedFirst();
     if (this.turn?.kind === 'events' && session.isStreaming) {
       // Steered in at the next model-call boundary; the thought in progress is not interrupted (Q1).
       this.beginHandling(eventId, row.message_id, false);
@@ -672,6 +685,7 @@ export class ThinkingLoop {
   close(): Promise<void> {
     this.closing ??= (async () => {
       this.agents.close();
+      if (this.curatorSession) await this.curatorSession.abort();
       if (this.running && this.session) {
         this.session.abortCompaction();
         await this.session.abort();
@@ -1154,6 +1168,9 @@ export class ThinkingLoop {
       }
       this.store.saveHandoffCommit(rotationId, handoffCommit);
       setRotation('switching');
+      // natsumi is asleep: the curator reorganizes memory before the new session is made (ADR 0055). Whatever becomes of
+      // it, the switch goes on; a stop during it is the only thing that holds the switch, as it would anyway.
+      if (!this.closing) await this.curate();
       if (this.closing) {
         // The handoff is kept; the next start finishes this switch.
         this.store.setEventState(eventId, 'failed', 'stopped');
@@ -1179,6 +1196,140 @@ export class ThinkingLoop {
     this.rotating = false;
     if (this.avatar.by === 'server' && this.avatar.expression === 'sleepy') this.setAvatar(this.queue.length > 0 ? 'thinking' : 'neutral', 'server');
     finish(outcome);
+  }
+
+  /**
+   * A curator run a stop cut off leaves its changes uncommitted: they are thrown away before anything else reads
+   * memory (ADR 0055). The curator commits nothing before its end, and it runs only on a clean tree, so what is thrown
+   * away is its own and nothing else.
+   */
+  private async recoverCurator(): Promise<void> {
+    let running: string | undefined;
+    try { running = this.curation.runningSince(); } catch { return; }
+    if (!running) return;
+    try {
+      await this.memoryRepository.discardChanges();
+      this.curation.end();
+      this.log('memory curator: a run was cut off by a stop; its changes were thrown away');
+    } catch {
+      this.log('memory curator: the changes of a run cut off by a stop could not be thrown away');
+    }
+  }
+
+  /**
+   * The memory curator's night (ADR 0055): a session of its own, with no personality and nothing of the day, one turn
+   * under its own limits, and one commit or none. Never throws, and never holds up the switch it runs inside.
+   */
+  private async curate(): Promise<void> {
+    const config = this.options.curator;
+    if (!config?.enabled || !this.shell) return;
+    const turnId = `turn-${randomUUID()}`;
+    const startedAt = this.now();
+    const route = this.routes.list.find(candidate => candidate.name === config.route) ?? this.route!;
+    this.working = { turnId, startedAt: isoAt(startedAt), eventKinds: CURATOR_EVENT_KIND, phase: 'turn' };
+    this.workingPlace = { kind: 'curator', mark: undefined, eventIds: [] };
+    let run: CuratorRun = { outcome: 'failed', calls: 0, usage: { input: 0, cacheRead: 0, output: 0 }, contextTokens: null, toolErrors: 0 };
+    try {
+      run = await this.runCurator(config, route);
+    } catch {
+      this.log('memory curator: the run failed');
+      try { await this.memoryRepository.discardChanges(); this.curation.end(); } catch { /* the next start throws it away */ }
+    }
+    if (run.outcome === 'ok') this.log('memory curator: done');
+    else this.log(`memory curator: nothing was kept (${run.outcome})`);
+    try {
+      this.turnStats.record({
+        turnId, kind: 'curator', eventIds: [], ...(run.place ? { place: run.place } : {}), startedAt, endedAt: this.now(),
+        receivedAt: startedAt, fold: 'off', route: route.name, eventKinds: CURATOR_EVENT_KIND, outcome: run.outcome,
+        modelCalls: run.calls, usage: run.usage, contextTokens: run.contextTokens, compacted: false,
+        confusion: { repeatedCalls: 0, toolErrors: run.toolErrors, doveRefusals: 0, unansweredMessages: 0 },
+      });
+    } catch {
+      this.log('thinking loop: the numbers of a turn could not be recorded');
+    }
+  }
+
+  private async runCurator(config: CuratorConfig, route: LoopRoute): Promise<CuratorRun> {
+    const empty = { calls: 0, usage: { input: 0, cacheRead: 0, output: 0 }, contextTokens: null, toolErrors: 0 };
+    // Everything the curator changes is thrown away on a failure, so it starts only where that throws away nothing else.
+    if (!(await this.memoryRepository.isClean())) return { outcome: 'memory-not-clean', ...empty };
+    if (!this.modelRuntime!.getModel(route.target.provider, route.target.model) || !(await this.isReady(route))) {
+      return { outcome: 'route-unavailable', ...empty };
+    }
+    const files = await this.memoryRepository.listFiles();
+    const existing = files.map(file => file.path);
+    const changed = (await this.memoryRepository.changedSince(this.curation.base())).filter(isRewritable);
+    const rotated = chooseRotation(existing, this.curation.curatedAt(), new Set(changed), config.rotateFiles);
+    const brief = curationBrief({ date: localDate(this.now(), this.options.loop.timeZone), fileMaxChars: this.options.loop.memoryFileMaxChars,
+      files, changed, rotated });
+
+    let note: string | undefined;
+    const tools = curatorTools({
+      runShell: command => this.shell!.run(command),
+      capture: command => this.shell!.capture(command),
+      writeChangeNote: text => {
+        const check = checkOutgoingText(text);
+        if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
+        note = text;
+        return { ok: true, text: '今夜のコミットメッセージにします。書き直すなら、もう一度呼んでください。' };
+      },
+    });
+    const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
+    this.curation.begin();
+    const session = await createPersistedPiSession({
+      cwd: dataDirectory, agentDir: agentDirectory, sessionDir: join(sessionDirectory, CURATOR_SESSION_DIRECTORY),
+      modelRuntime: this.modelRuntime!, target: route.target, systemPrompt: CURATOR_SYSTEM_PROMPT, thinkingLevel: this.thinkingLevel(),
+      tools: { names: tools.map(tool => tool.name), definitions: tools },
+    });
+    this.curatorSession = session;
+    this.options.configureSession?.(session);
+    const mark = await this.markPlace(session);
+    if (this.workingPlace) this.workingPlace.mark = mark;
+    let calls = 0;
+    let limited = false;
+    let timedOut = false;
+    const finish = session.agent.finishTurn;
+    session.agent.finishTurn = async (turn, signal) => {
+      const decision = await finish?.(turn, signal) ?? undefined;
+      if (turn.message.stopReason === 'error' || turn.message.stopReason === 'aborted') return decision;
+      calls += 1;
+      if (turn.message.stopReason === 'toolUse' && calls >= config.modelCalls) { limited = true; return { action: 'end' }; }
+      return decision;
+    };
+    const timer = setTimeout(() => { timedOut = true; void session.abort(); }, config.timeoutMinutes * 60_000);
+    try {
+      await session.prompt(brief, { expandPromptTemplates: false });
+    } catch {
+      // Judged below from what Pi recorded.
+    } finally { clearTimeout(timer); }
+    this.curatorSession = undefined;
+    const replies = assistantMessages(session.messages);
+    const last = replies.at(-1);
+    const toolErrors = session.messages.filter(message => message.role === 'toolResult' && message.isError).length;
+    const first = replies[0]?.usage;
+    const place = await this.placeSince(session, mark);
+    session.dispose();
+    const counted = { calls, usage: sumUsage(replies), contextTokens: first ? first.input + first.cacheRead + first.cacheWrite : null,
+      toolErrors, ...(place ? { place } : {}) };
+    const failure = limited ? 'model-call-limit' : timedOut ? 'timeout' : this.closing ? 'stopped'
+      : !last || last.stopReason !== 'stop' ? 'model-error' : undefined;
+    if (failure) {
+      await this.memoryRepository.discardChanges();
+      this.curation.end();
+      return { outcome: failure, ...counted };
+    }
+    const outcome = await this.memoryRepository.commitCuration(note ? { message: note } : {});
+    if (outcome.rejected.length > 0) {
+      for (const file of outcome.rejected) this.log(`memory curator: ${file.path}: ${file.reason}`);
+      this.curation.end();
+      return { outcome: 'rejected', ...counted };
+    }
+    const now = await this.memoryRepository.listFiles();
+    const present = now.map(file => file.path);
+    const kept = new Set(present);
+    this.curation.succeed(await this.memoryRepository.head(),
+      [...changed, ...rotated, ...outcome.files].filter(path => kept.has(path) && isRewritable(path)), present);
+    return { outcome: 'ok', ...counted };
   }
 
   /** Points the conversation at the new session and marks the switch done, together. */
@@ -1610,6 +1761,11 @@ function failureReason(error: unknown): string {
   const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
   const characters = [...message];
   return `${kind}: ${characters.length <= 200 ? message : `${characters.slice(0, 199).join('')}…`}`;
+}
+
+/** How the curator's night went, and what it cost (ADR 0055). */
+interface CuratorRun {
+  outcome: string; calls: number; usage: TokenCounts; contextTokens: number | null; toolErrors: number; place?: TurnPlace;
 }
 
 /** A turn once it has ended: its events, how it ended, and what it cost (ADR 0047). */

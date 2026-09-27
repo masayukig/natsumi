@@ -47,7 +47,7 @@ export interface TurnRecord {
   place?: TurnPlace;
 }
 
-export type TurnKind = 'events' | 'review';
+export type TurnKind = 'events' | 'review' | 'curator';
 
 /**
  * Where a unit of work (the turn, its memo and the compaction after it) is in the Pi session record (ADR 0049): the
