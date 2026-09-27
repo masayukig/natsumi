@@ -119,6 +119,9 @@ export class Sources {
         await this.git(['config', 'gc.auto', '0']);
         await this.git(['config', 'core.logAllRefUpdates', 'false']);
       }
+      // The work tree is given on every call, as each reader sees it. One written here would name this server's path,
+      // which the workspace does not have: init writes it, and an earlier server left it in place.
+      await this.git(['config', '--unset-all', 'core.worktree'], { allowFailure: true });
       await mkdir(join(gitDirectory, 'info'), { recursive: true, mode: 0o750 });
       await writeFile(join(gitDirectory, 'info', 'exclude'), this.excludes(), { mode: 0o640 });
       const refs = await this.refs('refs/seen/');

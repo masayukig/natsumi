@@ -311,6 +311,29 @@ test('sources-diff reads the history where the workspace sees it, though the ser
   assert.doesNotMatch(inside, /二回目/);
 });
 
+test('the server leaves no work tree in the history\'s config, and takes out one an earlier server left', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dev/a.jsonl', '{"text":"x"}\n');
+  await f.sources.prepare();
+  const worktree = () => run('git', ['--git-dir', f.gitDirectory, 'config', '--get', 'core.worktree']);
+  await assert.rejects(worktree(), 'a new history names no work tree');
+  await run('git', ['--git-dir', f.gitDirectory, 'config', 'core.worktree', f.directory]);
+  let clock = MORNING;
+  const again = new Sources({ db: f.db, directory: f.directory, gitDirectory: f.gitDirectory, timeZone: TIME_ZONE,
+    awakeHours: { start: '08:00', end: '23:00' }, activity: SOURCES_DEFAULTS.activity, historyDays: 7, now: () => clock });
+  let raised = 0;
+  again.connect(() => { raised += 1; });
+  again.register({ name: 'chat', depth: 2 });
+  await again.prepare();
+  await assert.rejects(worktree(), 'the one an earlier server left is gone');
+  // And the server still sees its own work tree without it: a change there raises as before.
+  await f.append('chat/work/dev/a.jsonl', '{"text":"y"}\n');
+  await again.tick();
+  clock += 61 * MINUTE;
+  await again.tick();
+  assert.equal(raised, 1);
+});
+
 test('sources-diff refuses a path outside /sources with an error and a non-zero exit, and shows nothing', async t => {
   const f = await setup(t);
   await f.write('chat/work/dev/a.jsonl', '{"text":"x"}\n');
