@@ -133,10 +133,12 @@ test('with the cookie, /dashboard shows the page under a strict CSP and the usua
   assert.ok(!/<style|\sstyle=|\son[a-z]+=/i.test(res.text));
   assert.match(res.text, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
 
-  // The frame: the sections, of which only the current state is there yet, and the logout.
+  // The frame: the sections, of which only the graphs are still to come, and the logout.
   assert.match(res.text, /いまの状態/);
-  for (const later of ['失敗と待ち', '統計']) assert.match(res.text, new RegExp(`${later}[^<]*<[^>]*>準備中`));
-  assert.match(res.text, /<a href="\/dashboard\/turns">ターン<\/a>/);
+  assert.match(res.text, /統計<small>準備中/);
+  for (const [label, href] of [['ターン', 'turns'], ['失敗と待ち', 'waits'], ['一行メモ', 'memos'], ['ポッポさん', 'dove'], ['端末', 'devices']]) {
+    assert.match(res.text, new RegExp(`<a href="/dashboard/${href}">${label}</a>`));
+  }
   assert.match(res.text, /<form method="post" action="\/dashboard\/logout">/);
   assert.match(res.text, /data-refresh="\/dashboard\/status"/);
 }));
@@ -297,8 +299,8 @@ test('the cookie is Secure unless the public origin is plain http on loopback, w
   assert.match(dashboardCookie('', 0, now, true), /^natsumi_dashboard=; Path=\/dashboard; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;/);
 });
 
-/** An owner message sent the way the app sends it, over the WebSocket with the app's session; resolves once sent. */
-async function sendAsApp(f: Fixture, text: string): Promise<WebSocket> {
+/** The app connected over the WebSocket with its session and synced, as a device; resolves with its device ID. */
+async function connectAsApp(f: Fixture): Promise<{ ws: WebSocket; deviceId: unknown }> {
   const { token } = await login(f);
   const ws = new WebSocket(f.wsUrl, { headers: { authorization: `Bearer ${token}` } });
   await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
@@ -311,6 +313,12 @@ async function sendAsApp(f: Fixture, text: string): Promise<WebSocket> {
     deviceId = (replies.find(reply => reply.requestId === 'sync-1')?.payload as { deviceId?: unknown } | undefined)?.deviceId;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
+  return { ws, deviceId };
+}
+
+/** An owner message sent the way the app sends it, over the WebSocket with the app's session; resolves once sent. */
+async function sendAsApp(f: Fixture, text: string): Promise<WebSocket> {
+  const { ws, deviceId } = await connectAsApp(f);
   ws.send(JSON.stringify({ v: 1, requestId: 'send-1', deviceId, type: 'conversation.send', payload: { text } }));
   return ws;
 }
@@ -399,4 +407,87 @@ test('the turns, a turn and its images need the cookie; unknown turns, images an
     '/dashboard/turns/..%2F..%2Fetc', '/dashboard/turns?page=0', '/dashboard/turns?page=x']) {
     assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
   }
+}));
+
+// The lists (ADR 0049): the failures and the waits, the memos, the dove's posts and the devices.
+
+test('the lists need the cookie, and the refreshed failures and waits answer 401 instead of starting a login', () => withFixture(async f => {
+  for (const path of ['/dashboard/waits', '/dashboard/memos', '/dashboard/dove', '/dashboard/devices']) assertLoginAgain(await f.fetch(path), f);
+  const res = await f.fetch('/dashboard/waits/live');
+  assert.equal(res.status, 401);
+  assert.equal(res.headers.get('location'), null);
+  const cookie = await browserLogin(f);
+  for (const path of ['/dashboard/memos?page=0', '/dashboard/memos?page=x', '/dashboard/dove?page=-1', '/dashboard/devices/other', '/dashboard/waits/other']) {
+    assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
+  }
+}));
+
+test('the failures and waits show what the state database holds, and refresh as a fragment', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    db.prepare(`INSERT INTO loop_events (event_id, kind, state, reason, created_at, updated_at)
+      VALUES ('event-failed', 'mac_message', 'failed', 'model-error', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z')`).run();
+    db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, created_at, updated_at)
+      VALUES ('check-1', ?, 'k', '2026-01-01T03:00:00.000Z', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(`架空の確認 ${HOSTILE}`);
+  } finally { db.close(); }
+  const page = await f.fetch('/dashboard/waits', withCookie(cookie));
+  assert.equal(page.status, 200, page.text);
+  assert.match(page.text, /data-refresh="\/dashboard\/waits\/live"/);
+  assert.match(page.text, /model-error/);
+  assert.match(page.text, /架空の確認 &lt;img/);
+  assert.ok(!page.text.includes('<img src=x'));
+  const live = await f.fetch('/dashboard/waits/live', withCookie(cookie));
+  assert.equal(live.status, 200);
+  assert.ok(!live.text.includes('<html'));
+  assert.match(live.text, /^<section id="waits"/);
+  assert.match(live.text, /model-error/);
+}));
+
+test('the memos page shows the memo each turn left, read from its record', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  f.model.memo = () => `架空のメモ ${HOSTILE}`;
+  const ws = await sendAsApp(f, '架空の質問');
+  try {
+    const call = await f.model.next();
+    call.delta('済んだ');
+    call.finish();
+    const deadline = Date.now() + 5_000;
+    let res = await f.fetch('/dashboard/memos', withCookie(cookie));
+    while (!res.text.includes('架空のメモ') && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      res = await f.fetch('/dashboard/memos', withCookie(cookie));
+    }
+    assert.equal(res.status, 200);
+    assert.match(res.text, /架空のメモ &lt;img/);
+    assert.ok(!res.text.includes('<img src=x'));
+    assert.match(res.text, /<a href="\/dashboard\/turns\/turn-[0-9a-f-]+">/);
+  } finally { ws.close(); }
+}));
+
+test('the dove page lists the posts with their words', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, reference, text, verdict, state, created_at, updated_at)
+      VALUES ('post-1', 'post', 'fixture-space', 'C0FIXTURE', '#架空', ?, 'send', 'sent', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(`架空の投稿 ${HOSTILE}`);
+  } finally { db.close(); }
+  const res = await f.fetch('/dashboard/dove', withCookie(cookie));
+  assert.equal(res.status, 200, res.text);
+  assert.match(res.text, /架空の投稿 &lt;img/);
+  assert.match(res.text, /C0FIXTURE/);
+  assert.ok(!res.text.includes('<img src=x'));
+}));
+
+test('the devices page shows a connected device and the sessions, this browser’s among them, with no token', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const { ws } = await connectAsApp(f);
+  try {
+    const res = await f.fetch('/dashboard/devices', withCookie(cookie));
+    assert.equal(res.status, 200, res.text);
+    assert.match(res.text, /つながっている/);
+    assert.match(res.text, /このブラウザ/);
+    assert.match(res.text, /有効 2/, 'this browser’s session and the app’s');
+    assert.ok(!res.text.includes(cookie), 'the token is never shown');
+  } finally { ws.close(); }
 }));

@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
+import { listDovePosts, readDevices, readWaits } from './dashboard-records.ts';
 import {
-  LOGOUT_PATH, messagePage, refusedPage, renderStatus, SIGNED_OUT_PATH, signedInPage, signedOutPage, STATIC_FILES, STATUS_PATH,
-  statusPage, TURNS_PATH, type DashboardStatus,
+  DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH, signedInPage,
+  signedOutPage, STATIC_FILES, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
 import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
@@ -12,7 +14,7 @@ import type { Html } from './html.ts';
 import type { SessionStore } from './sessions.ts';
 import { checkHealth, readStatus } from './status.ts';
 import type { LoopDashboardState, TurnInProgress } from './thinking-loop.ts';
-import { findTurn, listTurns, readTurn, turnImages } from './turn-log.ts';
+import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } from './turn-log.ts';
 
 /**
  * The read-only dashboard in the browser (ADR 0049), under /dashboard.
@@ -53,6 +55,10 @@ export interface DashboardOptions {
   /** Where the Pi session records are; nothing outside it is opened. */
   sessionDirectory: string;
   timeZone: string;
+  /** When the nightly switch runs (ADR 0009), or false when it is off; the failures and waits say when it is next. */
+  nightlyRotationAt: string | false;
+  /** Whether a device has a live connection now; the devices list shows it. */
+  isConnected: (deviceId: string) => boolean;
   now: () => number;
 }
 
@@ -112,8 +118,8 @@ export class Dashboard {
     const session = this.session(request);
     if (!session) {
       const cleared: Record<string, string> = cookieHeader(request) ? { 'set-cookie': this.cookie('', 0) } : {};
-      // The refreshed section is fetched by the script, which cannot follow a login; it reloads the page instead.
-      if (path === STATUS_PATH) return send(response, 401, messagePage('ログインが切れました'), cleared);
+      // A refreshed section is fetched by the script, which cannot follow a login; it reloads the page instead.
+      if (REFRESHED_PATHS.has(path)) return send(response, 401, messagePage('ログインが切れました'), cleared);
       const outcome = this.options.login.startBrowser();
       if ('location' in outcome) {
         response.writeHead(302, { location: outcome.location, ...cleared }).end();
@@ -125,6 +131,14 @@ export class Dashboard {
     if (path === DASHBOARD_PATH) return send(response, 200, statusPage(await this.status()), renewed);
     if (path === STATUS_PATH) return send(response, 200, renderStatus(await this.status()), renewed);
     if (path === TURNS_PATH) return this.turns(response, url, renewed);
+    if (path === WAITS_PATH) return send(response, 200, waitsPage(this.waits(), this.options.timeZone), renewed);
+    if (path === WAITS_LIVE_PATH) return send(response, 200, renderWaits(this.waits(), this.options.timeZone), renewed);
+    if (path === MEMOS_PATH) return this.memos(response, url, renewed);
+    if (path === DOVE_PATH) return this.dove(response, url, renewed);
+    if (path === DEVICES_PATH) {
+      const view = readDevices(this.options.db, { now: this.options.now(), isConnected: this.options.isConnected });
+      return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone), renewed);
+    }
     const turn = TURN_ROUTE.exec(path);
     if (turn) return this.turn(response, turn[1]!, turn[2] === undefined ? undefined : Number(turn[2]), renewed);
     send(response, 404, messagePage('見つかりません', true), renewed);
@@ -132,10 +146,34 @@ export class Dashboard {
 
   /** The list of turns, from SQLite alone, a page at a time. */
   private turns(response: ServerResponse, url: URL, headers: Record<string, string>): void {
-    const asked = url.searchParams.get('page');
-    const page = asked === null ? 1 : /^[1-9][0-9]{0,5}$/.test(asked) ? Number(asked) : 0;
+    const page = pageNumber(url);
     if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
     send(response, 200, turnsPage({ ...listTurns(this.options.db, page), page }, this.options.timeZone), headers);
+  }
+
+  private waits() {
+    const { db, now, nightlyRotationAt, timeZone } = this.options;
+    return readWaits(db, { now: now(), nightlyRotationAt, timeZone });
+  }
+
+  /**
+   * A page of memos: the turns from SQLite, and each memo read from the end of its turn's place, one after another, so
+   * a page reads at most MEMOS_PER_PAGE bounded windows (ADR 0049).
+   */
+  private async memos(response: ServerResponse, url: URL, headers: Record<string, string>): Promise<void> {
+    const page = pageNumber(url);
+    if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
+    const { rows, more } = listMemoTurns(this.options.db, page);
+    const source = { db: this.options.db, sessionDirectory: this.options.sessionDirectory };
+    const memos = [];
+    for (const row of rows) memos.push({ row, memo: await readMemo(source, row) });
+    send(response, 200, memosPage({ page, more, memos }, this.options.timeZone), headers);
+  }
+
+  private dove(response: ServerResponse, url: URL, headers: Record<string, string>): void {
+    const page = pageNumber(url);
+    if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
+    send(response, 200, dovePage({ ...listDovePosts(this.options.db, page), page }, this.options.timeZone), headers);
   }
 
   /** A turn read from the session record, recorded or still running; or one of its images. */

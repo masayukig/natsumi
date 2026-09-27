@@ -12,6 +12,14 @@ export const STATUS_PATH = '/dashboard/status';
 export const LOGOUT_PATH = '/dashboard/logout';
 export const SIGNED_OUT_PATH = '/dashboard/signed-out';
 export const TURNS_PATH = '/dashboard/turns';
+export const WAITS_PATH = '/dashboard/waits';
+/** The failures and waits alone, for the script to put in place; like STATUS_PATH it answers 401, never a login. */
+export const WAITS_LIVE_PATH = '/dashboard/waits/live';
+export const MEMOS_PATH = '/dashboard/memos';
+export const DOVE_PATH = '/dashboard/dove';
+export const DEVICES_PATH = '/dashboard/devices';
+/** The fragments the script refreshes: without a live session they answer 401, as the script cannot follow a login. */
+export const REFRESHED_PATHS: ReadonlySet<string> = new Set([STATUS_PATH, WAITS_LIVE_PATH]);
 
 /** A turn's page, recorded or in progress (ADR 0049). */
 export const turnPath = (turnId: string) => `${TURNS_PATH}/${encodeURIComponent(turnId)}`;
@@ -20,7 +28,10 @@ export const turnPath = (turnId: string) => `${TURNS_PATH}/${encodeURIComponent(
 const SECTIONS: { label: string; href?: string }[] = [
   { label: 'いまの状態', href: '/dashboard' },
   { label: 'ターン', href: TURNS_PATH },
-  { label: '失敗と待ち' },
+  { label: '失敗と待ち', href: WAITS_PATH },
+  { label: '一行メモ', href: MEMOS_PATH },
+  { label: 'ポッポさん', href: DOVE_PATH },
+  { label: '端末', href: DEVICES_PATH },
   { label: '統計' },
 ];
 

@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { REFLECTION_REQUEST } from './prompts.ts';
 import type { TurnInProgress } from './thinking-loop.ts';
 import type { TurnKind, TurnPlace } from './turn-stats.ts';
 
@@ -79,6 +80,68 @@ function turnRow(row: Record<string, unknown>): TurnRow {
     contextTokens: count(row.context_tokens), reflectionMs: count(row.reflection_ms), compacted: row.compacted === 1,
     toolErrors: row.tool_errors as number, place, eventIds,
   };
+}
+
+/** The turns that asked for a memo in a page of memos (ADR 0047); each memo is read from its record, so fewer than the turns. */
+export const MEMOS_PER_PAGE = 20;
+/**
+ * How far back from the end of its turn a memo is looked for. It is the turn's last message but for the compaction
+ * after it, so the first look is short; a long summary may take the second. A turn whose memo is further back than the
+ * last is not read on: the list says so and links to the turn.
+ */
+const MEMO_WINDOWS = [16 * 1024, 128 * 1024];
+export const MEMO_READ_LIMIT_BYTES = 1024 * 1024;
+
+export type MemoReading =
+  | { found: true; text: string }
+  /**
+   * `estimated`: the turn is from before the places, and finding it means reading the record from the start.
+   * `moved`: the bytes no longer end at the turn's last entry. `too-far`: no memo request within the limit.
+   * `no-memo`: the turn asked for none it got an answer to.
+   */
+  | { found: false; reason: 'estimated' | 'no-file' | 'moved' | 'too-far' | 'no-memo' };
+
+/** The ordinary turns that asked for a memo, newest first, a page at a time. */
+export function listMemoTurns(db: DatabaseSync, page: number): { rows: TurnRow[]; more: boolean } {
+  const rows = db.prepare(`SELECT * FROM turn_stats WHERE kind = 'events' AND reflection_ms IS NOT NULL
+    ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?`).all(MEMOS_PER_PAGE + 1, (page - 1) * MEMOS_PER_PAGE) as Record<string, unknown>[];
+  return { rows: rows.slice(0, MEMOS_PER_PAGE).map(turnRow), more: rows.length > MEMOS_PER_PAGE };
+}
+
+/**
+ * A turn's memo, read backwards from the end of its place a window at a time, never past its start nor further than
+ * MEMO_READ_LIMIT_BYTES: the answer to the last memo request in the turn. The turn's steps before it are not read.
+ */
+export async function readMemo(source: TurnSource, row: TurnRow): Promise<MemoReading> {
+  const place = row.place;
+  if (!place) return { found: false, reason: 'estimated' };
+  const path = await existing(source.sessionDirectory, place.sessionFile);
+  if (!path) return { found: false, reason: 'no-file' };
+  const span = place.endOffset - place.startOffset;
+  for (const window of [...MEMO_WINDOWS, MEMO_READ_LIMIT_BYTES]) {
+    const whole = window >= span;
+    const from = whole ? place.startOffset : place.endOffset - window;
+    const entries: RecordEntry[] = [];
+    let first = true;
+    for await (const line of lines(path, from, place.endOffset)) {
+      // Unless the window begins at the turn's start, its first line is the tail of one cut in two.
+      if (first && !whole) { first = false; continue; }
+      first = false;
+      const entry = parse(line);
+      if (entry) entries.push(entry);
+    }
+    // A window inside one long line has no whole entry yet: the next one looks further.
+    if (entries.length === 0 && !whole) continue;
+    if (entries.at(-1)?.id !== place.lastEntryId) return { found: false, reason: 'moved' };
+    const asked = entries.findLastIndex(entry => entry.type === 'message'
+      && (entry.message as { role?: string } | undefined)?.role === 'user' && contentText((entry.message as { content?: unknown }).content) === REFLECTION_REQUEST);
+    if (asked >= 0) {
+      const answer = entries.slice(asked + 1).find(entry => entry.type === 'message' && (entry.message as { role?: string } | undefined)?.role === 'assistant');
+      return answer ? { found: true, text: contentText((answer.message as { content?: unknown }).content) } : { found: false, reason: 'no-memo' };
+    }
+    if (whole) return { found: false, reason: 'no-memo' };
+  }
+  return { found: false, reason: 'too-far' };
 }
 
 /** The entries of a recorded turn, or of the one in progress. */

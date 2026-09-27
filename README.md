@@ -250,7 +250,7 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身を見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、端末を見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は `/dashboard` にだけ送られる cookie に載ります。最後に使ってから 30 日で切れ、開くたびに延びます。
@@ -268,7 +268,22 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   出来事やツールの結果に入っている画像（PNG・JPEG・GIF・WebP）は、`/dashboard` の下の URL から出します。
 - この版より前に記録されたターンは、session のファイルの中の位置を持っていません。時刻と `<events>` の区切りから対応付け、
   「推定」と印を付けて出します。境目がずれていることがあります。
-- 失敗と待ち、統計は準備中です。
+- 「失敗と待ち」（`/dashboard/waits`）は、次の節を並べ、10 秒ごとに更新します。どれも最大 20 件です。
+  - 失敗した出来事（`loop_events` の failed）と理由。どのターンで扱ったかが記録にあれば、その詳細へ移れます。
+  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・夜の振り返りの `no-handoff` など）。
+  - 承認待ち。何の承認か（投稿先・下書き・判定・引っかかった問題点）と期限です。承認はこれまでどおりアプリで行います。
+  - 予約した確認（self-check）の予定と理由、次の夜の切り替えの予定時刻（`loop.nightlyRotationAt`）。
+  - 外のエージェントへの依頼。相手、状態（waiting・input-required・completed・failed・gave-up）、送った時刻と最後の変化。まだ続いているものが先です。
+  - 夜の session の切り替えの結果と、失敗の理由。
+- 「一行メモ」（`/dashboard/memos`）は、ターンの終わりに書いた一行メモを新しい順に 20 件ずつ、全文で出します。
+  一覧は SQLite から作り、メモは session のファイルのうち、そのターンの位置の終わりの付近（最大 1MB）だけを読みます。
+  位置を持つ前の「推定」のターンは、ファイルを先頭から探すことになるので一覧では読みません。そのターンの詳細で見られます。
+- 「ポッポさん」（`/dashboard/dove`）は、ポッポさんへの依頼を新しい順に 50 件ずつ出します。投稿かリアクションか、チャンネル、
+  判定と問題点ごとの点数、状態、投稿先、時刻、下書きの全文と、本人が直して送った文です。
+- 「端末」（`/dashboard/devices`）は、端末ごとの最後に接続した時刻、いまつながっているか、push の登録（APNs の環境と時刻）と、
+  ログインのセッション（ダッシュボードのものを含む）の件数、最後の利用、期限を出します。token、ハッシュ、鍵は出しません。
+  最後の利用は、使うたびに延びる期限から逆算した値で、1 時間の幅があります。
+- 統計は準備中です。
 
 ### GitHub OAuth App を作る
 
