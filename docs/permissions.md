@@ -57,7 +57,7 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | --- | --- | --- | --- |
 | Pi の認証 | `pi.authPath` | モデルの OAuth の credential。Pi が refresh で書き換えます | [0004](adr/0004-pi-tool-and-voice-boundaries.md) |
 | ACME のアカウント鍵と証明書の鍵 | data directory の `.natsumi/acme/`（ディレクトリ 0700、ファイル 0600） | `acme` を使うときだけ | [0007](adr/0007-acme-and-fixed-ipv6.md) |
-| ログインのセッション | `.natsumi/state.sqlite` | bearer token の SHA-256 だけを持ちます。token そのものは持ちません | [0006](adr/0006-github-login-and-transport.md)、[0030](adr/0030-a-session-that-lasts-while-it-is-used.md) |
+| ログインのセッション | `.natsumi/state.sqlite` | bearer token（ダッシュボードでは cookie に載せたセッション）の SHA-256 だけを持ちます。token そのものは持ちません | [0006](adr/0006-github-login-and-transport.md)、[0030](adr/0030-a-session-that-lasts-while-it-is-used.md)、[0049](adr/0049-a-read-only-dashboard-in-the-browser.md) |
 | なつみが渡した画像の写し | data directory の `.natsumi/images/`（ディレクトリ 0700、ファイル 0600）と `.natsumi/state.sqlite` | ポッポさんへの依頼と `reply_to_mac` の `images` で `/work` から写し取った画像。承認に見せ、Slack に送り、会話の返事で本人に見せるのはこれです。会話と同じく消しません。作業環境からは見えません | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md)・[0045](adr/0045-showing-the-owner-images-with-a-reply.md) |
 | iPhone の device token | `.natsumi/state.sqlite` | APNs に送る宛先。ログには出しません | [0029](adr/0029-push-notifications-on-the-iphone.md) |
 | TLS の鍵（ファイルで渡すとき） | `listen.tls.keyFile` | 読めないと起動を止めます。Ingress の後ろでは要りません | [0006](adr/0006-github-login-and-transport.md)、[0033](adr/0033-running-on-kubernetes.md) |
@@ -69,11 +69,13 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | 口 | 相手 | 認証 | 返すもの | ADR |
 | --- | --- | --- | --- | --- |
 | `GET /auth/github/start` | Mac・iPhone のアプリ（ブラウザの画面） | なし。アプリの state と PKCE の challenge を受け取り、サーバーの state（1 回限り、10 分）と PKCE を付けて GitHub へ送ります | GitHub の認可画面への redirect | [0006](adr/0006-github-login-and-transport.md) |
-| `GET /auth/github/callback` | GitHub から戻るブラウザ | サーバーの state。code を交換し、数値 ID が `github.allowedUserId` と一致するときだけ通します | 60 秒で切れる 1 回限りの login code を付けた、アプリの URL scheme への redirect | [0002](adr/0002-client-events-and-approvals.md)、[0006](adr/0006-github-login-and-transport.md) |
+| `GET /auth/github/callback` | GitHub から戻るブラウザ | サーバーの state。code を交換し、数値 ID が `github.allowedUserId` と一致するときだけ通します | アプリのログインなら、60 秒で切れる 1 回限りの login code を付けた、アプリの URL scheme への redirect。ダッシュボードのログインなら、セッションの cookie を付けて、コードに固定の `/dashboard` へ戻します | [0002](adr/0002-client-events-and-approvals.md)、[0006](adr/0006-github-login-and-transport.md)、[0049](adr/0049-a-read-only-dashboard-in-the-browser.md) |
 | `POST /auth/session` | アプリ | login code と PKCE の verifier | セッション（256 ビットの bearer token。最後に使ってから 30 日で切れ、使うたびに延びます） | [0006](adr/0006-github-login-and-transport.md)、[0030](adr/0030-a-session-that-lasts-while-it-is-used.md) |
 | `POST /auth/logout` | アプリ | bearer token | セッションを失効させ、そのセッションの WebSocket を閉じます | [0006](adr/0006-github-login-and-transport.md) |
 | `/v1/ws`（WebSocket） | アプリ | bearer token（`allowedUserId` のセッションだけ）。Origin があれば `publicOrigin` と一致すること | 会話、承認、iPhone の通知の登録。つなぐたびにセッションが延びます | [0006](adr/0006-github-login-and-transport.md)、[0029](adr/0029-push-notifications-on-the-iphone.md)、[0041](adr/0041-approving-slack-posts-on-the-iphone.md) |
 | `GET /v1/images/<imageId>` | アプリ | bearer token（`allowedUserId` のセッションだけ）。セッションを確かめてから画像を探します | サーバーが写し取った画像（承認待ちの `images` の画像）。使うたびにセッションが延びます | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md) |
+| `/dashboard` の下（画面・自動更新・画像） | 本人のブラウザ | セッションの cookie（`HttpOnly`・`Secure`・`SameSite=Strict`・`Path=/dashboard`。`allowedUserId` のセッションだけ）。無ければ GitHub のログインから始めます。読み取り専用で、状態を変える操作はありません（例外は下のログアウト）。cookie は `/dashboard` の外には送られず、アプリの口は cookie を受け付けません | ターンの一覧と、思考・ツールの引数と結果・返事・一行メモの全文、画像、いまの状態、失敗と待ち、統計のグラフ、一行メモ・ポッポさん・端末の一覧。HTML はすべてエスケープし、CSP は `script-src 'self'`・`frame-ancestors 'none'` です | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md) |
+| `POST` のログアウト（`/dashboard` の下） | 本人のブラウザ | セッションの cookie と、Origin ヘッダーが `publicOrigin` と一致すること（CSRF を Origin の照合と `SameSite=Strict` で防ぎます）。Origin が無いか一致しなければ断ります | そのブラウザのセッションだけを失効させ、cookie を消します。ほかのセッションには触りません | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md) |
 | `GET /avatar/<表情>.png` | Slack（投稿のアイコンを取りに来る） | なし | 同梱の表情の画像だけ | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md) |
 | ACME の HTTP-01（`listen.tls.acme.httpPort`、既定 80） | CA | なし | 発行中の challenge への応答（`/.well-known/acme-challenge/`）と、`publicOrigin` の https への redirect だけ。ログイン・API・WebSocket にはつながりません | [0007](adr/0007-acme-and-fixed-ipv6.md) |
 
