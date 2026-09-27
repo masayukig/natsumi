@@ -710,6 +710,8 @@ test('past the context limit the loop compacts between turns and the conversatio
     const file = String(f.rows()[0]!.pi_session_file);
     const entries = (await readFile(join(f.sessionDirectory, file), 'utf8')).trim().split('\n').map(line => JSON.parse(line).type);
     assert.ok(entries.includes('compaction'));
+    const compactedAt = loop.dashboardState().lastCompactionAt;
+    assert.ok(compactedAt, 'the dashboard shows when the session was last compacted (ADR 0049)');
 
     let context: Context | undefined;
     behave(f, { owner: (_event, seen) => { context = seen; return { calls: [call('reply_to_mac', { text: '続きです', expression: 'neutral' })] }; } });
@@ -720,6 +722,7 @@ test('past the context limit the loop compacts between turns and the conversatio
 
     await loop.close();
     const restarted = await f.open(options);
+    assert.equal(restarted.loop.dashboardState().lastCompactionAt, compactedAt, 'and still knows it after a restart');
     const last = f.send(restarted.loop, '再起動後');
     assert.equal((await completed(restarted.events, last.eventId)).payload.status, 'replied');
     assert.match(textOf(context!.messages[0]!), /要約/);

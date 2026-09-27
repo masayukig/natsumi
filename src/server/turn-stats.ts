@@ -69,6 +69,13 @@ export class TurnStats {
         reflection?.output ?? null, turn.compacted ? 1 : 0, turn.confusion.repeatedCalls, turn.confusion.toolErrors,
         turn.confusion.doveRefusals, turn.confusion.unansweredMessages);
   }
+
+  /** The end of the latest turn the session was compacted after, for the dashboard (ADR 0049); undefined for none. */
+  lastCompactedTurnEnd(): number | undefined {
+    const row = this.db.prepare('SELECT started_at, turn_ms FROM turn_stats WHERE compacted = 1 ORDER BY started_at DESC LIMIT 1')
+      .get() as { started_at: string; turn_ms: number } | undefined;
+    return row ? Date.parse(row.started_at) + row.turn_ms : undefined;
+  }
 }
 
 /** The value at a percentile, by nearest rank; undefined for no values. */

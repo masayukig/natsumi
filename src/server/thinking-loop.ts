@@ -111,6 +111,25 @@ export type LoopSnapshot = {
   modelRoutes: RouteStatus;
 };
 
+/**
+ * What the dashboard shows of the loop (ADR 0049): a copy of values the loop already keeps, so reading it neither
+ * changes the loop nor makes it measure anything. Times are ISO strings.
+ */
+export interface LoopDashboardState {
+  unavailable: UnavailableCode | null;
+  routes: RouteStatus;
+  /** Whether ended turns are folded in the turns now (ADR 0047). */
+  fold: Fold;
+  /** The context as last measured, at the end of a turn, and the limit past which the route in use is compacted. */
+  context: { tokens: number | null; measuredAt: string | null; compactionThreshold: number };
+  /** The end of the latest turn the session was compacted after. */
+  lastCompactionAt: string | null;
+  /** The unit of work in progress: its turn, then the memo after it, then the compaction. */
+  turn: { startedAt: string; eventKinds: string; phase: 'turn' | 'memo' | 'compaction' } | null;
+  /** Events waiting behind it. */
+  queueLength: number;
+}
+
 /** One model route as the loop uses it (ADR 0046): the model, and when a session on it is compacted. */
 export interface LoopRoute {
   name: string;
@@ -280,6 +299,10 @@ export class ThinkingLoop {
   /** The model call in progress is the memo after a turn: it ends after one call and may use no tool. */
   private reflecting = false;
   private readonly turnStats: TurnStats;
+  /** For the dashboard (ADR 0049): the work in progress, the context as last measured, and the last compaction. */
+  private working: NonNullable<LoopDashboardState['turn']> | undefined;
+  private measured: { tokens: number; at: number } | undefined;
+  private compactedAt: number | undefined;
 
   private constructor(options: LoopOptions) {
     this.options = options;
@@ -328,6 +351,7 @@ export class ThinkingLoop {
     this.chosen = this.routes.defaultRoute;
     this.fold = loop.turnFold;
     this.turnStats = new TurnStats(options.db);
+    this.compactedAt = this.turnStats.lastCompactedTurnEnd();
   }
 
   /**
@@ -451,6 +475,20 @@ export class ThinkingLoop {
       ...this.readState.position(),
       unacknowledgedNotificationIds: this.readState.unacknowledgedNotificationIds(),
       modelRoutes: this.routeStatus(),
+    };
+  }
+
+  /** What the dashboard shows of the loop (ADR 0049). Only reads what is kept already; changes nothing. */
+  dashboardState(): LoopDashboardState {
+    const routes = this.routeStatus();
+    const route = this.route ?? this.routes.list.find(candidate => candidate.name === this.chosen);
+    return {
+      unavailable: this.unavailableCode ?? null, routes, fold: this.fold,
+      context: { tokens: this.measured?.tokens ?? null, measuredAt: this.measured ? isoAt(this.measured.at) : null,
+        compactionThreshold: route?.compactionThreshold ?? this.options.loop.compactionThreshold },
+      lastCompactionAt: this.compactedAt === undefined ? null : isoAt(this.compactedAt),
+      turn: this.working ? { ...this.working } : null,
+      queueLength: this.queue.length,
     };
   }
 
@@ -787,14 +825,18 @@ export class ThinkingLoop {
       await this.followRoute();
       await this.followFold();
       if (!eventId) return;
+      this.working = { startedAt: isoAt(this.now()), eventKinds: this.eventLabel([eventId]), phase: 'turn' };
       if (this.store.eventKind(eventId) === 'nightly-review') { await this.runRotation(eventId); return; }
       const turn = await this.runTurn([eventId], 'events');
+      this.working.phase = 'memo';
       const reflection = await this.reflect(turn);
+      this.working.phase = 'compaction';
       const compacted = await this.maintain();
       this.recordTurn(turn, reflection, compacted);
     })();
     this.running = work.finally(() => {
       this.running = undefined;
+      this.working = undefined;
       this.activityAt = this.now();
       this.pump();
     });
@@ -923,6 +965,7 @@ export class ThinkingLoop {
         outcome: turn.failure ?? 'ok', modelCalls: turn.calls, usage: turn.usage, contextTokens: turn.contextTokens,
         ...(reflection ? { reflection } : {}), compacted, confusion: turn.confusion,
       });
+      if (compacted) this.compactedAt = turn.endedAt;
     } catch {
       this.log('thinking loop: the numbers of a turn could not be recorded');
     }
@@ -1137,6 +1180,8 @@ export class ThinkingLoop {
     const session = this.session;
     if (this.closing || !session) return false;
     const tokens = session.getContextUsage()?.tokens;
+    // Kept for the dashboard, which reads it rather than measuring on every look (ADR 0049).
+    if (typeof tokens === 'number') this.measured = { tokens, at: this.now() };
     const limit = this.route!.compactionThreshold;
     if (tokens === undefined || tokens === null || tokens <= limit) return false;
     if (this.compactionRetryAbove !== undefined && tokens <= this.compactionRetryAbove) return false;
