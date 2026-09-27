@@ -259,7 +259,9 @@ export async function runCondition(condition: Condition, options: RunOptions): P
       modelCalls: sum(row => row.model_calls), ms: sum(row => row.turn_ms),
       tokens: { input: sum(row => row.input_tokens), cacheRead: sum(row => row.cache_read_tokens), output: sum(row => row.output_tokens) },
       replies: shown });
-    readTurns(session!.messages.slice(before), record, callTimes, callEnds.map(end => end - started));
+    readTurns(session!.messages.slice(before), record, callTimes, callEnds.map(end => end - started), redactor(options.model?.file));
+    // A turn that ended on a failed call says why, so that nobody has to dig the session for it.
+    if (record.outcome !== 'ok') { const failed = record.calls.find(call => call.error)?.error; if (failed) record.error = failed; }
     record.actors = stage.exchanges;
     record.dove = stage.exchanges.filter(exchange => exchange.agent === DOVE_NAME).map(exchange => ({ message: exchange.request, ok: exchange.taken }));
     record.session = session!.sessionFile;
@@ -318,7 +320,7 @@ function padding(chars: number, index: number): string {
  * The turns as the session recorded them, each up to its memo request: the first prompt, every event line handed over
  * (the first turn's, those steered in, and the later turns'), the calls and the tools. The memos are not the turns'.
  */
-function readTurns(messages: AgentSession['messages'], record: RunRecord, callTimes: number[], callEnds: number[]): void {
+function readTurns(messages: AgentSession['messages'], record: RunRecord, callTimes: number[], callEnds: number[], redact: (text: string) => string): void {
   const results = new Map<string, { text: string; isError: boolean }>();
   for (const message of messages) {
     if (message.role === 'toolResult') results.set(message.toolCallId, { text: textOf(message.content), isError: message.isError });
@@ -356,12 +358,23 @@ function readTurns(messages: AgentSession['messages'], record: RunRecord, callTi
       }
     }
     calls.push({ ms: time, ...(end === undefined ? {} : { at: end }), stopReason: message.stopReason, input: message.usage.input, cacheRead: message.usage.cacheRead,
-      output: message.usage.output, thinkingChars, text });
+      output: message.usage.output, thinkingChars, text, ...(message.errorMessage ? { error: redact(message.errorMessage) } : {}) });
   }
   record.prompt = prompt ?? '';
   record.events = events;
   record.calls = calls;
   record.tools = tools;
+}
+
+/** Takes the endpoint's host out of a provider's message: the results never name it (ADR 0051). */
+function redactor(file: ModelFile | undefined): (text: string) => string {
+  const host = file?.endpoint ? new URL(file.endpoint.baseUrl).host : undefined;
+  const hostname = file?.endpoint ? new URL(file.endpoint.baseUrl).hostname : undefined;
+  return text => {
+    let redacted = text;
+    for (const name of [host, hostname]) if (name) redacted = redacted.split(name).join('<endpoint>');
+    return redacted.length > 500 ? `${redacted.slice(0, 500)}…` : redacted;
+  };
 }
 
 /**

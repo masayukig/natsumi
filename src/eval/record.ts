@@ -17,7 +17,8 @@ export interface RunRecord {
   ms: number;
   /**
    * How the turn ended, as the loop records it (`ok`, `model-call-limit`, `timeout`, `model-error`), or `error` when the
-   * run itself could not be made; `error` then says why.
+   * run itself could not be made; `error` then says why. A turn that ended on a failed model call says why in `error`
+   * too, from the call's own message.
    */
   outcome: string;
   error?: string;
@@ -61,6 +62,8 @@ export interface ModelCallRecord {
   output: number;
   thinkingChars: number;
   text: string;
+  /** Why the call failed, as the provider said (`Connection error.`…), with the endpoint's host taken out. */
+  error?: string;
 }
 
 /** One tool call: the model call it was made in (1-based), what it was called with and what came back. */

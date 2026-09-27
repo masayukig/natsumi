@@ -1,3 +1,5 @@
+// First, before Pi's undici replaces it: the proxy dispatcher of an isolated run (ADR 0052).
+import { useProxyDispatcher } from './network.ts';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -108,7 +110,9 @@ async function run(argv: string[]): Promise<number> {
         return await runIsolated({ command: [process.execPath, ...process.execArgv, join(REPOSITORY, 'src', 'eval', 'cli.ts'), 'run', ...argv,
           ...(values.out ? [] : ['--out', out])],
         writable: [out, scratch, ...new Set(logins)], cwd: process.cwd(),
-        env: isolatedEnvironment({ relaySocket, runnerSocket, tmp: scratch, pass: keys }) });
+        env: isolatedEnvironment({ relaySocket, runnerSocket, tmp: scratch,
+          // A CA the owner trusts for their own endpoint goes in with the keys.
+          pass: { ...keys, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE } }) });
       } finally {
         await service.close();
         await relay.close();
@@ -118,6 +122,7 @@ async function run(argv: string[]): Promise<number> {
   }
   let runner: WorkspaceStarter | undefined;
   if (isolated) {
+    useProxyDispatcher();
     await startBridge(isolated.relay);
     runner = new RemoteRunner(isolated.runner);
   }

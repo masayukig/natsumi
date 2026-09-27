@@ -51,7 +51,11 @@ export interface Relay {
  * The relay: an HTTP proxy on a Unix socket that knows only CONNECT, and only to the hosts and ports in `allow`.
  * Anything else is answered 403 and closed; the names are resolved here, outside, never inside the sandbox.
  */
-export async function startRelay(options: { socketPath: string; allow: string[] }): Promise<Relay> {
+export async function startRelay(options: {
+  socketPath: string; allow: string[];
+  /** Where to connect for an allowed `host:port`, as `host:port`; by default the name itself. Tests point real names at fakes. */
+  connectTo?: Record<string, string>;
+}): Promise<Relay> {
   const allow = new Set(options.allow.map(entry => entry.toLowerCase()));
   const refused: string[] = [];
   const passed: string[] = [];
@@ -75,7 +79,8 @@ export async function startRelay(options: { socketPath: string; allow: string[] 
       }
       passed.push(target);
       const rest = head.subarray(end + 4);
-      const upstream = connect({ host: request[1]!.replace(/^\[|\]$/g, ''), port: Number(request[2]) });
+      const [host, port] = splitTarget(options.connectTo?.[target] ?? target);
+      const upstream = connect({ host, port });
       upstream.on('connect', () => {
         client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (rest.length > 0) upstream.write(rest);
@@ -91,6 +96,11 @@ export async function startRelay(options: { socketPath: string; allow: string[] 
   });
   await listen(server, options.socketPath);
   return { refused, passed, close: () => { for (const socket of open) socket.destroy(); return closeServer(server, options.socketPath); } };
+}
+
+function splitTarget(target: string): [string, number] {
+  const index = target.lastIndexOf(':');
+  return [target.slice(0, index), Number(target.slice(index + 1))];
 }
 
 /** Inside the sandbox: loopback's proxy port, carried to the relay's socket. */

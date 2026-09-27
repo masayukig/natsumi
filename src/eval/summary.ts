@@ -32,6 +32,10 @@ export interface ConditionSummary {
   runs: number;
   /** Runs that could not be made at all. */
   errors: number;
+  /** Turns that ended on a failed model call. */
+  modelErrors: number;
+  /** Why the runs that failed did, grouped: how they ended and the reason recorded. */
+  failures: { outcome: string; reason: string; runs: number }[];
   /** Turns stopped by the model-call or the time limit. */
   cutOffs: number;
   meanModelCalls: number | null;
@@ -64,6 +68,8 @@ export function summarize(records: RunRecord[], skipped: Skipped[] = []): Summar
     return {
       scene: runs[0]!.scene, variant: runs[0]!.variant, runs: runs.length,
       errors: runs.length - ran.length,
+      modelErrors: ran.filter(run => run.outcome === 'model-error').length,
+      failures: failuresOf(runs),
       cutOffs: ran.filter(run => CUT_OFF.has(run.outcome)).length,
       meanModelCalls: mean(ran.map(run => run.modelCalls)),
       meanMs: mean(ran.map(run => run.ms)),
@@ -88,6 +94,16 @@ export function summarize(records: RunRecord[], skipped: Skipped[] = []): Summar
     if (!models.some(model => model.provider === record.model.provider && model.id === record.model.id)) models.push(record.model);
   }
   return { models, dryRun: records.some(record => record.dryRun), conditions, skipped };
+}
+
+function failuresOf(runs: RunRecord[]): ConditionSummary['failures'] {
+  const failures: ConditionSummary['failures'] = [];
+  for (const run of runs.filter(candidate => candidate.outcome === 'error' || candidate.outcome === 'model-error')) {
+    const reason = run.error ?? '（理由の記録なし）';
+    const same = failures.find(failure => failure.outcome === run.outcome && failure.reason === reason);
+    if (same) same.runs += 1; else failures.push({ outcome: run.outcome, reason, runs: 1 });
+  }
+  return failures;
 }
 
 function steps(reached: Reached[]): Steps | null {
@@ -128,9 +144,19 @@ export function summaryMarkdown(summary: Summary, label: string): string {
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const condition of summary.conditions) {
     const tokens = condition.meanTokens;
-    lines.push(`| ${cell(condition.scene)} | ${cell(condition.variant)} | ${condition.runs} | ${condition.errors} | ${condition.cutOffs} | `
+    lines.push(`| ${cell(condition.scene)} | ${cell(condition.variant)} | ${condition.runs} | ${condition.errors + (condition.modelErrors ?? 0)} | ${condition.cutOffs} | `
       + `${number(condition.meanModelCalls)} | ${number(condition.meanMs === null ? null : condition.meanMs / 1000)} | `
       + `${number(tokens?.input ?? null, 0)} | ${number(tokens?.cacheRead ?? null, 0)} | ${number(tokens?.output ?? null, 0)} |`);
+  }
+  const failed = summary.conditions.filter(condition => (condition.failures ?? []).length > 0);
+  if (failed.length > 0) {
+    lines.push('', '## 失敗の理由', '', '失敗: 回を作れなかった（error）か、モデルの呼び出しが失敗して終わった（model-error）回。', '',
+      '| 場面 | 変種 | 終わり方 | 回数 | 理由 |', '| --- | --- | --- | --- | --- |');
+    for (const condition of failed) {
+      for (const failure of condition.failures) {
+        lines.push(`| ${cell(condition.scene)} | ${cell(condition.variant)} | ${failure.outcome} | ${failure.runs} | ${cell(failure.reason.replace(/\n/g, ' '))} |`);
+      }
+    }
   }
   if (summary.skipped.length > 0) {
     lines.push('', '## 飛ばした場面', '');

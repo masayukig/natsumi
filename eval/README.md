@@ -66,7 +66,8 @@ npm run eval -- compare eval/results/qwen-before eval/results/qwen-after
 `<out>/<label>/` に次のものができます。
 
 - `runs.jsonl`: 1 行 1 回。渡した出来事、ターンのプロンプト、システム指示の大きさと SHA-256、モデルの呼び出しごとの時間・トークン・本文、ツールの呼び出しと結果、本人に見せたもの、ポッポさんへの依頼、項目ごとの判定（規則・関数・LLM のどれで判定したか）、終わり方。
-- `summary.md`・`summary.json`: 項目ごとの合格数と Wilson の 95% 区間、着くまでのステップ（下の「着くまでのステップ」）、副指標（呼び出し回数、秒、トークン、打ち切り、失敗）、飛ばした場面。
+- `summary.md`・`summary.json`: 項目ごとの合格数と Wilson の 95% 区間、着くまでのステップ（下の「着くまでのステップ」）、副指標（呼び出し回数、秒、トークン、打ち切り、失敗）、失敗の理由、飛ばした場面。
+  失敗は、回を作れなかった回（`error`）と、モデルの呼び出しが失敗して終わった回（`model-error`）です。理由は `runs.jsonl` の `error` と、呼び出しごとの `error`（プロバイダーのメッセージ。エンドポイントのホストは除きます）にも残ります。
 - `work/<場面>/<変種>/run-<N>/`: その回のデータディレクトリと Pi の session。ターンの中身を読み返せます。
 
 ### 着くまでのステップ
@@ -294,7 +295,8 @@ checks:
 2. **ネットワークからの隔離。** 評価のプロセス全体を bubblewrap の新しいネットワークの名前空間（loopback だけ）で動かし直します。
    外へ出られるのは、外側の中継（HTTP の CONNECT）を通る道だけで、中継は評価するモデル・判定役・相手役のエンドポイントのホストとポートだけを通します（`openai-codex` は `chatgpt.com:443` と `auth.openai.com:443`）。
    それ以外は名前の解決もされずに断られ、断った宛先は終わりに表示します。ファイルシステムは読み取り専用で、書けるのは結果の置き場、一時の置き場、ログインのファイルのあるディレクトリ（token の更新のため）だけです。
-   環境変数は、proxy の設定と、モデルのファイルが `apiKeyEnv` で名指しした変数のほかは渡しません。workspace の runner は外側で起動し、Unix socket で渡します。
+   環境変数は、proxy の設定と、モデルのファイルが `apiKeyEnv` で名指しした変数、`NODE_EXTRA_CA_CERTS`・`SSL_CERT_FILE`（自前のエンドポイントの CA）のほかは渡しません。workspace の runner は外側で起動し、Unix socket で渡します。
+   中の Node は、起動時に環境の proxy から作った dispatcher を、Pi を読み込んだあとに戻します。Pi が読み込む undici は、proxy を知らない dispatcher に差し替えるからです。
 3. **起動時の拒否。** 次のものがあれば始めません。理由には場所だけを出し、値は出しません。
    - 名前に `SLACK`・`APNS`・`A2A` を含む環境変数、または値が Slack の token・秘密鍵・JWT の形の環境変数
    - 本番の秘密の置き場（`/run/secrets/natsumi`・`/run/secrets/natsumi-a2a` など）
