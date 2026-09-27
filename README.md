@@ -245,6 +245,20 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 - `--since` と `--until` は `YYYY-MM-DD`（UTC の 0 時）か、`Z` 付きの時刻です。`--until` の時刻は含みません。
 - `--memos` は `pi.sessionDirectory` を読むために設定ファイルを読みます（既定は `config.local.json`）。
 
+### ブラウザでダッシュボードを見る
+
+ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
+GitHub でログインしてから、なつみのいまの状態を見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
+
+- ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
+- ログインの状態は `/dashboard` にだけ送られる cookie に載ります。最後に使ってから 30 日で切れ、開くたびに延びます。
+  ページの「ログアウト」は、そのブラウザのセッションだけを終わらせます。
+- 読み取り専用です。経路や畳み込みの切り替え、承認は、これまでどおりアプリとコマンドで行います。
+- いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
+  文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
+  文脈の大きさは、ターンの終わりに測った値です。
+- ターンの一覧・詳細、失敗と待ち、統計は準備中です。
+
 ### GitHub OAuth App を作る
 
 1. GitHub の Settings → Developer settings → OAuth Apps → New OAuth App を開きます。
