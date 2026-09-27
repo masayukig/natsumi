@@ -1038,3 +1038,46 @@ test('a reply whose images cannot be taken is not sent, text and all, and says h
     assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM images').get() as { n: number }).n, 0);
   } finally { await f.cleanup(); }
 });
+
+test('the dashboard reads the running turn, the queue, the route, the fold and the context, and changes nothing by reading (ADR 0049)', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open({ now: () => Date.parse('2026-01-01T00:00:00Z') });
+    const idle = loop.dashboardState();
+    assert.equal(idle.unavailable, null);
+    assert.equal(idle.turn, null);
+    assert.equal(idle.queueLength, 0);
+    assert.equal(idle.fold, 'off');
+    assert.equal(idle.routes.current, 'default');
+    assert.deepEqual(idle.context, { tokens: null, measuredAt: null, compactionThreshold: LOOP_DEFAULTS.compactionThreshold });
+    assert.equal(idle.lastCompactionAt, null);
+
+    const sent = f.send(loop, 'おはよう');
+    const reply = await f.model.next();
+    loop.raise('dove-reply', () => {});
+    const running = loop.dashboardState();
+    assert.deepEqual(running.turn, { startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'mac_message', phase: 'turn' });
+    assert.equal(running.queueLength, 1, 'what waits behind the turn');
+
+    // Reading is not acting: the answer is a copy, and asking again moves nothing on.
+    running.routes.routes.length = 0;
+    running.routes.current = 'changed';
+    const calls = f.model.calls;
+    const again = loop.dashboardState();
+    assert.equal(again.routes.current, 'default');
+    assert.equal(again.routes.routes.length, 1);
+    assert.equal(again.queueLength, 1);
+    assert.equal(f.model.calls, calls);
+
+    reply.call('reply_to_mac', { text: 'おはよう', expression: 'neutral' });
+    reply.finish();
+    f.model.auto = () => 'おわり';
+    await completed(events, sent.eventId);
+    await loop.idle();
+    const after = loop.dashboardState();
+    assert.equal(after.turn, null);
+    assert.equal(after.queueLength, 0);
+    assert.equal(typeof after.context.tokens, 'number', 'measured after the turn, not on every read');
+    assert.equal(after.context.measuredAt, '2026-01-01T00:00:00.000Z');
+  } finally { await f.cleanup(); }
+});
