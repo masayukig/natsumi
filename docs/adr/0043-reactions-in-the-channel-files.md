@@ -1,7 +1,7 @@
 # 0043. Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる
 
 - Date: 2026-09-26
-- Status: Accepted
+- Status: Accepted（`updates` の `reactions_on_mine` と、ファイルの `リアクション:` の行は [ADR 0050](0050-telling-of-source-updates-with-one-event.md) で置き換え（リアクションは JSON Lines の行の欄、付け外しはファイルの変化として `sources_updated` に出る））
 
 ## Context
 

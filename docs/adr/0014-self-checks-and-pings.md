@@ -1,7 +1,7 @@
 # 0014. 自分で予約する確認と定期の合図
 
 - Date: 2026-09-17
-- Status: Accepted（`ping` と `self_check` のイベントに、更新元ごとの新しい件数を知らせる `updates` の欄を足す点は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で追加）
+- Status: Accepted（`ping` と `self_check` のイベントに、更新元ごとの新しい件数を知らせる `updates` の欄を足す点は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で追加、その `updates` の欄をなくし、更新は `sources_updated` のイベントで知らせる形に [ADR 0050](0050-telling-of-source-updates-with-one-event.md) で置き換え）
 
 ## Context
 
