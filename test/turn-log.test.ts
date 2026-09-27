@@ -6,7 +6,9 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import test from 'node:test';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
-import { findTurn, listTurns, readTurn, turnImages, TURNS_PER_PAGE, type TurnReading } from '../src/server/turn-log.ts';
+import {
+  findTurn, listMemoTurns, listTurns, MEMO_READ_LIMIT_BYTES, MEMOS_PER_PAGE, readMemo, readTurn, turnImages, TURNS_PER_PAGE, type TurnReading,
+} from '../src/server/turn-log.ts';
 import { TurnStats, type TurnRecord } from '../src/server/turn-stats.ts';
 import { ordinaryTurn, SessionRecord } from './support/session-record.ts';
 
@@ -235,5 +237,111 @@ test('opening a turn in a record of tens of megabytes does not hold up the event
       assert.ok(delay.max / 1e6 < 100, `held up the event loop for ${(delay.max / 1e6).toFixed(0)} ms`);
       if (row === estimated) assert.ok(ticks > 0, 'timers ran while the file was scanned');
     }
+  } finally { await f.cleanup(); }
+});
+
+// The memos (ADR 0047) as the dashboard lists them: the turns that asked for one, from SQLite, and each memo read from
+// the end of the place its row keeps, not from the whole turn.
+
+test('the turns with a memo are listed newest first, a page at a time, leaving out the nightly reviews and turns without one', async () => {
+  const f = await setup();
+  try {
+    for (let i = 0; i < MEMOS_PER_PAGE + 2; i++) {
+      f.record({ startedAt: T0 + i * 60_000, reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 } });
+    }
+    f.record({ startedAt: T0 + 999 * 60_000 });
+    f.record({ startedAt: T0 + 998 * 60_000, kind: 'review', reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 } });
+    const first = listMemoTurns(f.db, 1);
+    assert.equal(first.rows.length, MEMOS_PER_PAGE);
+    assert.equal(first.more, true);
+    assert.equal(first.rows[0]!.startedAt, new Date(T0 + (MEMOS_PER_PAGE + 1) * 60_000).toISOString());
+    assert.ok(first.rows.every(row => row.kind === 'events' && row.reflectionMs !== null));
+    const second = listMemoTurns(f.db, 2);
+    assert.equal(second.rows.length, 2);
+    assert.equal(second.more, false);
+  } finally { await f.cleanup(); }
+});
+
+test('a memo is read from the end of its turn’s place, with the compaction after it left aside', async () => {
+  const f = await setup();
+  try {
+    const record = new SessionRecord('new-session');
+    const startOffset = record.bytes();
+    const turn = ordinaryTurn(record, T0, { message: '質問', thought: '思考', reply: '返事', memo: `今のメモ <b>全文</b>\n二行目` });
+    const last = record.compaction(new Date(T0 + 3_000).toISOString(), '要約', turn.first);
+    const endOffset = record.bytes();
+    ordinaryTurn(record, T0 + 60_000, { message: '次', thought: '次', reply: '次', memo: '次のメモ' });
+    await f.write(NEW_FILE, record.text());
+    const row = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: NEW_FILE, firstEntryId: turn.first, lastEntryId: last, startOffset, endOffset } });
+    assert.deepEqual(await readMemo(f.source, row), { found: true, text: '今のメモ <b>全文</b>\n二行目' });
+  } finally { await f.cleanup(); }
+});
+
+test('a memo far from the end of a large turn is found by reading further back, and never past the turn’s start', async () => {
+  const f = await setup();
+  try {
+    const record = new SessionRecord('new-session');
+    ordinaryTurn(record, T0 - 60_000, { message: '前', thought: '前', reply: '前', memo: '前のメモ' });
+    const startOffset = record.bytes();
+    const turn = ordinaryTurn(record, T0, { message: '質問', thought: '思考', reply: '返事', memo: '遠いメモ' });
+    // A long compaction summary after the memo, longer than the first look.
+    const last = record.compaction(new Date(T0 + 3_000).toISOString(), 'あ'.repeat(40_000), turn.first);
+    const endOffset = record.bytes();
+    await f.write(NEW_FILE, record.text());
+    const row = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: NEW_FILE, firstEntryId: turn.first, lastEntryId: last, startOffset, endOffset } });
+    assert.deepEqual(await readMemo(f.source, row), { found: true, text: '遠いメモ' });
+
+    // A turn whose memo request got no answer: the one before it is not taken for its memo.
+    const other = new SessionRecord('other-session');
+    ordinaryTurn(other, T0 - 60_000, { message: '前', thought: '前', reply: '前', memo: '前のメモ' });
+    const from = other.bytes();
+    const first = other.events(new Date(T0).toISOString(), [{ type: 'mac_message', received_at: 'x', text: '質問' }]);
+    const end = other.assistant(new Date(T0 + 1_000).toISOString(), [{ type: 'text', text: '済んだ' }]);
+    await f.write(OLD_FILE, other.text());
+    const bare = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: OLD_FILE, firstEntryId: first, lastEntryId: end, startOffset: from, endOffset: other.bytes() } });
+    assert.deepEqual(await readMemo(f.source, bare), { found: false, reason: 'no-memo' });
+  } finally { await f.cleanup(); }
+});
+
+test('a memo is not looked for in a turn from before the places, a missing file or bytes that moved', async () => {
+  const f = await setup();
+  try {
+    const estimated = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 } });
+    assert.deepEqual(await readMemo(f.source, estimated), { found: false, reason: 'estimated' });
+    const missing = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: 'missing.jsonl', firstEntryId: 'a', lastEntryId: 'b', startOffset: 0, endOffset: 10 } });
+    assert.deepEqual(await readMemo(f.source, missing), { found: false, reason: 'no-file' });
+    const outside = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: '../state.sqlite', firstEntryId: 'a', lastEntryId: 'b', startOffset: 0, endOffset: 10 } });
+    assert.deepEqual(await readMemo(f.source, outside), { found: false, reason: 'no-file' });
+
+    const record = new SessionRecord('new-session');
+    const turn = ordinaryTurn(record, T0, { message: '質問', thought: '思考', reply: '返事', memo: 'メモ' });
+    await f.write(NEW_FILE, record.text());
+    // The bytes no longer end at the turn's last entry, as after Pi rewrote the file.
+    const moved = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: NEW_FILE, firstEntryId: turn.first, lastEntryId: turn.last, startOffset: 0, endOffset: record.bytes() - 30 } });
+    assert.deepEqual(await readMemo(f.source, moved), { found: false, reason: 'moved' });
+  } finally { await f.cleanup(); }
+});
+
+test('a page of memos reads each within a bounded window, however large the turns', async () => {
+  const f = await setup();
+  try {
+    const record = new SessionRecord('new-session');
+    const startOffset = record.bytes();
+    const first = record.events(new Date(T0).toISOString(), [{ type: 'mac_message', received_at: 'x', text: '質問' }]);
+    record.assistant(new Date(T0 + 1_000).toISOString(), [{ type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'x' } }]);
+    // A tool result of several megabytes, and no memo request after it.
+    record.toolResult(new Date(T0 + 1_100).toISOString(), 'c1', 'read', 'い'.repeat(2_000_000));
+    const last = record.assistant(new Date(T0 + 2_000).toISOString(), [{ type: 'text', text: '済んだ' }]);
+    await f.write(NEW_FILE, record.text());
+    const row = f.record({ reflection: { ms: 500, input: 1, cacheRead: 1, output: 1 },
+      place: { sessionFile: NEW_FILE, firstEntryId: first, lastEntryId: last, startOffset, endOffset: record.bytes() } });
+    assert.ok(record.bytes() > MEMO_READ_LIMIT_BYTES);
+    assert.deepEqual(await readMemo(f.source, row), { found: false, reason: 'too-far' });
   } finally { await f.cleanup(); }
 });
