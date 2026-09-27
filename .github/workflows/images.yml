@@ -22,6 +22,11 @@ jobs:
         with:
           node-version: "24.12.0"
           cache: npm
+      # As in ci.yml: bubblewrap, and the user namespace it needs, for the turn evaluation's workspace (ADR 0051).
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
