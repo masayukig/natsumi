@@ -48,5 +48,11 @@
     "memoryFileMaxChars": 32000,
     "alwaysMemoryMaxChars": 2000,
     "turnFold": "off"
+  },
+  "curator": {
+    "enabled": true,
+    "modelCalls": 60,
+    "timeoutMinutes": 30,
+    "rotateFiles": 2
   }
 }

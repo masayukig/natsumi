@@ -37,6 +37,10 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | ポッポさんの判定（`jev`） | TypeSafe AI の Jev の API キー（任意）。下書きと返信先の周りの発言を送ります | `slack.judge.method` = `jev`、`slack.judge.baseUrl`、`slack.judge.apiKeyEnv` / `apiKeyFile`（秘密） | `api.typesafe.ai`（既定）か `slack.judge.baseUrl` のホスト | 同上 | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md) |
 | 証明書の取得（ACME） | サーバーが作る ACME のアカウント鍵。CA の利用規約に同意して登録します | `listen.tls.acme.directoryUrl`、`listen.tls.acme.contactEmail`、`listen.tls.acme.httpPort` | `listen.tls.acme.directoryUrl` のホスト（既定 `acme-v02.api.letsencrypt.org`） | `acme` を使わないなら要りません（証明書ファイルか、手前のプロキシで TLS を終端）。取得できるまで HTTPS の待ち受けを開きません | [0007](adr/0007-acme-and-fixed-ipv6.md)、[0033](adr/0033-running-on-kubernetes.md) |
 
+記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち `curator.route` の経路
+（書かなければ、そのときなつみが使っている経路）で動き、同じ credential を使います。毎晩、記憶の全ファイルの一覧と見出し、
+係が読んだファイルの中身がその経路の接続先へ送られます。本人のエンドポイントの外の経路を選ぶと、記憶がそこへ出ます。
+
 サーバーは記憶の git を push しません（push するのは本人です）。Google などほかの外部サービスには、今はつなぎません。
 
 ### Slack の scope
@@ -89,8 +93,10 @@ Slack は Socket Mode で natsumi から外へつなぐので、Slack から届�
 （[ADR 0019](adr/0019-a-workspace-not-a-memory-tool.md)、[ADR 0034](adr/0034-an-allow-list-for-the-way-out.md)）。
 Docker では `network_mode: none`、Kubernetes では作業環境の UID の外向きを全部拒否します。
 
-なつみのツールのうち作業環境に届くのは `run_shell` と `read` の 2 つで、どちらもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)）。
+なつみのツールのうち作業環境に届くのは `run_shell`・`read`・`search_memory` の 3 つで、どれもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)、[ADR 0055](adr/0055-a-memory-curator-at-night.md)）。
 `read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
+`search_memory` は `rg` を決まったオプションで `/memory` の下にだけ掛けます。検索語とパスはオプションとして解釈されない形で渡し、パスは `/memory` の外を指せません。
+夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、1 つでも当たればその夜の変更をすべて捨てます。
 サーバーのコンテナのファイル（ログインのファイルや secret）は、どちらからも見えません。Pi の組み込みの bash・edit・write・grep・find・ls は有効にしません。
 
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
