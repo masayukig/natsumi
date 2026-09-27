@@ -605,4 +605,64 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE turn_stats ADD COLUMN event_ids TEXT;
     `,
   },
+  {
+    version: 21,
+    name: 'sources updated',
+    sql: `
+      -- What a source said was for natsumi (ADR 0050): the file, the place in it as a jq -s path, and the source's own word
+      -- for what it is (kind), with the paths of the images to show beside it (JSON). dir is the directory it is in,
+      -- relative to sources/. event_id is set once a sources_updated event has taken it; until then it waits, across a
+      -- restart too.
+      CREATE TABLE source_attention (
+        attention_id INTEGER PRIMARY KEY,
+        source TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        dir TEXT NOT NULL,
+        file TEXT NOT NULL,
+        path TEXT NOT NULL,
+        images TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        event_id TEXT REFERENCES loop_events (event_id)
+      ) STRICT;
+      CREATE INDEX source_attention_waiting ON source_attention (attention_id) WHERE event_id IS NULL;
+
+      -- The line of each sources_updated event, made when its turn began, and the images shown beside it (JSON paths).
+      CREATE TABLE source_events (
+        event_id TEXT PRIMARY KEY REFERENCES loop_events (event_id),
+        line TEXT NOT NULL,
+        images TEXT NOT NULL
+      ) STRICT;
+
+      -- Where each Slack message stands in its day's JSON Lines file, from 0: the order it was recorded in, which never
+      -- moves, so a jq -s path keeps pointing at it. What was recorded before is numbered by time, as the Markdown was.
+      ALTER TABLE slack_messages ADD COLUMN line INTEGER NOT NULL DEFAULT -1;
+      UPDATE slack_messages SET line = numbered.line FROM (
+        SELECT workspace, channel_id, ts,
+          ROW_NUMBER() OVER (PARTITION BY workspace, channel_id, file_date ORDER BY CAST(ts AS REAL), ts) - 1 AS line
+        FROM slack_messages) AS numbered
+      WHERE numbered.workspace = slack_messages.workspace AND numbered.channel_id = slack_messages.channel_id
+        AND numbered.ts = slack_messages.ts;
+
+      -- The messages told to the core as for her, so that one is told once however often Slack sends it. The mentions
+      -- that were events before are among them: a fill-in does not tell them again. slack_mentions stays as it was.
+      CREATE TABLE slack_attention (
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace, channel_id, ts)
+      ) STRICT;
+      INSERT INTO slack_attention (workspace, channel_id, ts, created_at) SELECT workspace, channel_id, ts, '' FROM slack_mentions;
+
+      -- Nothing is counted for the updates any more: the counted columns stay, at 0, without their indexes.
+      DROP INDEX slack_messages_counted;
+      DROP INDEX slack_reactions_counted;
+      UPDATE slack_messages SET counted = 0 WHERE counted = 1;
+      UPDATE slack_reactions SET counted = 0 WHERE counted = 1;
+
+      -- A mention event still waiting has no line to be made into; the message is in its file.
+      UPDATE loop_events SET state = 'no-reply', reason = 'superseded', updated_at = created_at
+        WHERE kind = 'slack-mention' AND state IN ('queued', 'processing');
+    `,
+  },
 ];

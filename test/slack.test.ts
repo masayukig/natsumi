@@ -1,49 +1,44 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { SLACK_DEFAULTS } from '../src/server/config.ts';
-import { ConversationStore } from '../src/server/conversation-store.ts';
+import { parseReference } from '../src/server/dove-request.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { SlackWorkspace } from '../src/server/slack.ts';
+import type { Attention } from '../src/server/sources.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
 
 /**
- * The receiving side of Slack (ADR 0012): what the server writes for natsumi to read, and which messages become
- * events. Slack is a stand-in; nothing goes over the network.
+ * The receiving side of Slack (ADR 0012, ADR 0050): what the server writes for natsumi to read — one JSON line a
+ * message — and which messages it tells the core are for her. Slack is a stand-in; nothing goes over the network.
  */
 
 const TIME_ZONE = 'Asia/Tokyo';
 /** 2026-09-25 14:32:05 in Tokyo. */
 const AT = '2026-09-25T05:32:05Z';
 
+type Line = Record<string, unknown> & { at: string; from: string; text?: string };
+
 async function setup(t: test.TestContext, options: { backfillDays?: number; maxImageBytes?: number } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-slack-')));
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
-  const store = new ConversationStore(db, Date.now);
   const directory = join(root, 'sources', 'slack');
   let clock = Date.parse(AT) + 60_000;
   const now = () => clock;
-  const archive = new SlackArchive({ db, directory, timeZone: TIME_ZONE, now, mentionContext: { messages: 5, chars: 500 } });
+  const archive = new SlackArchive({ db, directory, timeZone: TIME_ZONE, now });
   const slack = new FakeSlack();
   slack.addChannel({ id: 'C1', name: 'dev', isIm: false });
-  const events: string[] = [];
+  const told: Attention[] = [];
   const logs: string[] = [];
   const workspace = new SlackWorkspace({
     name: 'work', api: slack, socket: slack, archive, reaction: 'eyes', backfillDays: options.backfillDays ?? SLACK_DEFAULTS.backfillDays,
     maxImageBytes: options.maxImageBytes ?? 1024 * 1024, now, log: line => { logs.push(line); },
-    // What the loop does with a new event: the row and the caller's own records, in one transaction.
-    raise: record => {
-      store.transaction(transaction => {
-        const eventId = store.insertEvent('slack-mention');
-        record(eventId, transaction);
-        events.push(eventId);
-      });
-    },
+    attention: attention => { told.push(attention); },
   });
   await workspace.start();
   t.after(async () => {
@@ -52,7 +47,9 @@ async function setup(t: test.TestContext, options: { backfillDays?: number; maxI
     await rm(root, { recursive: true, force: true });
   });
   const read = (path: string) => readFile(join(directory, path), 'utf8');
-  return { root, db, directory, archive, slack, workspace, events, logs, read, tick: (ms: number) => { clock += ms; } };
+  /** A day file as `jq -s` reads it: one value a line. */
+  const lines = async (path: string) => (await read(path)).split('\n').filter(Boolean).map(line => JSON.parse(line) as Line);
+  return { root, db, directory, archive, slack, workspace, told, logs, read, lines, tick: (ms: number) => { clock += ms; } };
 }
 
 /** A message event as Slack sends it over Socket Mode. */
@@ -60,56 +57,62 @@ function message(fields: Record<string, unknown>): Record<string, unknown> {
   return { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', text: '', ts: tsAt(AT), ...fields };
 }
 
-test('a message in a channel is written to that day\'s file under a heading of its local time and speaker', async t => {
+/** The line a jq -s path such as `.[3]` names. */
+function at(lines: Line[], path: string): Line {
+  const index = /^\.\[(\d+)\]$/.exec(path);
+  assert.ok(index, path);
+  return lines[Number(index[1])]!;
+}
+
+test('a message in a channel is one JSON line in that day\'s file, with its local time and speaker', async t => {
   const f = await setup(t);
   f.slack.emit(message({ text: 'おはようございます\n今日は <#C9|design> で話します <https://example.test/doc|資料>' }));
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /^# work\/#dev 2026-09-25$/m);
-  assert.match(text, /^## 14:32:05 山田$/m);
-  assert.match(text, /^おはようございます$/m);
-  assert.match(text, /今日は #design で話します 資料（https:\/\/example\.test\/doc）/);
-  assert.doesNotMatch(text, /\d{10}\.\d{6}/, 'no Slack ts in the file');
+  const [line, ...rest] = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(rest, []);
+  assert.deepEqual(line, { at: '2026-09-25 14:32:05', from: '山田',
+    text: 'おはようございます\n今日は #design で話します 資料（https://example.test/doc）' });
+  assert.doesNotMatch(await f.read('work/dev/2026-09-25.jsonl'), /\d{10}\.\d{6}|C1|U1/, 'no Slack ID in the file');
   const index = await f.read('INDEX.md');
   assert.match(index, /work\/#dev/);
   assert.match(index, /2026-09-25 14:32:05/);
-  assert.match(index, /\/sources\/slack\/work\/dev\/2026-09-25\.md/);
+  assert.match(index, /\/sources\/slack\/work\/dev\/2026-09-25\.jsonl/);
 });
 
-test('a reply in a thread stands indented under its parent, in the parent\'s file', async t => {
+test('a reply in a thread is a line of its own in the parent\'s file, naming the parent\'s line, in the order recorded', async t => {
   const f = await setup(t);
   const parent = tsAt(AT);
+  f.slack.emit(message({ text: '別の発言が先', ts: tsAt('2026-09-25T05:00:00Z') }));
   f.slack.emit(message({ text: '親の発言', ts: parent }));
-  // The next day in Tokyo: the reply still goes under the parent.
+  f.slack.emit(message({ text: '次の発言', ts: tsAt('2026-09-25T05:40:00Z') }));
+  // The next day in Tokyo: the reply still goes into the parent's file, at its end.
   f.slack.emit(message({ user: 'U2', text: '返信です', ts: tsAt('2026-09-25T15:10:00Z'), thread_ts: parent }));
-  f.slack.emit(message({ text: '別の発言', ts: tsAt('2026-09-25T05:40:00Z') }));
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  const parentAt = text.indexOf('## 14:32:05 山田');
-  const replyAt = text.indexOf('  ### 2026-09-26 00:10:00 佐藤');
-  const nextAt = text.indexOf('## 14:40:00 山田');
-  assert.ok(parentAt >= 0 && replyAt > parentAt && nextAt > replyAt, text);
-  assert.match(text, /^ {2}返信です$/m);
-  await assert.rejects(f.read('work/dev/2026-09-26.md'));
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines.map(line => line.text), ['別の発言が先', '親の発言', '次の発言', '返信です']);
+  assert.deepEqual(lines[3], { at: '2026-09-26 00:10:00', from: '佐藤', reply_to: 1, text: '返信です' });
+  await assert.rejects(f.read('work/dev/2026-09-26.jsonl'));
 });
 
-test('an edit and a deletion rewrite the day\'s file', async t => {
+test('an edit rewrites the line in place, and a deletion leaves a line saying so: no line moves', async t => {
   const f = await setup(t);
   const ts = tsAt(AT);
   f.slack.emit(message({ text: '最初の文', ts }));
   f.slack.emit(message({ text: '消える文', ts: tsAt('2026-09-25T05:33:00Z') }));
+  f.slack.emit(message({ text: '後の文', ts: tsAt('2026-09-25T05:34:00Z') }));
   await f.workspace.idle();
   f.slack.emit({ type: 'message', subtype: 'message_changed', channel: 'C1', channel_type: 'channel', ts: tsAt('2026-09-25T05:35:00Z'),
     message: { type: 'message', user: 'U1', text: '直した文', ts, edited: { user: 'U1', ts: tsAt('2026-09-25T05:35:00Z') } } });
   f.slack.emit({ type: 'message', subtype: 'message_deleted', channel: 'C1', channel_type: 'channel',
     ts: tsAt('2026-09-25T05:36:00Z'), deleted_ts: tsAt('2026-09-25T05:33:00Z') });
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /直した文/);
-  assert.match(text, /（編集済み）/);
-  assert.doesNotMatch(text, /最初の文/);
-  assert.doesNotMatch(text, /消える文/);
-  assert.doesNotMatch(text, /14:33:00/);
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines, [
+    { at: '2026-09-25 14:32:05', from: '山田', text: '直した文', edited: true },
+    { at: '2026-09-25 14:33:00', from: '山田', deleted: true },
+    { at: '2026-09-25 14:34:00', from: '山田', text: '後の文' },
+  ]);
+  assert.doesNotMatch(await f.read('work/dev/2026-09-25.jsonl'), /最初の文|消える文/);
 });
 
 test('an image is fetched into files/ beside the day\'s file; one too large or not an image is only noted', async t => {
@@ -122,52 +125,76 @@ test('an image is fetched into files/ beside the day\'s file; one too large or n
     { id: 'F3', name: 'memo.pdf', mimetype: 'application/pdf', size: 100, url_private_download: 'https://files.example.test/memo.pdf' },
   ] }));
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  const image = /- 画像: (\/sources\/slack\/work\/dev\/files\/\S+\.png)/.exec(text);
-  assert.ok(image, text);
+  const [line] = await f.lines('work/dev/2026-09-25.jsonl');
+  const images = line!.images as string[];
+  assert.equal(images.length, 1);
+  assert.match(images[0]!, /^\/sources\/slack\/work\/dev\/files\/\S+\.png$/);
   const saved = await readdir(join(f.directory, 'work', 'dev', 'files'));
   assert.equal(saved.length, 1);
-  assert.deepEqual(await readFile(join(f.directory, image[1]!.replace('/sources/slack/', ''))), PNG);
-  assert.match(text, /- 添付あり（取り込まず）: big\.png/);
-  assert.match(text, /- 添付あり（取り込まず）: memo\.pdf/);
+  assert.deepEqual(await readFile(join(f.directory, images[0]!.replace('/sources/slack/', ''))), PNG);
+  assert.deepEqual(line!.attachments, ['big.png', 'memo.pdf']);
   assert.deepEqual(f.slack.downloads, ['https://files.example.test/a.png'], 'what is too large or not an image is not fetched');
 });
 
-test('a mention becomes one event, gets the eyes reaction once, and a retry or the app_mention twin adds nothing', async t => {
+test('a mention is told to the core once, with the jq path of its line and its images, and gets the eyes reaction once', async t => {
   const f = await setup(t);
+  f.slack.files.set('https://files.example.test/a.png', PNG);
+  f.slack.emit(message({ user: 'U2', text: '前の発言', ts: tsAt('2026-09-25T05:30:00Z') }));
   const ts = tsAt(AT);
-  const mention = message({ text: '<@UBOT> 明日の件どうなってる？', ts });
+  const mention = message({ text: '<@UBOT> 明日の件どうなってる？', ts, files: [
+    { id: 'F1', name: 'a.png', mimetype: 'image/png', size: PNG.length, url_private_download: 'https://files.example.test/a.png' }] });
   f.slack.emit(mention);
   f.slack.emit({ ...mention, type: 'app_mention' });
   f.slack.emit(mention);
   await f.workspace.idle();
-  assert.equal(f.events.length, 1);
+  assert.equal(f.told.length, 1);
+  const [told] = f.told;
+  assert.equal(told!.source, 'slack');
+  assert.equal(told!.kind, 'mention');
+  assert.equal(told!.file, '/sources/slack/work/dev/2026-09-25.jsonl');
+  assert.equal(told!.path, '.[1]');
+  assert.equal(told!.images!.length, 1);
+  assert.equal(at(await f.lines('work/dev/2026-09-25.jsonl'), told!.path).text, '@natsumi 明日の件どうなってる？');
   assert.deepEqual(f.slack.reactions, [{ channel: 'C1', ts, name: 'eyes' }]);
-  assert.match(await f.read('work/dev/2026-09-25.md'), /@natsumi 明日の件どうなってる？/);
+  assert.doesNotMatch(JSON.stringify(f.told), /\d{10}\.\d{6}|C1|U1|UBOT|F1/, 'no Slack ID in what is told');
 });
 
-test('a direct message becomes an event, under the sender\'s name', async t => {
+test('a mention in a thread points at its own line, which names the thread\'s parent', async t => {
+  const f = await setup(t);
+  const parent = tsAt('2026-09-25T05:00:00Z');
+  f.slack.emit(message({ text: 'スレッドの親', ts: parent }));
+  f.slack.emit(message({ text: 'チャンネルの別の話', ts: tsAt('2026-09-25T05:10:00Z') }));
+  f.slack.emit(message({ user: 'U2', text: '<@UBOT> どう思う？', ts: tsAt(AT), thread_ts: parent }));
+  await f.workspace.idle();
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  const line = at(lines, f.told[0]!.path);
+  assert.equal(line.text, '@natsumi どう思う？');
+  assert.equal(lines[line.reply_to as number]!.text, 'スレッドの親');
+});
+
+test('a direct message is told as a dm, and written under the sender\'s name', async t => {
   const f = await setup(t);
   f.slack.addChannel({ id: 'D1', isIm: true, user: 'U2' });
   f.slack.emit(message({ channel: 'D1', channel_type: 'im', user: 'U2', text: 'ちょっと相談です' }));
   await f.workspace.idle();
-  assert.equal(f.events.length, 1);
-  assert.match(await f.read('work/@佐藤/2026-09-25.md'), /^## 14:32:05 佐藤$/m);
+  assert.deepEqual(f.told, [{ source: 'slack', kind: 'dm', file: '/sources/slack/work/@佐藤/2026-09-25.jsonl', path: '.[0]' }]);
+  assert.deepEqual(await f.lines('work/@佐藤/2026-09-25.jsonl'), [{ at: '2026-09-25 14:32:05', from: '佐藤', text: 'ちょっと相談です' }]);
 });
 
-test('her name without a mention, her own posts and other bots make no event', async t => {
+test('her name without a mention, her own posts and other bots are told nothing', async t => {
   const f = await setup(t);
   f.slack.emit(message({ text: 'natsumi さんに聞いてみよう', ts: tsAt(AT) }));
   f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '了解です', ts: tsAt('2026-09-25T05:33:00Z') }));
   f.slack.emit(message({ user: undefined, bot_id: 'B2', username: 'ci', subtype: 'bot_message', text: '<@UBOT> build failed',
     ts: tsAt('2026-09-25T05:34:00Z') }));
   await f.workspace.idle();
-  assert.equal(f.events.length, 0);
+  assert.equal(f.told.length, 0);
   assert.deepEqual(f.slack.reactions, []);
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /natsumi さんに聞いてみよう/);
-  assert.match(text, /^## 14:33:00 natsumi$/m);
-  assert.match(text, /^## 14:34:00 ci$/m);
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.equal(lines[0]!.text, 'natsumi さんに聞いてみよう');
+  assert.deepEqual(lines[1], { at: '2026-09-25 14:33:00', from: 'natsumi', mine: true, text: '了解です' });
+  assert.equal(lines[2]!.from, 'ci');
+  assert.equal(lines[2]!.mine, undefined);
 });
 
 test('on connecting, what was missed is filled in from the last recorded message, threads included, and nothing is removed', async t => {
@@ -180,13 +207,12 @@ test('on connecting, what was missed is filled in from the last recorded message
   f.slack.connect();
   await f.workspace.idle();
   assert.deepEqual(f.slack.historyCalls.at(-1), { channel: 'C1', oldest: tsAt(AT) });
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /記録済み/, 'what Slack no longer returns stays');
-  assert.match(text, /止まっている間の発言/);
-  assert.match(text, /^ {2}止まっている間の返信$/m);
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines.map(line => line.text), ['記録済み', '止まっている間の発言', '止まっている間の返信']);
+  assert.equal(lines[2]!.reply_to, 1);
 });
 
-test('a channel never recorded is filled in from the configured number of days back, and its mentions raise nothing', async t => {
+test('a channel never recorded is filled in from the configured number of days back, and its mentions are not told', async t => {
   const f = await setup(t, { backfillDays: 2 });
   f.slack.addChannel({ id: 'C2', name: 'random', isIm: false });
   f.slack.post('C2', { ts: tsAt('2026-09-24T05:00:00Z'), user: 'U1', text: '<@UBOT> 昨日の呼びかけ', files: [] });
@@ -194,93 +220,88 @@ test('a channel never recorded is filled in from the configured number of days b
   await f.workspace.idle();
   const call = f.slack.historyCalls.find(c => c.channel === 'C2');
   assert.equal(call?.oldest, String((Date.parse(AT) + 60_000) / 1000 - 2 * 86400));
-  assert.match(await f.read('work/random/2026-09-24.md'), /昨日の呼びかけ/);
-  assert.equal(f.events.length, 0, 'a first fill-in raises no old mentions');
+  assert.match(await f.read('work/random/2026-09-24.jsonl'), /昨日の呼びかけ/);
+  assert.equal(f.told.length, 0, 'a first fill-in tells of no old mentions');
 });
 
-test('a mention missed while disconnected is raised when it is filled in', async t => {
+test('a mention missed while disconnected is told when it is filled in', async t => {
   const f = await setup(t);
   f.slack.emit(message({ text: '記録済み', ts: tsAt(AT) }));
   await f.workspace.idle();
   f.slack.post('C1', { ts: tsAt('2026-09-25T05:40:00Z'), user: 'U2', text: '<@UBOT> 止まっている間の呼びかけ', files: [] });
   f.slack.connect();
   await f.workspace.idle();
-  assert.equal(f.events.length, 1);
+  assert.equal(f.told.length, 1);
+  assert.equal(f.told[0]!.path, '.[1]');
   assert.equal(f.slack.reactions.length, 1);
 });
 
-test('updates count what came since they were last shown, per channel, and drop to nothing once shown', async t => {
-  const f = await setup(t);
-  f.slack.addChannel({ id: 'C2', name: 'random', isIm: false });
-  f.slack.emit(message({ text: '一つ目', ts: tsAt(AT) }));
-  f.slack.emit(message({ text: 'natsumi の話', ts: tsAt('2026-09-25T05:33:00Z') }));
-  f.slack.emit(message({ channel: 'C2', text: '雑談', ts: tsAt('2026-09-25T05:34:00Z') }));
-  f.slack.emit(message({ text: '<@UBOT> メンション', ts: tsAt('2026-09-25T05:35:00Z') }));
-  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '自分の発言', ts: tsAt('2026-09-25T05:36:00Z') }));
-  await f.workspace.idle();
-  assert.deepEqual(f.archive.take(), {
-    new: { 'work/#dev': 2, 'work/#random': 1 },
-    files: ['/sources/slack/work/dev/2026-09-25.md', '/sources/slack/work/random/2026-09-25.md'],
-  });
-  assert.equal(f.archive.take(), undefined);
-  f.slack.emit(message({ text: '次の発言', ts: tsAt('2026-09-25T05:50:00Z') }));
-  await f.workspace.idle();
-  assert.deepEqual(f.archive.take()?.new, { 'work/#dev': 1 });
-});
-
-test('the event line names the speaker and a reference to copy, with the flow before it, and carries no Slack ID', async t => {
-  const f = await setup(t);
-  f.slack.emit(message({ user: 'U2', text: '前の発言 1', ts: tsAt('2026-09-25T05:30:00Z') }));
-  f.slack.emit(message({ text: '前の発言 2', ts: tsAt('2026-09-25T05:31:00Z') }));
-  f.slack.files.set('https://files.example.test/a.png', PNG);
-  const ts = tsAt(AT);
-  f.slack.emit(message({ text: '<@UBOT> これ見て', ts, files: [
-    { id: 'F1', name: 'a.png', mimetype: 'image/png', size: PNG.length, url_private_download: 'https://files.example.test/a.png' }] }));
-  await f.workspace.idle();
-  const line = f.archive.eventLine(f.events[0]!, '2026-09-25T05:32:06.000Z');
-  assert.equal(line.type, 'slack_mention');
-  assert.equal(line.via, 'mention');
-  assert.equal(line.channel, 'work/#dev');
-  assert.equal(line.from, '山田');
-  assert.equal(line.text, '@natsumi これ見て');
-  assert.equal(line.reference, 'work/#dev 2026-09-25 14:32:05 山田');
-  assert.equal(line.file, '/sources/slack/work/dev/2026-09-25.md');
-  assert.deepEqual(line.context, [
-    { at: '14:30:00', from: '佐藤', text: '前の発言 1' },
-    { at: '14:31:00', from: '山田', text: '前の発言 2' },
-  ]);
-  assert.equal((line.images as string[]).length, 1);
-  const serialized = JSON.stringify(line);
-  assert.doesNotMatch(serialized, /\d{10}\.\d{6}/, 'no ts');
-  assert.doesNotMatch(serialized, /event|C1|U1|UBOT|F1/, 'no Slack or event ID');
-  const images = await f.archive.images(f.events[0]!);
-  assert.deepEqual(images, [{ type: 'image', mimeType: 'image/png', data: PNG.toString('base64') }]);
-});
-
-test('in a thread, the flow is the thread\'s own latest messages', async t => {
-  const f = await setup(t);
-  const parent = tsAt('2026-09-25T05:00:00Z');
-  f.slack.emit(message({ text: 'スレッドの親', ts: parent }));
-  f.slack.emit(message({ text: 'チャンネルの別の話', ts: tsAt('2026-09-25T05:10:00Z') }));
-  f.slack.emit(message({ user: 'U2', text: 'スレッドの返信', ts: tsAt('2026-09-25T05:20:00Z'), thread_ts: parent }));
-  f.slack.emit(message({ text: '<@UBOT> どう思う？', ts: tsAt(AT), thread_ts: parent }));
-  await f.workspace.idle();
-  const line = f.archive.eventLine(f.events[0]!, AT);
-  assert.equal(line.in_thread, true);
-  assert.deepEqual((line.context as { text: string }[]).map(item => item.text), ['スレッドの親', 'スレッドの返信']);
-  assert.equal(line.reference, 'work/#dev 2026-09-25 14:32:05 山田');
-});
-
-test('a reply to a thread whose parent was never recorded fetches the parent, which is not counted as new', async t => {
+test('a reply to a thread whose parent was never recorded fetches the parent into the file first', async t => {
   const f = await setup(t);
   const parent = tsAt('2026-09-20T05:00:00Z');
   f.slack.post('C1', { ts: parent, user: 'U2', text: '古い親', files: [] });
-  f.slack.emit(message({ text: '古いスレッドへの返信', ts: tsAt(AT), thread_ts: parent }));
+  f.slack.emit(message({ text: '<@UBOT> 古いスレッドへの返信', ts: tsAt(AT), thread_ts: parent }));
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-20.md');
-  assert.match(text, /古い親/);
-  assert.match(text, /古いスレッドへの返信/);
-  assert.deepEqual(f.archive.take()?.new, { 'work/#dev': 1 });
+  const lines = await f.lines('work/dev/2026-09-20.jsonl');
+  assert.deepEqual(lines.map(line => line.text), ['古い親', '@natsumi 古いスレッドへの返信']);
+  assert.equal(lines[1]!.reply_to, 0);
+  assert.equal(f.told[0]!.file, '/sources/slack/work/dev/2026-09-20.jsonl');
+  assert.equal(f.told[0]!.path, '.[1]');
+});
+
+test('a reference written from a line\'s time and speaker finds that message, as the dove matches it', async t => {
+  const f = await setup(t);
+  f.slack.emit(message({ text: '返したい発言', ts: tsAt(AT) }));
+  await f.workspace.idle();
+  const [line] = await f.lines('work/dev/2026-09-25.jsonl');
+  const reference = parseReference(`work/#dev ${line!.at} ${line!.from}`);
+  assert.ok(typeof reference !== 'string', String(reference));
+  const found = f.archive.resolve(reference);
+  assert.ok(found.ok, JSON.stringify(found));
+  assert.equal(found.target.message?.ts, tsAt(AT));
+  assert.equal(found.target.message?.text, '返したい発言');
+});
+
+test('day files written in Markdown before are written again as JSON Lines from every row, and removed', async t => {
+  const f = await setup(t);
+  f.slack.emit(message({ text: '一つ目', ts: tsAt(AT) }));
+  f.slack.emit(message({ user: 'U2', text: '返信', ts: tsAt('2026-09-25T05:40:00Z'), thread_ts: tsAt(AT) }));
+  f.slack.emit(message({ text: '前の日', ts: tsAt('2026-09-24T05:00:00Z') }));
+  await f.workspace.idle();
+  // As an older server left them: Markdown days, and no JSON Lines.
+  for (const day of ['2026-09-24', '2026-09-25']) {
+    await unlink(join(f.directory, 'work', 'dev', `${day}.jsonl`));
+    await writeFile(join(f.directory, 'work', 'dev', `${day}.md`), '# work/#dev\n');
+  }
+  const again = new SlackArchive({ db: f.db, directory: f.directory, timeZone: TIME_ZONE, now: () => Date.parse(AT) });
+  await again.prepare();
+  assert.deepEqual((await f.lines('work/dev/2026-09-25.jsonl')).map(line => line.text), ['一つ目', '返信']);
+  assert.deepEqual((await f.lines('work/dev/2026-09-24.jsonl')).map(line => line.text), ['前の日']);
+  assert.deepEqual((await readdir(join(f.directory, 'work', 'dev'))).sort(), ['2026-09-24.jsonl', '2026-09-25.jsonl']);
+  assert.match(await f.read('INDEX.md'), /^# Slack$/m, 'the index stays Markdown');
+});
+
+test('the migration numbers the lines already recorded by time, and a mention event already made is not told again', () => {
+  const db = openStateDatabase(':memory:');
+  migrate(db, MIGRATIONS.filter(migration => migration.version < 21));
+  db.prepare(`INSERT INTO slack_channels (workspace, channel_id, directory, label, is_im, created_at) VALUES ('work', 'C1', 'dev', '#dev', 0, 'x')`).run();
+  const insert = db.prepare(`INSERT INTO slack_messages (workspace, channel_id, ts, thread_ts, speaker, own, text, files, edited, deleted, file_date,
+    counted, created_at, updated_at) VALUES ('work', 'C1', ?, NULL, '山田', 0, ?, '[]', 0, 0, ?, 1, 'x', 'x')`);
+  insert.run('300.0', '三', '2026-09-25');
+  insert.run('100.0', '一', '2026-09-25');
+  insert.run('200.0', '二', '2026-09-25');
+  insert.run('50.0', '別の日', '2026-09-24');
+  db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at) VALUES ('e1', 'slack-mention', NULL, 'queued', 'x', 'x')`).run();
+  db.prepare(`INSERT INTO slack_mentions (event_id, workspace, channel_id, ts) VALUES ('e1', 'work', 'C1', '200.0')`).run();
+  migrate(db, MIGRATIONS);
+  const rows = db.prepare('SELECT text, line FROM slack_messages ORDER BY file_date, line').all() as { text: string; line: number }[];
+  assert.deepEqual(rows.map(row => [row.text, row.line]), [['別の日', 0], ['一', 0], ['二', 1], ['三', 2]]);
+  const archive = new SlackArchive({ db, directory: join(tmpdir(), 'unused'), timeZone: TIME_ZONE, now: () => 0 });
+  assert.equal(archive.markForHer('work', 'C1', '200.0'), undefined);
+  assert.equal(archive.markForHer('work', 'C1', '300.0')?.path, '.[2]');
+  const event = db.prepare(`SELECT state FROM loop_events WHERE event_id = 'e1'`).get() as { state: string };
+  assert.equal(event.state, 'no-reply');
+  db.close();
 });
 
 /** No Slack ID of a channel, a person or a message, and no token, in a log line. */
@@ -300,8 +321,8 @@ test('when one conversation\'s history is refused, the others are still filled i
   f.slack.fail('history', 'D1', 'conversations.history', 'missing_scope', 'im:history');
   f.slack.connect();
   await f.workspace.idle();
-  assert.match(await f.read('work/dev/2026-09-25.md'), /dev の発言/);
-  assert.match(await f.read('work/random/2026-09-25.md'), /random の発言/);
+  assert.match(await f.read('work/dev/2026-09-25.jsonl'), /dev の発言/);
+  assert.match(await f.read('work/random/2026-09-25.jsonl'), /random の発言/);
   assert.ok(f.logs.includes('slack (work): filling in a conversation failed (conversations.history: missing_scope, needed im:history)'), f.logs.join('\n'));
   assert.ok(f.logs.includes('slack (work): filled in 2 message(s) from 2 conversation(s); 1 conversation(s) failed'), f.logs.join('\n'));
   assert.ok(!f.logs.some(line => line.includes('発言')), 'no text in the log');
@@ -317,7 +338,7 @@ test('when a thread cannot be fetched, its parent and the rest are still recorde
   f.slack.fail('replies', parent, 'conversations.replies', 'thread_not_found');
   f.slack.connect();
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
+  const text = await f.read('work/dev/2026-09-25.jsonl');
   assert.match(text, /スレッドの親/);
   assert.match(text, /次の発言/);
   assert.ok(f.logs.includes('slack (work): a thread could not be fetched (conversations.replies: thread_not_found)'), f.logs.join('\n'));
@@ -333,9 +354,8 @@ test('a speaker whose name cannot be looked up is recorded under a stand-in name
   f.slack.post('C1', { ts: tsAt('2026-09-25T05:33:00Z'), user: 'U3', text: '二つ目', files: [] });
   f.slack.connect();
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /^## 14:32:05 someone$/m);
-  assert.match(text, /^## 14:33:00 someone$/m);
+  const text = await f.read('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(text.split('\n').filter(Boolean).map(line => (JSON.parse(line) as { from: string }).from), ['someone', 'someone']);
   const lines = f.logs.filter(line => line.includes('users.info'));
   assert.deepEqual(lines, ['slack (work): a name could not be looked up (users.info: user_not_found)']);
   assertNoIds(f.logs);
@@ -347,9 +367,9 @@ test('an image that cannot be fetched is only noted, and the message is recorded
   f.slack.emit(message({ text: '画像です', files: [
     { id: 'F1', name: 'a.png', mimetype: 'image/png', size: PNG.length, url_private_download: 'https://files.example.test/a.png' }] }));
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
+  const text = await f.read('work/dev/2026-09-25.jsonl');
   assert.match(text, /画像です/);
-  assert.match(text, /- 添付あり（取り込まず）: a\.png/);
+  assert.deepEqual((JSON.parse(text) as { attachments: string[] }).attachments, ['a.png']);
   assert.ok(f.logs.includes('slack (work): an image could not be fetched (files.download: http_403)'), f.logs.join('\n'));
   assertNoIds(f.logs);
 });
@@ -364,7 +384,7 @@ test('a live event that fails, or a reaction Slack refuses, is logged with the c
   await f.workspace.idle();
   assert.ok(f.logs.includes('slack (work): handling an event failed (conversations.info: channel_not_found)'), f.logs.join('\n'));
   assert.ok(f.logs.includes('slack (work): the reaction could not be added (reactions.add: missing_scope, needed reactions:write)'), f.logs.join('\n'));
-  assert.equal(f.events.length, 1, 'the mention is still an event');
+  assert.equal(f.told.length, 1, 'the mention is still told');
   assertNoIds(f.logs);
 });
 
@@ -374,7 +394,7 @@ function reaction(type: 'reaction_added' | 'reaction_removed', fields: { user: s
     item: { type: 'message', channel: fields.channel ?? 'C1', ts: fields.ts }, event_ts: tsAt('2026-09-25T05:40:00Z') };
 }
 
-test('a reaction is written under the message it is on, by name, and taking it off writes the day again', async t => {
+test('a reaction is written in the line of the message it is on, by name, and taking it off writes the day again', async t => {
   const f = await setup(t);
   const ts = tsAt(AT);
   const reply = tsAt('2026-09-25T05:33:00Z');
@@ -386,19 +406,19 @@ test('a reaction is written under the message it is on, by name, and taking it o
   f.slack.emit(reaction('reaction_added', { user: 'UBOT', reaction: '+1', ts }));
   f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: 'eyes', ts: reply }));
   await f.workspace.idle();
-  let text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /^明日リリースします\nリアクション: :\+1: 佐藤・natsumi、:tada: 山田$/m, text);
-  assert.match(text, /^ {2}スレッドの返信\n {2}リアクション: :eyes: 山田$/m, text);
+  let lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines[0]!.reactions, [{ name: '+1', by: ['佐藤', 'natsumi'] }, { name: 'tada', by: ['山田'] }]);
+  assert.deepEqual(lines[1]!.reactions, [{ name: 'eyes', by: ['山田'] }]);
   f.slack.emit(reaction('reaction_removed', { user: 'U2', reaction: '+1', ts }));
   f.slack.emit(reaction('reaction_removed', { user: 'U1', reaction: 'eyes', ts: reply }));
   await f.workspace.idle();
-  text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /^リアクション: :\+1: natsumi、:tada: 山田$/m, text);
-  assert.doesNotMatch(text, /:eyes:/);
-  assert.doesNotMatch(text, /\b(?:U1|U2|UBOT|C1)\b|\d{10}\.\d{6}/, 'no Slack ID in the file');
+  lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines[0]!.reactions, [{ name: '+1', by: ['natsumi'] }, { name: 'tada', by: ['山田'] }]);
+  assert.equal(lines[1]!.reactions, undefined);
+  assert.doesNotMatch(await f.read('work/dev/2026-09-25.jsonl'), /\b(?:U1|U2|UBOT|C1)\b|\d{10}\.\d{6}/, 'no Slack ID in the file');
 });
 
-test('the same reaction event sent again changes nothing and is counted once', async t => {
+test('the same reaction event sent again changes nothing, and her own post says it is hers', async t => {
   const f = await setup(t);
   const ts = tsAt(AT);
   f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: 'まとめました', ts }));
@@ -407,52 +427,10 @@ test('the same reaction event sent again changes nothing and is counted once', a
   f.slack.emit(added);
   f.slack.emit(added);
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /^リアクション: :\+1: 佐藤$/m, text);
-  assert.deepEqual(f.archive.take()?.reactions_on_mine, { 'work/#dev': 1 });
-});
-
-test('updates count only the reactions others put on her own posts, and not those taken off before they were shown', async t => {
-  const f = await setup(t);
-  f.slack.addChannel({ id: 'C2', name: 'random', isIm: false });
-  const mine = tsAt(AT);
-  const theirs = tsAt('2026-09-25T05:33:00Z');
-  const mineElsewhere = tsAt('2026-09-24T05:00:00Z');
-  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '自分の投稿', ts: mine }));
-  f.slack.emit(message({ text: '人の発言', ts: theirs }));
-  f.slack.emit(message({ channel: 'C2', user: 'UBOT', bot_id: 'BBOT', text: '前日の自分の投稿', ts: mineElsewhere }));
-  await f.workspace.idle();
-  f.archive.take();
-  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts: mine }));
-  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: 'tada', ts: mine }));
-  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: 'eyes', ts: mine }));
-  f.slack.emit(reaction('reaction_removed', { user: 'U2', reaction: 'eyes', ts: mine }));
-  f.slack.emit(reaction('reaction_added', { user: 'UBOT', reaction: 'pray', ts: mine }));
-  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: '+1', ts: theirs }));
-  f.slack.emit(reaction('reaction_added', { channel: 'C2', user: 'U1', reaction: 'bow', ts: mineElsewhere }));
-  await f.workspace.idle();
-  const taken = f.archive.take();
-  assert.deepEqual(taken, {
-    reactions_on_mine: { 'work/#dev': 2, 'work/#random': 1 },
-    files: ['/sources/slack/work/dev/2026-09-25.md', '/sources/slack/work/random/2026-09-24.md'],
-  });
-  assert.doesNotMatch(JSON.stringify(taken), /\b(?:U1|U2|UBOT|C1|C2)\b|\d{10}\.\d{6}/, 'no Slack ID in the updates');
-  assert.equal(f.archive.take(), undefined);
-  f.slack.emit(reaction('reaction_removed', { user: 'U1', reaction: '+1', ts: mine }));
-  await f.workspace.idle();
-  assert.equal(f.archive.take(), undefined, 'a reaction taken off is never counted');
-});
-
-test('new messages and reactions on her posts are counted side by side', async t => {
-  const f = await setup(t);
-  const mine = tsAt(AT);
-  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '自分の投稿', ts: mine }));
-  f.slack.emit(message({ text: '次の発言', ts: tsAt('2026-09-25T05:33:00Z') }));
-  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts: mine }));
-  await f.workspace.idle();
-  assert.deepEqual(f.archive.take(), {
-    new: { 'work/#dev': 1 }, reactions_on_mine: { 'work/#dev': 1 }, files: ['/sources/slack/work/dev/2026-09-25.md'],
-  });
+  const [line] = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.equal(line!.mine, true);
+  assert.deepEqual(line!.reactions, [{ name: '+1', by: ['佐藤'] }]);
+  assert.equal(f.told.length, 0, 'a reaction is a change in the file, not something for her');
 });
 
 test('a reaction on a message not recorded, or on something that is not a message, is let go', async t => {
@@ -462,8 +440,7 @@ test('a reaction on a message not recorded, or on something that is not a messag
   f.slack.emit({ type: 'reaction_added', user: 'U1', reaction: '+1', item: { type: 'file', file: 'F1' }, event_ts: tsAt(AT) });
   await f.workspace.idle();
   assert.deepEqual(f.logs, []);
-  assert.equal(f.archive.take(), undefined);
-  await assert.rejects(f.read('work/dev/2026-09-01.md'));
+  await assert.rejects(f.read('work/dev/2026-09-01.jsonl'));
 });
 
 test('a fill-in takes in the reactions on what it fills in, with those Slack only counted said as a number', async t => {
@@ -475,10 +452,9 @@ test('a fill-in takes in the reactions on what it fills in, with those Slack onl
     reactions: [{ name: 'eyes', users: ['UBOT'], count: 1 }] });
   f.slack.connect();
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /^止まっている間の自分の投稿\nリアクション: :\+1: 山田・佐藤、:tada: 山田・ほか 3 人$/m, text);
-  assert.match(text, /^ {2}返信\n {2}リアクション: :eyes: natsumi$/m, text);
-  assert.deepEqual(f.archive.take()?.reactions_on_mine, { 'work/#dev': 3 }, 'those Slack did not name are not counted');
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines[0]!.reactions, [{ name: '+1', by: ['山田', '佐藤'] }, { name: 'tada', by: ['山田'], others: 3 }]);
+  assert.deepEqual(lines[1]!.reactions, [{ name: 'eyes', by: ['natsumi'] }]);
 });
 
 test('a reaction taken off by someone Slack only counted comes off the number', async t => {
@@ -489,7 +465,7 @@ test('a reaction taken off by someone Slack only counted comes off the number', 
   await f.workspace.idle();
   f.slack.emit(reaction('reaction_removed', { user: 'U3', reaction: 'tada', ts }));
   await f.workspace.idle();
-  assert.match(await f.read('work/dev/2026-09-25.md'), /^リアクション: :tada: 山田・ほか 1 人$/m);
+  assert.deepEqual((await f.lines('work/dev/2026-09-25.jsonl'))[0]!.reactions, [{ name: 'tada', by: ['山田'], others: 1 }]);
 });
 
 test('a reacting person whose name cannot be looked up is written under a stand-in name, and the log carries no ID', async t => {
@@ -500,25 +476,22 @@ test('a reacting person whose name cannot be looked up is written under a stand-
   f.slack.fail('userName', 'U3', 'users.info', 'user_not_found');
   f.slack.emit(reaction('reaction_added', { user: 'U3', reaction: '+1', ts }));
   await f.workspace.idle();
-  assert.match(await f.read('work/dev/2026-09-25.md'), /^リアクション: :\+1: someone$/m);
+  assert.deepEqual((await f.lines('work/dev/2026-09-25.jsonl'))[0]!.reactions, [{ name: '+1', by: ['someone'] }]);
   assert.ok(f.logs.includes('slack (work): a name could not be looked up (users.info: user_not_found)'), f.logs.join('\n'));
   assertNoIds(f.logs);
 });
 
-test('a deleted message keeps none of its reactions in the file or the count', async t => {
+test('a deleted message keeps none of its reactions, and its replies still point at its line', async t => {
   const f = await setup(t);
   const ts = tsAt(AT);
   f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '消す投稿', ts }));
   f.slack.emit(message({ user: 'U2', text: '返信', ts: tsAt('2026-09-25T05:33:00Z'), thread_ts: ts }));
   f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts }));
   await f.workspace.idle();
-  f.archive.take();
-  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: 'tada', ts }));
   f.slack.emit({ type: 'message', subtype: 'message_deleted', channel: 'C1', channel_type: 'channel',
     ts: tsAt('2026-09-25T05:36:00Z'), deleted_ts: ts });
   await f.workspace.idle();
-  const text = await f.read('work/dev/2026-09-25.md');
-  assert.match(text, /（この発言は削除されました）/);
-  assert.doesNotMatch(text, /リアクション/);
-  assert.equal(f.archive.take(), undefined);
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.deepEqual(lines[0], { at: '2026-09-25 14:32:05', from: 'natsumi', mine: true, deleted: true });
+  assert.equal(lines[1]!.reply_to, 0);
 });

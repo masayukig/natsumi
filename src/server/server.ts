@@ -27,11 +27,11 @@ import { IMAGE_DIRECTORY, ImageStore } from './images.ts';
 import { HttpJevClient } from './jev.ts';
 import { LogprobJudgeClient } from './logprob-judge.ts';
 import type { JudgeClient } from './judge.ts';
-import { SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
+import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
-import { SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
-import type { UpdateSource } from './updates.ts';
+import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
+import { Sources } from './sources.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 import { Scheduler } from './scheduler.ts';
@@ -163,14 +163,24 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
 
     // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033).
     const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
-    // What she reads of Slack, written under sources/slack whether or not it is counted in the updates (ADR 0039).
+    // What she reads of Slack, written under sources/slack (ADR 0039, ADR 0050).
     const slackConfig = config.slack;
+    for (const key of slackConfig?.ignored ?? []) log(`config: ${key} is no longer read (ADR 0050); it can be deleted`);
     // The images she hands the server from /work (ADR 0044), fetched by the devices by their IDs.
     const images = new ImageStore(db, join(dataDirectory, STATE_DIRECTORY, IMAGE_DIRECTORY));
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
-      timeZone: config.loop.timeZone, now, mentionContext: slackConfig.mentionContext }) : undefined;
+      timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
-    const updates: UpdateSource[] = archive && slackConfig?.updates ? [archive] : [];
+    // The core that tells her what changed in them (ADR 0050), when there is anything to read. A history that cannot be
+    // kept leaves her the files and no events; the server still starts.
+    let sources: Sources | undefined = archive ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+      gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: config.loop.awakeHours,
+      activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
+    sources?.register(SLACK_REGISTRATION);
+    try { await sources?.prepare(); } catch {
+      log('sources: the history could not be prepared; no sources_updated event will be raised');
+      sources = undefined;
+    }
     const connector = options.slack?.connector ?? connectSlack;
     const slackConnections = archive ? slackTokens.map(({ name, botToken, appToken }) => ({ name, ...connector({ botToken, appToken }) })) : [];
 
@@ -202,9 +212,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
-      updates, ...(archive ? { slack: archive } : {}), ...(theDove ? { dove: theDove } : {}), images,
+      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
     });
     raiseInto = thinkingLoop;
+    sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
     if (theDove) {
       // What a previous process left on its way, and the approvals whose time ran out while it was stopped.
       theDove.resume();
@@ -220,7 +231,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         const workspace = new SlackWorkspace({
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
           maxImageBytes: slackConfig.maxImageBytes, now, log,
-          raise: record => thinkingLoop.raise('slack-mention', record),
+          attention: attention => { sources?.attention(attention); },
         });
         slackWorkspaces.push(workspace);
         void workspace.start().then(
@@ -244,7 +255,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       scheduler = new Scheduler({
         loop: thinkingLoop, now, log, timeZone: config.loop.timeZone, awakeHours: config.loop.awakeHours,
         nightlyRotationAt: config.loop.nightlyRotationAt, pingIntervalMinutes: config.loop.pingIntervalMinutes,
-        expressionResetMinutes: config.loop.expressionResetMinutes,
+        expressionResetMinutes: config.loop.expressionResetMinutes, ...(sources ? { sources } : {}),
       });
       scheduler.start();
       // The tasks outside agents are working on, fetched now and then on the interval (ADR 0035). The first round

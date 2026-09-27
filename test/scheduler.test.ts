@@ -526,3 +526,35 @@ test('no nightly switch is asked for when it is turned off, or while the loop is
   down.scheduler.tick();
   assert.equal(down.loop.rotations, 0);
 });
+
+test('the sources are looked at on every tick, at night and in the middle of a turn too, one look at a time (ADR 0050)', async () => {
+  const loop = new FakeLoop();
+  const clock = { now: tokyo('2026-09-18 02:00') };
+  let looks = 0;
+  let finish: (() => void) | undefined;
+  const sources = { tick: () => { looks += 1; return new Promise<void>(resolve => { finish = resolve; }); } };
+  const logs: string[] = [];
+  const scheduler = new Scheduler({ loop, now: () => clock.now, timeZone: TZ, awakeHours: AWAKE, pingIntervalMinutes: false,
+    expressionResetMinutes: 3, nightlyRotationAt: false, sources, log: line => { logs.push(line); } });
+  loop.quiet = false;
+  scheduler.tick();
+  assert.equal(looks, 1);
+  // Still looking: the next tick does not start another.
+  scheduler.tick();
+  assert.equal(looks, 1);
+  finish!();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  scheduler.tick();
+  assert.equal(looks, 2);
+  // A failed look is logged, and the next tick looks again.
+  const failing = new Scheduler({ loop, now: () => clock.now, timeZone: TZ, awakeHours: AWAKE, pingIntervalMinutes: false,
+    expressionResetMinutes: 3, nightlyRotationAt: false, sources: { tick: () => Promise.reject(new Error('git')) },
+    log: line => { logs.push(line); } });
+  failing.tick();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(logs, ['sources: a look failed']);
+  // Nothing looks while the loop is unavailable.
+  loop.unavailable = 'pi-unavailable';
+  scheduler.tick();
+  assert.equal(looks, 2);
+});

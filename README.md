@@ -503,38 +503,65 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.reaction` | | `eyes` | メンションと DM を受け取ったときにサーバーが付けるリアクション（コロンなしの絵文字名） |
    | `slack.backfillDays` | | 90 | 初めて見るチャンネルを何日前から埋めるか（1〜365） |
    | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
-   | `slack.mentionContext.messages` / `.chars` | | 5 / 500 | メンションの出来事に添える前の発言の件数（0〜20）と、1 件あたりの文字数 |
-   | `slack.updates` | | `true` | 合図（ping・self_check）の `updates` に Slack の件数を載せるか |
    | `slack.judge` | | 既定の経路の互換のモデルの logprobs | ポッポさんの判定の方式と接続先。下の「Slack に投稿する」 |
    | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
    | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネル、超えたらスレッドに置く（0〜20） |
    | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
    | `slack.postImages.maxBytes` / `.maxCount` | | 10 MiB / 4 | ポッポさんに頼む投稿の画像 1 枚の上限（1 KiB〜50 MiB）と、1 回の枚数の上限（1〜10） |
 
+   `slack.mentionContext` と `slack.updates` は使わなくなりました（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
+   書かれていても起動は止めず、ログに `config: slack.mentionContext is no longer read (ADR 0050); it can be deleted` と出します。消してかまいません。
+
 - 参加するチャンネルは、bot を招待して決めます。招待した後の最初の接続で、`backfillDays` 日前から埋めます。
-- 発言は data directory の `sources/slack/<ワークスペース>/<チャンネル>/<日付>.md`（DM は `@<名前>/`）に 1 日 1 ファイルで書きます。
-  見出しは natsumi のタイムゾーンの `## 14:32:05 山田` で、スレッドの返信は親の下に字下げします。編集と削除ではその日のファイルを書き直します。
-  画像は同じ場所の `files/` に取ってきます。目次は `sources/slack/INDEX.md` です。ファイルは消さないので、古いものは手で片づけます。
-- 発言に付いたリアクションは、発言の下に `リアクション: :+1: 山田・佐藤、:tada: 田中` の形で書き、付け外しのたびにその日のファイルを書き直します
+- 発言は data directory の `sources/slack/<ワークスペース>/<チャンネル>/<日付>.jsonl`（DM は `@<名前>/`）に 1 日 1 ファイル、
+  1 行 1 発言の JSON Lines で書きます（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
+  行は記録した順に並び、あとで動きません。時刻（`at`）は natsumi のタイムゾーンの秒まで、スレッドの返信は親と同じファイルの 1 行で、親の行の番号を `reply_to` に持ちます。
+  編集と削除ではその日のファイルを書き直し、削除された発言は `deleted` の行として残します。
+  画像は同じ場所の `files/` に取ってきます。目次は `sources/slack/INDEX.md`（Markdown）です。ファイルは消さないので、古いものは手で片づけます。
+  Markdown で書いていた以前の日付のファイルは、起動したときに SQLite から JSON Lines に書き直して消します。
+- 発言に付いたリアクションは、その発言の行の `reactions` に書き、付け外しのたびにその日のファイルを書き直します
   （[ADR 0043](docs/adr/0043-reactions-in-the-channel-files.md)）。natsumi 自身が付けたものも書きます。記録に無い発言へのリアクションは捨てます。
-  埋め直しでは、取り直した発言の `reactions` を取り込み、Slack が名前を返さなかった分は「ほか N 人」とします。
+  埋め直しでは、取り直した発言の `reactions` を取り込み、Slack が名前を返さなかった分は `others` の人数とします。
   Slack App に `reactions:read` とイベント `reaction_added`・`reaction_removed` が要ります（[Slack App の作り方](docs/slack-app.md)）。
-- 発言とリアクションは `.natsumi/state.sqlite`（migration 13・15）にも残り、ファイルはそこから書き直します。個人データとしてバックアップの対象です。
+- 発言とリアクションは `.natsumi/state.sqlite`（migration 13・15・21）にも残り、ファイルはそこから書き直します。個人データとしてバックアップの対象です。
 - 起動したときと Slack につなぎ直したときに、チャンネルごとに最後に記録した発言から後を取り直して埋めます。
   止まっている間に古いスレッドへ付いた返信は、埋め直しでは拾いません（親が最後に記録した発言より前にあるため）。
   Slack に断られた会話は飛ばして残りを埋め、次につなぎ直したときにまた試します。スレッド・発言者の名前・画像が取れなくても、発言は記録します
   （名前は `someone`、画像は「添付あり（取り込まず）」）。最後に、埋めた件数と失敗した会話の数を 1 行で出します。
-- 出来事になるのは、bot への本物のメンションと DM だけです。受け取るとサーバーが `reaction` を付けます。同じ発言は何度届いても出来事 1 件です。
-  名前が出ただけの発言やほかの発言は、次の合図の `updates` に件数で出ます。bot の発言（自分のものを含む）は出来事になりません。
-- natsumi 自身の投稿にほかの人が付けたリアクションは、合図の `updates.slack.reactions_on_mine` にチャンネルごとの数で出ます。
-  natsumi が自分で付けたもの、ほかの人の発言へのもの、見せる前に外されたものは数えません。
+- チャンネルが変わると、`sources_updated` の出来事で natsumi に知らせます（下の「読みものの更新」）。
+  bot への本物のメンションと DM は、そのチャンネルの `attention`（`kind` が `mention` か `dm`、ファイルと `jq -s` のパス、画像）として、間隔を待たずに、夜でも知らせます。
+  受け取るとサーバーが `reaction` を付けます。同じ発言は何度届いても 1 度だけ知らせます。bot の発言（自分のものを含む）は `attention` になりません。
+  本文や前後の流れは出来事に載せず、natsumi がファイルから読みます。
 - natsumi が読むものには、Slack の ID（ts・チャンネル・ユーザー）を書きません。発言はワークスペース・チャンネル・日付・秒までの時刻・発言者で指します。
-- 作業環境からは、data directory の `sources/` を `/sources` に読み取り専用でマウントします（compose.yaml に入っています）。
+- 作業環境からは、data directory の `sources/` を `/sources` に、`sources.git/` を `/sources.git` に、どちらも読み取り専用でマウントします（compose.yaml に入っています）。
   natsumi は shell で読み、`view <パス>` で画像を見ます（`/sources/` の下の画像だけ、サーバーが答えます）。
 - ログにはワークスペースの名前と失敗の種類だけを出し、発言や token、Slack の ID は出しません。
   Slack の API の失敗は、呼び出したメソッドと Slack のエラーのコード（足りない scope があればそれも）を出します。
   例: `slack (work): filling in a conversation failed (conversations.history: missing_scope, needed im:history)`。
   埋め直しの間は、同じ失敗は 1 度だけ出し、残りは最後の 1 行の件数に数えます。
+
+### 読みものの更新（sources_updated）
+
+`/sources` の下の読みもの（いまは Slack だけ）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
+（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
+
+- サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。
+- 変わったかどうかは、スケジューラの tick ごとに見ます。読みものごとの単位（Slack はチャンネル）で書き込みの回数を数え、
+  「前回見せた時刻 + 間隔」を過ぎた変わったチャンネルを出来事にします。間隔は `k ÷ 直近 1 時間の書き込みの速さ` を最短・最長で頭打ちにしたものです。
+- 本人の起きている時間（`loop.awakeHours`）の外は、`attention` が無い限り知らせません。朝の最初の出来事に夜の分がまとめて入ります。
+- 出来事は、待っているものが 1 件だけになるようにまとめます。中身はそのターンの始めに作り、見せるものが無ければターンを始めずに閉じます。
+- 出来事に差分の本文は載せません。natsumi は作業環境の `sources-diff` で見ます（`/sources.git` を読み取り専用でマウントします）。
+- 毎晩、`historyDays` 日より前の履歴を刈り込みます。
+
+```json
+"sources": { "activity": { "k": 3, "minMinutes": 3, "maxMinutes": 60 }, "historyDays": 7 }
+```
+
+| 項目 | 必須 | 既定 | 中身 |
+| --- | --- | --- | --- |
+| `sources.activity.k` | | 3 | 間隔の係数。直近 1 時間に書き込みが 60 回なら 3 分、6 回なら 30 分 |
+| `sources.activity.minMinutes` / `.maxMinutes` | | 3 / 60 | 間隔の最短と最長（分、1〜1440） |
+| `sources.historyDays` | | 7 | 残す履歴の日数（1〜90） |
 
 ### Slack に投稿する（ポッポさん）
 

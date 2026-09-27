@@ -99,3 +99,9 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
   通すのは生成（txt2img・img2img）、進み具合、一覧の GET と設定の読み取り（GET options）だけで、設定の書き換え（POST options）は断ります。
 - **token は中継（proxy のコンテナ）だけが持ちます。** 作業環境にも natsumi のサーバーにも渡しません。なつみは中継の通す API の外で、画像生成サーバーやその前の認証を使えません。
 - 中継・token と、コンテナのシェル向けの `SDCTL_URL` は環境の設定（公開しないリポジトリ）にあります。Docker（`compose.yaml`）の作業環境には中継が無いので、sdctl はつながらずに失敗します。
+
+読み取り専用で見せるものもあります。
+
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルなど）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)）。
+- `/sources.git`: `/sources` の履歴。data directory の `sources.git/` で、作業環境の `sources-diff` が読みます。commit と ref を動かすのはサーバーだけで、
+  作業環境からは書けません。中身は `/sources` と同じ読みものの、数日分の差分です（[ADR 0050](adr/0050-telling-of-source-updates-with-one-event.md)）。

@@ -120,12 +120,20 @@ services:
         volume:
           subpath: sources
           nocopy: true
+      # The history of /sources, which sources-diff reads (ADR 0050). Read-only: the server commits and moves its refs.
+      - type: volume
+        source: natsumi-data
+        target: /sources.git
+        read_only: true
+        volume:
+          subpath: sources.git
+          nocopy: true
       - type: volume
         source: natsumi-workspace-socket
         target: /run/natsumi-workspace
         volume:
           nocopy: true
-    # natsumi creates memory/, work/, home/ and agents/ in the data directory on its first start.
+    # natsumi creates memory/, work/, home/, agents/, sources/ and sources.git/ in the data directory on its first start.
     depends_on:
       natsumi:
         condition: service_healthy

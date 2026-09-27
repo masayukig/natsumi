@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { openPush } from '../src/server/push-crypto.ts';
 import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
-import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
+import { FakeSlack, PNG, referenceFromAttention, tsAt } from './support/fake-slack.ts';
 import { login, PUBLIC_ORIGIN, startFixture, type Fixture } from './support/server-fixture.ts';
 
 /**
@@ -87,11 +87,11 @@ async function withDove(fn: (f: Fixture, slack: FakeSlack, apns: FakeApns, jev: 
   const jev = new OwnerJev();
   const f = await startFixture({ apns: { origin: apns.origin, pem: apnsTestKey().pem, retryDelaysMs: [1] },
     slack: { section: SLACK, api: slack, judge: jev } });
-  // natsumi answers a mention by asking the dove to reply to it, copying the reference the event gave her.
+  // natsumi answers a mention by asking the dove to reply to it, with a reference written from the line it points at.
   f.model.auto = context => {
     const last = context.messages.at(-1);
     const text = last?.role === 'user' ? JSON.stringify(last.content) : '';
-    const reference = /\\"reference\\":\\"([^\\]+)\\"/.exec(text)?.[1];
+    const reference = referenceFromAttention(text, f.data);
     if (!reference) return {};
     return { calls: [{ name: 'ask_agent', arguments: { agent: 'poppo', continue: false,
       message: `返信先: ${reference}\n種類: 投稿\n表情: happy\n---\n架空の返事です。` } }] };
@@ -223,7 +223,7 @@ test('an approval with an image lists it, and the image is fetched only with a l
     f.model.auto = context => {
       const last = context.messages.at(-1);
       const text = last?.role === 'user' ? JSON.stringify(last.content) : '';
-      const reference = /\\"reference\\":\\"([^\\]+)\\"/.exec(text)?.[1];
+      const reference = referenceFromAttention(text, f.data);
       if (!reference) return {};
       return { calls: [{ name: 'ask_agent', arguments: { agent: 'poppo', continue: false,
         message: `返信先: ${reference}\n種類: 投稿\n画像: /work/images/cat.png\n---\n描いてみました。` } }] };

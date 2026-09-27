@@ -30,7 +30,6 @@ import { ReadState, type ReadPosition } from './read-state.ts';
 import { isoAt, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
-import { takeUpdates, type UpdateSource } from './updates.ts';
 import { parseView, viewImage } from './view.ts';
 
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
@@ -188,12 +187,10 @@ export interface LoopOptions {
   /** Replaces the SDK client built from `a2a`. */
   a2aClient?: A2AClient;
   /**
-   * What natsumi reads besides her memory (ADR 0039). Their `updates` ride on pings and self-checks. The loop knows
-   * neither how many there are nor what they read.
+   * What natsumi reads besides her memory (ADR 0050): the line of a `sources_updated` event, made as its turn begins,
+   * and the images beside it. The loop knows neither how many sources there are nor what they read.
    */
-  updates?: readonly UpdateSource[];
-  /** What a Slack mention event is made of when it is handed to her: its line, and the images beside it. */
-  slack?: SlackEvents;
+  sources?: SourceEvents;
   /**
    * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent, and its answers
    * come back as `dove-reply` events. Present only when Slack is configured.
@@ -208,8 +205,10 @@ export interface LoopOptions {
   log?: (line: string) => void;
 }
 
-/** The side of Slack the loop reads a mention event from (ADR 0039). */
-export interface SlackEvents {
+/** The side of the sources the loop reads a `sources_updated` event from (ADR 0050). */
+export interface SourceEvents {
+  /** Makes the event's line from what is there now. False when there is nothing to show: then no turn is run. */
+  take(eventId: string): Promise<boolean>;
   eventLine(eventId: string, receivedAt: string): Record<string, unknown>;
   images(eventId: string): Promise<ImageContent[]>;
 }
@@ -221,7 +220,7 @@ export interface DoveEvents {
 }
 
 /** The kinds of event something outside the loop may raise. */
-export type RaisedKind = 'slack-mention' | 'dove-reply';
+export type RaisedKind = 'dove-reply';
 
 type FinishTurn = NonNullable<AgentSession['agent']['finishTurn']>;
 type StopContext = Parameters<FinishTurn>[0];
@@ -618,7 +617,7 @@ export class ThinkingLoop {
   }
 
   /**
-   * An event raised from outside the loop, such as a Slack mention (ADR 0039). The caller's own rows are written in
+   * An event raised from outside the loop, such as the dove's answer (ADR 0040). The caller's own rows are written in
    * the event's transaction, so neither is ever recorded without the other. Like an agent's answer it waits behind
    * whatever is running: it is queued, not steered in.
    */
@@ -630,6 +629,19 @@ export class ThinkingLoop {
     });
     this.queue.push(eventId);
     this.pump();
+  }
+
+  /**
+   * Asks for a `sources_updated` event (ADR 0050). One waits at most: while one is queued, asking again adds nothing,
+   * and what came meanwhile goes into that one, whose line is made only as its turn begins. Returns whether one was
+   * queued now.
+   */
+  raiseSourcesUpdated(): boolean {
+    if (this.closing || this.unavailableCode || !this.options.sources) return false;
+    if (this.queue.some(eventId => this.store.eventKind(eventId) === 'sources-updated')) return false;
+    this.queue.push(this.store.insertEvent('sources-updated'));
+    this.pump();
+    return true;
   }
 
   /** Hands the loop a ping: the "anything you want to do?" of a quiet moment (ADR 0014). */
@@ -857,6 +869,11 @@ export class ThinkingLoop {
       await this.followRoute();
       await this.followFold();
       if (!eventId) return;
+      // Nothing changed after all (another event showed it first): the event ends without a turn.
+      if (this.store.eventKind(eventId) === 'sources-updated' && !await this.takeSources(eventId)) {
+        this.store.setEventState(eventId, 'no-reply', 'nothing-to-show');
+        return;
+      }
       const turnId = `turn-${randomUUID()}`;
       const review = this.store.eventKind(eventId) === 'nightly-review';
       this.working = { turnId, startedAt: isoAt(this.now()), eventKinds: this.eventLabel([eventId]), phase: 'turn' };
@@ -1302,19 +1319,18 @@ export class ThinkingLoop {
     const raisedAt = Date.parse(row.created_at);
     if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
     if (row.kind === 'dove-reply') return this.options.dove?.takeEventLine(eventId, row.created_at) ?? { type: 'agent_reply', received_at: row.created_at, agent: DOVE_NAME };
-    if (row.kind === 'slack-mention') return this.options.slack?.eventLine(eventId, row.created_at) ?? { type: 'slack_mention', received_at: row.created_at };
-    // What the sources have that she was not shown yet, on the quiet moments only; taken as the line is made (ADR 0039).
-    const updates = row.kind === 'ping' || row.kind === 'self-check' ? takeUpdates(this.options.updates ?? []) : undefined;
-    const shownUpdates = updates ? { updates } : {};
+    if (row.kind === 'sources-updated') return this.options.sources?.eventLine(eventId, row.created_at) ?? { type: 'sources_updated', received_at: row.created_at };
+    // Only an event recorded before ADR 0050 and closed by its migration has this kind; it is never made into a line.
+    if (row.kind === 'slack-mention') return { type: 'slack_mention', received_at: row.created_at };
     if (row.kind === 'self-check') {
       return { type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),
-        checks: this.selfChecks.carriedBy(eventId, raisedAt), ...shownUpdates };
+        checks: this.selfChecks.carriedBy(eventId, raisedAt) };
     }
     // How many of her notices the owner has not checked, when any: read-only, so she need not send them again.
     const unacknowledged = this.readState.unacknowledgedNotificationIds().length;
     const notices = unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {};
     if (row.kind === 'ping') {
-      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices, ...shownUpdates };
+      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
     }
     return { type: 'mac_message', received_at: row.message_at, text: row.text, ...notices };
   }
@@ -1360,12 +1376,20 @@ export class ThinkingLoop {
     return this.shell!.run(command);
   }
 
+  /** Has the sources make a `sources_updated` event's line. One that fails shows nothing, and the event ends. */
+  private async takeSources(eventId: string): Promise<boolean> {
+    try { return await this.options.sources?.take(eventId) ?? false; } catch {
+      this.log('thinking loop: the sources could not make their event');
+      return false;
+    }
+  }
+
   /** The images a turn's events bring with them, handed to the model beside the prompt. */
   private async eventImages(eventIds: string[]): Promise<ImageContent[]> {
     const images: ImageContent[] = [];
     for (const eventId of eventIds) {
-      if (this.store.eventKind(eventId) !== 'slack-mention' || !this.options.slack) continue;
-      try { images.push(...await this.options.slack.images(eventId)); } catch { /* the line still goes; the images are a courtesy */ }
+      if (this.store.eventKind(eventId) !== 'sources-updated' || !this.options.sources) continue;
+      try { images.push(...await this.options.sources.images(eventId)); } catch { /* the line still goes; the images are a courtesy */ }
     }
     return images;
   }

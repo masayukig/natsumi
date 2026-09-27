@@ -148,8 +148,8 @@ test('the scenes kept in the repository all load', async () => {
   const scenes = await loadScenes([join(import.meta.dirname, '..', 'eval', 'scenes')]);
   assert.ok(scenes.length >= 2);
   for (const scene of scenes) assert.ok(conditions(scene).length >= 1, scene.name);
-  // The scenes of sources_updated need PR #94's event, and say so.
+  // sources_updated is on main (ADR 0050): its scene needs nothing more.
   const sources = scenes.find(scene => scene.name === 'sources-mention');
-  assert.deepEqual(sources?.requires, ['sources-updated']);
+  assert.deepEqual(sources?.requires, []);
   assert.equal(conditions(sources!).length, 10);
 });
