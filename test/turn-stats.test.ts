@@ -205,6 +205,13 @@ test('stats counts the ordinary turns only: the nightly reviews leave every numb
     assert.equal(await f.run(['stats']), 0);
     assert.deepEqual(f.out.slice(0, without.length), without);
     assert.deepEqual(f.out.slice(without.length), ['', 'nightly reviews: 1 (not counted above)']);
+    // The memory curator's turns are kept apart the same way (ADR 0055).
+    stats.record(record({ turnId: 'turn-curator', kind: 'curator', fold: 'off', eventKinds: 'memory_curator', outcome: 'rejected',
+      modelCalls: 60, contextTokens: 50_000, reflection: undefined, firstOutAt: undefined }));
+    f.out.length = 0;
+    assert.equal(await f.run(['stats']), 0);
+    assert.deepEqual(f.out.slice(0, without.length), without);
+    assert.deepEqual(f.out.slice(without.length), ['', 'nightly reviews: 1 (not counted above)', 'memory curator: 1 (not counted above)']);
   } finally { await f.cleanup(); }
 });
 

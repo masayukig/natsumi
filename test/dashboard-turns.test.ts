@@ -20,8 +20,9 @@ function row(overrides: Partial<TurnRow> = {}): TurnRow {
 }
 
 test('the list shows each turn’s time, kind, events, outcome, times, calls, tokens, route, fold and compaction, newest first', () => {
-  const text = turnsPage({ rows: [row({ compacted: true }), row({ turnId: 'turn-2', kind: 'review', eventKinds: 'nightly_review' })],
-    more: false, page: 1 }, ZONE).text;
+  const text = turnsPage({ rows: [row({ compacted: true }), row({ turnId: 'turn-2', kind: 'review', eventKinds: 'nightly_review' }),
+    row({ turnId: 'turn-3', kind: 'curator', eventKinds: 'memory_curator' })], more: false, page: 1 }, ZONE).text;
+  assert.match(text, /記憶の整理/, 'the curator\'s turn is a kind of its own (ADR 0055)');
   assert.match(text, /2026-01-01 09:00:00/, 'in the configured time zone');
   assert.match(text, /href="\/dashboard\/turns\/turn-1"/);
   assert.match(text, /mac_message/);

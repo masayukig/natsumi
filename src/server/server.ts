@@ -210,7 +210,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         target: { provider: route.model.provider, model: route.model.id }, compactionThreshold: route.compactionThreshold,
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
-      configureSession: options.pi?.configureSession, now, log, loop: config.loop,
+      configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
     });

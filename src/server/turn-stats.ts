@@ -39,7 +39,7 @@ export interface TurnRecord {
   compacted: boolean;
   /** Signs of her losing her way, counted by the server from what the turn did (ADR 0047). */
   confusion: Confusion;
-  /** An ordinary turn, or the nightly review (ADR 0049). Ordinary when omitted. */
+  /** An ordinary turn, the nightly review (ADR 0049) or the memory curator's (ADR 0055). Ordinary when omitted. */
   kind?: TurnKind;
   /** The turn's events, those steered in included. */
   eventIds?: string[];
@@ -47,7 +47,12 @@ export interface TurnRecord {
   place?: TurnPlace;
 }
 
-export type TurnKind = 'events' | 'review';
+export type TurnKind = 'events' | 'review' | 'curator';
+
+/** A turn's kind as the table keeps it; a row from before the kinds is an ordinary turn. */
+export function turnKind(value: unknown): TurnKind {
+  return value === 'review' || value === 'curator' ? value : 'events';
+}
 
 /**
  * Where a unit of work (the turn, its memo and the compaction after it) is in the Pi session record (ADR 0049): the
@@ -153,10 +158,11 @@ export async function runStatsCommand(cli: StatsCommand, dataDirectory: string, 
     const until = cli.until ? boundary(cli.until) : '9999';
     const all = db.prepare('SELECT * FROM turn_stats WHERE started_at >= ? AND started_at < ? ORDER BY started_at')
       .all(since, until) as Row[];
-    // The nightly review is a turn of another kind, with limits of its own: it would move every number (ADR 0049). A
-    // database from before the kinds has no reviews in it.
+    // The nightly review and the memory curator are turns of other kinds, with limits of their own: they would move every
+    // number (ADR 0049, ADR 0055). A database from before the kinds has neither in it.
     const rows = all.filter(row => (row.kind ?? 'events') === 'events');
-    const reviews = all.length - rows.length;
+    const reviews = all.filter(row => row.kind === 'review').length;
+    const curators = all.filter(row => row.kind === 'curator').length;
     const period = `${cli.since ?? 'the start'} to ${cli.until ?? 'now'}`;
     if (rows.length === 0) { write(`no turns from ${period}`); return 0; }
     const off = rows.filter(row => row.fold === 'off');
@@ -183,7 +189,9 @@ export async function runStatsCommand(cli: StatsCommand, dataDirectory: string, 
     const cut = (group: Row[]) => group.length === 0 ? '-'
       : ((group.filter(row => row.outcome === 'model-call-limit' || row.outcome === 'timeout').length / group.length) * 100).toFixed(0);
     write(`${'cut short (%)'.padEnd(rateWidth)}  ${cut(off).padStart(8)}  ${cut(on).padStart(8)}`);
-    if (reviews > 0) { write(''); write(`nightly reviews: ${reviews} (not counted above)`); }
+    if (reviews + curators > 0) write('');
+    if (reviews > 0) write(`nightly reviews: ${reviews} (not counted above)`);
+    if (curators > 0) write(`memory curator: ${curators} (not counted above)`);
     return 0;
   } finally { db.close(); }
 }

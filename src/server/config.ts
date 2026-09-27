@@ -312,6 +312,24 @@ const MAX_SOURCES_HISTORY_DAYS = 90;
 /** Slack's emoji names: lower case, digits and a few marks, without the colons. */
 const EMOJI_NAME = /^[a-z0-9_+'-]+$/;
 
+/** The memory curator that reorganizes memory after the nightly review (ADR 0055). */
+export interface CuratorConfig {
+  /** False to leave memory as natsumi left it. */
+  enabled: boolean;
+  /** A name in `pi.routes`; without it the curator runs on the route natsumi is on. */
+  route?: string;
+  /** Model calls the curator's one turn may make. */
+  modelCalls: number;
+  /** Minutes the curator's one turn may take. */
+  timeoutMinutes: number;
+  /** Files handed over each night in turn, besides the ones that changed that day, those left longest first. */
+  rotateFiles: number;
+}
+
+export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2 };
+/** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
+const MAX_ROTATE_FILES = 10;
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -323,6 +341,7 @@ export interface ServerConfig {
   a2a?: A2AConfig;
   slack?: SlackConfig;
   sources: SourcesConfig;
+  curator: CuratorConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -343,6 +362,7 @@ const SECTIONS = {
   a2a: parseA2A,
   slack: parseSlack,
   sources: parseSources,
+  curator: parseCurator,
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -381,7 +401,11 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
     sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
+    curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
   };
+  if (config.curator.route !== undefined && !config.pi.routes.some(route => route.name === config.curator.route)) {
+    throw new ConfigError('curator.route', 'must be one of pi.routes');
+  }
   if (config.slack) {
     const judge = parseJudge((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
@@ -774,6 +798,24 @@ function parseSlack(value: unknown, path: string): SlackConfig {
     approvalExpiryDays: expiry as number, placementFollowing: following,
     judgeContext: { messages: judgeMessages as number, chars: judgeChars as number },
     postImages: { maxBytes: imageBytes as number, maxCount: imageCount as number } };
+}
+
+function parseCurator(value: unknown, path: string): CuratorConfig {
+  const curator = object(value, path);
+  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'rotateFiles']);
+  const enabled = curator.enabled ?? CURATOR_DEFAULTS.enabled;
+  if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
+  const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
+  const calls = curator.modelCalls ?? CURATOR_DEFAULTS.modelCalls;
+  if (!positiveInteger(calls, 1)) throw new ConfigError(`${path}.modelCalls`, 'must be a positive integer');
+  const minutes = curator.timeoutMinutes ?? CURATOR_DEFAULTS.timeoutMinutes;
+  if (!positiveInteger(minutes, 1)) throw new ConfigError(`${path}.timeoutMinutes`, 'must be a positive integer');
+  const files = curator.rotateFiles ?? CURATOR_DEFAULTS.rotateFiles;
+  if (!positiveInteger(files, 0) || (files as number) > MAX_ROTATE_FILES) {
+    throw new ConfigError(`${path}.rotateFiles`, `must be an integer from 0 to ${MAX_ROTATE_FILES}`);
+  }
+  return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
+    rotateFiles: files as number };
 }
 
 function parseSources(value: unknown, path: string): SourcesConfig {

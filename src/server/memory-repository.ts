@@ -19,10 +19,19 @@ export const ALWAYS_FILE = 'always.md';
 export const PERSONALITY_FILE = 'personality.md';
 /** The note the nightly review leaves for the next session. */
 export const HANDOFF_FILE = 'handoff.md';
-/** The three names the server fixes. Everything else in the repository is natsumi's to arrange. */
-export const FIXED_FILES = [ALWAYS_FILE, PERSONALITY_FILE, HANDOFF_FILE] as const;
+/** The way into memory, a list of its files. Only the curator writes it (ADR 0055). */
+export const INDEX_FILE = 'INDEX.md';
+/** The names the server fixes. Everything else in the repository is natsumi's, and the curator's, to arrange. */
+export const FIXED_FILES = [ALWAYS_FILE, PERSONALITY_FILE, HANDOFF_FILE, INDEX_FILE] as const;
 /** These ride in every prompt, so only the nightly review may change them: a day turn's change is put back. */
 export const NIGHT_ONLY_FILES: readonly string[] = [ALWAYS_FILE, PERSONALITY_FILE];
+/** natsumi's own: the curator may read them and never change them (ADR 0055). */
+export const NATSUMI_ONLY_FILES: readonly string[] = [ALWAYS_FILE, PERSONALITY_FILE, HANDOFF_FILE];
+/** The day by day story, kept as history: the curator reads it and never changes it (ADR 0055). */
+export const DIARY_DIRECTORY = 'diary';
+
+/** Who changed the working tree: a turn of the day, the nightly review, or the curator after it. */
+export type Writer = 'day' | 'night' | 'curator';
 
 /** The longest one memory file may be, in characters. */
 export const DEFAULT_FILE_MAX_CHARS = 32000;
@@ -47,6 +56,12 @@ natsumi の性格と話し方をここに書きます。夜の再構成のとき
 const HANDOFF_TEMPLATE = `# 引き継ぎ
 
 まだ引き継ぎはありません。
+`;
+
+const INDEX_TEMPLATE = `# 記憶の索引
+
+記憶のファイルの一覧と、それぞれに何が書いてあるかを書く場所です。夜に記憶の整理係が書きます。
+まだ索引はありません。
 `;
 
 /** The handoff as the file holds it: the fixed heading, then what was written. Nothing, when nothing was. */
@@ -81,6 +96,21 @@ export interface CommitOutcome {
   files: string[];
   reverted: RevertedFile[];
 }
+
+/** The curator's commit (ADR 0055): all or nothing, so what failed is named and nothing of the night is kept. */
+export interface CurationOutcome {
+  committed: boolean;
+  /** The paths the commit carries, empty when nothing was committed. */
+  files: string[];
+  /** Every change that failed a check. Any at all, and the whole night was thrown away. */
+  rejected: RevertedFile[];
+}
+
+/** A file of memory, as the curator is shown it: its size and its headings. */
+export interface MemoryFile { path: string; chars: number; headings: string[] }
+
+/** git's empty tree: what a repository had before its first commit. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 type Change = 'added' | 'modified' | 'deleted';
 
@@ -134,9 +164,10 @@ export class MemoryRepository {
    * a night that never explained itself still commits.
    */
   async commit(input: { event: string; night?: boolean; message?: string }): Promise<CommitOutcome> {
+    const writer: Writer = input.night === true ? 'night' : 'day';
     const reverted: RevertedFile[] = [];
     for (const entry of await this.status()) {
-      const reason = entry.deleted ? this.inspectRemoval(entry.path) : await this.inspect(entry.path, input.night === true);
+      const reason = entry.deleted ? this.inspectRemoval(entry.path, writer) : await this.inspect(entry.path, writer);
       if (!reason) continue;
       await this.restore(entry.path);
       reverted.push({ path: entry.path, reason });
@@ -147,6 +178,73 @@ export class MemoryRepository {
     await this.commitStaged(input.event, files, input.message);
     if (reverted.length > 0) this.log(`memory: ${reverted.length} changed file(s) went back to the previous commit`);
     return { committed: true, files, reverted };
+  }
+
+  /**
+   * The curator's night as one commit, under the note it wrote, or under a line the server makes when it wrote none
+   * (ADR 0055). Every change is checked as natsumi's are, and the curator is further kept off her three files and off
+   * the diary. Unlike a turn's commit, one change that fails throws the whole night away: the curator moves and merges
+   * files, and a merge whose result alone went back would leave its sources gone and nothing in their place.
+   */
+  async commitCuration(input: { message?: string }): Promise<CurationOutcome> {
+    const rejected: RevertedFile[] = [];
+    const entries = await this.status();
+    for (const entry of entries) {
+      const reason = entry.deleted ? this.inspectRemoval(entry.path, 'curator') : await this.inspect(entry.path, 'curator');
+      if (reason) rejected.push({ path: entry.path, reason });
+    }
+    if (rejected.length > 0) {
+      await this.discardChanges();
+      this.log(`memory: the curator's changes were thrown away (${rejected.length} failed the check)`);
+      return { committed: false, files: [], rejected };
+    }
+    const files = entries.map(entry => entry.path);
+    if (files.length === 0) return { committed: false, files: [], rejected };
+    await runGit(this.directory, ['add', '-A', '--', '.']);
+    await this.commitStaged('memory_curator', files, input.message);
+    return { committed: true, files, rejected };
+  }
+
+  /** Throws away whatever the last commit does not hold: changes, removals, and new files and folders alike. */
+  async discardChanges(): Promise<void> {
+    await runGit(this.directory, ['reset', '--hard', '--quiet', 'HEAD']);
+    await runGit(this.directory, ['clean', '-f', '-d', '--quiet']);
+  }
+
+  /** Whether the working tree is what the last commit holds. */
+  async isClean(): Promise<boolean> {
+    return (await this.status()).length === 0;
+  }
+
+  /**
+   * Every file memory holds, in path order, with its length in characters and its `#` and `##` headings: the map of
+   * memory the curator starts from (ADR 0055). Read straight from the working tree; `.git` is not memory.
+   */
+  async listFiles(): Promise<MemoryFile[]> {
+    const { stdout } = await runGit(this.directory, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+    const paths = [...new Set(stdout.split('\0').filter(Boolean))].sort();
+    const files: MemoryFile[] = [];
+    for (const path of paths) {
+      let text: string;
+      try { text = await readFile(join(this.directory, path), 'utf8'); } catch { continue; }
+      files.push({ path, chars: [...text].length, headings: text.split('\n').filter(line => /^#{1,2} /.test(line)).map(line => line.trim()) });
+    }
+    return files;
+  }
+
+  /**
+   * The files still in memory that changed between `base` and the last commit, in path order. A base the history
+   * does not hold (none yet, or one the owner rewrote away) stands for the last day: the last commit made more than
+   * a day ago, or the empty tree when there is none.
+   */
+  async changedSince(base: string | undefined): Promise<string[]> {
+    let from = base;
+    if (!from || (await runGit(this.directory, ['cat-file', '-e', `${from}^{commit}`], { allowFailure: true })).code !== 0) {
+      const older = (await runGit(this.directory, ['rev-list', '-1', '--before=24 hours ago', 'HEAD'])).stdout.trim();
+      from = older || EMPTY_TREE;
+    }
+    const { stdout } = await runGit(this.directory, ['diff', '--name-only', '-z', '--no-renames', '--diff-filter=AM', from, 'HEAD']);
+    return stdout.split('\0').filter(Boolean).sort();
   }
 
   /**
@@ -194,6 +292,10 @@ export class MemoryRepository {
     if (!(await this.exists(ALWAYS_FILE))) {
       await writeFile(join(this.directory, ALWAYS_FILE), ALWAYS_TEMPLATE, { mode: SHARED_FILE_MODE });
       placed.push(ALWAYS_FILE);
+    }
+    if (!(await this.exists(INDEX_FILE))) {
+      await writeFile(join(this.directory, INDEX_FILE), INDEX_TEMPLATE, { mode: SHARED_FILE_MODE });
+      placed.push(INDEX_FILE);
     }
     if (!(await this.exists(HANDOFF_FILE))) {
       await writeFile(join(this.directory, HANDOFF_FILE), handoffText(handoff) ?? HANDOFF_TEMPLATE, { mode: SHARED_FILE_MODE });
@@ -253,16 +355,22 @@ export class MemoryRepository {
    * the server's own footing — the prompt reads them every turn — so losing one would quietly break what the server
    * assumes, with nobody told. A rename reaches here as the removal half, and is put back the same way.
    */
-  private inspectRemoval(path: string): string | undefined {
+  private inspectRemoval(path: string, writer: Writer): string | undefined {
+    if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は消すことも動かすこともできません`;
     if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
     return `${path} はサーバーが名前と置き場所を固定しているファイルなので、消すことも改名することもできません`;
   }
 
   /** Why the changed file may not be committed, or undefined when it may. A removal goes through inspectRemoval. */
-  private async inspect(path: string, night: boolean): Promise<string | undefined> {
-    if (!night && NIGHT_ONLY_FILES.includes(path)) {
+  private async inspect(path: string, writer: Writer): Promise<string | undefined> {
+    if (writer !== 'curator' && path === INDEX_FILE) {
+      return `${path} は記憶の整理係だけが書くファイルなので、あなたは書き換えられません（夜に整理係が書き直します）`;
+    }
+    if (writer === 'day' && NIGHT_ONLY_FILES.includes(path)) {
       return `${path} は毎回のプロンプトに入るので、夜の再構成のターンでだけ書き換えられます`;
     }
+    if (writer === 'curator' && NATSUMI_ONLY_FILES.includes(path)) return `${path} はなつみ自身のファイルなので、整理係は変えられません`;
+    if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は変えられません`;
     let info;
     try { info = await lstat(join(this.directory, path)); } catch { return undefined; }
     if (info.isSymbolicLink()) return 'symlink は記憶に置けません';
@@ -294,6 +402,11 @@ export class MemoryRepository {
   }
 
   private log(line: string) { this.options.log?.(line); }
+}
+
+/** Whether a path is in the diary, or is the diary itself. */
+function inDiary(path: string): boolean {
+  return path === DIARY_DIRECTORY || path.startsWith(`${DIARY_DIRECTORY}/`);
 }
 
 /** The sentence the next turn reads about what went back, or an empty string when nothing did. */

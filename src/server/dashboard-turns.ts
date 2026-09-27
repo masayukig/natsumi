@@ -22,7 +22,7 @@ export const imagePath = (turnId: string, index: number) => `${turnPath(turnId)}
 const numberFormat = new Intl.NumberFormat('en-US');
 const number = (value: number) => numberFormat.format(value);
 const seconds = (ms: number | null) => ms === null ? '—' : `${(ms / 1000).toFixed(1)} s`;
-const KINDS = { events: 'ターン', review: '夜の振り返り' } as const;
+const KINDS = { events: 'ターン', review: '夜の振り返り', curator: '記憶の整理' } as const;
 
 function outcome(value: string): Html {
   return value === 'ok' ? html`<span class="ok">ok</span>` : html`<span class="bad">${value}</span>`;

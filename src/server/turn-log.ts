@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { REFLECTION_REQUEST } from './prompts.ts';
 import type { TurnInProgress } from './thinking-loop.ts';
-import type { TurnKind, TurnPlace } from './turn-stats.ts';
+import { turnKind, type TurnKind, type TurnPlace } from './turn-stats.ts';
 
 /**
  * The turns as the dashboard reads them (ADR 0049): the list from `turn_stats` alone, and each turn's words from the
@@ -73,7 +73,7 @@ function turnRow(row: Record<string, unknown>): TurnRow {
   let eventIds: string[] | null = null;
   try { eventIds = text(row.event_ids) ? JSON.parse(row.event_ids as string) as string[] : null; } catch { /* shown without */ }
   return {
-    turnId: row.turn_id as string, kind: row.kind === 'review' ? 'review' : 'events', startedAt: row.started_at as string,
+    turnId: row.turn_id as string, kind: turnKind(row.kind), startedAt: row.started_at as string,
     turnMs: row.turn_ms as number, fold: row.fold as string, route: row.route as string, eventKinds: row.event_kinds as string,
     outcome: row.outcome as string, firstOutMs: count(row.first_out_ms), modelCalls: row.model_calls as number,
     inputTokens: row.input_tokens as number, cacheReadTokens: row.cache_read_tokens as number, outputTokens: row.output_tokens as number,

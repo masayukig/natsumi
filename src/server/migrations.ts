@@ -665,4 +665,67 @@ export const MIGRATIONS: readonly Migration[] = [
         WHERE kind = 'slack-mention' AND state IN ('queued', 'processing');
     `,
   },
+  {
+    version: 22,
+    name: 'memory curator',
+    sql: `
+      -- The memory curator's turn is a turn of its own kind (ADR 0055). A column's CHECK changes only by rebuilding the
+      -- table, so turn_stats is made again as it was, with 'curator' allowed, and every row carried over as it stands.
+      CREATE TABLE turn_stats_new (
+        turn_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        fold TEXT NOT NULL CHECK (fold IN ('on', 'off')),
+        route TEXT NOT NULL,
+        event_kinds TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        first_out_ms INTEGER CHECK (first_out_ms >= 0),
+        turn_ms INTEGER NOT NULL CHECK (turn_ms >= 0),
+        model_calls INTEGER NOT NULL CHECK (model_calls >= 0),
+        input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+        cache_read_tokens INTEGER NOT NULL CHECK (cache_read_tokens >= 0),
+        output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+        context_tokens INTEGER CHECK (context_tokens >= 0),
+        reflection_ms INTEGER CHECK (reflection_ms >= 0),
+        reflection_input_tokens INTEGER CHECK (reflection_input_tokens >= 0),
+        reflection_cache_read_tokens INTEGER CHECK (reflection_cache_read_tokens >= 0),
+        reflection_output_tokens INTEGER CHECK (reflection_output_tokens >= 0),
+        compacted INTEGER NOT NULL CHECK (compacted IN (0, 1)),
+        repeated_calls INTEGER NOT NULL CHECK (repeated_calls >= 0),
+        tool_errors INTEGER NOT NULL CHECK (tool_errors >= 0),
+        dove_refusals INTEGER NOT NULL CHECK (dove_refusals >= 0),
+        unanswered_messages INTEGER NOT NULL CHECK (unanswered_messages >= 0),
+        kind TEXT NOT NULL DEFAULT 'events' CHECK (kind IN ('events', 'review', 'curator')),
+        session_file TEXT,
+        first_entry_id TEXT,
+        last_entry_id TEXT,
+        start_offset INTEGER CHECK (start_offset >= 0),
+        end_offset INTEGER CHECK (end_offset >= start_offset),
+        event_ids TEXT
+      ) STRICT;
+      INSERT INTO turn_stats_new SELECT turn_id, started_at, fold, route, event_kinds, outcome, first_out_ms, turn_ms, model_calls,
+        input_tokens, cache_read_tokens, output_tokens, context_tokens, reflection_ms, reflection_input_tokens,
+        reflection_cache_read_tokens, reflection_output_tokens, compacted, repeated_calls, tool_errors, dove_refusals,
+        unanswered_messages, kind, session_file, first_entry_id, last_entry_id, start_offset, end_offset, event_ids FROM turn_stats;
+      DROP TABLE turn_stats;
+      ALTER TABLE turn_stats_new RENAME TO turn_stats;
+      CREATE INDEX turn_stats_started ON turn_stats (started_at);
+
+      -- When the curator last had each memory file in hand, by its path in the repository: handed to it, or changed by
+      -- its commit, on a night it succeeded. The files longest untouched are handed over next. git cannot say this: a
+      -- file the curator read and judged fine leaves no commit.
+      CREATE TABLE memory_curation (
+        path TEXT PRIMARY KEY,
+        curated_at TEXT NOT NULL
+      ) STRICT;
+
+      -- The curator itself: the commit it last succeeded at, which the files changed since are counted from, and when the
+      -- run in progress began. A start that finds running_since set knows a run was cut off by a stop, and throws away
+      -- what it left uncommitted.
+      CREATE TABLE memory_curator (
+        owner INTEGER PRIMARY KEY CHECK (owner = 1),
+        base_commit TEXT,
+        running_since TEXT
+      ) STRICT;
+    `,
+  },
 ];

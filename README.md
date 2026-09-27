@@ -75,6 +75,10 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
+   - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)）。
+     `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
+     係のターンの上限 `modelCalls`（既定 60 回）と `timeoutMinutes`（既定 30 分）、一晩に順番で回すファイルの数 `rotateFiles`
+     （既定 2、0〜10）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
 4. ビルドして起動します。
 
 ```sh
@@ -98,32 +102,34 @@ Pi の session ファイルが消えた・壊れた場合は新しい session �
 長期記憶は 1 つの git リポジトリです（[ADR 0018](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)）。
 場所は `loop.memoryRepository`、既定は data directory の `memory/` で、初回起動でそこが git のリポジトリになります
 （ブランチは `main`）。すでにあった Markdown は、名前も中身も変えずに最初のコミットに入ります。
-記憶そのものは、これまでどおりトピックごとの Markdown ファイルで、見出しと日付付きの箇条書きの行でできています
-（[ADR 0009](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)）。natsumi はこのファイルを `run_shell` で
-読み書きします（[ADR 0019](docs/adr/0019-a-workspace-not-a-memory-tool.md)。専用の記憶のツールはもうありません）。
+記憶そのものは、トピックごとの Markdown ファイルです。トピックには「今どうなっているか」を書き、その日の出来事と経緯は
+`diary/` の日ごとのファイルに書くよう、natsumi に指示しています（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)）。
+natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](docs/adr/0019-a-workspace-not-a-memory-tool.md)）、
+`INDEX.md` から、または `search_memory`（`rg` を決まったオプションで `/memory` に掛けるツール）で探します。
 手で読んで直すこともできますし、直下に手で置いた `.md` ファイルも natsumi が探す対象になります。
 
-サーバーが名前と置き場所を決めるのは、リポジトリ直下の 3 つだけです。
+サーバーが名前と置き場所を決めるのは、リポジトリ直下の 4 つだけです。
 
 | ファイル | 中身 |
 | --- | --- |
 | `always.md` | 常時記憶。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます |
 | `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます |
 | `handoff.md` | 夜の引き継ぎ。初回起動で、そのときの最新の引き継ぎを写します（引き継ぎ自体を SQLite からこのファイルへ移すのは後続の実装） |
+| `INDEX.md` | 記憶の索引。無ければ雛形を置きます。書くのは記憶の整理係だけで、natsumi のターンで変わっていたら戻します |
 
 記憶に変更があったターンの終わりごとに、サーバーが 1 回コミットします。順序は、ターンが終わる → 変わったファイルを
 検査 → 当たったものを直前のコミットの状態に戻す（新しいファイルは消す）→ 残りをコミット、です。ターンがモデル呼び出しの
 上限や時間切れで終わったときも同じように検査してコミットします。検査は `.md` 以外・symlink・空・
 `loop.memoryFileMaxChars`（既定 32000 文字）超過・テンプレートの制御文字列・制御文字・日本語以外の文字と、
-日中のターンでの `always.md`・`personality.md` の変更です。`always.md` にはこれに加えて
+日中のターンでの `always.md`・`personality.md` の変更と、natsumi のターンでの `INDEX.md` の変更です。`always.md` にはこれに加えて
 `loop.alwaysMemoryMaxChars`（既定 2000 文字）の上限が掛かります。戻した理由は次のターンで natsumi に伝わります。
 
 上限を掛けるのは書くときだけです（[ADR 0020](docs/adr/0020-limits-at-write-time-and-a-nightly-menu.md)）。
 プロンプトを組む側は長さを見ないので、オーナーが自分で git に直接コミットした長い `always.md` は、そのまま
 プロンプトに入ります。サーバーが書いたものは必ず上限の中にあります。
 
-natsumi が作ったファイルは、削除も改名も検査しません。全部消しても履歴から戻せます。上の 3 つだけは別で、
-消すことも改名することもできません（戻したうえで理由を伝えます）。サーバーはこの 3 つが直下にある前提で動くので、
+natsumi が作ったファイルは、削除も改名も検査しません。全部消しても履歴から戻せます。上の 4 つだけは別で、
+消すことも改名することもできません（戻したうえで理由を伝えます）。サーバーはこの 4 つが直下にある前提で動くので、
 黙って消えるとその前提が崩れます。
 
 **サーバーは commit だけを行い、push も pull もしません。** リモートを設定するか、外へ出すかはオーナーが決めます。
@@ -131,10 +137,25 @@ natsumi が作ったファイルは、削除も改名も検査しません。全
 author と committer はサーバーが固定し、リポジトリに置かれた git の hook は実行しません。
 
 毎晩 `loop.nightlyRotationAt` に、natsumi はその日を振り返り、引き継ぎのメモを持って新しい Pi session に切り替えます。
-夜のターンに必ず求めるのは、引き継ぎを書くこととターンを終えることの 2 つだけで、記憶の組み直し、常時記憶と性格の見直し、
+夜のターンに必ず求めるのは、引き継ぎを書くこととターンを終えることの 2 つだけで、書き漏れの書き足し、常時記憶と性格の見直し、
 作業場の片づけなどは候補として渡し、その夜に何をするかは natsumi が選びます
 （[ADR 0020](docs/adr/0020-limits-at-write-time-and-a-nightly-menu.md)）。やらなかったことは引き継ぎに残ります。
 その夜のコミットメッセージは natsumi 自身の説明で、書かれなかった夜はサーバーが機械的に付けます。
+
+記憶の組み直し（ファイルの統合・分割・改名・ディレクトリの整理、重複や古いところの手直し、`INDEX.md`）は、振り返りの後、
+新しい session に切り替える前に、記憶の整理係が行います（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)）。
+
+- 係は natsumi の人格を持たない、別の Pi の session です。毎晩新しく作り、記録は `pi.sessionDirectory` の `curator/` に残ります。
+  使えるツールは `run_shell`・`read`・`search_memory` と、係の変更の説明を書くツールだけです。
+- 係には、全ファイルの一覧と見出し、前回の整理から変わったファイル、最後に手が入ってから日が経ったファイル（`curator.rotateFiles` 件）を渡します。
+  中身まで書き直すのは後の 2 つだけで、ほかのファイルは構成の組み替えのために読むだけです。
+- 係は `always.md`・`personality.md`・`handoff.md` と `diary/` を変えられません。古いもの・重複は消してよく、消したものは理由とともに
+  コミットメッセージに残ります。本人の言葉・約束・「覚えておいて」と言われたことは、済んだと明らかでない限り残します。
+- 係の変更は 1 コミットか、無しかです。検査に 1 つでも当たったとき、上限で打ち切られたとき、モデルの呼び出しが失敗したときは、
+  その夜の係の変更をすべて捨てます。それでも夜の切り替えは止めません。捨てた夜は、ダッシュボードの「失敗と待ち」に出ます。
+- 係が動いている間、natsumi は寝ています。届いたメッセージは、切り替えの後に新しい session が扱います。
+- 係の結果も説明も、翌朝の natsumi には渡しません。本人は git の履歴か、ダッシュボードの係のターンで確かめます。
+- 係の途中でサーバーが止まったときは、次の起動で、係がコミットしなかった変更を捨てます。
 古い session ファイルは消さずに残るので、Pi の session 領域は日ごとに増えます。日中に context が `loop.compactionThreshold` を超えると、
 イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
@@ -237,7 +258,7 @@ node dist/src/server/main.js fold off --data-dir <data directory>     # 次の�
 - 切り替えた直後のターンは、prefix cache が 1 回外れます。
 
 ターンごとの数と、そのターンが session のファイルのどこにあるか（本文は含みません）が `.natsumi/state.sqlite` の `turn_stats` に残ります。
-夜の振り返りも 1 行になり、種類で普通のターンと見分けます。on と off を比べるには:
+夜の振り返りと記憶の整理係のターンも 1 行ずつになり、種類で普通のターンと見分けます。on と off を比べるには:
 
 ```sh
 node dist/src/server/main.js stats --since 2026-09-20 --until 2026-09-27 --data-dir <data directory>
@@ -247,7 +268,7 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 - `stats` は、最初の返事（またはポッポさんへの依頼）までの時間、ターンの長さ、呼び出しの回数、最初の呼び出しの文脈の大きさ、
   キャッシュに乗った割合、出力の tokens、振り返りの時間を on と off に分けて中央値と p90 で並べ、compaction の回数と、
   迷いの指標（読み直し・ツールのエラー・ポッポさんの突き返し・答えなかったメッセージの 1 ターンあたりの平均、打ち切りの割合）を続けます。
-- `stats` が数えるのは普通のターンだけです。夜の振り返りは、あれば件数だけを最後に出します。
+- `stats` が数えるのは普通のターンだけです。夜の振り返りと記憶の整理係のターンは、あれば件数だけを最後に出します。
 - `--since` と `--until` は `YYYY-MM-DD`（UTC の 0 時）か、`Z` 付きの時刻です。`--until` の時刻は含みません。
 - `--memos` は `pi.sessionDirectory` を読むために設定ファイルを読みます（既定は `config.local.json`）。
 
@@ -263,7 +284,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
 - いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
   文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
   文脈の大きさは、ターンの終わりに測った値です。実行中のターンからは、その詳細へ移れます。
-- 「ターン」（`/dashboard/turns`）は、ターンを新しい順に 50 件ずつ並べます。時刻、種類（ターン／夜の振り返り）、出来事の種類、
+- 「ターン」（`/dashboard/turns`）は、ターンを新しい順に 50 件ずつ並べます。時刻、種類（ターン／夜の振り返り／記憶の整理）、出来事の種類、
   outcome、返事までの時間、ターンの長さ、呼び出しの回数、tokens、経路、畳み込み、compaction の有無です。
   outcome が `ok` でないターン（失敗や打ち切り）は赤で出します。一覧は SQLite だけから作ります。
 - ターンを開くと、session のファイル（`pi.sessionDirectory`）からそのターンの分だけを読み、全文で出します。
@@ -274,7 +295,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   「推定」と印を付けて出します。境目がずれていることがあります。
 - 「失敗と待ち」（`/dashboard/waits`）は、次の節を並べ、10 秒ごとに更新します。どれも最大 20 件です。
   - 失敗した出来事（`loop_events` の failed）と理由。どのターンで扱ったかが記録にあれば、その詳細へ移れます。
-  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・夜の振り返りの `no-handoff` など）。
+  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・夜の振り返りの `no-handoff`、記憶の整理係の `rejected`（検査に当たった）・`memory-not-clean`・`route-unavailable` など）。
   - 承認待ち。何の承認か（投稿先・下書き・判定・引っかかった問題点）と期限です。承認はこれまでどおりアプリで行います。
     ここから「承認の履歴」へ移れます。
   - 予約した確認（self-check）の予定と理由、次の夜の切り替えの予定時刻（`loop.nightlyRotationAt`）。
@@ -294,7 +315,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
 - 「端末」（`/dashboard/devices`）は、端末ごとの最後に接続した時刻、いまつながっているか、push の登録（APNs の環境と時刻）と、
   ログインのセッション（ダッシュボードのものを含む）の件数、最後の利用、期限を出します。token、ハッシュ、鍵は出しません。
   最後の利用は、使うたびに延びる期限から逆算した値で、1 時間の幅があります。
-- 「統計」（`/dashboard/stats`）は、普通のターン（夜の振り返りを除く。`natsumi stats` と同じ）をグラフにします。
+- 「統計」（`/dashboard/stats`）は、普通のターン（夜の振り返りと記憶の整理係を除く。`natsumi stats` と同じ）をグラフにします。
   期間は 24 時間（1 時間ごと）、7 日（6 時間ごと）、30 日（1 日ごと）から選び、刻みは `loop.timeZone` の時計に揃えます。
   - 返事までの時間とターンの長さの p50・p90（秒）、モデルの呼び出しの回数、tokens、
     打ち切り（上限・時間切れ）とほかの失敗の回数です。
@@ -1032,7 +1053,7 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)、[終わったターンを畳んで一行メモを残し、read で読んだものは残す](docs/adr/0047-folding-ended-turns-with-a-memo.md)、[外のエージェントが返事に付けた画像を、サーバーが /work に取り込む](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)、[ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する](docs/adr/0051-evaluating-one-turn-on-the-real-path.md)、[本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す](docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)、[ダッシュボードで、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る](docs/adr/0054-her-files-on-the-dashboard.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)、[終わったターンを畳んで一行メモを残し、read で読んだものは残す](docs/adr/0047-folding-ended-turns-with-a-memo.md)、[外のエージェントが返事に付けた画像を、サーバーが /work に取り込む](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)、[ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する](docs/adr/0051-evaluating-one-turn-on-the-real-path.md)、[本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す](docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)、[ダッシュボードで、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る](docs/adr/0054-her-files-on-the-dashboard.md)、[記憶の組み直しは、人格を持たない整理係が夜に行う](docs/adr/0055-a-memory-curator-at-night.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [権限と秘密の一覧](docs/permissions.md): サーバーが外に対して持つ権限・秘密・外への出口と、受け付ける認証
 - [実接続の実行方法と結果](docs/probe-results.md)

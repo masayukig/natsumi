@@ -9,7 +9,7 @@ import type { MemoReading, TurnRow } from './turn-log.ts';
  * failures and waits refresh themselves; the other lists are read again by reloading.
  */
 
-const KINDS = { events: 'ターン', review: '夜の振り返り' } as const;
+const KINDS = { events: 'ターン', review: '夜の振り返り', curator: '記憶の整理' } as const;
 
 /** A page of a list, keeping the list's other query values; the first page has no number. */
 function pageHref(path: string, page: number, query: Record<string, string> = {}): string {

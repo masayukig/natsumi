@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { isoAt, nextOccurrence } from './nightly.ts';
 import { SESSION_TTL_MS } from './sessions.ts';
-import type { TurnKind } from './turn-stats.ts';
+import { turnKind, type TurnKind } from './turn-stats.ts';
 
 /**
  * What the dashboard lists from the state database alone (ADR 0049): the failures and what waits, the dove's posts and
@@ -57,7 +57,7 @@ export function readWaits(db: DatabaseSync, options: { now: number; nightlyRotat
       turnId: row.turn_id ?? null }));
   const cutTurns = all<Record<string, string>>(`SELECT turn_id, kind, started_at, event_kinds, outcome FROM turn_stats
     WHERE outcome <> 'ok' ORDER BY started_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
-    .map(row => ({ turnId: row.turn_id!, kind: row.kind === 'review' ? 'review' as const : 'events' as const, startedAt: row.started_at!,
+    .map(row => ({ turnId: row.turn_id!, kind: turnKind(row.kind), startedAt: row.started_at!,
       eventKinds: row.event_kinds!, outcome: row.outcome! }));
   const now = isoAt(options.now);
   const approvals = all<Record<string, string>>(`SELECT approval_id, kind, payload, created_at, expires_at FROM approvals

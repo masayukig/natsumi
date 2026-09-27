@@ -23,10 +23,11 @@ jobs:
           node-version: "24.12.0"
           cache: npm
       # The turn evaluation runs its workspace in bubblewrap (ADR 0051); Ubuntu's AppArmor keeps an unprivileged
-      # process from making the user namespace it needs unless told otherwise.
+      # process from making the user namespace it needs unless told otherwise. search_memory's tests run the real rg,
+      # which the workspace image has (ADR 0055).
       - run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run typecheck

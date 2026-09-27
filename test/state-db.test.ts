@@ -454,3 +454,31 @@ test('schema 20 tells a turn where it is in the session record and what kind it 
   const columns = (db.prepare('PRAGMA table_info(turn_stats)').all() as { name: string }[]).map(column => column.name);
   for (const name of columns) assert.doesNotMatch(name, /(^|_)(text|memo|message|body|reply)(_|$)/, name);
 }));
+
+test('schema 22 lets a turn be the memory curator\'s, keeps every turn before, and keeps when each file was last curated', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 21));
+  const insert = (version: number) => db.prepare(`INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, turn_ms,
+    model_calls, input_tokens, cache_read_tokens, output_tokens, compacted, repeated_calls, tool_errors, dove_refusals, unanswered_messages,
+    kind, session_file, first_entry_id, last_entry_id, start_offset, end_offset, event_ids)
+    VALUES (?, ?, 'off', 'local', ?, 'ok', 10, 1, 1, 1, 1, 0, 0, 0, 0, 0, ?, ${version >= 22 ? "'curator/a.jsonl'" : "'a.jsonl'"}, 'e1', 'e2', 0, 10, '[]')`);
+  insert(21).run('turn-review', '2026-09-26T19:00:00.000Z', 'nightly_review', 'review');
+  assert.throws(() => insert(21).run('turn-curator', 'x', 'memory_curator', 'curator'), /constraint/i);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 22)).applied, [22]);
+  // What was there before is there after, column for column.
+  assert.deepEqual({ ...db.prepare("SELECT kind, event_kinds, session_file, start_offset, end_offset FROM turn_stats WHERE turn_id = 'turn-review'").get() as object },
+    { kind: 'review', event_kinds: 'nightly_review', session_file: 'a.jsonl', start_offset: 0, end_offset: 10 });
+  insert(22).run('turn-curator', '2026-09-26T19:10:00.000Z', 'memory_curator', 'curator');
+  assert.throws(() => insert(22).run('turn-chat', 'x', 'mac_message', 'chat'), /constraint/i, 'an ordinary turn, the review or the curator');
+  assert.throws(() => db.prepare(`INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, turn_ms, model_calls,
+    input_tokens, cache_read_tokens, output_tokens, compacted, repeated_calls, tool_errors, dove_refusals, unanswered_messages)
+    VALUES ('turn-bad', 'x', 'sideways', 'local', 'x', 'ok', 10, 1, 1, 1, 1, 0, 0, 0, 0, 0)`).run(), /constraint/i, 'the other checks stay');
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'turn_stats_started'").get());
+  const columns = (db.prepare('PRAGMA table_info(turn_stats)').all() as { name: string }[]).map(column => column.name);
+  for (const name of columns) assert.doesNotMatch(name, /(^|_)(text|memo|message|body|reply)(_|$)/, name);
+
+  // One row per file, and one row for the curator itself: where it last succeeded and whether it is running now.
+  db.prepare("INSERT INTO memory_curation (path, curated_at) VALUES ('暮らし/予定.md', '2026-09-26T19:10:00.000Z')").run();
+  assert.throws(() => db.prepare("INSERT INTO memory_curation (path, curated_at) VALUES ('暮らし/予定.md', 'x')").run(), /constraint/i);
+  db.prepare("INSERT INTO memory_curator (owner, base_commit, running_since) VALUES (1, 'abc', NULL)").run();
+  assert.throws(() => db.prepare("INSERT INTO memory_curator (owner) VALUES (2)").run(), /constraint/i);
+}));

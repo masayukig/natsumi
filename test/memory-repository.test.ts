@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from '../src/server/memory-repository.ts';
+import { ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from '../src/server/memory-repository.ts';
 import { SERVER_UMASK } from '../src/server/permissions.ts';
 
 // Fictional memories only.
@@ -52,7 +52,7 @@ test('the first start takes the memory that is there into one commit on main, un
     assert.match(await f.read(ALWAYS_FILE), /\S/);
     assert.match(await f.read(HANDOFF_FILE), /昨夜の引き継ぎ/);
     assert.deepEqual(f.git('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(),
-      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, '合言葉.md', '仕事/予定.md'].sort());
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE, '合言葉.md', '仕事/予定.md'].sort());
     // The server fixes who commits.
     const [author, committer] = f.git('log', '-1', '--format=%an <%ae>%n%cn <%ce>').split('\n');
     assert.equal(author, committer);
@@ -60,14 +60,16 @@ test('the first start takes the memory that is there into one commit on main, un
   } finally { await f.cleanup(); }
 });
 
-test('a start with nothing to take in still leaves the three files committed', async () => {
+test('a start with nothing to take in still leaves the fixed files committed, INDEX.md among them', async () => {
   const f = await setup();
   try {
     await f.repository.initialize(undefined);
     assert.equal(f.commits(), 1);
     assert.deepEqual(f.git('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(),
-      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
-    for (const name of [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE]) assert.match(await f.read(name), /\S/);
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE].sort());
+    for (const name of [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE]) assert.match(await f.read(name), /\S/);
+    // The template says who writes it, for whoever opens it first (ADR 0055).
+    assert.match(await f.read(INDEX_FILE), /整理係/);
   } finally { await f.cleanup(); }
 });
 
@@ -86,7 +88,7 @@ test('an existing repository keeps its history, and only the missing files are a
     assert.equal(f.commits(), 2);
     assert.equal(f.git('rev-parse', 'HEAD~1'), first);
     assert.deepEqual(f.git('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').sort(),
-      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE].sort());
     assert.match(await f.read('\u5408\u8a00\u8449.md'), new RegExp(PASSPHRASE));
     assert.match(await f.read(HANDOFF_FILE), /\u6700\u521d\u306e\u5f15\u304d\u7d99\u304e/);
 
@@ -136,7 +138,7 @@ test('natsumi may delete and rename her own files, at night or in the day, witho
     assert.deepEqual(outcome.reverted, []);
     assert.equal(f.clean(), true);
     assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
-      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, 'あいことば.md'].sort());
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE, 'あいことば.md'].sort());
 
     // A day turn is no different: what natsumi named, she may unname.
     await rm(join(f.directory, 'あいことば.md'));
@@ -144,7 +146,7 @@ test('natsumi may delete and rename her own files, at night or in the day, witho
     assert.equal(day.committed, true);
     assert.deepEqual(day.reverted, []);
     assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
-      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE].sort());
   } finally { await f.cleanup(); }
 });
 
@@ -214,7 +216,7 @@ test('a changed file that fails a check goes back to the previous commit, and a 
     // The one that existed is back as it was; the new ones are gone.
     assert.equal(await f.read('合言葉.md'), kept);
     assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
-      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, '予定.md', '合言葉.md'].sort());
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE, '予定.md', '合言葉.md'].sort());
     assert.equal(f.clean(), true);
     assert.equal(f.commits(), 2);
     assert.match(await f.read('予定.md'), /歯医者/);
@@ -499,4 +501,150 @@ test('the server commits memory that git sees as owned by another user (ADR 0033
     process.env.PATH = path;
     await f.cleanup();
   }
+});
+
+// ── ADR 0055: INDEX.md, and the curator's commit ──
+
+test('INDEX.md is the curator\'s: natsumi\'s change to it goes back by day and by night, and it cannot be taken away', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const index = await f.read(INDEX_FILE);
+    await f.write(INDEX_FILE, '# 索引\n\n- 昼に書いた\n');
+    await f.write('予定.md', '# 予定\n\n- 歯医者は金曜\n');
+    const day = await f.repository.commit({ event: 'mac_message' });
+    assert.deepEqual(day.reverted.map(file => file.path), [INDEX_FILE]);
+    assert.match(day.reverted[0]!.reason, /整理係/);
+    assert.equal(await f.read(INDEX_FILE), index);
+    assert.equal(day.committed, true);
+
+    await f.write(INDEX_FILE, '# 索引\n\n- 夜に書いた\n');
+    const night = await f.repository.commit({ event: 'nightly_review', night: true });
+    assert.deepEqual(night.reverted.map(file => file.path), [INDEX_FILE]);
+    assert.equal(await f.read(INDEX_FILE), index);
+
+    await rm(join(f.directory, INDEX_FILE));
+    const removed = await f.repository.commit({ event: 'mac_message' });
+    assert.deepEqual(removed.reverted.map(file => file.path), [INDEX_FILE]);
+    assert.equal(await f.read(INDEX_FILE), index);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('the curator\'s reorganization is one commit under its own note: moves, merges and a new index together', async () => {
+  const f = await setup();
+  try {
+    await f.write('予定.md', '# 予定\n\n- 歯医者は金曜\n');
+    await f.write('予定2.md', '# 予定\n\n- 散髪は土曜\n');
+    await f.repository.initialize(undefined);
+    const before = f.commits();
+    await mkdir(join(f.directory, '暮らし'));
+    await f.write('暮らし/予定.md', '# 予定\n\n- 歯医者は金曜\n- 散髪は土曜\n');
+    await rm(join(f.directory, '予定.md'));
+    await rm(join(f.directory, '予定2.md'));
+    await f.write(INDEX_FILE, '# 記憶の索引\n\n- 暮らし/予定.md: 近い予定\n');
+
+    const outcome = await f.repository.commitCuration({ message: '予定をまとめた\n\n- 予定2.md: 予定.md と重複していたので統合' });
+
+    assert.equal(outcome.committed, true);
+    assert.deepEqual(outcome.rejected, []);
+    assert.deepEqual([...outcome.files].sort(), [INDEX_FILE, '予定.md', '予定2.md', '暮らし/予定.md'].sort());
+    assert.equal(f.commits(), before + 1);
+    assert.equal(f.git('log', '-1', '--format=%B').trim(), '予定をまとめた\n\n- 予定2.md: 予定.md と重複していたので統合');
+    assert.equal(f.clean(), true);
+
+    // Nothing to do makes no commit, and a missing note gets the server's own line.
+    assert.equal((await f.repository.commitCuration({})).committed, false);
+    await f.write('暮らし/予定.md', '# 予定\n\n- 歯医者は金曜\n');
+    await f.repository.commitCuration({});
+    assert.match(f.subject(), /^memory_curator: 暮らし\/予定\.md$/);
+  } finally { await f.cleanup(); }
+});
+
+test('one change the curator may not make throws the whole night away, new files and folders included', async () => {
+  const cases: [string, (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, RegExp][] = [
+    ['a fixed file changed', f => f.write(ALWAYS_FILE, '# 常時記憶\n\n係が書いた\n'), /always\.md/],
+    ['the handoff removed', f => rm(join(f.directory, HANDOFF_FILE)), /handoff\.md/],
+    ['personality renamed', f => rename(join(f.directory, PERSONALITY_FILE), join(f.directory, '性格.md')), /personality\.md/],
+    ['a diary changed', f => f.write('diary/2026-09-26.md', '# 2026-09-26\n\n書き換えた\n'), /diary\/2026-09-26\.md/],
+    ['a diary moved', f => rename(join(f.directory, 'diary'), join(f.directory, '日記')), /diary\//],
+    ['the index removed', f => rm(join(f.directory, INDEX_FILE)), /INDEX\.md/],
+    ['a file too long', f => f.write('長い.md', `# 長い\n\n${'あ'.repeat(1200)}\n`), /長い\.md/],
+    ['not Markdown', f => f.write('メモ.txt', 'メモ\n'), /メモ\.txt/],
+  ];
+  for (const [label, act, named] of cases) {
+    const f = await setup({ fileMaxChars: 1000 });
+    try {
+      await mkdir(join(f.directory, 'diary'));
+      await f.write('diary/2026-09-26.md', '# 2026-09-26\n\n日記\n');
+      await f.write('予定.md', '# 予定\n\n- 歯医者は金曜\n');
+      await f.repository.initialize(undefined);
+      const head = f.git('rev-parse', 'HEAD');
+      // Good work alongside the bad: it is thrown away too.
+      await mkdir(join(f.directory, '暮らし'));
+      await rename(join(f.directory, '予定.md'), join(f.directory, '暮らし', '予定.md'));
+      await f.write(INDEX_FILE, '# 記憶の索引\n\n- 暮らし/予定.md\n');
+      await act(f);
+
+      const outcome = await f.repository.commitCuration({ message: '整理した' });
+
+      assert.equal(outcome.committed, false, label);
+      assert.ok(outcome.rejected.some(file => named.test(file.path)), `${label}: ${JSON.stringify(outcome.rejected)}`);
+      assert.equal(f.git('rev-parse', 'HEAD'), head, label);
+      assert.equal(f.clean(), true, label);
+      assert.match(await f.read('予定.md'), /歯医者/, label);
+      await assert.rejects(stat(join(f.directory, '暮らし')), label);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test('the uncommitted changes can be thrown away, and a clean tree says so', async () => {
+  const f = await setup();
+  try {
+    await f.write('予定.md', '# 予定\n\n- 歯医者は金曜\n');
+    await f.repository.initialize(undefined);
+    assert.equal(await f.repository.isClean(), true);
+    await f.write('予定.md', '# 予定\n\n書きかけ\n');
+    await mkdir(join(f.directory, '新しい/奥'), { recursive: true });
+    await f.write('新しい/奥/メモ.md', '# メモ\n');
+    await rm(join(f.directory, ALWAYS_FILE));
+    assert.equal(await f.repository.isClean(), false);
+
+    await f.repository.discardChanges();
+
+    assert.equal(await f.repository.isClean(), true);
+    assert.match(await f.read('予定.md'), /歯医者/);
+    await assert.rejects(stat(join(f.directory, '新しい')));
+    assert.match(await f.read(ALWAYS_FILE), /\S/);
+  } finally { await f.cleanup(); }
+});
+
+test('the files memory holds are listed with their size and headings, and the files changed since a commit are named', async () => {
+  const f = await setup();
+  try {
+    await mkdir(join(f.directory, '暮らし'));
+    await f.write('暮らし/予定.md', '# 予定\n\n## 歯医者\n- 金曜\n### 細かい\n## 散髪\n- 土曜\n');
+    await f.write('本人.md', '本文だけ\n');
+    await f.repository.initialize(undefined);
+    const files = await f.repository.listFiles();
+    const plans = files.find(file => file.path === '暮らし/予定.md');
+    assert.deepEqual(plans, { path: '暮らし/予定.md', chars: [...'# 予定\n\n## 歯医者\n- 金曜\n### 細かい\n## 散髪\n- 土曜\n'].length,
+      headings: ['# 予定', '## 歯医者', '## 散髪'] });
+    assert.deepEqual(files.find(file => file.path === '本人.md')?.headings, []);
+    assert.ok(files.some(file => file.path === INDEX_FILE));
+    assert.deepEqual(files.map(file => file.path), [...files.map(file => file.path)].sort());
+
+    const base = await f.repository.head();
+    assert.deepEqual(await f.repository.changedSince(base), []);
+    await f.write('本人.md', '本文だけ。書き足した\n');
+    await f.write('新しい.md', '# 新しい\n');
+    await f.repository.commit({ event: 'mac_message' });
+    await rm(join(f.directory, '暮らし/予定.md'));
+    await f.repository.commit({ event: 'mac_message' });
+    // Only what is still there: a removed file has nothing left to rewrite.
+    assert.deepEqual(await f.repository.changedSince(base), ['新しい.md', '本人.md']);
+    // A base the history does not know is taken as the last day, which here is the whole of it.
+    assert.deepEqual((await f.repository.changedSince('0'.repeat(40))).sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE, '新しい.md', '本人.md'].sort());
+  } finally { await f.cleanup(); }
 });
