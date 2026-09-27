@@ -175,3 +175,46 @@ test('stats --memos lists the latest memos from the session files the config poi
     assert.deepEqual(f.out, ['2026-09-25T10:00:03.000Z  予定は 15:00。', '2026-09-25T11:00:03.000Z  特になし']);
   } finally { await f.cleanup(); }
 });
+
+test('a turn keeps its place in the session record and its events; the nightly review is a row of its own kind', async () => {
+  const f = await setup();
+  try {
+    const stats = new TurnStats(f.db);
+    stats.record(record({ turnId: 'turn-placed', eventIds: ['event-1', 'event-2'],
+      place: { sessionFile: 'a.jsonl', firstEntryId: 'aaaa0001', lastEntryId: 'aaaa0009', startOffset: 120, endOffset: 4_000 } }));
+    stats.record(record({ turnId: 'turn-review', kind: 'review', eventKinds: 'nightly_review', eventIds: ['event-3'], reflection: undefined }));
+    const row = (id: string) => ({ ...f.db.prepare(`SELECT kind, session_file, first_entry_id, last_entry_id, start_offset, end_offset,
+      event_ids FROM turn_stats WHERE turn_id = ?`).get(id) as object });
+    assert.deepEqual(row('turn-placed'), { kind: 'events', session_file: 'a.jsonl', first_entry_id: 'aaaa0001',
+      last_entry_id: 'aaaa0009', start_offset: 120, end_offset: 4_000, event_ids: '["event-1","event-2"]' });
+    assert.deepEqual(row('turn-review'), { kind: 'review', session_file: null, first_entry_id: null, last_entry_id: null,
+      start_offset: null, end_offset: null, event_ids: '["event-3"]' });
+  } finally { await f.cleanup(); }
+});
+
+test('stats counts the ordinary turns only: the nightly reviews leave every number as it was, and are counted apart', async () => {
+  const f = await setup();
+  try {
+    const stats = new TurnStats(f.db);
+    stats.record(record({ fold: 'off', outcome: 'model-call-limit' }));
+    stats.record(record({ fold: 'on' }));
+    assert.equal(await f.run(['stats']), 0);
+    const without = [...f.out];
+    stats.record(record({ kind: 'review', fold: 'off', eventKinds: 'nightly_review', outcome: 'timeout', modelCalls: 90,
+      contextTokens: 999_999, compacted: true, reflection: undefined, firstOutAt: undefined }));
+    assert.equal(await f.run(['stats']), 0);
+    assert.deepEqual(f.out.slice(0, without.length), without);
+    assert.deepEqual(f.out.slice(without.length), ['', 'nightly reviews: 1 (not counted above)']);
+  } finally { await f.cleanup(); }
+});
+
+test('stats reads a database the server has not moved to the turn kinds yet', async () => {
+  const f = await setup();
+  try {
+    const stats = new TurnStats(f.db);
+    stats.record(record({ fold: 'off' }));
+    f.db.exec('ALTER TABLE turn_stats DROP COLUMN kind');
+    assert.equal(await f.run(['stats']), 0);
+    assert.match(f.out.join('\n'), /turns: 1 \(off 1, on 0\)/);
+  } finally { await f.cleanup(); }
+});

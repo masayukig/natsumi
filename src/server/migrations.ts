@@ -586,4 +586,23 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE agent_replies ADD COLUMN files TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    version: 20,
+    name: 'turn positions',
+    sql: `
+      -- Where each turn is in the Pi session record, for the dashboard to read it back (ADR 0049), and whether it was
+      -- an ordinary turn or the nightly review, which now leaves a row too. Only the place: the words stay in the
+      -- record (ADR 0047). session_file is relative to the Pi session directory; the entry IDs are Pi's, of the first
+      -- and last entry the unit of work wrote (the turn, its memo and the compaction after it); the offsets are bytes
+      -- into the file, the end exclusive. event_ids is a JSON array of the turn's events, those steered in included.
+      -- All are NULL on the turns recorded before, whose place the dashboard estimates from the times.
+      ALTER TABLE turn_stats ADD COLUMN kind TEXT NOT NULL DEFAULT 'events' CHECK (kind IN ('events', 'review'));
+      ALTER TABLE turn_stats ADD COLUMN session_file TEXT;
+      ALTER TABLE turn_stats ADD COLUMN first_entry_id TEXT;
+      ALTER TABLE turn_stats ADD COLUMN last_entry_id TEXT;
+      ALTER TABLE turn_stats ADD COLUMN start_offset INTEGER CHECK (start_offset >= 0);
+      ALTER TABLE turn_stats ADD COLUMN end_offset INTEGER CHECK (end_offset >= start_offset);
+      ALTER TABLE turn_stats ADD COLUMN event_ids TEXT;
+    `,
+  },
 ];
