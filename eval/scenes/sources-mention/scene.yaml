@@ -1,0 +1,137 @@
+# Slack のメンションを含む sources_updated（ADR 0050、PR #94 の形）。メンションの場所の欄の書き方 5 通りと、
+# マニュアルの読み方のあり・なしを掛け合わせる。人物・会話はすべて架空。
+#
+# #dev の 2026-09-27 は 60 行、スレッドが 4 本ある。メンションは .[36]（37 行目）のスレッドの返信で、親は .[14]（15 行目）。
+# 出来事は 15:08 に渡る（メンションは 14:32:05）ので、tail だけではメンションに届かない。
+# ファイル・履歴（/sources.git）・マニュアルの差し替えは scene.ts の setup が作る。
+description: メンション付きの sources_updated で、メンションと親を読み、正しい返信先でポッポさんに頼む
+requires: [sources-updated]
+runs: 10
+time: "2026-09-27T15:08:30+09:00"
+limits: { modelCalls: 12, minutes: 10 }
+dove: true
+setup: prepare
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。Slack では丁寧語を使う。
+event:
+  line: &P
+    type: sources_updated
+    received_at: "2026-09-27T06:08:30.000Z"
+    local_time: "2026-09-27 15:08"
+    changed:
+      - dir: /sources/slack/work/dev
+        files: [/sources/slack/work/dev/2026-09-27.jsonl]
+        writes: 30
+        diff: sources-diff /sources/slack/work/dev
+        attention:
+          - { source: slack, kind: mention, file: /sources/slack/work/dev/2026-09-27.jsonl, path: ".[36]" }
+      - dir: /sources/slack/work/random
+        files: [/sources/slack/work/random/2026-09-27.jsonl]
+        writes: 6
+        diff: sources-diff /sources/slack/work/random
+axes:
+  location:
+    P: {}
+    A:
+      event:
+        line:
+          <<: *P
+          changed:
+            - dir: /sources/slack/work/dev
+              files: [/sources/slack/work/dev/2026-09-27.jsonl]
+              writes: 30
+              diff: sources-diff /sources/slack/work/dev
+              attention:
+                - { source: slack, kind: mention, file: /sources/slack/work/dev/2026-09-27.jsonl,
+                    jq: "jq -s '.[36]' /sources/slack/work/dev/2026-09-27.jsonl" }
+            - { dir: /sources/slack/work/random, files: [/sources/slack/work/random/2026-09-27.jsonl], writes: 6,
+                diff: sources-diff /sources/slack/work/random }
+      prompt:
+        - replace: file と path（jq -s のパス）がその場所で
+          with: file と jq（その発言を読むコマンド）がその場所で
+    B:
+      event:
+        line:
+          <<: *P
+          changed:
+            - dir: /sources/slack/work/dev
+              files: [/sources/slack/work/dev/2026-09-27.jsonl]
+              writes: 30
+              diff: sources-diff /sources/slack/work/dev
+              attention:
+                - { source: slack, kind: mention, file: /sources/slack/work/dev/2026-09-27.jsonl, jq_slurp_path: ".[36]" }
+            - { dir: /sources/slack/work/random, files: [/sources/slack/work/random/2026-09-27.jsonl], writes: 6,
+                diff: sources-diff /sources/slack/work/random }
+      prompt:
+        - replace: file と path（jq -s のパス）がその場所で
+          with: file と jq_slurp_path（jq -s のパス）がその場所で
+    C:
+      event:
+        line:
+          <<: *P
+          changed:
+            - dir: /sources/slack/work/dev
+              files: [/sources/slack/work/dev/2026-09-27.jsonl]
+              writes: 30
+              diff: sources-diff /sources/slack/work/dev
+              attention:
+                - { source: slack, kind: mention, file: /sources/slack/work/dev/2026-09-27.jsonl, line: 37 }
+            - { dir: /sources/slack/work/random, files: [/sources/slack/work/random/2026-09-27.jsonl], writes: 6,
+                diff: sources-diff /sources/slack/work/random }
+      prompt:
+        - replace: file と path（jq -s のパス）がその場所で
+          with: file と line（何行目か。1 から数える）がその場所で
+    AC:
+      event:
+        line:
+          <<: *P
+          changed:
+            - dir: /sources/slack/work/dev
+              files: [/sources/slack/work/dev/2026-09-27.jsonl]
+              writes: 30
+              diff: sources-diff /sources/slack/work/dev
+              attention:
+                - { source: slack, kind: mention, file: /sources/slack/work/dev/2026-09-27.jsonl, line: 37,
+                    jq: "jq -s '.[36]' /sources/slack/work/dev/2026-09-27.jsonl" }
+            - { dir: /sources/slack/work/random, files: [/sources/slack/work/random/2026-09-27.jsonl], writes: 6,
+                diff: sources-diff /sources/slack/work/random }
+      prompt:
+        - replace: file と path（jq -s のパス）がその場所で
+          with: file と line（何行目か。1 から数える）・jq（その発言を読むコマンド）がその場所で
+  # /manual/slack.md は PR #94 のページ。without では読み方（「メンションに応える」「差分を見る」の節、行の数え方、
+  # 探し方の例）を抜く。欄の説明と返し方は残す。場所の欄の説明は location ごとに差し替える（どちらも scene.ts）。
+  manual:
+    with: {}
+    without: {}
+dryRun:
+  - calls:
+      - { tool: run_shell, args: { command: "jq -s '.[36], .[14]' /sources/slack/work/dev/2026-09-27.jsonl" } }
+  - calls:
+      - tool: ask_agent
+        args:
+          agent: poppo
+          continue: false
+          message: "返信先: work/#dev 2026-09-27 14:32:05 田中\n種類: 投稿\n---\n週末の対応を考えると、B 案がいいと思います！"
+checks:
+  - id: mention
+    output: なつみさんはどっちがいいと思う
+  - id: mention-clean
+    function: mentionWithoutMiss
+  - id: parent
+    output: リリースの段取り、案が 2 つあります
+  - id: reply-target
+    asked: { agent: poppo, replyTo: "work/#dev 2026-09-27 14:32:05 田中" }
+    max: 1
+  - id: random-once
+    shell: /random
+    min: 0
+    max: 1
+  - id: finished
+    finished: true
+  - id: answer
+    rubric: >-
+      ポッポさんへの依頼の本文が、田中さんの問い（リリースの段取りの A 案と B 案のどちらがよいか）に答え、
+      どちらがよいかを理由とともに述べている。スレッドのほかの人の意見（週末の対応、切り戻し、当番表など）を踏まえていればなおよい。
+      依頼が無ければ不合格。

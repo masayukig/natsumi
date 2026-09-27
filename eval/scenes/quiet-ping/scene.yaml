@@ -1,0 +1,21 @@
+# 夜遅くの ping。何もすることが無ければ、本人に知らせを送らずに静かに終える。
+description: 23 時半の ping に、知らせを送らず少ない呼び出しで終える
+runs: 5
+time: "2026-09-27T23:30:00+09:00"
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。
+event:
+  ping: {}
+dryRun:
+  - text: 特にやることはないので、今日はこのまま休む。
+checks:
+  - id: no-notice
+    notCalled: notify_owner
+  - id: no-reply
+    notCalled: reply_to_mac
+  - id: few-calls
+    modelCalls: { max: 3 }
+  - id: finished
+    finished: true

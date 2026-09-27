@@ -1,0 +1,37 @@
+# 本人の Mac のメッセージに、記憶を調べてから一度だけ返事をする。人物と予定はすべて架空。
+description: 夕飯の約束の時刻を聞かれて、/memory のメモを探してから答える
+runs: 5
+time: "2026-09-27T17:40:00+09:00"
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+  /memory/plans/2026-09.md: |
+    # 9 月の予定
+    - 9/27（土）19:00 駅前の定食屋で、佐藤さん（大学の友だち）と夕飯。本人が予約済み。
+    - 9/29（月）10:00 歯医者。
+event:
+  mac_message: 今日の夕飯の約束って何時だっけ？
+dryRun:
+  - calls:
+      - { tool: run_shell, args: { command: "rg -n 夕飯 /memory" } }
+  - calls:
+      - { tool: reply_to_mac, args: { text: "19 時に駅前の定食屋で佐藤さんとだよ！", expression: happy } }
+checks:
+  - id: replied-once
+    called: reply_to_mac
+    max: 1
+  - id: looked-in-memory
+    shell: "/memory"
+  - id: found-the-plan
+    output: "19:00 駅前の定食屋"
+  - id: told-the-time
+    reply: "19"
+  - id: no-notice
+    notCalled: notify_owner
+  - id: finished
+    finished: true
+  - id: answer
+    rubric: >-
+      返事は、今日の夕飯の約束が 19 時（駅前の定食屋、佐藤さんと）であることを、本人の問いに対する答えとして伝えている。
+      記憶に無いことを付け足していない。

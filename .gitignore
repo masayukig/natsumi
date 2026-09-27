@@ -21,3 +21,5 @@ mac/build/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+# The turn evaluation writes its results here (ADR 0051).
+eval/results/

@@ -15,12 +15,14 @@
     "fake-server": "node src/fake-server/main.ts",
     "probe:jev": "node src/probe/jev-eval.ts",
     "probe:fold": "node src/probe/fold-live.ts",
-    "probe:fold-replay": "node src/probe/fold-replay.ts"
+    "probe:fold-replay": "node src/probe/fold-replay.ts",
+    "eval": "node src/eval/cli.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
     "@types/ws": "8.18.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "yaml": "2.9.1"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.2.0",
