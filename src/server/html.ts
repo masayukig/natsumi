@@ -2,7 +2,7 @@
  * Markup for the dashboard (ADR 0049), escaped by default. What the pages show comes from natsumi and from outside
  * (her thinking, tool results, Slack), so no value put into a template is ever read as markup: only the template's
  * own literal text is, and a template put into another. Nothing else can make an `Html`, and there is no way to mark
- * a string as safe.
+ * a string as safe — but for the one renderer below, which escapes on its own.
  */
 
 const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -22,6 +22,15 @@ export class Html {
     return new Html(text);
   }
   static is(value: unknown): value is Html { return typeof value === 'object' && value !== null && #text in value; }
+  static rendered(text: string): Html { return new Html(text); }
+}
+
+/**
+ * Markup made by the Markdown renderer of her files (ADR 0054), and by nothing else: it is set to let no raw HTML
+ * through and escapes every text and attribute itself, and the links and images it keeps are rewritten first.
+ */
+export function markdownMarkup(text: string): Html {
+  return Html.rendered(text);
 }
 
 /** The tag for templates: html`<p>${text}</p>`. */

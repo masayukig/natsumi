@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -578,4 +579,122 @@ test('the history of the approvals needs the cookie, takes only the outcomes it 
   assert.ok(!rejected.text.includes('架空の失敗'));
   const waits = await f.fetch('/dashboard/waits', withCookie(cookie));
   assert.match(waits.text, /href="\/dashboard\/approvals\?state=pending"/);
+}));
+
+// Her files (ADR 0054): the five places read-only, behind the same cookie.
+
+/** A GET sent with the path exactly as written, which fetch would have normalized first. */
+function rawGet(f: Fixture, path: string, cookie: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(`${f.base}/`, { path, headers: { cookie: `${COOKIE}=${cookie}` } }, response => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+test('her files need the cookie, like every other page', () => withFixture(async f => {
+  for (const path of ['/dashboard/files', '/dashboard/files/work', '/dashboard/files/memory/a.md', '/dashboard/files/work/a.png?image=1',
+    '/dashboard/files/work/a.txt?download=1']) {
+    assertLoginAgain(await f.fetch(path), f);
+  }
+}));
+
+test('the places, a directory and a file are shown; the manual is the one beside the code, and the agents the data directory’s', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  await mkdir(join(f.data, 'work', 'drafts'));
+  await writeFile(join(f.data, 'work', 'drafts', 'plan.md'), '# 計画\n\n<script>alert(1)</script>\n');
+  await writeFile(join(f.data, 'memory', 'always.md'), 'いつも覚えていること');
+  await writeFile(join(f.data, 'agents', 'fixture.md'), '# 頼める相手');
+  const index = await f.fetch('/dashboard/files', withCookie(cookie));
+  assert.equal(index.status, 200, index.text);
+  assert.match(index.text, /href="\/dashboard\/files\/work"/);
+  const work = await f.fetch('/dashboard/files/work', withCookie(cookie));
+  assert.equal(work.status, 200, work.text);
+  assert.match(work.text, /href="\/dashboard\/files\/work\/drafts"/);
+  const plan = await f.fetch('/dashboard/files/work/drafts/plan.md', withCookie(cookie));
+  assert.equal(plan.status, 200, plan.text);
+  assert.match(plan.text, /<h1>計画<\/h1>/);
+  assert.doesNotMatch(plan.text, /<script>alert/);
+  assert.match((await f.fetch('/dashboard/files/work/drafts/plan.md?raw=1', withCookie(cookie))).text, /<pre[^>]*># 計画/);
+  assert.match((await f.fetch('/dashboard/files/memory/always.md', withCookie(cookie))).text, /いつも覚えていること/);
+  assert.match((await f.fetch('/dashboard/files/manual/INDEX.md', withCookie(cookie))).text, /<h1>/, 'the checkout’s manual/INDEX.md');
+  assert.match((await f.fetch('/dashboard/files/manual', withCookie(cookie))).text, /href="\/dashboard\/files\/manual\/agents"/);
+  assert.match((await f.fetch('/dashboard/files/manual/agents/fixture.md', withCookie(cookie))).text, /頼める相手/);
+  assert.match((await f.fetch('/dashboard', withCookie(cookie))).text, /href="\/dashboard\/files"/, 'the navigation leads to the files');
+}));
+
+test('a download is an attachment of octets, never sniffed, and streams the whole file', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const body = Buffer.concat([Buffer.from('<html><script>alert(1)</script>'), Buffer.alloc(3 * 1024 * 1024, 0x61)]);
+  await writeFile(join(f.data, 'work', 'page "x".html'), body);
+  const res = await fetch(`${f.base}/dashboard/files/work/page%20%22x%22.html?download=1`, withCookie(cookie));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'application/octet-stream');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('content-length'), String(body.length));
+  const disposition = res.headers.get('content-disposition') ?? '';
+  assert.match(disposition, /^attachment;/);
+  assert.match(disposition, /filename\*=UTF-8''page%20%22x%22\.html/);
+  assert.doesNotMatch(disposition, /filename="page "x"/, 'the quote in the name cannot end the header’s own');
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), body);
+  // The page itself shows only the first part.
+  const page = await f.fetch('/dashboard/files/work/page%20%22x%22.html', withCookie(cookie));
+  assert.match(page.text, /以降は省略（全体 3\.0 MiB）/);
+  assert.doesNotMatch(page.text, /<script>alert/);
+}));
+
+test('an image is served as the picture its bytes say it is; anything else asked as an image is not found', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  await writeFile(join(f.data, 'work', 'a.png'), png);
+  await writeFile(join(f.data, 'work', 'fake.png'), '<svg><script>alert(1)</script></svg>');
+  await writeFile(join(f.data, 'work', 'b.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+  const image = await fetch(`${f.base}/dashboard/files/work/a.png?image=1`, withCookie(cookie));
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.equal(image.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+  assert.match((await f.fetch('/dashboard/files/work/a.png', withCookie(cookie))).text, /<img src="\/dashboard\/files\/work\/a\.png\?image=1"/);
+  for (const path of ['/dashboard/files/work/fake.png?image=1', '/dashboard/files/work/b.svg?image=1']) {
+    assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
+  }
+  const svg = await f.fetch('/dashboard/files/work/b.svg', withCookie(cookie));
+  assert.equal(svg.status, 200);
+  assert.match(svg.text, /&lt;svg xmlns/, 'an SVG is shown as text');
+  assert.doesNotMatch(svg.text, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"><script>/);
+}));
+
+test('nothing outside the five places can be reached: not by .., encoded separators, symlinks or the memory’s .git', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const secret = 'fixture-secret-under-natsumi';
+  await writeFile(join(f.data, '.natsumi', 'secret.txt'), secret);
+  await symlink(join(f.data, '.natsumi'), join(f.data, 'work', 'state'));
+  await symlink(join(f.data, '.natsumi', 'secret.txt'), join(f.data, 'work', 'secret.txt'));
+  await mkdir(join(f.data, 'memory', '.git'), { recursive: true });
+  await writeFile(join(f.data, 'memory', '.git', 'config'), secret);
+  for (const path of ['/dashboard/files/work/state/secret.txt', '/dashboard/files/work/state/secret.txt?download=1',
+    '/dashboard/files/work/secret.txt', '/dashboard/files/work/secret.txt?download=1', '/dashboard/files/work/state',
+    '/dashboard/files/work/%2e%2e/.natsumi/secret.txt', '/dashboard/files/work/..%2F.natsumi%2Fsecret.txt',
+    '/dashboard/files/work/..%2f..%2f..%2fetc%2fpasswd', '/dashboard/files/memory/.git/config', '/dashboard/files/memory/.git/config?download=1',
+    '/dashboard/files/memory/.git', '/dashboard/files/.natsumi/secret.txt', '/dashboard/files/work/%00', '/dashboard/files/work/a?raw=2',
+    '/dashboard/files/work?sort=owner', '/dashboard/files/work?hidden=yes']) {
+    const res = await f.fetch(path, withCookie(cookie));
+    assert.equal(res.status, 404, path);
+    assert.ok(!res.text.includes(secret), path);
+  }
+  for (const path of ['/dashboard/files/work/../.natsumi/secret.txt', '/dashboard/files/work/../../../etc/passwd',
+    '/dashboard/files/work/./../.natsumi/secret.txt']) {
+    const res = await rawGet(f, path, cookie);
+    assert.equal(res.status, 404, path);
+    assert.ok(!res.body.includes(secret), path);
+  }
+  const listing = await f.fetch('/dashboard/files/memory?hidden=1', withCookie(cookie));
+  assert.doesNotMatch(listing.text, />\.git</);
+  const work = await f.fetch('/dashboard/files/work', withCookie(cookie));
+  assert.match(work.text, /→ [^<]*\.natsumi/, 'a symlink is listed with where it points, and no more');
+  assertNoLeaks(f, [secret]);
 }));

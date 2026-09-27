@@ -1,7 +1,14 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import type { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import {
+  classify, DEFAULT_ORDER, FILES_PATH, imageType, listDirectory, locate, look, openFile, readHead, TEXT_LIMIT, type FileRoots, type ListingView,
+  type SortKey,
+} from './dashboard-files.ts';
+import { directoryPage, filePage, filesIndexPage, refusedFilePage } from './dashboard-files-view.ts';
 import { approvalsPage, devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
 import { APPROVAL_STATES, listApprovals, listDovePosts, readDevices, readWaits, type ApprovalState } from './dashboard-records.ts';
 import {
@@ -13,6 +20,8 @@ import { readStats, statsPeriod } from './dashboard-stats.ts';
 import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
 import type { Html } from './html.ts';
+import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
+import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
 import { checkHealth, readStatus } from './status.ts';
 import type { LoopDashboardState, TurnInProgress } from './thinking-loop.ts';
@@ -52,6 +61,10 @@ export interface DashboardOptions {
   login: GitHubLogin;
   loop: DashboardLoop;
   dataDirectory: string;
+  /** The memory repository (`loop.memoryRepository`, by default `memory/` in the data directory), seen as /memory (ADR 0054). */
+  memoryDirectory: string;
+  /** The manual seen as /manual; by default the `manual/` that came with the code (ADR 0054). */
+  manualDirectory?: string;
   /** The state database, read for the turns' rows and the session files the conversation used (ADR 0049). */
   db: DatabaseSync;
   /** Where the Pi session records are; nothing outside it is opened. */
@@ -71,6 +84,8 @@ const STATIC_TYPES: Record<string, string> = {
   [STATIC_FILES.js]: 'text/javascript; charset=utf-8',
 };
 const staticCache = new Map<string, Buffer>();
+/** `manual/` beside `src/` in a checkout, and beside `dist/` in the image, as the workspace has it at /manual (ADR 0054). */
+const MANUAL_DIRECTORIES = ['../../manual/', '../../../manual/'].map(path => fileURLToPath(new URL(path, import.meta.url)));
 
 /**
  * The images a turn's page shows, by their recorded type: those a browser takes as a picture and nothing more. An SVG
@@ -143,6 +158,8 @@ export class Dashboard {
       return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone), renewed);
     }
     if (path === STATS_PATH) return this.stats(response, url, renewed);
+    if (path === FILES_PATH) return send(response, 200, filesIndexPage(), renewed);
+    if (path.startsWith(`${FILES_PATH}/`)) return this.files(response, url, renewed);
     const turn = TURN_ROUTE.exec(path);
     if (turn) return this.turn(response, turn[1]!, turn[2] === undefined ? undefined : Number(turn[2]), renewed);
     send(response, 404, messagePage('見つかりません', true), renewed);
@@ -214,6 +231,60 @@ export class Dashboard {
     if (!picture || !IMAGE_TYPES.has(picture.mimeType)) return notFound();
     const body = Buffer.from(picture.data, 'base64');
     response.writeHead(200, { 'content-type': picture.mimeType, 'content-length': body.length, ...headers }).end(body);
+  }
+
+  /**
+   * One of her files or directories (ADR 0054): a directory one level down, a file's page with the head of it, its
+   * bytes as a download, or its bytes as a picture when they are one.
+   */
+  private async files(response: ServerResponse, url: URL, headers: Record<string, string>): Promise<void> {
+    const location = locate(url.pathname);
+    const query = fileQuery(url);
+    if (!location || !query) return send(response, 404, messagePage('見つかりません', true), headers);
+    const roots = await this.fileRoots();
+    const refused = (reason: Parameters<typeof refusedFilePage>[0]['reason'], target?: string) =>
+      send(response, 404, refusedFilePage({ location, reason, ...(target === undefined ? {} : { target }) }), headers);
+    if (query.download || query.image) {
+      const opened = await openFile(roots, location);
+      if (opened.kind === 'refused') return refused(opened.reason, opened.target);
+      const { handle, size } = opened;
+      let mimeType: string | undefined;
+      if (query.image) {
+        const head = Buffer.alloc(16);
+        const { bytesRead } = await handle.read(head, 0, head.length, 0).catch(() => ({ bytesRead: 0 }));
+        mimeType = imageType(head.subarray(0, bytesRead));
+        if (!mimeType) {
+          await handle.close();
+          return send(response, 404, messagePage('見つかりません', true), headers);
+        }
+      }
+      response.writeHead(200, {
+        'content-type': mimeType ?? 'application/octet-stream', 'content-length': size, 'x-content-type-options': 'nosniff',
+        ...(query.download ? { 'content-disposition': attachment(location.segments.at(-1) ?? 'file') } : {}), ...headers,
+      });
+      // The file is streamed from the handle that was checked, and closed by the stream when it ends or fails.
+      await pipeline(handle.createReadStream({ start: 0 }), response).catch(() => { response.destroy(); });
+      return;
+    }
+    const found = await look(roots, location);
+    if (found.kind === 'refused') return refused(found.reason, found.target);
+    if (found.kind === 'directory') {
+      if (query.raw || !query.listing) return send(response, 404, messagePage('見つかりません', true), headers);
+      const listed = listDirectory(found, query.listing);
+      return send(response, 200, directoryPage({ location, view: query.listing, ...listed }, this.options.timeZone), headers);
+    }
+    const head = await readHead(roots, location, TEXT_LIMIT);
+    if (head.kind === 'refused') return refused(head.reason, head.target);
+    const content = classify(head.head, head.size, TEXT_LIMIT);
+    send(response, 200, filePage({ location, size: head.size, mtimeMs: head.mtimeMs, content, raw: query.raw }, this.options.timeZone), headers);
+  }
+
+  private async fileRoots(): Promise<FileRoots> {
+    const { dataDirectory, memoryDirectory, manualDirectory } = this.options;
+    return {
+      memory: memoryDirectory, work: join(dataDirectory, WORK_DIRECTORY), home: join(dataDirectory, HOME_DIRECTORY),
+      agents: join(dataDirectory, AGENT_LIST_DIRECTORY), manual: manualDirectory ?? await codeManual(),
+    };
   }
 
   /** The callback's answer to a login that began here. */
@@ -293,6 +364,61 @@ function cookieValue(request: IncomingMessage): string | undefined {
 function send(response: ServerResponse, status: number, body: Html, headers: Record<string, string> = {}) {
   const text = Buffer.from(body.text, 'utf8');
   response.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': text.length, ...headers }).end(text);
+}
+
+/** The code's own manual: the first of its places that is there. */
+async function codeManual(): Promise<string> {
+  for (const directory of MANUAL_DIRECTORIES) {
+    if (await stat(directory).then(found => found.isDirectory(), () => false)) return directory;
+  }
+  return MANUAL_DIRECTORIES[0]!;
+}
+
+interface FileQuery {
+  raw: boolean;
+  download: boolean;
+  image: boolean;
+  /** The listing's view, when the query is one a directory takes. */
+  listing?: ListingView;
+}
+
+const FLAGS = ['raw', 'download', 'image', 'hidden'] as const;
+const SORT_KEYS: readonly SortKey[] = ['name', 'mtime', 'size'];
+
+/** The query of a file or a directory; undefined when a value is not one of those taken, or is given twice. */
+function fileQuery(url: URL): FileQuery | undefined {
+  const params = url.searchParams;
+  const one = (name: string) => {
+    const values = params.getAll(name);
+    return values.length > 1 ? null : values[0];
+  };
+  const flags: Record<string, boolean> = {};
+  for (const name of FLAGS) {
+    const value = one(name);
+    if (value === null || (value !== undefined && value !== '1')) return undefined;
+    flags[name] = value === '1';
+  }
+  const sort = one('sort');
+  const order = one('order');
+  if (sort === null || order === null) return undefined;
+  if (sort !== undefined && !(SORT_KEYS as readonly string[]).includes(sort)) return undefined;
+  if (order !== undefined && order !== 'asc' && order !== 'desc') return undefined;
+  if ([flags.raw, flags.download, flags.image].filter(Boolean).length > 1) return undefined;
+  const key = (sort ?? 'name') as SortKey;
+  const forFile = flags.raw || flags.download || flags.image;
+  const forListing = flags.hidden || sort !== undefined || order !== undefined;
+  if (forFile && forListing) return undefined;
+  return {
+    raw: flags.raw!, download: flags.download!, image: flags.image!,
+    ...(forFile ? {} : { listing: { hidden: flags.hidden!, sort: key, order: order ?? DEFAULT_ORDER[key] } }),
+  };
+}
+
+/** The Content-Disposition of a download: the name in UTF-8 by RFC 6266, and a plain fallback that cannot end the header's quote. */
+function attachment(name: string): string {
+  const plain = name.replace(/[^A-Za-z0-9._-]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${plain}"; filename*=UTF-8''${encoded}`;
 }
 
 async function staticFile(path: string): Promise<Buffer | undefined> {

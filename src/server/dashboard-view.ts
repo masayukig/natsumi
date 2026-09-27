@@ -1,3 +1,4 @@
+import { FILES_PATH } from './dashboard-files.ts';
 import { html, type Html } from './html.ts';
 import type { LoopDashboardState } from './thinking-loop.ts';
 
@@ -36,6 +37,7 @@ const SECTIONS: { label: string; href?: string }[] = [
   { label: '承認の履歴', href: APPROVALS_PATH },
   { label: '端末', href: DEVICES_PATH },
   { label: '統計', href: STATS_PATH },
+  { label: 'ファイル', href: FILES_PATH },
 ];
 
 export interface DashboardStatus {
