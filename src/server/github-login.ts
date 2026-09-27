@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { GitHubConfig } from './config.ts';
-import type { SessionStore } from './sessions.ts';
+import type { IssuedSession, SessionStore } from './sessions.ts';
 
 export interface GitHubEndpoints { authorizeUrl: string; tokenUrl: string; userUrl: string }
 
@@ -12,6 +12,8 @@ export const GITHUB_ENDPOINTS: GitHubEndpoints = {
 
 /** The Mac app's callback (ASWebAuthenticationSession). Fixed in code so it can never become an open redirect. */
 export const APP_REDIRECT_URI = 'natsumi://oauth/callback';
+/** Where a browser login ends (ADR 0049). Fixed in code for the same reason; nothing in a request or the config moves it. */
+export const DASHBOARD_PATH = '/dashboard';
 export const LOGIN_ATTEMPT_TTL_MS = 10 * 60_000;
 export const LOGIN_CODE_TTL_MS = 60_000;
 const UPSTREAM_TIMEOUT_MS = 10_000;
@@ -24,8 +26,21 @@ const APP_STATE = /^[\x21-\x7e]{1,256}$/;
 /** An HTTP answer: a redirect, or a JSON body carrying only a fixed error code. */
 export type Outcome = { status: 302; location: string } | { status: number; body: Record<string, unknown> };
 
-interface Attempt { appChallenge: string; appState: string; githubVerifier: string; expiresAt: number }
+/**
+ * How a browser login ended (ADR 0049): a session for the dashboard's cookie, or a fixed code to show with the status.
+ * The browser has no app to take a login code to, so the session is issued at the callback itself.
+ */
+export type BrowserOutcome = { browser: 'signed-in'; session: IssuedSession } | { browser: 'refused'; status: number; code: string };
+
+type Attempt = { githubVerifier: string; expiresAt: number }
+  & ({ kind: 'app'; appChallenge: string; appState: string } | { kind: 'browser' });
 interface LoginCode { githubUserId: number; appChallenge: string; expiresAt: number }
+
+/** The status a refused browser login is shown with: GitHub failing is not the browser's fault. */
+const BROWSER_STATUS: Record<string, number> = {
+  'github-denied': 403, 'account-not-allowed': 403, 'github-unavailable': 502, 'github-exchange-failed': 502,
+  'too-many-logins': 429,
+};
 
 const random = () => randomBytes(32).toString('base64url');
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -68,12 +83,24 @@ export class GitHubLogin {
     if (query.get('code_challenge_method') !== 'S256' || !CHALLENGE.test(appChallenge) || !APP_STATE.test(appState)) {
       return failure(400, 'invalid-request');
     }
+    return this.toGitHub({ kind: 'app', appChallenge, appState });
+  }
+
+  /**
+   * A login from the dashboard (ADR 0049): the same state, GitHub PKCE and account check as the app's, ending at
+   * DASHBOARD_PATH with a session instead of at the app with a login code.
+   */
+  startBrowser(): Outcome {
+    return this.toGitHub({ kind: 'browser' });
+  }
+
+  private toGitHub(attempt: { kind: 'app'; appChallenge: string; appState: string } | { kind: 'browser' }): Outcome {
     const now = this.options.now();
     prune(this.attempts, now - LOGIN_ATTEMPT_TTL_MS);
     if (this.attempts.size >= MAX_PENDING) return failure(429, 'too-many-logins');
     const state = random();
     const githubVerifier = random();
-    this.attempts.set(digest(state), { appChallenge, appState, githubVerifier, expiresAt: now + LOGIN_ATTEMPT_TTL_MS });
+    this.attempts.set(digest(state), { ...attempt, githubVerifier, expiresAt: now + LOGIN_ATTEMPT_TTL_MS });
     const url = new URL(this.options.endpoints.authorizeUrl);
     url.search = new URLSearchParams({
       client_id: this.options.config.clientId, redirect_uri: this.options.config.callbackUrl, state,
@@ -82,12 +109,20 @@ export class GitHubLogin {
     return { status: 302, location: url.href };
   }
 
-  async callback(query: URLSearchParams): Promise<Outcome> {
+  async callback(query: URLSearchParams): Promise<Outcome | BrowserOutcome> {
     const state = query.get('state');
     const key = state ? digest(state) : undefined;
     const attempt = key === undefined ? undefined : this.attempts.get(key);
     if (!attempt) return this.refuse(failure(400, 'invalid-state'), 'invalid-state');
     this.attempts.delete(key!); // One use, whatever happens next.
+
+    const verified = await this.verify(query, attempt);
+    if (attempt.kind === 'browser') {
+      if (typeof verified === 'string') return this.refuse({ browser: 'refused', status: BROWSER_STATUS[verified] ?? 400, code: verified }, verified);
+      const session = this.options.sessions.create(verified);
+      this.options.log('github login: dashboard session issued');
+      return { browser: 'signed-in', session };
+    }
 
     const toApp = (params: Record<string, string>): Outcome => {
       const url = new URL(APP_REDIRECT_URI);
@@ -95,18 +130,8 @@ export class GitHubLogin {
       return { status: 302, location: url.href };
     };
     const refuseToApp = (code: string) => this.refuse(toApp({ error: code }), code);
-
-    const now = this.options.now();
-    if (attempt.expiresAt <= now) return refuseToApp('login-expired');
-    if (query.has('error')) return refuseToApp('github-denied');
-    const code = query.get('code');
-    if (!code) return refuseToApp('invalid-request');
-
-    const exchanged = await this.exchange(code, attempt.githubVerifier);
-    if (exchanged.kind !== 'ok') return refuseToApp(exchanged.kind === 'rejected' ? 'github-exchange-failed' : 'github-unavailable');
-    const userId = await this.fetchUserId(exchanged.accessToken);
-    if (userId === undefined) return refuseToApp('github-unavailable');
-    if (userId !== this.options.config.allowedUserId) return refuseToApp('account-not-allowed');
+    if (typeof verified === 'string') return refuseToApp(verified);
+    const userId = verified;
 
     const issuedAt = this.options.now();
     prune(this.codes, issuedAt);
@@ -114,6 +139,20 @@ export class GitHubLogin {
     const loginCode = random();
     this.codes.set(digest(loginCode), { githubUserId: userId, appChallenge: attempt.appChallenge, expiresAt: issuedAt + LOGIN_CODE_TTL_MS });
     return toApp({ code: loginCode });
+  }
+
+  /** The allowed account's numeric ID from GitHub's answer, or the fixed code of why there is none. */
+  private async verify(query: URLSearchParams, attempt: Attempt): Promise<number | string> {
+    if (attempt.expiresAt <= this.options.now()) return 'login-expired';
+    if (query.has('error')) return 'github-denied';
+    const code = query.get('code');
+    if (!code) return 'invalid-request';
+    const exchanged = await this.exchange(code, attempt.githubVerifier);
+    if (exchanged.kind !== 'ok') return exchanged.kind === 'rejected' ? 'github-exchange-failed' : 'github-unavailable';
+    const userId = await this.fetchUserId(exchanged.accessToken);
+    if (userId === undefined) return 'github-unavailable';
+    if (userId !== this.options.config.allowedUserId) return 'account-not-allowed';
+    return userId;
   }
 
   redeem(body: unknown): Outcome {
@@ -133,7 +172,7 @@ export class GitHubLogin {
     return { status: 200, body: { token: session.token, expiresAt: session.expiresAt } };
   }
 
-  private refuse(outcome: Outcome, code: string): Outcome {
+  private refuse<T extends Outcome | BrowserOutcome>(outcome: T, code: string): T {
     this.options.log(`github login refused: ${code}`);
     return outcome;
   }

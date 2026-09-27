@@ -1,0 +1,137 @@
+/* natsumi dashboard (ADR 0049). Light and dark follow the system; the layout holds on a phone. */
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf7;
+  --fg: #22211f;
+  --muted: #6b6760;
+  --line: #e2ded6;
+  --card: #ffffff;
+  --accent: #b4532a;
+  --ok: #2f7a3e;
+  --bad: #b3261e;
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  line-height: 1.6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171614;
+    --fg: #ebe8e2;
+    --muted: #a39e95;
+    --line: #34312d;
+    --card: #211f1c;
+    --accent: #f08a5d;
+    --ok: #7cc68a;
+    --bad: #f2877e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+a { color: var(--accent); }
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0 0.25em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+small { color: var(--muted); }
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+}
+
+.top nav { flex: 1 1 auto; }
+
+.top nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.top nav a { text-decoration: none; }
+.top nav a[aria-current="page"] { font-weight: 600; text-decoration: underline; text-underline-offset: 0.3em; }
+.top nav .soon { color: var(--muted); }
+.top nav .soon small { margin-left: 0.3em; font-size: 0.75em; }
+
+.top form { margin: 0; }
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.2rem 0.75rem;
+  cursor: pointer;
+}
+
+button:hover { border-color: var(--accent); }
+
+main {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+h2 { font-size: 1.05rem; margin: 0.5rem 0 0.75rem; }
+
+section {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+}
+
+section.stale { opacity: 0.6; }
+
+.facts { margin: 0; }
+
+.facts > div {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.facts > div:first-child { border-top: none; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.facts dd small { display: inline-block; margin-right: 0.5em; }
+
+.routes { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+
+.ok { color: var(--ok); font-weight: 600; }
+.bad { color: var(--bad); font-weight: 600; }
+.note { color: var(--accent); }
+
+@media (max-width: 36rem) {
+  .facts > div { grid-template-columns: 1fr; gap: 0.1rem; }
+  main { padding: 0.75rem; }
+}

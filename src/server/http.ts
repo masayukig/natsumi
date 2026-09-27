@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { AVATAR_PATH, avatarImage } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
+import { Dashboard } from './dashboard.ts';
 import type { GitHubLogin, Outcome } from './github-login.ts';
 import type { SessionStore } from './sessions.ts';
 
@@ -21,6 +22,8 @@ export interface ListenerOptions {
   log: (line: string) => void;
   /** The images the server took from /work (ADR 0044), which the devices fetch by ID with the session. */
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
+  /** The read-only dashboard in the browser (ADR 0049). It alone reads its cookie; every other route ignores it. */
+  dashboard: Dashboard;
 }
 
 export interface Listener {
@@ -108,7 +111,11 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     return;
   }
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
-  if (method === 'GET' && url.pathname === GITHUB_CALLBACK_PATH) return answer(response, await options.login.callback(url.searchParams));
+  if (Dashboard.owns(url.pathname)) return options.dashboard.handle(request, response, url);
+  if (method === 'GET' && url.pathname === GITHUB_CALLBACK_PATH) {
+    const outcome = await options.login.callback(url.searchParams);
+    return Dashboard.isBrowser(outcome) ? options.dashboard.finishLogin(response, outcome) : answer(response, outcome);
+  }
   if (method === 'POST' && url.pathname === '/auth/session') {
     const body = await readJson(request);
     return body === undefined ? json(response, 400, { error: 'invalid-request' }) : answer(response, options.login.redeem(body));

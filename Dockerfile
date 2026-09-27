@@ -78,6 +78,8 @@ COPY --from=build /app/dist/src/server ./dist/src/server
 COPY --from=build /app/dist/src/pi ./dist/src/pi
 # The faces Slack shows beside what the dove posts, served at /avatar/ (ADR 0040).
 COPY assets/avatar/*.png ./assets/avatar/
+# The dashboard's style sheet and script, served at /dashboard/static/ (ADR 0049).
+COPY assets/dashboard/ ./assets/dashboard/
 # Mount points for the data directory and the dedicated Pi state area. A new named volume inherits
 # this ownership and mode, so the unprivileged user can write without running as root.
 RUN mkdir -p /data /var/lib/natsumi-pi \

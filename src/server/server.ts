@@ -10,6 +10,7 @@ import { catalogContextWindow } from '../pi/auth.ts';
 import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgeConfig,
   type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
+import { Dashboard } from './dashboard.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
 import { bearerToken, openListener, type Listener } from './http.ts';
@@ -293,8 +294,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
+    const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, login, loop: thinkingLoop, dataDirectory,
+      timeZone: config.loop.timeZone, now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
-      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log,
+      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard,
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 
