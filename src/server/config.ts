@@ -442,8 +442,11 @@ function parsePi(value: unknown, path: string): ParsedPi {
 /** A compatible route's provider is this one, or this one with a suffix of its own. */
 const isCompatibleProvider = (provider: string) => provider === COMPATIBLE_PROVIDER || provider.startsWith(`${COMPATIBLE_PROVIDER}-`);
 
-/** `model` and `compatible` of one route, at `path` (which is `pi` itself for a config with only `pi.model`). */
-function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible'> {
+/**
+ * `model` and `compatible` of one route, at `path` (which is `pi` itself for a config with only `pi.model`). The turn
+ * evaluation reads its model files with it too, so they are written as the config is (ADR 0051).
+ */
+export function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible'> {
   const modelPath = `${path}.model`;
   const model = object(required(fields, 'model', path), modelPath);
   onlyKeys(model, modelPath, ['provider', 'id']);
