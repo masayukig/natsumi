@@ -1,7 +1,7 @@
 # 0049. ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る
 
 - Date: 2026-09-27
-- Status: Accepted
+- Status: Accepted（画面に並べるものに、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る閲覧を加えることと、そのための Markdown の整形の依存は [ADR 0054](0054-her-files-on-the-dashboard.md) で追加）
 
 ## Context
 
