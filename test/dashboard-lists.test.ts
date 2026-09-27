@@ -148,11 +148,11 @@ test('the devices page shows each device, whether it is connected, its push, and
   assert.match(text, /aria-current="page">端末/);
 });
 
-test('the navigation has every list now, and only the graphs are still to come', () => {
+test('the navigation has every list and the statistics, and nothing is still to come', () => {
   const text = memosPage({ page: 1, more: false, memos: [] }, ZONE).text;
   for (const [label, href] of [['失敗と待ち', '/dashboard/waits'], ['一行メモ', '/dashboard/memos'], ['ポッポさん', '/dashboard/dove'],
-    ['端末', '/dashboard/devices']]) {
+    ['端末', '/dashboard/devices'], ['統計', '/dashboard/stats']]) {
     assert.match(text, new RegExp(`<a href="${href}"[^>]*>${label}</a>`), label);
   }
-  assert.match(text, /統計<small>準備中/);
+  assert.doesNotMatch(text, /準備中/);
 });
