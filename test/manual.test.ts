@@ -58,6 +58,23 @@ test('the Slack page says how to ask the dove and names every answer it gives', 
   assert.doesNotMatch(page, /今はまだ Slack に書き込めません|書き込む手段がありません/);
 });
 
+// ADR 0050: the page says what an attention's kind means, how to read the JSON Lines, and how to see a diff.
+test('the Slack page reads a sources_updated: its kinds, the lines by jq -s, the thread by reply_to, and sources-diff', async () => {
+  const page = await read('manual/slack.md');
+  for (const word of ['sources_updated', 'attention', '`mention`', '`dm`', "jq -s '.[", 'tail -n', 'reply_to', 'deleted', 'mine',
+    'sources-diff', '--since', '.jsonl']) {
+    assert.ok(page.includes(word), word);
+  }
+  assert.doesNotMatch(page, /slack_mention|updates\.slack|reference はその発言/);
+  const dockerfile = await read('Dockerfile');
+  assert.match(dockerfile, /^COPY --chmod=755 docker\/sources-diff\/sources-diff \/usr\/local\/bin\/sources-diff$/m);
+  const compose = await read('compose.yaml');
+  const mount = /target: \/sources\.git\n(( {8}.*\n)+)/.exec(compose);
+  assert.ok(mount, 'the history of /sources is not mounted at /sources.git');
+  assert.match(mount[1]!, /read_only: true/);
+  assert.match(mount[1]!, /subpath: sources\.git\b/);
+});
+
 // ADR 0044: the page on drawing names what the image holds, and her own look as the owner wrote it.
 test('the page on images says how to draw with the default params, where to put the result, and how she looks', async () => {
   const page = await read('manual/images.md');
