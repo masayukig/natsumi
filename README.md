@@ -232,7 +232,8 @@ node dist/src/server/main.js fold off --data-dir <data directory>     # 次の�
 - 選んだ値は `.natsumi/turn-fold.json` に残り、再起動しても続きます。サーバーはターンの前に読みます。
 - 切り替えた直後のターンは、prefix cache が 1 回外れます。
 
-ターンごとの数（本文は含みません）が `.natsumi/state.sqlite` の `turn_stats` に残ります。on と off を比べるには:
+ターンごとの数と、そのターンが session のファイルのどこにあるか（本文は含みません）が `.natsumi/state.sqlite` の `turn_stats` に残ります。
+夜の振り返りも 1 行になり、種類で普通のターンと見分けます。on と off を比べるには:
 
 ```sh
 node dist/src/server/main.js stats --since 2026-09-20 --until 2026-09-27 --data-dir <data directory>
@@ -242,13 +243,14 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 - `stats` は、最初の返事（またはポッポさんへの依頼）までの時間、ターンの長さ、呼び出しの回数、最初の呼び出しの文脈の大きさ、
   キャッシュに乗った割合、出力の tokens、振り返りの時間を on と off に分けて中央値と p90 で並べ、compaction の回数と、
   迷いの指標（読み直し・ツールのエラー・ポッポさんの突き返し・答えなかったメッセージの 1 ターンあたりの平均、打ち切りの割合）を続けます。
+- `stats` が数えるのは普通のターンだけです。夜の振り返りは、あれば件数だけを最後に出します。
 - `--since` と `--until` は `YYYY-MM-DD`（UTC の 0 時）か、`Z` 付きの時刻です。`--until` の時刻は含みません。
 - `--memos` は `pi.sessionDirectory` を読むために設定ファイルを読みます（既定は `config.local.json`）。
 
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態を見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身を見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は `/dashboard` にだけ送られる cookie に載ります。最後に使ってから 30 日で切れ、開くたびに延びます。
@@ -256,8 +258,17 @@ GitHub でログインしてから、なつみのいまの状態を見られま�
 - 読み取り専用です。経路や畳み込みの切り替え、承認は、これまでどおりアプリとコマンドで行います。
 - いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
   文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
-  文脈の大きさは、ターンの終わりに測った値です。
-- ターンの一覧・詳細、失敗と待ち、統計は準備中です。
+  文脈の大きさは、ターンの終わりに測った値です。実行中のターンからは、その詳細へ移れます。
+- 「ターン」（`/dashboard/turns`）は、ターンを新しい順に 50 件ずつ並べます。時刻、種類（ターン／夜の振り返り）、出来事の種類、
+  outcome、返事までの時間、ターンの長さ、呼び出しの回数、tokens、経路、畳み込み、compaction の有無です。
+  outcome が `ok` でないターン（失敗や打ち切り）は赤で出します。一覧は SQLite だけから作ります。
+- ターンを開くと、session のファイル（`pi.sessionDirectory`）からそのターンの分だけを読み、全文で出します。
+  届いた出来事、途中で差し込まれた本人のメッセージ、モデル呼び出しごとの思考・テキスト・ツールの呼び出し（名前と引数）と結果（成否）、
+  usage、エラー、一行メモ、compaction です。2KB を超えるツールの結果は畳んであり、クリックで開きます。
+  出来事やツールの結果に入っている画像（PNG・JPEG・GIF・WebP）は、`/dashboard` の下の URL から出します。
+- この版より前に記録されたターンは、session のファイルの中の位置を持っていません。時刻と `<events>` の区切りから対応付け、
+  「推定」と印を付けて出します。境目がずれていることがあります。
+- 失敗と待ち、統計は準備中です。
 
 ### GitHub OAuth App を作る
 

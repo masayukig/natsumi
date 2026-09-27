@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ImageContent } from '@earendil-works/pi-ai';
@@ -21,7 +21,7 @@ import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome }
 import { COMPACTION_INSTRUCTIONS, composeSystemPrompt, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS } from './prompts.ts';
 import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
-import { TurnStats, type Confusion, type TokenCounts } from './turn-stats.ts';
+import { TurnStats, type Confusion, type TokenCounts, type TurnPlace } from './turn-stats.ts';
 import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
@@ -125,9 +125,22 @@ export interface LoopDashboardState {
   /** The end of the latest turn the session was compacted after. */
   lastCompactionAt: string | null;
   /** The unit of work in progress: its turn, then the memo after it, then the compaction. */
-  turn: { startedAt: string; eventKinds: string; phase: 'turn' | 'memo' | 'compaction' } | null;
+  turn: { turnId: string; startedAt: string; eventKinds: string; phase: 'turn' | 'memo' | 'compaction' } | null;
   /** Events waiting behind it. */
   queueLength: number;
+}
+
+/**
+ * The unit of work in progress, for the dashboard to read it from the session record while it runs (ADR 0049): where it
+ * began in which file, relative to the session directory, and its events so far. It has no row until it ends.
+ */
+export interface TurnInProgress {
+  turnId: string;
+  kind: 'events' | 'review';
+  startedAt: string;
+  eventKinds: string;
+  eventIds: string[];
+  place: { sessionFile: string; startOffset: number } | null;
 }
 
 /** One model route as the loop uses it (ADR 0046): the model, and when a session on it is compacted. */
@@ -301,6 +314,8 @@ export class ThinkingLoop {
   private readonly turnStats: TurnStats;
   /** For the dashboard (ADR 0049): the work in progress, the context as last measured, and the last compaction. */
   private working: NonNullable<LoopDashboardState['turn']> | undefined;
+  /** Where the unit of work in progress began in the session record, and its events so far, for the dashboard. */
+  private workingPlace: { kind: 'events' | 'review'; mark: PlaceMark | undefined; eventIds: string[] } | undefined;
   private measured: { tokens: number; at: number } | undefined;
   private compactedAt: number | undefined;
 
@@ -398,6 +413,7 @@ export class ThinkingLoop {
     if (this.turn?.kind === 'events' && session.isStreaming) {
       // Steered in at the next model-call boundary; the thought in progress is not interrupted (Q1).
       this.beginHandling(eventId, row.message_id, false);
+      this.workingPlace?.eventIds.push(eventId);
       const prompt = formatEvents([this.eventLine(eventId)]);
       this.steered.set(prompt, [...this.steered.get(prompt) ?? [], eventId]);
       void session.steer(prompt);
@@ -490,6 +506,16 @@ export class ThinkingLoop {
       turn: this.working ? { ...this.working } : null,
       queueLength: this.queue.length,
     };
+  }
+
+  /** The unit of work in progress, as a copy; undefined when idle (ADR 0049). */
+  turnInProgress(): TurnInProgress | undefined {
+    const working = this.working;
+    const place = this.workingPlace;
+    if (!working || !place) return undefined;
+    return { turnId: working.turnId, kind: place.kind, startedAt: working.startedAt, eventKinds: working.eventKinds,
+      eventIds: [...place.eventIds],
+      place: place.mark ? { sessionFile: relative(this.options.sessionDirectory, place.mark.file), startOffset: place.mark.offset } : null };
   }
 
   /** The model routes as the owner is shown them (ADR 0046). */
@@ -825,18 +851,23 @@ export class ThinkingLoop {
       await this.followRoute();
       await this.followFold();
       if (!eventId) return;
-      this.working = { startedAt: isoAt(this.now()), eventKinds: this.eventLabel([eventId]), phase: 'turn' };
-      if (this.store.eventKind(eventId) === 'nightly-review') { await this.runRotation(eventId); return; }
+      const turnId = `turn-${randomUUID()}`;
+      const review = this.store.eventKind(eventId) === 'nightly-review';
+      this.working = { turnId, startedAt: isoAt(this.now()), eventKinds: this.eventLabel([eventId]), phase: 'turn' };
+      this.workingPlace = { kind: review ? 'review' : 'events', mark: await this.markPlace(this.session!), eventIds: [eventId] };
+      if (review) { await this.runRotation(eventId, turnId); return; }
+      const session = this.session!;
       const turn = await this.runTurn([eventId], 'events');
       this.working.phase = 'memo';
       const reflection = await this.reflect(turn);
       this.working.phase = 'compaction';
       const compacted = await this.maintain();
-      this.recordTurn(turn, reflection, compacted);
+      this.recordTurn(turnId, turn, reflection, compacted, await this.placeSince(session, this.workingPlace.mark));
     })();
     this.running = work.finally(() => {
       this.running = undefined;
       this.working = undefined;
+      this.workingPlace = undefined;
       this.activityAt = this.now();
       this.pump();
     });
@@ -897,6 +928,7 @@ export class ThinkingLoop {
     const last = replies.at(-1);
     const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
       : !last || (last.stopReason !== 'stop' && last.stopReason !== 'toolUse') ? 'model-error' : undefined;
+    const handledIds = [...this.handling.keys()];
     let unanswered = 0;
     for (const handling of this.handling.values()) {
       if (handling.messageId !== undefined && handling.shown && !handling.replied) unanswered += 1;
@@ -917,7 +949,7 @@ export class ThinkingLoop {
       toolErrors: session.messages.slice(before).filter(message => message.role === 'toolResult' && message.isError).length,
       doveRefusals: turn.doveRefusals };
     return { ...turn, ...(failure ? { failure } : {}), eventIds, endedAt, usage: sumUsage(replies),
-      contextTokens: first ? first.input + first.cacheRead + first.cacheWrite : null, confusion };
+      contextTokens: first ? first.input + first.cacheRead + first.cacheWrite : null, confusion, handledIds };
   }
 
   /**
@@ -953,22 +985,51 @@ export class ThinkingLoop {
     return { ms: this.now() - startedAt, ...sumUsage(answers) };
   }
 
-  /** One row of numbers for the turn; a row that cannot be written is logged, never thrown (ADR 0047). */
-  private recordTurn(turn: EndedTurn, reflection: (TokenCounts & { ms: number }) | undefined, compacted: boolean) {
+  /**
+   * One row of numbers for the turn, and where it is in the session record (ADR 0049); a row that cannot be written is
+   * logged, never thrown (ADR 0047).
+   */
+  private recordTurn(turnId: string, turn: EndedTurn, reflection: (TokenCounts & { ms: number }) | undefined, compacted: boolean,
+    place: TurnPlace | undefined, outcome = turn.failure ?? 'ok') {
     try {
       const rows = turn.eventIds.map(eventId => this.store.eventRow(eventId));
       this.turnStats.record({
-        turnId: `turn-${randomUUID()}`, startedAt: turn.startedAt, endedAt: turn.endedAt,
+        turnId, kind: turn.kind, eventIds: turn.handledIds, ...(place ? { place } : {}), startedAt: turn.startedAt, endedAt: turn.endedAt,
         receivedAt: Math.min(...rows.map(row => Date.parse(row.created_at))),
         ...(turn.firstOutAt === undefined ? {} : { firstOutAt: turn.firstOutAt }),
         fold: this.fold, route: this.route?.name ?? this.chosen, eventKinds: this.eventLabel(turn.eventIds),
-        outcome: turn.failure ?? 'ok', modelCalls: turn.calls, usage: turn.usage, contextTokens: turn.contextTokens,
+        outcome, modelCalls: turn.calls, usage: turn.usage, contextTokens: turn.contextTokens,
         ...(reflection ? { reflection } : {}), compacted, confusion: turn.confusion,
       });
       if (compacted) this.compactedAt = turn.endedAt;
     } catch {
       this.log('thinking loop: the numbers of a turn could not be recorded');
     }
+  }
+
+  /** Where the next entry of the session will be written. Undefined when it cannot be told; the turn then has no place. */
+  private async markPlace(session: AgentSession): Promise<PlaceMark | undefined> {
+    const file = session.sessionFile;
+    if (!file) return undefined;
+    try {
+      return { file, afterEntryId: session.sessionManager.getLeafId(), offset: (await stat(file)).size };
+    } catch { return undefined; }
+  }
+
+  /** The entries the session wrote since the mark, as a place in its file; undefined when it wrote none. */
+  private async placeSince(session: AgentSession, mark: PlaceMark | undefined): Promise<TurnPlace | undefined> {
+    if (!mark || session.sessionFile !== mark.file) return undefined;
+    const entries = session.sessionManager.getEntries();
+    const index = mark.afterEntryId === null ? 0 : entries.findIndex(entry => entry.id === mark.afterEntryId) + 1;
+    const first = entries[index];
+    const last = entries.at(-1);
+    if ((mark.afterEntryId !== null && index === 0) || !first || !last) return undefined;
+    try {
+      const endOffset = (await stat(mark.file)).size;
+      if (endOffset <= mark.offset) return undefined;
+      return { sessionFile: relative(this.options.sessionDirectory, mark.file), firstEntryId: first.id, lastEntryId: last.id,
+        startOffset: mark.offset, endOffset };
+    } catch { return undefined; }
   }
 
   /**
@@ -1025,7 +1086,7 @@ export class ThinkingLoop {
    * The nightly switch (ADR 0009): a review turn in the current session writes memories and a handoff, then a new
    * session starts from that handoff. The old session file is kept. The shown conversation is untouched.
    */
-  private async runRotation(eventId: string): Promise<void> {
+  private async runRotation(eventId: string, turnId: string): Promise<void> {
     const { sessionDirectory } = this.options;
     const session = this.session!;
     const finish = (outcome: RotationOutcome) => {
@@ -1047,6 +1108,9 @@ export class ThinkingLoop {
 
     const outcome = await (async (): Promise<RotationOutcome> => {
       const turn = await this.runTurn([eventId], 'review', rotationId);
+      // The review is a turn too, placed in the session it closes (ADR 0049). It has no memo, and ends the session.
+      this.recordTurn(turnId, turn, undefined, false, await this.placeSince(session, this.workingPlace?.mark),
+        turn.failure ?? (turn.handoffWritten ? 'ok' : 'no-handoff'));
       const setRotation = (state: string, reason?: string) => this.store.setRotation(rotationId, state, reason);
       if (!turn.handoffWritten) {
         const reason = this.closing ? 'stopped' : turn.failure ?? 'no-handoff';
@@ -1520,7 +1584,10 @@ function failureReason(error: unknown): string {
 
 /** A turn once it has ended: its events, how it ended, and what it cost (ADR 0047). */
 type EndedTurn = Turn & { failure?: string; eventIds: string[]; endedAt: number; usage: TokenCounts; contextTokens: number | null;
-  confusion: Confusion };
+  confusion: Confusion; handledIds: string[] };
+
+/** Where a unit of work began in the session record: its file, the entry before it, and the file's size then. */
+interface PlaceMark { file: string; afterEntryId: string | null; offset: number }
 
 /**
  * The run_shell commands and read paths of the turn (from `start`) that were already used before, in the session's

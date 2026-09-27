@@ -11,11 +11,15 @@ export const STATIC_FILES = { css: '/dashboard/static/dashboard.css', js: '/dash
 export const STATUS_PATH = '/dashboard/status';
 export const LOGOUT_PATH = '/dashboard/logout';
 export const SIGNED_OUT_PATH = '/dashboard/signed-out';
+export const TURNS_PATH = '/dashboard/turns';
+
+/** A turn's page, recorded or in progress (ADR 0049). */
+export const turnPath = (turnId: string) => `${TURNS_PATH}/${encodeURIComponent(turnId)}`;
 
 /** The sections of the dashboard. Those not built yet are listed as coming, so the frame does not move when they are. */
 const SECTIONS: { label: string; href?: string }[] = [
   { label: 'いまの状態', href: '/dashboard' },
-  { label: 'ターン' },
+  { label: 'ターン', href: TURNS_PATH },
   { label: '失敗と待ち' },
   { label: '統計' },
 ];
@@ -89,7 +93,7 @@ ${route.ready ? html` <span class="ok">使える</span>` : html` <span class="ba
 （compaction の閾値 ${number(context.compactionThreshold)} の ${share}%）${context.measuredAt && html` <small>${at(context.measuredAt)} に測った</small>`}`}
 ${context.tokens === null && html` <small>compaction の閾値 ${number(context.compactionThreshold)}</small>`}</dd></div>
 <div><dt>最後の compaction</dt><dd>${loop.lastCompactionAt ? at(loop.lastCompactionAt) : 'まだない'}</dd></div>
-<div><dt>実行中のターン</dt><dd>${turn === null ? 'なし' : html`<strong>${PHASES[turn.phase]}</strong>
+<div><dt>実行中のターン</dt><dd>${turn === null ? 'なし' : html`<a href="${turnPath(turn.turnId)}"><strong>${PHASES[turn.phase]}</strong></a>
 <code>${turn.eventKinds}</code> <small>${at(turn.startedAt)} から</small>`}</dd></div>
 <div><dt>キュー</dt><dd><strong>${loop.queueLength}</strong> 件</dd></div>
 </dl>

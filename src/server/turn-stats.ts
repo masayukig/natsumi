@@ -39,6 +39,26 @@ export interface TurnRecord {
   compacted: boolean;
   /** Signs of her losing her way, counted by the server from what the turn did (ADR 0047). */
   confusion: Confusion;
+  /** An ordinary turn, or the nightly review (ADR 0049). Ordinary when omitted. */
+  kind?: TurnKind;
+  /** The turn's events, those steered in included. */
+  eventIds?: string[];
+  /** Where the unit of work is in the session record, when it could be told. */
+  place?: TurnPlace;
+}
+
+export type TurnKind = 'events' | 'review';
+
+/**
+ * Where a unit of work (the turn, its memo and the compaction after it) is in the Pi session record (ADR 0049): the
+ * file relative to the session directory, its first and last entries, and the bytes they take, the end exclusive.
+ */
+export interface TurnPlace {
+  sessionFile: string;
+  firstEntryId: string;
+  lastEntryId: string;
+  startOffset: number;
+  endOffset: number;
 }
 
 export interface Confusion {
@@ -57,17 +77,20 @@ export class TurnStats {
   constructor(db: DatabaseSync) { this.db = db; }
 
   record(turn: TurnRecord): void {
-    const { reflection } = turn;
+    const { reflection, place } = turn;
     this.db.prepare(`INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, first_out_ms, turn_ms,
       model_calls, input_tokens, cache_read_tokens, output_tokens, context_tokens, reflection_ms, reflection_input_tokens,
       reflection_cache_read_tokens, reflection_output_tokens, compacted, repeated_calls, tool_errors, dove_refusals,
-      unanswered_messages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      unanswered_messages, kind, session_file, first_entry_id, last_entry_id, start_offset, end_offset, event_ids)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(turn.turnId, isoAt(turn.startedAt), turn.fold, turn.route, turn.eventKinds, turn.outcome,
         turn.firstOutAt === undefined ? null : Math.max(0, turn.firstOutAt - turn.receivedAt),
         Math.max(0, turn.endedAt - turn.startedAt), turn.modelCalls, turn.usage.input, turn.usage.cacheRead, turn.usage.output,
         turn.contextTokens, reflection?.ms ?? null, reflection?.input ?? null, reflection?.cacheRead ?? null,
         reflection?.output ?? null, turn.compacted ? 1 : 0, turn.confusion.repeatedCalls, turn.confusion.toolErrors,
-        turn.confusion.doveRefusals, turn.confusion.unansweredMessages);
+        turn.confusion.doveRefusals, turn.confusion.unansweredMessages, turn.kind ?? 'events', place?.sessionFile ?? null,
+        place?.firstEntryId ?? null, place?.lastEntryId ?? null, place?.startOffset ?? null, place?.endOffset ?? null,
+        turn.eventIds ? JSON.stringify(turn.eventIds) : null);
   }
 
   /** The end of the latest turn the session was compacted after, for the dashboard (ADR 0049); undefined for none. */
@@ -128,8 +151,12 @@ export async function runStatsCommand(cli: StatsCommand, dataDirectory: string, 
     if (!table) { write('no turns recorded yet: the server has not run this version'); return 0; }
     const since = cli.since ? boundary(cli.since) : '';
     const until = cli.until ? boundary(cli.until) : '9999';
-    const rows = db.prepare('SELECT * FROM turn_stats WHERE started_at >= ? AND started_at < ? ORDER BY started_at')
+    const all = db.prepare('SELECT * FROM turn_stats WHERE started_at >= ? AND started_at < ? ORDER BY started_at')
       .all(since, until) as Row[];
+    // The nightly review is a turn of another kind, with limits of its own: it would move every number (ADR 0049). A
+    // database from before the kinds has no reviews in it.
+    const rows = all.filter(row => (row.kind ?? 'events') === 'events');
+    const reviews = all.length - rows.length;
     const period = `${cli.since ?? 'the start'} to ${cli.until ?? 'now'}`;
     if (rows.length === 0) { write(`no turns from ${period}`); return 0; }
     const off = rows.filter(row => row.fold === 'off');
@@ -156,6 +183,7 @@ export async function runStatsCommand(cli: StatsCommand, dataDirectory: string, 
     const cut = (group: Row[]) => group.length === 0 ? '-'
       : ((group.filter(row => row.outcome === 'model-call-limit' || row.outcome === 'timeout').length / group.length) * 100).toFixed(0);
     write(`${'cut short (%)'.padEnd(rateWidth)}  ${cut(off).padStart(8)}  ${cut(on).padStart(8)}`);
+    if (reviews > 0) { write(''); write(`nightly reviews: ${reviews} (not counted above)`); }
     return 0;
   } finally { db.close(); }
 }

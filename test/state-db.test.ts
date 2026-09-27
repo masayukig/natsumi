@@ -430,3 +430,27 @@ test('schema 19 gives an agent reply what it says of the images the agent handed
   assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 19)).applied, [19]);
   assert.deepEqual({ ...db.prepare("SELECT files FROM agent_replies WHERE event_id = 'event-1'").get() as object }, { files: '' });
 }));
+
+test('schema 20 tells a turn where it is in the session record and what kind it was, and still has no room for words', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 19));
+  const before = `INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, first_out_ms, turn_ms,
+    model_calls, input_tokens, cache_read_tokens, output_tokens, context_tokens, reflection_ms, reflection_input_tokens,
+    reflection_cache_read_tokens, reflection_output_tokens, compacted, repeated_calls, tool_errors, dove_refusals, unanswered_messages)
+    VALUES (?, 'x', 'off', 'local', 'mac_message', 'ok', NULL, 10, 1, 1, 1, 1, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, 0)`;
+  db.prepare(before).run('turn-old');
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 20)).applied, [20]);
+  // The turns recorded before are ordinary ones, with no place: the dashboard estimates it (ADR 0049).
+  assert.deepEqual({ ...db.prepare(`SELECT kind, session_file, first_entry_id, last_entry_id, start_offset, end_offset, event_ids
+    FROM turn_stats WHERE turn_id = 'turn-old'`).get() as object },
+  { kind: 'events', session_file: null, first_entry_id: null, last_entry_id: null, start_offset: null, end_offset: null, event_ids: null });
+  const insert = db.prepare(`INSERT INTO turn_stats (turn_id, started_at, fold, route, event_kinds, outcome, turn_ms, model_calls,
+    input_tokens, cache_read_tokens, output_tokens, compacted, repeated_calls, tool_errors, dove_refusals, unanswered_messages,
+    kind, session_file, first_entry_id, last_entry_id, start_offset, end_offset, event_ids)
+    VALUES (?, 'x', 'off', 'local', 'nightly_review', 'ok', 10, 1, 1, 1, 1, 0, 0, 0, 0, 0, ?, 'a.jsonl', 'aaaa0001', 'aaaa0009', ?, ?, '["event-1"]')`);
+  insert.run('turn-review', 'review', 100, 900);
+  assert.throws(() => insert.run('turn-2', 'chat', 100, 900), /constraint/i, 'an ordinary turn or the nightly review');
+  assert.throws(() => insert.run('turn-3', 'events', -1, 900), /constraint/i);
+  assert.throws(() => insert.run('turn-4', 'events', 900, 100), /constraint/i, 'the end is not before the start');
+  const columns = (db.prepare('PRAGMA table_info(turn_stats)').all() as { name: string }[]).map(column => column.name);
+  for (const name of columns) assert.doesNotMatch(name, /(^|_)(text|memo|message|body|reply)(_|$)/, name);
+}));

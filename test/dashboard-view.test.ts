@@ -17,7 +17,7 @@ function status(overrides: Partial<DashboardStatus['loop']> = {}, server: Dashbo
       fold: 'on',
       context: { tokens: 41_250, measuredAt: '2026-01-01T02:59:00.000Z', compactionThreshold: 60_000 },
       lastCompactionAt: '2025-12-31T20:00:00.000Z',
-      turn: { startedAt: '2026-01-01T02:58:30.000Z', eventKinds: 'mac_message+slack_mention', phase: 'turn' },
+      turn: { turnId: 'turn-running-1', startedAt: '2026-01-01T02:58:30.000Z', eventKinds: 'mac_message+slack_mention', phase: 'turn' },
       queueLength: 2,
       ...overrides,
     },
@@ -56,15 +56,20 @@ test('a stale heartbeat, a loop that cannot talk and an idle loop are shown as s
 });
 
 test('the memo and the compaction after a turn are shown as its phases', () => {
-  assert.match(renderStatus(status({ turn: { startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'ping', phase: 'memo' } })).text, /一行メモ/);
-  assert.match(renderStatus(status({ turn: { startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'ping', phase: 'compaction' } })).text, /compaction 中/);
+  assert.match(renderStatus(status({ turn: { turnId: 'turn-running-1', startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'ping', phase: 'memo' } })).text, /一行メモ/);
+  assert.match(renderStatus(status({ turn: { turnId: 'turn-running-1', startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'ping', phase: 'compaction' } })).text, /compaction 中/);
 });
 
 test('names that came from settings are escaped like everything else', () => {
   const text = renderStatus(status({
     routes: { defaultRoute: HOSTILE, current: HOSTILE, chosen: HOSTILE, routes: [{ name: HOSTILE, provider: HOSTILE, model: HOSTILE, ready: true }] },
-    turn: { startedAt: '2026-01-01T00:00:00.000Z', eventKinds: HOSTILE, phase: 'turn' },
+    turn: { turnId: 'turn-running-1', startedAt: '2026-01-01T00:00:00.000Z', eventKinds: HOSTILE, phase: 'turn' },
   })).text;
   assert.ok(!text.includes('<img'));
   assert.match(text, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+test('the running turn links to its detail', () => {
+  const text = renderStatus(status()).text;
+  assert.match(text, /<a href="\/dashboard\/turns\/turn-running-1">/);
 });

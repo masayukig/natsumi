@@ -1056,7 +1056,15 @@ test('the dashboard reads the running turn, the queue, the route, the fold and t
     const reply = await f.model.next();
     loop.raise('dove-reply', () => {});
     const running = loop.dashboardState();
-    assert.deepEqual(running.turn, { startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'mac_message', phase: 'turn' });
+    assert.match(running.turn?.turnId ?? '', /^turn-[0-9a-f-]{36}$/);
+    assert.deepEqual(running.turn, { turnId: running.turn!.turnId, startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'mac_message', phase: 'turn' });
+    // Where it began in the record, so the dashboard can read it while it runs; the row with its numbers comes after.
+    const inProgress = loop.turnInProgress()!;
+    assert.equal(inProgress.turnId, running.turn!.turnId);
+    assert.equal(inProgress.kind, 'events');
+    assert.deepEqual(inProgress.eventIds, [sent.eventId]);
+    assert.deepEqual(inProgress.place, { sessionFile: (await f.sessionFiles())[0], startOffset: inProgress.place!.startOffset });
+    assert.ok(inProgress.place!.startOffset > 0, 'after the header');
     assert.equal(running.queueLength, 1, 'what waits behind the turn');
 
     // Reading is not acting: the answer is a copy, and asking again moves nothing on.
@@ -1076,6 +1084,7 @@ test('the dashboard reads the running turn, the queue, the route, the fold and t
     await loop.idle();
     const after = loop.dashboardState();
     assert.equal(after.turn, null);
+    assert.equal(loop.turnInProgress(), undefined);
     assert.equal(after.queueLength, 0);
     assert.equal(typeof after.context.tokens, 'number', 'measured after the turn, not on every read');
     assert.equal(after.context.measuredAt, '2026-01-01T00:00:00.000Z');

@@ -357,3 +357,112 @@ test('the memo request asks for one or two sentences, and for "なし" alone whe
   assert.match(REFLECTION_REQUEST, /100 字/);
   assert.match(REFLECTION_REQUEST, /「なし」/);
 });
+
+/** The entries a row's offsets cover, read straight from its session file. */
+async function entriesOf(root: string, row: Record<string, unknown>) {
+  const file = await readFile(join(root, 'pi', 'sessions', row.session_file as string));
+  return file.subarray(row.start_offset as number, row.end_offset as number).toString('utf8')
+    .split('\n').filter(Boolean).map(line => JSON.parse(line) as { id: string; type: string; message?: { role: string; content: unknown } });
+}
+const contentText = (content: unknown) => typeof content === 'string' ? content
+  : (content as { type: string; text?: string }[]).map(part => part.text ?? '').join('');
+
+test('a turn records where it is in the session file: its first and last entries, the bytes between, and its events (ADR 0049)', async () => {
+  const f = await setup();
+  try {
+    f.model.auto = replying('考え');
+    f.model.memo = () => '予定を確かめた。';
+    const { loop } = await f.open();
+    const first = f.send(loop, '一つ目');
+    await until(() => f.stats().length === 1);
+    const second = f.send(loop, '二つ目');
+    await until(() => f.stats().length === 2);
+    await loop.idle();
+    const rows = f.stats();
+    const files = (await readdir(join(f.root, 'pi', 'sessions'))).filter(name => name.endsWith('.jsonl'));
+    assert.equal(files.length, 1);
+    for (const [row, sent] of [[rows[0]!, first], [rows[1]!, second]] as const) {
+      assert.equal(row.kind, 'events');
+      assert.equal(row.session_file, files[0]);
+      assert.deepEqual(JSON.parse(row.event_ids as string), [sent.eventId]);
+      const entries = await entriesOf(f.root, row);
+      // The unit of work, whole: the events, her calls and their results, the memo request and the memo.
+      assert.equal(entries[0]!.id, row.first_entry_id);
+      assert.equal(entries.at(-1)!.id, row.last_entry_id);
+      // Pi puts the instructions in the record ahead of a session's first prompt; otherwise the events come first.
+      const opening = entries.findIndex(entry => entry.message?.role === 'user');
+      assert.ok(entries.slice(0, opening).every(entry => entry.message?.role === 'system'));
+      assert.match(contentText(entries[opening]!.message!.content), /^<events>\n/);
+      assert.ok(entries.some(entry => entry.message?.role === 'user' && contentText(entry.message.content) === REFLECTION_REQUEST));
+      assert.equal(contentText(entries.at(-1)!.message!.content), '予定を確かめた。');
+    }
+    // One after the other, with nothing of one turn in the other.
+    assert.equal(rows[1]!.start_offset, rows[0]!.end_offset);
+  } finally { await f.cleanup(); }
+});
+
+test('an owner message steered into a turn is counted among its events', async () => {
+  const f = await setup();
+  try {
+    const { loop } = await f.open({ loop: { eventModelCalls: 8 } });
+    const first = f.send(loop, '一件目');
+    const call1 = await f.model.next();
+    const second = f.send(loop, '二件目');
+    call1.call('list_self_checks', {});
+    call1.finish();
+    const call2 = await f.model.next();
+    call2.call('reply_to_mac', { text: '二件まとめての返事', expression: 'neutral' });
+    call2.finish();
+    (await f.model.next()).finish();
+    await until(() => f.stats().length === 1);
+    await loop.idle();
+    const [row] = f.stats();
+    assert.deepEqual(JSON.parse(row!.event_ids as string), [first.eventId, second.eventId]);
+    // The kinds stay the turn's own, as before: the numbers already recorded mean the same.
+    assert.equal(row!.event_kinds, 'mac_message');
+    const entries = await entriesOf(f.root, row!);
+    const users = entries.filter(entry => entry.message?.role === 'user').map(entry => contentText(entry.message!.content));
+    assert.equal(users.filter(text => text.startsWith('<events>')).length, 2, 'the steered message is inside the range');
+  } finally { await f.cleanup(); }
+});
+
+test('the nightly review leaves a row of its own kind, placed in the session it closed', async () => {
+  const f = await setup();
+  try {
+    f.model.auto = replying('昼の思考');
+    const { loop } = await f.open();
+    f.send(loop, '昼');
+    await until(() => f.stats().length === 1);
+    await loop.idle();
+    f.model.auto = context => JSON.stringify(context.messages.at(-1)).includes('nightly_review')
+      ? { calls: [call('write_handoff_note', { text: '引き継ぎ' })] } : '済んだ';
+    assert.equal((await loop.rotate()).result, 'switched');
+    const [day, review] = f.stats();
+    assert.equal(f.stats().length, 2);
+    assert.equal(review!.kind, 'review');
+    assert.equal(review!.event_kinds, 'nightly_review');
+    assert.equal(review!.outcome, 'ok');
+    assert.equal(review!.reflection_ms, null, 'the review is not asked for a memo');
+    assert.equal(review!.session_file, day!.session_file, 'the review is in the session it closed, not the new one');
+    const entries = await entriesOf(f.root, review!);
+    assert.match(contentText(entries[0]!.message!.content), /nightly_review/);
+    assert.equal(entries.at(-1)!.id, review!.last_entry_id);
+    const conversation = f.db.prepare('SELECT pi_session_file FROM conversations').get() as { pi_session_file: string };
+    assert.notEqual(conversation.pi_session_file, review!.session_file);
+  } finally { await f.cleanup(); }
+});
+
+test('a review that writes no handoff is recorded as such', async () => {
+  const f = await setup();
+  try {
+    f.model.auto = replying('昼の思考');
+    const { loop } = await f.open();
+    f.send(loop, '昼');
+    await until(() => f.stats().length === 1);
+    await loop.idle();
+    f.model.auto = () => '書かずに寝る';
+    assert.equal((await loop.rotate()).result, 'failed');
+    const review = f.stats().find(row => row.kind === 'review')!;
+    assert.equal(review.outcome, 'no-handoff');
+  } finally { await f.cleanup(); }
+});
