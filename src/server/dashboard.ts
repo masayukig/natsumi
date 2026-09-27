@@ -2,11 +2,11 @@ import { readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
-import { listDovePosts, readDevices, readWaits } from './dashboard-records.ts';
+import { approvalsPage, devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
+import { APPROVAL_STATES, listApprovals, listDovePosts, readDevices, readWaits, type ApprovalState } from './dashboard-records.ts';
 import {
-  DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH, signedInPage,
-  signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
+  APPROVALS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH,
+  signedInPage, signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
 import { statsPage, statsTokens } from './dashboard-charts.ts';
 import { readStats, statsPeriod } from './dashboard-stats.ts';
@@ -137,6 +137,7 @@ export class Dashboard {
     if (path === WAITS_LIVE_PATH) return send(response, 200, renderWaits(this.waits(), this.options.timeZone), renewed);
     if (path === MEMOS_PATH) return this.memos(response, url, renewed);
     if (path === DOVE_PATH) return this.dove(response, url, renewed);
+    if (path === APPROVALS_PATH) return this.approvals(response, url, renewed);
     if (path === DEVICES_PATH) {
       const view = readDevices(this.options.db, { now: this.options.now(), isConnected: this.options.isConnected });
       return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone), renewed);
@@ -186,6 +187,16 @@ export class Dashboard {
     if (!period || !tokens) return send(response, 404, messagePage('見つかりません', true), headers);
     const { db, now, timeZone } = this.options;
     send(response, 200, statsPage(readStats(db, { period, now: now(), timeZone }), timeZone, tokens), headers);
+  }
+
+  /** The approvals, all or those of one outcome; an outcome not in the list is not a page. */
+  private approvals(response: ServerResponse, url: URL, headers: Record<string, string>): void {
+    const page = pageNumber(url);
+    const asked = url.searchParams.getAll('state');
+    const state = asked.length === 1 && (APPROVAL_STATES as readonly string[]).includes(asked[0]!) ? asked[0] as ApprovalState : undefined;
+    if (page === 0 || asked.length > 1 || (asked.length === 1 && state === undefined)) return send(response, 404, messagePage('見つかりません', true), headers);
+    const list = listApprovals(this.options.db, { page, now: this.options.now(), ...(state ? { state } : {}) });
+    send(response, 200, approvalsPage({ ...list, page, ...(state ? { state } : {}) }, this.options.timeZone), headers);
   }
 
   /** A turn read from the session record, recorded or still running; or one of its images. */

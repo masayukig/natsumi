@@ -136,7 +136,8 @@ test('with the cookie, /dashboard shows the page under a strict CSP and the usua
   // The frame: every section, none still to come, and the logout.
   assert.match(res.text, /いまの状態/);
   assert.doesNotMatch(res.text, /準備中/);
-  for (const [label, href] of [['ターン', 'turns'], ['失敗と待ち', 'waits'], ['一行メモ', 'memos'], ['ポッポさん', 'dove'], ['端末', 'devices'], ['統計', 'stats']]) {
+  for (const [label, href] of [['ターン', 'turns'], ['失敗と待ち', 'waits'], ['一行メモ', 'memos'], ['ポッポさん', 'dove'], ['承認の履歴', 'approvals'],
+    ['端末', 'devices'], ['統計', 'stats']]) {
     assert.match(res.text, new RegExp(`<a href="/dashboard/${href}">${label}</a>`));
   }
   assert.match(res.text, /<form method="post" action="\/dashboard\/logout">/);
@@ -541,4 +542,40 @@ test('the statistics need the cookie, take only the periods on the list, and sho
     '/dashboard/stats?show=bogus', '/dashboard/stats?period=7d&show=input,bogus', '/dashboard/stats?show=']) {
     assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
   }
+}));
+
+test('the history of the approvals needs the cookie, takes only the outcomes it knows, and shows every approval', () => withFixture(async f => {
+  assertLoginAgain(await f.fetch('/dashboard/approvals'), f);
+  const cookie = await browserLogin(f);
+  for (const path of ['/dashboard/approvals?state=sent', '/dashboard/approvals?state=', '/dashboard/approvals?state=PENDING',
+    `/dashboard/approvals?state=${encodeURIComponent(HOSTILE)}`, '/dashboard/approvals?page=0', '/dashboard/approvals/other']) {
+    assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
+  }
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    const at = '2026-01-01T00:00:00.000Z';
+    const post = db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, reference, text, verdict, state, failure, created_at, updated_at)
+      VALUES (?, 'post', 'fixture-space', 'C0FIXTURE', '#架空', ?, 'owner', ?, ?, ?, ?)`);
+    const approval = db.prepare(`INSERT INTO approvals (approval_id, revision, kind, post_id, payload, state, created_at, expires_at, decision, device_id,
+      delivery, delivery_reason, resolved_at) VALUES (?, 1, 'slack-post', ?, ?, ?, ?, '2026-01-02T00:00:00.000Z', ?, ?, ?, ?, ?)`);
+    const payload = (text: string) => JSON.stringify({ target: { channel: '#架空のチャンネル', placement: 'thread' }, text, reason: { verdict: 'owner', issues: [] } });
+    post.run('post-rejected', '架空の却下', 'rejected', null, at, at);
+    approval.run('approval-rejected', 'post-rejected', payload(`架空の却下 ${HOSTILE}`), 'rejected', at, 'reject', 'device-fixture', null, null, at);
+    post.run('post-failed', '架空の失敗', 'failed', 'target-gone', '2026-01-01T00:01:00.000Z', at);
+    approval.run('approval-failed', 'post-failed', payload('架空の失敗'), 'approved', '2026-01-01T00:01:00.000Z', 'approve', 'device-fixture',
+      'failed', 'target-gone', at);
+  } finally { db.close(); }
+  const all = await f.fetch('/dashboard/approvals', withCookie(cookie));
+  assert.equal(all.status, 200, all.text);
+  assert.match(all.text, /架空の却下 &lt;img/);
+  assert.ok(!all.text.includes('<img src=x'));
+  assert.match(all.text, /target-gone/);
+  assert.match(all.text, /href="\/dashboard\/dove#post-failed"/);
+  assert.ok(all.text.indexOf('架空の失敗') < all.text.indexOf('架空の却下'), 'newest first');
+  const rejected = await f.fetch('/dashboard/approvals?state=rejected', withCookie(cookie));
+  assert.equal(rejected.status, 200);
+  assert.match(rejected.text, /架空の却下/);
+  assert.ok(!rejected.text.includes('架空の失敗'));
+  const waits = await f.fetch('/dashboard/waits', withCookie(cookie));
+  assert.match(waits.text, /href="\/dashboard\/approvals\?state=pending"/);
 }));
