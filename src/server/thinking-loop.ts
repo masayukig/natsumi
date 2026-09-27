@@ -173,6 +173,11 @@ export interface LoopOptions {
   /** Called with every Pi session before its first prompt. Tests replace the model stream here. */
   configureSession?: (session: AgentSession) => void;
   /**
+   * Given the instructions as composed, returns the ones the session is made with. Only the turn evaluation passes it,
+   * to try a variant of the prompt on the branch as it is (ADR 0051); without it the composed instructions are used.
+   */
+  reviseSystemPrompt?: (prompt: string) => string;
+  /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
@@ -789,8 +794,9 @@ export class ThinkingLoop {
       try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
-    return composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
+    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice() });
+    return this.options.reviseSystemPrompt?.(prompt) ?? prompt;
   }
 
   /** The note about reverted files, taken once: whoever writes the next prompt carries it. */
