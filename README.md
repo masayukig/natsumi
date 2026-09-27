@@ -529,8 +529,9 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   Slack に断られた会話は飛ばして残りを埋め、次につなぎ直したときにまた試します。スレッド・発言者の名前・画像が取れなくても、発言は記録します
   （名前は `someone`、画像は「添付あり（取り込まず）」）。最後に、埋めた件数と失敗した会話の数を 1 行で出します。
 - チャンネルが変わると、`sources_updated` の出来事で natsumi に知らせます（下の「読みものの更新」）。
-  bot への本物のメンションと DM は、そのチャンネルの `attention`（`kind` が `mention` か `dm`、ファイルと `jq -s` のパス、画像）として、間隔を待たずに、夜でも知らせます。
-  受け取るとサーバーが `reaction` を付けます。同じ発言は何度届いても 1 度だけ知らせます。bot の発言（自分のものを含む）は `attention` になりません。
+  bot への本物のメンションと DM は、そのチャンネルの `attention`（`kind` が `mention` か `dm`、ファイルと `jq -s` のパス、画像）として、待たずに、夜でも知らせます。
+  受け取るとサーバーが `reaction` を付けます。natsumi が発言したスレッドへの、人からのメンションの無い返事も `attention`（`kind` が `thread-reply`）として同じように知らせますが、
+  `reaction` は付けません（[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。同じ発言は何度届いても 1 度だけ知らせます。bot の発言（自分のものを含む）は `attention` になりません。
   本文や前後の流れは出来事に載せず、natsumi がファイルから読みます。
 - natsumi が読むものには、Slack の ID（ts・チャンネル・ユーザー）を書きません。発言はワークスペース・チャンネル・日付・秒までの時刻・発言者で指します。
 - 作業環境からは、data directory の `sources/` を `/sources` に、`sources.git/` を `/sources.git` に、どちらも読み取り専用でマウントします（compose.yaml に入っています）。
@@ -543,24 +544,29 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
 ### 読みものの更新（sources_updated）
 
 `/sources` の下の読みもの（いまは Slack だけ）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
-（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
+（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)、[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。
 
 - サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。
-- 変わったかどうかは、スケジューラの tick ごとに見ます。読みものごとの単位（Slack はチャンネル）で書き込みの回数を数え、
-  「前回見せた時刻 + 間隔」を過ぎた変わったチャンネルを出来事にします。間隔は `k ÷ 直近 1 時間の書き込みの速さ` を最短・最長で頭打ちにしたものです。
+- 変わったかどうかは、スケジューラの tick ごとに見ます。読みものごとの単位（Slack はチャンネル）で書き込みの回数を数えます。
+  前回見せた後で最初に変化を見つけたときに待ちを 1 回引き、それを過ぎたら出来事にします。
+  待ちは平均 m の指数分布から引いて最長で打ち切ります。m は `k ÷ 直近 windowMinutes 分の書き込みの速さ` を最短と静かなときの平均の間で頭打ちにしたもので、
+  書き込みが 0〜1 回なら静かなときの平均です。引いた待ちはメモリに持ち、再起動したら残っていた変化について引き直します。
 - 本人の起きている時間（`loop.awakeHours`）の外は、`attention` が無い限り知らせません。朝の最初の出来事に夜の分がまとめて入ります。
 - 出来事は、待っているものが 1 件だけになるようにまとめます。中身はそのターンの始めに作り、見せるものが無ければターンを始めずに閉じます。
 - 出来事に差分の本文は載せません。natsumi は作業環境の `sources-diff` で見ます（`/sources.git` を読み取り専用でマウントします）。
 - 毎晩、`historyDays` 日より前の履歴を刈り込みます。
 
 ```json
-"sources": { "activity": { "k": 3, "minMinutes": 3, "maxMinutes": 60 }, "historyDays": 7 }
+"sources": { "activity": { "k": 3, "minMinutes": 3, "maxMinutes": 60, "windowMinutes": 15, "quietMeanMinutes": 10 }, "historyDays": 7 }
 ```
 
 | 項目 | 必須 | 既定 | 中身 |
 | --- | --- | --- | --- |
-| `sources.activity.k` | | 3 | 間隔の係数。直近 1 時間に書き込みが 60 回なら 3 分、6 回なら 30 分 |
-| `sources.activity.minMinutes` / `.maxMinutes` | | 3 / 60 | 間隔の最短と最長（分、1〜1440） |
+| `sources.activity.k` | | 3 | 待ちの平均の係数。直近 15 分に書き込みが 15 回なら 3 分、6 回なら 7.5 分 |
+| `sources.activity.minMinutes` | | 3 | 待ちの平均の最短（分、1〜1440） |
+| `sources.activity.maxMinutes` | | 60 | 待ちの最長。引いた待ちはここで打ち切る（分、minMinutes〜1440） |
+| `sources.activity.windowMinutes` | | 15 | 書き込みの速さを測る窓（分、1〜1440） |
+| `sources.activity.quietMeanMinutes` | | 10 | 静かなとき（窓の中の書き込みが 0〜1 回）の待ちの平均。賑やかなときの平均もこれより長くならない（分、minMinutes〜maxMinutes） |
 | `sources.historyDays` | | 7 | 残す履歴の日数（1〜90） |
 
 ### Slack に投稿する（ポッポさん）

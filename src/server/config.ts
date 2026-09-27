@@ -297,10 +297,13 @@ const MIN_JUDGE_CONTEXT_CHARS = 50;
 /** Settings of `slack` ADR 0050 made unused: the server builds no mention context, and nothing rides on pings. */
 const IGNORED_SLACK_KEYS = ['mentionContext', 'updates'];
 
-/** How the updates of what natsumi reads are told (ADR 0050). */
+/** How the updates of what natsumi reads are told (ADR 0050, ADR 0053). */
 export interface SourcesConfig {
-  /** interval = k ÷ (writes in the last hour ÷ 60 minutes), held between minMinutes and maxMinutes. */
-  activity: { k: number; minMinutes: number; maxMinutes: number };
+  /**
+   * The mean wait = k ÷ (writes in the last windowMinutes ÷ windowMinutes), held between minMinutes and quietMeanMinutes,
+   * and quietMeanMinutes with one write or none. A wait is drawn around it and cut at maxMinutes.
+   */
+  activity: { k: number; minMinutes: number; maxMinutes: number; windowMinutes: number; quietMeanMinutes: number };
   /** The days of history kept when it is cut back at night. */
   historyDays: number;
 }
@@ -778,7 +781,7 @@ function parseSources(value: unknown, path: string): SourcesConfig {
   onlyKeys(sources, path, ['activity', 'historyDays']);
   const activityPath = `${path}.activity`;
   const activity = object(sources.activity ?? {}, activityPath);
-  onlyKeys(activity, activityPath, ['k', 'minMinutes', 'maxMinutes']);
+  onlyKeys(activity, activityPath, ['k', 'minMinutes', 'maxMinutes', 'windowMinutes', 'quietMeanMinutes']);
   const defaults = SOURCES_DEFAULTS.activity;
   const k = activity.k ?? defaults.k;
   if (typeof k !== 'number' || !Number.isFinite(k) || k <= 0) throw new ConfigError(`${activityPath}.k`, 'must be a number above 0');
@@ -790,11 +793,20 @@ function parseSources(value: unknown, path: string): SourcesConfig {
   if (!positiveInteger(most, least as number) || (most as number) > MAX_SOURCES_INTERVAL_MINUTES) {
     throw new ConfigError(`${activityPath}.maxMinutes`, `must be an integer from minMinutes to ${MAX_SOURCES_INTERVAL_MINUTES}`);
   }
+  const window = activity.windowMinutes ?? defaults.windowMinutes;
+  if (!positiveInteger(window, 1) || (window as number) > MAX_SOURCES_INTERVAL_MINUTES) {
+    throw new ConfigError(`${activityPath}.windowMinutes`, `must be an integer from 1 to ${MAX_SOURCES_INTERVAL_MINUTES}`);
+  }
+  const quiet = activity.quietMeanMinutes ?? defaults.quietMeanMinutes;
+  if (!positiveInteger(quiet, least as number) || (quiet as number) > (most as number)) {
+    throw new ConfigError(`${activityPath}.quietMeanMinutes`, 'must be an integer from minMinutes to maxMinutes');
+  }
   const days = sources.historyDays ?? SOURCES_DEFAULTS.historyDays;
   if (!positiveInteger(days, 1) || (days as number) > MAX_SOURCES_HISTORY_DAYS) {
     throw new ConfigError(`${path}.historyDays`, `must be an integer from 1 to ${MAX_SOURCES_HISTORY_DAYS}`);
   }
-  return { activity: { k, minMinutes: least as number, maxMinutes: most as number }, historyDays: days as number };
+  return { activity: { k, minMinutes: least as number, maxMinutes: most as number, windowMinutes: window as number,
+    quietMeanMinutes: quiet as number }, historyDays: days as number };
 }
 
 /**

@@ -8,12 +8,13 @@ import { isAwake, type AwakeHours } from './scheduler.ts';
 import { imageType, SOURCES_PATH } from './view.ts';
 
 /**
- * What natsumi reads besides her memory, and how she hears that it changed (ADR 0050). Every source writes its files
+ * What natsumi reads besides her memory, and how she hears that it changed (ADR 0050, ADR 0053). Every source writes its files
  * under `sources/<name>/` and nothing more; this core knows none of them. It keeps `sources/` as the work tree of one
  * git repository kept outside it, looks now and then at what differs from the last commit, and counts the writes of
  * each directory at the depth its source registered (Slack's is a channel). A directory that changed is shown in a
- * `sources_updated` event once its time comes: the last look plus an interval that shortens as it gets busier. Out of
- * the awake hours only what a source marked as for her (an attention) raises one, and the rest wait for the morning.
+ * `sources_updated` event once its wait is up: a wait drawn at its first change after the last look, at random around a
+ * mean that shortens as it gets busier. Out of the awake hours only what a source marked as for her (an attention)
+ * raises one, and the rest wait for the morning.
  *
  * A commit is made only when an event is made (and when a directory is first seen, to take it in silently). Each
  * directory's last look is its ref `refs/seen/<dir>`, and the one before it `refs/before/<dir>`, which is what
@@ -21,8 +22,11 @@ import { imageType, SOURCES_PATH } from './view.ts';
  */
 
 export const SOURCES_DEFAULTS = {
-  /** interval = k ÷ (writes in the last hour ÷ 60 minutes), held between the shortest and the longest. */
-  activity: { k: 3, minMinutes: 3, maxMinutes: 60 },
+  /**
+   * The mean wait = k ÷ (writes in the window ÷ its minutes), held between the shortest and the quiet mean; the quiet
+   * mean with one write or none. A wait is drawn around it and cut at the longest.
+   */
+  activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 },
   /** The days of history kept when it is cut back at night. */
   historyDays: 7,
 };
@@ -36,7 +40,15 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const BRANCH = 'refs/heads/main';
 
-export interface ActivitySettings { k: number; minMinutes: number; maxMinutes: number }
+export interface ActivitySettings { k: number; minMinutes: number; maxMinutes: number; windowMinutes: number; quietMeanMinutes: number }
+
+/**
+ * A wait drawn from the exponential distribution of a mean, cut at the longest: most come sooner than the mean, and
+ * now and then one is long. `u` is a draw from [0, 1).
+ */
+export function drawWait(mean: number, longest: number, u: number): number {
+  return Math.min(longest, Math.round(mean * -Math.log1p(-u)));
+}
 
 /** A source: its directory under `sources/`, the depth of the directories it is measured by, and what git leaves out. */
 export interface SourceRegistration {
@@ -64,6 +76,8 @@ export interface SourcesOptions {
   activity: ActivitySettings;
   historyDays: number;
   now: () => number;
+  /** A draw from [0, 1), for the waits. Math.random unless given. */
+  random?: () => number;
   /** Asks the loop for a `sources_updated` event. The loop keeps one waiting at most, so asking again is harmless. */
   raise?: () => void;
   log?: (line: string) => void;
@@ -79,7 +93,7 @@ export class Sources {
   private prepared = false;
   /** Files differing from the last commit, with the size and time they were last seen with. */
   private readonly dirty = new Map<string, string>();
-  /** When each directory was written, over the last hour. */
+  /** When each directory was written, over the window. */
   private readonly writes = new Map<string, number[]>();
   /** Writes counted since each directory was last shown. */
   private readonly unshown = new Map<string, number>();
@@ -87,6 +101,11 @@ export class Sources {
   private readonly pending = new Set<string>();
   /** Directories with a ref, and when each was last looked at. */
   private readonly checked = new Map<string, number>();
+  /**
+   * When each directory with something not shown is due: drawn at its first change after the last look, and dropped
+   * when it is shown. Kept in memory as `checked` is: a change left unshown by an earlier process draws again.
+   */
+  private readonly deadlines = new Map<string, number>();
   /** The local date of the last cut, so a night cuts once. */
   private prunedOn: string | undefined;
 
@@ -133,7 +152,7 @@ export class Sources {
       if (head) {
         for (const [dir, ref] of refs) {
           const { code } = await this.git(['diff', '--quiet', ref, head, '--', literal(dir)], { allowFailure: true });
-          if (code === 1) this.pending.add(dir);
+          if (code === 1) this.mark(dir);
         }
       }
       // What is there as this process begins was written before it: learnt, not counted as writes now.
@@ -176,14 +195,17 @@ export class Sources {
     this.raiseEvent?.();
   }
 
-  /** The interval of a directory now, from its writes in the last hour. */
-  interval(dir: string): number {
-    const { k, minMinutes, maxMinutes } = this.options.activity;
+  /** The mean wait of a directory now, from its writes in the window. */
+  mean(dir: string): number {
+    const { k, minMinutes, windowMinutes, quietMeanMinutes } = this.options.activity;
     const now = this.options.now();
-    const count = (this.writes.get(dir) ?? []).filter(at => at > now - HOUR).length;
-    if (count === 0) return maxMinutes * MINUTE;
-    return Math.min(maxMinutes * MINUTE, Math.max(minMinutes * MINUTE, Math.round(k * HOUR / count)));
+    const count = (this.writes.get(dir) ?? []).filter(at => at > now - windowMinutes * MINUTE).length;
+    if (count <= 1) return quietMeanMinutes * MINUTE;
+    return Math.min(quietMeanMinutes * MINUTE, Math.max(minMinutes * MINUTE, k * windowMinutes * MINUTE / count));
   }
+
+  /** When a directory with something not shown is due, if it has a wait drawn. */
+  deadline(dir: string): number | undefined { return this.deadlines.get(dir); }
 
   /**
    * Makes the line of a `sources_updated` event as its turn begins: commits what is there, and shows the directories
@@ -213,6 +235,7 @@ export class Sources {
           ? (await this.git(['diff', '--name-only', '-z', seen, head, '--', literal(dir)])).stdout.split('\0').filter(Boolean) : [];
         const here = attentions.filter(row => row.dir === dir);
         this.pending.delete(dir);
+        this.deadlines.delete(dir);
         if (files.length === 0 && here.length === 0) continue;
         if (files.length > 0) {
           await this.git(['update-ref', beforeRef(dir), seen]);
@@ -308,6 +331,7 @@ export class Sources {
     const roots = await this.roots();
     if (roots.length === 0) return;
     const now = this.options.now();
+    const window = this.options.activity.windowMinutes * MINUTE;
     const out = (await this.git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--', ...roots])).stdout;
     const seen = new Set<string>();
     for (const entry of out.split('\0')) {
@@ -319,14 +343,16 @@ export class Sources {
       const signature = await fileSignature(join(this.options.directory, path));
       if (this.dirty.get(path) === signature) continue;
       this.dirty.set(path, signature);
-      this.pending.add(dir);
-      if (!count) continue;
-      this.writes.set(dir, [...(this.writes.get(dir) ?? []).filter(at => at > now - HOUR), now]);
-      this.unshown.set(dir, (this.unshown.get(dir) ?? 0) + 1);
+      if (count) {
+        this.writes.set(dir, [...(this.writes.get(dir) ?? []).filter(at => at > now - window), now]);
+        this.unshown.set(dir, (this.unshown.get(dir) ?? 0) + 1);
+      }
+      // After the write is counted, so a wait drawn now knows it.
+      this.mark(dir);
     }
     for (const path of this.dirty.keys()) if (!seen.has(path)) this.dirty.delete(path);
     for (const [dir, times] of this.writes) {
-      const recent = times.filter(at => at > now - HOUR);
+      const recent = times.filter(at => at > now - window);
       if (recent.length > 0) this.writes.set(dir, recent); else this.writes.delete(dir);
     }
   }
@@ -349,6 +375,7 @@ export class Sources {
       await this.git(['update-ref', seenRef(dir), head]);
       this.checked.set(dir, now);
       this.pending.delete(dir);
+      this.deadlines.delete(dir);
       this.unshown.delete(dir);
     }
   }
@@ -370,7 +397,7 @@ export class Sources {
     if (head) {
       for (const path of (await this.git(['diff', '--name-only', '-z', head, made])).stdout.split('\0')) {
         const dir = path ? this.unitOf(path) : undefined;
-        if (dir) this.pending.add(dir);
+        if (dir) this.mark(dir);
       }
     }
     return made;
@@ -381,7 +408,19 @@ export class Sources {
   }
 
   private dueAt(dir: string): number {
-    return (this.checked.get(dir) ?? this.options.now()) + this.interval(dir);
+    return this.deadlines.get(dir) ?? this.options.now();
+  }
+
+  /**
+   * Marks a directory as having something not shown. The first change after its last look draws its wait; a directory
+   * with no ref yet is taken in silently instead, and draws none.
+   */
+  private mark(dir: string): void {
+    this.pending.add(dir);
+    if (!this.checked.has(dir) || this.deadlines.has(dir)) return;
+    const { maxMinutes } = this.options.activity;
+    const wait = drawWait(this.mean(dir), maxMinutes * MINUTE, (this.options.random ?? Math.random)());
+    this.deadlines.set(dir, this.options.now() + wait);
   }
 
   private waiting(): AttentionRow[] {

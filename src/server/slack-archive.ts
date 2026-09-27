@@ -15,8 +15,8 @@ import { SOURCES_PATH } from './view.ts';
  * file again from the rows, so an edit, a deletion or a reaction (ADR 0043) is never a patch on the file; a deleted
  * message stays as a line that says so. Nothing is removed from disk: the owner clears old files by hand.
  *
- * The core of the sources notices the files change (ADR 0050). A message for her — a real mention, or a DM — is told
- * to it as an attention, with the line it is on. No Slack ID (ts, channel, user) is ever written where she reads it
+ * The core of the sources notices the files change (ADR 0050). A message for her — a real mention, a DM, or a reply in
+ * a thread she spoke in (ADR 0053) — is told to it as an attention, with the line it is on. No Slack ID (ts, channel, user) is ever written where she reads it
  * (ADR 0024): a message is named by its workspace, channel, local time to the second, and speaker.
  */
 
@@ -131,6 +131,12 @@ export class SlackArchive {
 
   has(workspace: string, channelId: string, ts: string): boolean {
     return this.row(workspace, channelId, ts) !== undefined;
+  }
+
+  /** Whether natsumi posted in a thread — its parent or a reply — with the post still there. */
+  spokeIn(workspace: string, channelId: string, threadTs: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM slack_messages WHERE workspace = ? AND channel_id = ? AND (ts = ? OR thread_ts = ?)
+      AND own = 1 AND deleted = 0 LIMIT 1`).get(workspace, channelId, threadTs, threadTs) !== undefined;
   }
 
   /** The newest top-level message recorded in a channel: a fill-in asks Slack for what came after it. */
