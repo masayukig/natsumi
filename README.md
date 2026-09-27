@@ -250,7 +250,7 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、端末を見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、端末、統計のグラフを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は `/dashboard` にだけ送られる cookie に載ります。最後に使ってから 30 日で切れ、開くたびに延びます。
@@ -283,7 +283,17 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
 - 「端末」（`/dashboard/devices`）は、端末ごとの最後に接続した時刻、いまつながっているか、push の登録（APNs の環境と時刻）と、
   ログインのセッション（ダッシュボードのものを含む）の件数、最後の利用、期限を出します。token、ハッシュ、鍵は出しません。
   最後の利用は、使うたびに延びる期限から逆算した値で、1 時間の幅があります。
-- 統計は準備中です。
+- 「統計」（`/dashboard/stats`）は、普通のターン（夜の振り返りを除く。`natsumi stats` と同じ）をグラフにします。
+  期間は 24 時間（1 時間ごと）、7 日（6 時間ごと）、30 日（1 日ごと）から選び、刻みは `loop.timeZone` の時計に揃えます。
+  - 返事までの時間とターンの長さの p50・p90（秒）、モデルの呼び出しの回数、tokens、
+    打ち切り（上限・時間切れ）とほかの失敗の回数です。
+  - tokens は、既定では「input と output」と「cache read」の 2 つのグラフに分けます。cache read は桁が違うので、同じ軸では input と output が読めないためです。
+    グラフの上のチェックボックスで系列を選ぶと、選んだ系列だけを 1 つのグラフに、その系列に合わせた縦軸で描きます。
+    選んだ系列はクエリの `show`（`?period=7d&show=input&show=output`。`show=input,output` でもよい）に入り、期間を切り替えても保たれます。
+    知らない値が入っていれば 404 を返します。
+  - グラフはサーバーが SVG で描き、JS は使いません。点や棒に触れると値が出て、各グラフの下の「数値の表」に同じ数値があります。
+  - ターンの無い刻みは値なしとして扱い、0 にはしません。線はそこで切れ、表では「—」と出します。
+  - 集計は SQLite で行い、期間の行だけを `started_at` の索引で読みます。
 
 ### GitHub OAuth App を作る
 
