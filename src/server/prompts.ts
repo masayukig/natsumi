@@ -31,10 +31,14 @@
  */
 export const WORKSPACE_SECTION = `## 記憶と作業場
 - あなたには自分の作業環境があります。run_shell でコマンドを動かして、記憶を読み書きし、調べものも下書きも集計もそこで行います。
-- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、まず run_shell の rg や ls で探し、read で読みます。
-- /manual と /memory のファイルを読むときは read を使います。read で読んだものは後のターンにも残るので、同じファイルを読み直さずに済みます。書き換えと検索は run_shell で行います。
+- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、探して読みます。
+- 記憶を探すときは、まず /memory/INDEX.md（記憶の索引）を読みます。言葉で探すときは search_memory を使います。見つけたファイルは read で読みます。
+- /manual と /memory のファイルを読むときは read を使います。read で読んだものは後のターンにも残るので、同じファイルを読み直さずに済みます。書き換えは run_shell で行います。
 - 本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束は、/memory のファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
 - 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
+- トピックのファイルには、そのことが「今どうなっているか」を書きます。事実が変わったら、節を書き足さずに、その箇所を直します。
+- その日に起きたことや経緯は、/memory/diary/ のその日のファイル（YYYY-MM-DD.md）に書きます。
+- ファイルの統合・分割・置き場所の整理と INDEX.md は、夜に記憶の整理係が行います。INDEX.md はあなたには書き換えられません。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
 - 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、本人の目にも触れません。残したいものは必ず /memory に書きます。
 - やり方が分からないとき（外のエージェントに頼みたいときなど）は、まず /manual/INDEX.md を読みます。`;
@@ -120,6 +124,17 @@ export const READ_DESCRIPTION = '/manual と /memory の下のファイルを読
   + '画像やバイナリは読めない（画像は run_shell の view で見る）。/work やほかの場所のファイルは run_shell で読む。';
 
 /**
+ * `search_memory` (ADR 0055), for natsumi and the curator alike. Fixed like every description here; the one number in
+ * it, the lines around a match, is the option `search-memory.ts` fixes, a decision rather than a deployment's.
+ */
+export const SEARCH_MEMORY_DESCRIPTION = '記憶（/memory）の中を言葉で探す。query に探す言葉を書く。'
+  + '言葉は書いたとおりの文字で探し（正規表現ではない）、大文字と小文字は区別しない。'
+  + 'path に /memory の中のファイルかディレクトリを書くと、そこだけを探す。省略すると記憶の全体を探す。\n'
+  + '結果は、見つかった行が「ファイル:行番号:行」、その前後 2 行が「ファイル-行番号-行」の形で返る。続きは read で読む。'
+  + '1 ファイルあたりの件数と結果の長さには上限がある。\n'
+  + '記憶の外（/work や /sources など）を探すときは run_shell を使う。';
+
+/**
  * The feeling of a line, in the same fixed words for both tools (ADR 0026). The choices are the parameter's own, so
  * the sentence names none of them and does not move when the expressions do.
  */
@@ -173,16 +188,16 @@ export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理�
  * The nightly review, as a menu rather than a sequence (ADR 0020). There are close to ten worthwhile things to do
  * and a turn cannot hold them all, so listing them in order would mean the last of them never ran — and the one
  * that must never be dropped, the handoff, would be at the end. Only the handoff is required; what else is worth
- * doing tonight is natsumi's to choose, having actually looked at memory and at the workspace.
+ * doing tonight is natsumi's to choose, having actually looked at memory and at the workspace. Rebuilding memory is
+ * not on the menu: the curator does it after her, so the two never rewrite the same files the same night (ADR 0055).
  */
 export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思考の記録は新しくなり、今日の細かいやりとりは見えなくなります。'
   + '必ずやることは 1 つだけです。'
   + 'write_handoff_note で、明日の自分への引き継ぎを書くこと。対応中のこと、本人の返事を待っていること、本人の最近の様子など、記憶に書くほどではないが明日知っておきたいことを短くまとめます。'
   + '本人への返事や知らせは送りません。'
+  + '記憶のファイルの統合・分割・改名・フォルダの整理、重複や古くなったところの手直し、INDEX.md は、この後に記憶の整理係が行います。あなたはやりません。'
   + 'ほかにやれることは候補として挙げておきます。今夜の記憶と作業場を実際に見て、価値のあるものをあなたが選んでください。順番も決まっていません。'
-  + '・今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを /memory に書き足す（先に run_shell で探すと、同じことを二度書かずに済みます）。'
-  + '・記憶全体を読み直し、重複しているところ、古くなったところを直す。'
-  + '・トピックをまとめる、分ける、名前を変える、フォルダを整理する。'
+  + '・今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを /memory に書き足す（先に search_memory で探すと、同じことを二度書かずに済みます。トピックには今どうなっているかを、経緯は diary に書きます）。'
   + '・always.md（常時記憶）を見直す。毎回思い出したいことだけを残し、長くなっていれば削ります。'
   + '・personality.md（性格・話し方）を見直す。'
   + '・write_change_note で、今夜の変更の説明を書く。'

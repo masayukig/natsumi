@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, READ_TOOL_NAME, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
+import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, READ_TOOL_NAME, RUN_SHELL_TOOL_NAME, SEARCH_MEMORY_TOOL_NAME,
+  type LoopToolHost } from '../src/server/loop-tools.ts';
 import { ASK_AGENT_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
@@ -43,10 +44,19 @@ test('read is registered with a runner, after every other tool, and never withou
   const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
   const withShell = names(host({ runShell: () => ok('ran'), capture }));
   assert.equal(READ_TOOL_NAME, 'read');
-  assert.equal(withShell.at(-1), READ_TOOL_NAME);
-  assert.deepEqual(withShell.slice(0, -1), names(host({ runShell: () => ok('ran') })));
+  assert.equal(withShell.at(-2), READ_TOOL_NAME);
+  assert.deepEqual(withShell.slice(0, -2), names(host({ runShell: () => ok('ran') })));
   assert.equal(names(host()).includes(READ_TOOL_NAME), false);
   for (const builtIn of ['bash', 'edit', 'write', 'grep', 'find', 'ls']) assert.equal(withShell.includes(builtIn), false, builtIn);
+});
+
+// ADR 0055: search_memory comes with the runner too, after read, so that adding it moved no definition before it.
+test('search_memory is registered with a runner, last of all, and never without one', () => {
+  const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
+  const withShell = names(host({ runShell: () => ok('ran'), capture }));
+  assert.equal(SEARCH_MEMORY_TOOL_NAME, 'search_memory');
+  assert.equal(withShell.at(-1), SEARCH_MEMORY_TOOL_NAME);
+  assert.equal(names(host()).includes(SEARCH_MEMORY_TOOL_NAME), false);
 });
 
 /**

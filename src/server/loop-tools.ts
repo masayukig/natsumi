@@ -2,6 +2,7 @@ import type { ImageContent } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
+import { searchMemoryTool } from './search-memory.ts';
 import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
   NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
   SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
@@ -56,6 +57,8 @@ export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'set_mac_avatar_
 export const RUN_SHELL_TOOL_NAME = 'run_shell';
 /** Pi's own read, added with a runner and pointed at /manual and /memory in the workspace (ADR 0047). */
 export const READ_TOOL_NAME = 'read';
+/** Searching memory for a word, added with a runner (ADR 0055). */
+export const SEARCH_MEMORY_TOOL_NAME = 'search_memory';
 
 /**
  * The expressions as a parameter. The avatar and every line share this one list, so an expression added to the Mac is
@@ -138,6 +141,7 @@ export function createLoopTools(host: LoopToolHost) {
       execute: async (_id, params) => result(host.askAgent(params.agent, params.message, params.continue)),
     }),
     // After ask_agent for the same reason: every definition before it stays where it was on the prefix (ADR 0047).
-    ...(host.capture ? [workspaceReadTool(host.capture)] : []),
+    // search_memory after read, likewise (ADR 0055).
+    ...(host.capture ? [workspaceReadTool(host.capture), searchMemoryTool(host.capture)] : []),
   ];
 }
