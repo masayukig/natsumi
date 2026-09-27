@@ -1,15 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import {
   LOGOUT_PATH, messagePage, refusedPage, renderStatus, SIGNED_OUT_PATH, signedInPage, signedOutPage, STATIC_FILES, STATUS_PATH,
-  statusPage, type DashboardStatus,
+  statusPage, TURNS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
+import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
 import type { Html } from './html.ts';
 import type { SessionStore } from './sessions.ts';
 import { checkHealth, readStatus } from './status.ts';
-import type { LoopDashboardState } from './thinking-loop.ts';
+import type { LoopDashboardState, TurnInProgress } from './thinking-loop.ts';
+import { findTurn, listTurns, readTurn, turnImages } from './turn-log.ts';
 
 /**
  * The read-only dashboard in the browser (ADR 0049), under /dashboard.
@@ -32,9 +35,10 @@ export const DASHBOARD_COOKIE = 'natsumi_dashboard';
 export const DASHBOARD_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:",
   "connect-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"].join('; ');
 
-/** The loop as the dashboard uses it: one read of what it keeps, and no way to change any of it. */
+/** The loop as the dashboard uses it: reads of what it keeps, and no way to change any of it. */
 export interface DashboardLoop {
   dashboardState(): LoopDashboardState;
+  turnInProgress(): TurnInProgress | undefined;
 }
 
 export interface DashboardOptions {
@@ -44,6 +48,10 @@ export interface DashboardOptions {
   login: GitHubLogin;
   loop: DashboardLoop;
   dataDirectory: string;
+  /** The state database, read for the turns' rows and the session files the conversation used (ADR 0049). */
+  db: DatabaseSync;
+  /** Where the Pi session records are; nothing outside it is opened. */
+  sessionDirectory: string;
   timeZone: string;
   now: () => number;
 }
@@ -55,6 +63,15 @@ const STATIC_TYPES: Record<string, string> = {
   [STATIC_FILES.js]: 'text/javascript; charset=utf-8',
 };
 const staticCache = new Map<string, Buffer>();
+
+/**
+ * The images a turn's page shows, by their recorded type: those a browser takes as a picture and nothing more. An SVG
+ * or anything else recorded is not served, since it could carry script.
+ */
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+/** A turn ID as the loop makes them; anything else is not looked up. */
+const TURN_ID = /^turn-[A-Za-z0-9-]{1,80}$/;
+const TURN_ROUTE = /^\/dashboard\/turns\/([^/]+)(?:\/images\/(0|[1-9][0-9]{0,5}))?$/;
 
 /** A session token as `SessionStore` issues it: 32 random bytes in base64url. Anything else is not looked up. */
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -107,7 +124,35 @@ export class Dashboard {
     const renewed = { 'set-cookie': this.cookie(session.token, Date.parse(session.expiresAt)) };
     if (path === DASHBOARD_PATH) return send(response, 200, statusPage(await this.status()), renewed);
     if (path === STATUS_PATH) return send(response, 200, renderStatus(await this.status()), renewed);
+    if (path === TURNS_PATH) return this.turns(response, url, renewed);
+    const turn = TURN_ROUTE.exec(path);
+    if (turn) return this.turn(response, turn[1]!, turn[2] === undefined ? undefined : Number(turn[2]), renewed);
     send(response, 404, messagePage('見つかりません', true), renewed);
+  }
+
+  /** The list of turns, from SQLite alone, a page at a time. */
+  private turns(response: ServerResponse, url: URL, headers: Record<string, string>): void {
+    const asked = url.searchParams.get('page');
+    const page = asked === null ? 1 : /^[1-9][0-9]{0,5}$/.test(asked) ? Number(asked) : 0;
+    if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
+    send(response, 200, turnsPage({ ...listTurns(this.options.db, page), page }, this.options.timeZone), headers);
+  }
+
+  /** A turn read from the session record, recorded or still running; or one of its images. */
+  private async turn(response: ServerResponse, turnId: string, image: number | undefined, headers: Record<string, string>): Promise<void> {
+    const notFound = () => send(response, 404, messagePage('見つかりません', true), headers);
+    if (!TURN_ID.test(turnId)) return notFound();
+    const source = { db: this.options.db, sessionDirectory: this.options.sessionDirectory };
+    const row = findTurn(this.options.db, turnId);
+    const running = row ? undefined : this.options.loop.turnInProgress();
+    const inProgress = running?.turnId === turnId ? running : undefined;
+    if (!row && !inProgress) return notFound();
+    const reading = await readTurn(source, row ? { row } : { inProgress: inProgress! });
+    if (image === undefined) return send(response, 200, turnPage({ ...(row ? { row } : { inProgress }), reading }, this.options.timeZone), headers);
+    const picture = reading.found ? turnImages(reading.entries)[image] : undefined;
+    if (!picture || !IMAGE_TYPES.has(picture.mimeType)) return notFound();
+    const body = Buffer.from(picture.data, 'base64');
+    response.writeHead(200, { 'content-type': picture.mimeType, 'content-length': body.length, ...headers }).end(body);
   }
 
   /** The callback's answer to a login that began here. */

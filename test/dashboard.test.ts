@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import WebSocket from 'ws';
 import {
   approveAtGitHub, CLIENT_SECRET, login, MINUTE, OWNER, PUBLIC_ORIGIN, startFixture, UPSTREAM_DETAIL, type Fixture,
 } from './support/server-fixture.ts';
 import { dashboardCookie } from '../src/server/dashboard.ts';
+import { TurnStats } from '../src/server/turn-stats.ts';
+import { SessionRecord } from './support/session-record.ts';
 
 const COOKIE = 'natsumi_dashboard';
 const DAY = 24 * 60 * MINUTE;
@@ -130,7 +135,8 @@ test('with the cookie, /dashboard shows the page under a strict CSP and the usua
 
   // The frame: the sections, of which only the current state is there yet, and the logout.
   assert.match(res.text, /いまの状態/);
-  for (const later of ['ターン', '失敗と待ち', '統計']) assert.match(res.text, new RegExp(`${later}[^<]*<[^>]*>準備中`));
+  for (const later of ['失敗と待ち', '統計']) assert.match(res.text, new RegExp(`${later}[^<]*<[^>]*>準備中`));
+  assert.match(res.text, /<a href="\/dashboard\/turns">ターン<\/a>/);
   assert.match(res.text, /<form method="post" action="\/dashboard\/logout">/);
   assert.match(res.text, /data-refresh="\/dashboard\/status"/);
 }));
@@ -290,3 +296,107 @@ test('the cookie is Secure unless the public origin is plain http on loopback, w
   assert.match(loopback, /HttpOnly; SameSite=Strict$/);
   assert.match(dashboardCookie('', 0, now, true), /^natsumi_dashboard=; Path=\/dashboard; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;/);
 });
+
+/** An owner message sent the way the app sends it, over the WebSocket with the app's session; resolves once sent. */
+async function sendAsApp(f: Fixture, text: string): Promise<WebSocket> {
+  const { token } = await login(f);
+  const ws = new WebSocket(f.wsUrl, { headers: { authorization: `Bearer ${token}` } });
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  const replies: Record<string, unknown>[] = [];
+  ws.on('message', data => { replies.push(JSON.parse(String(data)) as Record<string, unknown>); });
+  ws.send(JSON.stringify({ v: 1, requestId: 'sync-1', type: 'session.sync', payload: { resume: null } }));
+  const deadline = Date.now() + 5_000;
+  let deviceId: unknown;
+  while (!deviceId && Date.now() < deadline) {
+    deviceId = (replies.find(reply => reply.requestId === 'sync-1')?.payload as { deviceId?: unknown } | undefined)?.deviceId;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  ws.send(JSON.stringify({ v: 1, requestId: 'send-1', deviceId, type: 'conversation.send', payload: { text } }));
+  return ws;
+}
+
+const HOSTILE = '<img src=x onerror=alert(1)>';
+
+test('a turn the loop ran is listed, opened whole and escaped, and its running self is linked from the state (ADR 0049)', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const ws = await sendAsApp(f, `架空の質問 ${HOSTILE}`);
+  try {
+    const call = await f.model.next();
+    // While it runs: the state links to it, and its page reads what the record has so far.
+    const status = await f.fetch('/dashboard/status', withCookie(cookie));
+    const link = /<a href="(\/dashboard\/turns\/turn-[0-9a-f-]+)">/.exec(status.text)?.[1];
+    assert.ok(link, status.text);
+    const running = await f.fetch(link, withCookie(cookie));
+    assert.equal(running.status, 200, running.text);
+    assert.match(running.text, /実行中/);
+    assert.match(running.text, /架空の質問 &lt;img/);
+
+    call.think(`架空の思考 ${HOSTILE}`);
+    call.call('reply_to_mac', { text: '架空の返事', expression: 'neutral' });
+    call.finish();
+    const second = await f.model.next();
+    second.delta('済んだ');
+    second.finish();
+    const deadline = Date.now() + 5_000;
+    let list = await f.fetch('/dashboard/turns', withCookie(cookie));
+    while (!list.text.includes(link) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      list = await f.fetch('/dashboard/turns', withCookie(cookie));
+    }
+    assert.equal(list.status, 200);
+    assert.ok(list.text.includes(`href="${link}"`), 'the same turn, now with its row');
+    assert.match(list.text, /mac_message/);
+    assert.match(list.text, /aria-current="page">ターン/);
+
+    const detail = await f.fetch(link, withCookie(cookie));
+    assert.equal(detail.status, 200);
+    assert.doesNotMatch(detail.text, /実行中/);
+    assert.match(detail.text, /架空の思考 &lt;img/);
+    assert.match(detail.text, /reply_to_mac[\s\S]*架空の返事/);
+    assert.match(detail.text, /一行メモ/);
+    assert.doesNotMatch(detail.text, /推定/);
+    assert.ok(!detail.text.includes('<img src=x'));
+    assert.match(detail.headers.get('content-security-policy') ?? '', /script-src 'self'/);
+    assert.equal(detail.headers.get('cache-control'), 'no-store');
+  } finally { ws.close(); }
+}));
+
+test('the turns, a turn and its images need the cookie; unknown turns, images and pages are not found', () => withFixture(async f => {
+  for (const path of ['/dashboard/turns', '/dashboard/turns/turn-1', '/dashboard/turns/turn-1/images/0']) {
+    assertLoginAgain(await f.fetch(path), f);
+  }
+  const cookie = await browserLogin(f);
+  // A turn of the record written by hand, with an image in its events.
+  const record = new SessionRecord('fixture-session');
+  const start = record.bytes();
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  const first = record.events('2026-01-01T00:00:01.000Z', [{ type: 'slack_mention', received_at: 'x' }], '',
+    [{ data: png.toString('base64'), mimeType: 'image/png' }, { data: 'PHN2Zz4=', mimeType: 'image/svg+xml' }]);
+  const last = record.assistant('2026-01-01T00:00:02.000Z', [{ type: 'text', text: '見た' }]);
+  await writeFile(join(f.root, 'pi', 'sessions', 'fixture.jsonl'), record.text());
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    new TurnStats(db).record({ turnId: 'turn-fixture', startedAt: Date.parse('2026-01-01T00:00:00Z'), endedAt: Date.parse('2026-01-01T00:00:03Z'),
+      receivedAt: Date.parse('2026-01-01T00:00:00Z'), fold: 'off', route: 'default', eventKinds: 'slack_mention', outcome: 'ok', modelCalls: 1,
+      usage: { input: 1, cacheRead: 1, output: 1 }, contextTokens: 1, compacted: false,
+      confusion: { repeatedCalls: 0, toolErrors: 0, doveRefusals: 0, unansweredMessages: 0 },
+      place: { sessionFile: 'fixture.jsonl', firstEntryId: first, lastEntryId: last, startOffset: start, endOffset: record.bytes() } });
+  } finally { db.close(); }
+
+  const page = await f.fetch('/dashboard/turns/turn-fixture', withCookie(cookie));
+  assert.equal(page.status, 200, page.text);
+  assert.match(page.text, /<img src="\/dashboard\/turns\/turn-fixture\/images\/0"/);
+  const image = await fetch(`${f.base}/dashboard/turns/turn-fixture/images/0`, withCookie(cookie));
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.equal(image.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(image.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+  // Only the kinds of image a browser shows as a picture: an SVG could carry script.
+  assert.equal((await f.fetch('/dashboard/turns/turn-fixture/images/1', withCookie(cookie))).status, 404);
+  for (const path of ['/dashboard/turns/turn-fixture/images/2', '/dashboard/turns/turn-fixture/images/-1',
+    '/dashboard/turns/turn-fixture/images/x', '/dashboard/turns/turn-missing', '/dashboard/turns/turn-missing/images/0',
+    '/dashboard/turns/..%2F..%2Fetc', '/dashboard/turns?page=0', '/dashboard/turns?page=x']) {
+    assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
+  }
+}));

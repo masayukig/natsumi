@@ -68,3 +68,8 @@ test('names that came from settings are escaped like everything else', () => {
   assert.ok(!text.includes('<img'));
   assert.match(text, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
+
+test('the running turn links to its detail', () => {
+  const text = renderStatus(status()).text;
+  assert.match(text, /<a href="\/dashboard\/turns\/turn-running-1">/);
+});
