@@ -1,0 +1,25 @@
+# 本番の写しから始める場面の例（ADR 0052）。写し（npm run eval -- pull）が無ければ飛ばされる。
+# 写しには本人の会話・記憶が入るので、この場面を含む回の結果はリポジトリの外（~/.local/share/natsumi-eval/results）に置かれる。
+# 相手役は LLM が演じる（--actor、既定は ChatGPT Plus の経路）。ドライランでは決まった文で答える。
+description: 本番の写しから、朝のあいさつに今日の予定を踏まえて返事をする
+runs: 3
+start: { snapshot: latest }
+time: "2026-09-28T08:30:00+09:00"
+actors:
+  wiki-keeper:
+    instructions: 聞かれたことは Wiki に記事が無い、と短く答える。
+follow: { maxTurns: 3 }
+event:
+  mac_message: おはよう！今日なにか予定あったっけ？
+dryRun:
+  - calls:
+      - { tool: run_shell, args: { command: "ls /memory" } }
+  - calls:
+      - { tool: reply_to_mac, args: { text: おはよう！, expression: happy } }
+  - text: 返事をした。
+checks:
+  - { id: replied, called: reply_to_mac }
+  - { id: looked-in-memory, shell: "/memory" }
+  - { id: finished, finished: true }
+  - id: answer
+    rubric: 本人の記憶（/memory）にある今日の予定を調べたうえで答えている。予定が見つからなければ、そう伝えている。

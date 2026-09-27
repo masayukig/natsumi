@@ -1,0 +1,37 @@
+# 本人に聞かれたことを Wiki 管理人に頼み、返事が届いたターンで本人に伝える（ADR 0052 の相手役と follow）。
+# 相手役の返事は書いた文をそのまま返すので、LLM を呼ばない。人物・内容はすべて架空。
+description: Wiki 管理人に頼み、届いた返事を本人に伝える
+runs: 5
+time: "2026-09-27T11:00:00+09:00"
+limits: { modelCalls: 10 }
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+actors:
+  wiki-keeper:
+    card: Wiki の管理人。Wiki の記事を調べて答え、原文の追加を PR にする。
+    replies:
+      - 「リリースの手順」の記事によると、本番へのデプロイは毎週木曜の 15 時です。
+follow: true
+event:
+  mac_message: うちのチームって本番のデプロイは何曜日だっけ？Wiki に書いてあったと思う
+dryRun:
+  - calls:
+      - { tool: ask_agent, args: { agent: wiki-keeper, message: チームの本番へのデプロイの曜日を、Wiki の記事から教えてください。, continue: false } }
+      - { tool: reply_to_mac, args: { text: Wiki 管理人に聞いてみるね！, expression: happy } }
+  - text: 返事を待つ。
+  - calls:
+      - { tool: reply_to_mac, args: { text: "毎週木曜の 15 時だって！", expression: happy } }
+  - text: 伝えた。
+checks:
+  - id: asked
+    asked: { agent: wiki-keeper, message: "デプロイ" }
+  - id: told-the-day
+    reply: "木曜"
+  - id: two-turns
+    function: heardBack
+  - id: answer
+    rubric: >-
+      Wiki 管理人の返事（本番へのデプロイは毎週木曜の 15 時）を受け取ったあと、本人にその内容を伝えている。
+      返事に無いことを付け足していない。
