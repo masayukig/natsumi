@@ -68,7 +68,12 @@ function pidNamespaceAvailable(): Promise<boolean> {
   return pidNamespace;
 }
 
-export class WorkspaceRunner {
+/** What starts a workspace for a run: the runner itself, or a stand-in that asks another process to start it. */
+export interface WorkspaceStarter {
+  start(options: StartOptions): Promise<RunningWorkspace>;
+}
+
+export class WorkspaceRunner implements WorkspaceStarter {
   private readonly binary: string;
   private readonly tools: string;
 

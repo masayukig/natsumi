@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { routesRuntime } from '../pi/auth.ts';
@@ -12,13 +12,12 @@ import { LOOP_DEFAULTS } from '../server/config.ts';
 import { ConversationStore } from '../server/conversation-store.ts';
 import { initializeDataDirectory, STATE_DIRECTORY } from '../server/data-directory.ts';
 import { DOVE_NAME } from '../server/dove.ts';
-import { parseDoveRequest } from '../server/dove-request.ts';
-import type { ToolOutcome } from '../server/loop-tools.ts';
 import { MIGRATIONS } from '../server/migrations.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from '../server/paths.ts';
 import { REFLECTION_REQUEST } from '../server/prompts.ts';
 import { migrate, openStateDatabase } from '../server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions } from '../server/thinking-loop.ts';
+import { Stage, type ActorModel } from './actors.ts';
 import { judgeChecks, type Judge } from './checks.ts';
 import { loadSceneModule } from './hooks.ts';
 import { DRY_JUDGE } from './judge.ts';
@@ -26,8 +25,9 @@ import type { ModelFile } from './model-file.ts';
 import type { ModelCallRecord, RunRecord, ToolRecord } from './record.ts';
 import { conditions, loadScenes, type Condition, type Feature, type Scene, type SceneEvent } from './scene.ts';
 import { scriptedStream, type Answer } from './scripted.ts';
+import { DEFAULT_SNAPSHOT_STORE, findSnapshot, type SnapshotInfo } from './snapshot.ts';
 import { summarize, summaryMarkdown, type Skipped, type Summary } from './summary.ts';
-import { bwrapAvailable, WorkspaceRunner, type Sandbox } from './workspace.ts';
+import { bwrapAvailable, WorkspaceRunner, type Sandbox, type WorkspaceStarter } from './workspace.ts';
 
 /** The model of a dry run: a route to nowhere, whose every call the scene's script answers. */
 export const DRY_TARGET: PiTarget = { provider: COMPATIBLE_PROVIDER, model: 'dry-run' };
@@ -42,7 +42,11 @@ export interface RunOptions {
   repository: string;
   /** Where the run's own directory is made. */
   work: string;
-  runner: WorkspaceRunner;
+  runner: WorkspaceStarter;
+  /** The snapshot the scene starts from, when it names one (ADR 0052). */
+  snapshot?: Pick<SnapshotInfo, 'name' | 'directory'>;
+  /** The LLM that plays the actors given no written replies; a dry run's stand-in answers when absent. */
+  actor?: ActorModel;
   /** The model evaluated; absent in a dry run. */
   model?: { file: ModelFile; runtime: (root: string) => Promise<ModelRuntime> };
   judge?: Judge;
@@ -78,12 +82,15 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     model: options.model?.file.shown ?? { provider: DRY_TARGET.provider, id: DRY_TARGET.model }, dryRun: options.dryRun,
     startedAt: new Date().toISOString(), ms: 0, outcome: 'error', modelCalls: 0, tokens: { input: 0, cacheRead: 0, output: 0 },
     instructions: { chars: 0, sha256: '' }, priorMessages: 0, prompt: '', events: [], calls: [], tools: [], replies: [], dove: [], checks: [],
+    turns: 0, actors: [], ...(options.snapshot ? { snapshot: options.snapshot.name } : {}),
   };
   const closers: (() => Promise<void> | void)[] = [];
   try {
     await mkdir(sessionDirectory, { recursive: true });
     await mkdir(agentDirectory, { recursive: true });
-    await mkdir(data);
+    // A working copy of the snapshot's state, so that the snapshot itself never changes (ADR 0052).
+    if (options.snapshot) await cp(join(options.snapshot.directory, 'data'), data, { recursive: true });
+    else await mkdir(data);
     await initializeDataDirectory(data);
     await cp(join(options.repository, 'manual'), manual, { recursive: true });
     await placeState(condition, data, manual);
@@ -91,13 +98,17 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     await module.setup?.({ data, manual, scene: scene.name, variant: condition.variant });
     const t0 = Date.now();
     const now = scene.time === undefined ? Date.now : () => scene.time! + (Date.now() - t0);
+    // Who stands in for the outside agents and the dove, reached only through the loop's injection points (ADR 0052).
+    const stage = new Stage({ actors: scene.actors, dryRun: options.dryRun, ...(options.actor ? { model: options.actor } : {}) });
+    const a2a = stage.a2aConfig();
     // What the server writes on every start, as it would with Slack configured or not (ADR 0036, ADR 0040).
-    await writeAgentList({ directory: join(data, AGENT_LIST_DIRECTORY), config: undefined, client: undefined, now: now(),
+    await writeAgentList({ directory: join(data, AGENT_LIST_DIRECTORY), config: a2a, client: stage.client, now: now(),
       timeZone: scene.timeZone, dove: scene.dove });
 
     const db = openStateDatabase(join(data, STATE_DIRECTORY, 'state.sqlite'));
     closers.unshift(() => db.close());
     migrate(db, MIGRATIONS);
+    if (options.snapshot) await openSnapshot(db, options.snapshot.directory, sessionDirectory, now);
     if (scene.context.session) {
       // The copy is the conversation the loop opens, as a restart would open the server's own.
       const file = join(sessionDirectory, basename(scene.context.session));
@@ -171,17 +182,6 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     const lineOf = (receivedAt: string) => ({ received_at: receivedAt, ...rawLine });
     const sources = { take: async () => true, eventLine: (_id: string, receivedAt: string) => lineOf(receivedAt),
       images: async (): Promise<ImageContent[]> => [] };
-    const dove = {
-      ask(message: string): ToolOutcome {
-        const parsed = parseDoveRequest(message);
-        record.dove.push({ message, ok: parsed.ok });
-        if (!parsed.ok) return { ok: false, text: parsed.text };
-        const later = 'は、後で agent_reply の出来事（agent: poppo）として届きます。待たずに、ほかのことをしてかまいません。';
-        return { ok: true, text: parsed.request.kind === 'reaction' ? `ポッポさんがリアクションの依頼を受け付けました。付けたかどうか${later}`
-          : `ポッポさんが投稿の依頼を受け付けました。届けたか、本人に回したか、突き返したか${later}` };
-      },
-      takeEventLine: (_id: string, receivedAt: string) => ({ type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME }),
-    };
 
     const logs: string[] = [];
     const limits = { modelCalls: options.limits?.modelCalls ?? scene.limits.modelCalls, minutes: options.limits?.minutes ?? scene.limits.minutes };
@@ -192,7 +192,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
         compactionThreshold: NO_COMPACTION,
         ...(limits.modelCalls === undefined ? {} : { eventModelCalls: limits.modelCalls }),
         ...(limits.minutes === undefined ? {} : { eventTimeoutMinutes: limits.minutes }) },
-      ...(scene.dove ? { dove } : {}),
+      ...(a2a ? { a2a, a2aClient: stage.client } : {}),
+      ...(scene.dove ? { dove: stage.dove } : {}),
       sources,
     } as LoopOptions;
     const loop = await ThinkingLoop.open(loopOptions);
@@ -231,20 +232,36 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     });
     const before = session!.messages.length;
     record.priorMessages = before;
-    record.dove = [];
+    // What the prelude asked is not the turn's.
+    stage.forget();
+    const lastRow = (db.prepare('SELECT max(rowid) AS id FROM turn_stats').get() as { id: number | null }).id ?? 0;
+    const rows = () => db.prepare(`SELECT outcome, model_calls, input_tokens, cache_read_tokens, output_tokens, turn_ms FROM turn_stats
+      WHERE rowid > ? ORDER BY rowid`).all(lastRow) as unknown as { outcome: string; model_calls: number; input_tokens: number;
+        cache_read_tokens: number; output_tokens: number; turn_ms: number }[];
     phase.now = 'turn';
     const started = Date.now();
     await hand(condition.event);
+    // The actors answer what the turn asked, and each answer comes back as production's event would, until nothing is
+    // waiting or the turns run out (ADR 0052).
+    while (scene.follow && stage.hasPending() && rows().length < scene.follow.maxTurns) {
+      stage.turn = rows().length + 1;
+      const doveLines = await stage.answerPending();
+      await loop.pollAgents();
+      for (const line of doveLines) loop.raise('dove-reply', eventId => stage.bindDoveLine(eventId, line));
+      await loop.idle();
+    }
     phase.now = 'after';
-    record.ms = Date.now() - started;
 
-    const row = db.prepare(`SELECT outcome, model_calls, input_tokens, cache_read_tokens, output_tokens, turn_ms FROM turn_stats
-      ORDER BY rowid DESC LIMIT 1`).get() as { outcome: string; model_calls: number; input_tokens: number; cache_read_tokens: number;
-        output_tokens: number; turn_ms: number } | undefined;
-    if (!row) throw new Error(`the turn left no numbers (${logs.at(-1) ?? 'no log'})`);
-    Object.assign(record, { outcome: row.outcome, modelCalls: row.model_calls, ms: row.turn_ms,
-      tokens: { input: row.input_tokens, cacheRead: row.cache_read_tokens, output: row.output_tokens }, replies: shown });
-    readTurn(session!.messages.slice(before), record, callTimes, callEnds.map(end => end - started));
+    const turns = rows();
+    if (turns.length === 0) throw new Error(`the turn left no numbers (${logs.at(-1) ?? 'no log'})`);
+    const sum = (pick: (row: typeof turns[number]) => number) => turns.reduce((total, row) => total + pick(row), 0);
+    Object.assign(record, { outcome: turns.find(row => row.outcome !== 'ok')?.outcome ?? 'ok', turns: turns.length,
+      modelCalls: sum(row => row.model_calls), ms: sum(row => row.turn_ms),
+      tokens: { input: sum(row => row.input_tokens), cacheRead: sum(row => row.cache_read_tokens), output: sum(row => row.output_tokens) },
+      replies: shown });
+    readTurns(session!.messages.slice(before), record, callTimes, callEnds.map(end => end - started));
+    record.actors = stage.exchanges;
+    record.dove = stage.exchanges.filter(exchange => exchange.agent === DOVE_NAME).map(exchange => ({ message: exchange.request, ok: exchange.taken }));
     record.session = session!.sessionFile;
   } catch (error) {
     record.outcome = 'error';
@@ -297,22 +314,36 @@ function padding(chars: number, index: number): string {
   return line.repeat(Math.ceil(chars / line.length)).slice(0, chars);
 }
 
-/** The turn as the session recorded it, up to the memo request: its prompt, its calls and its tools. */
-function readTurn(messages: AgentSession['messages'], record: RunRecord, callTimes: number[], callEnds: number[]): void {
-  const end = messages.findIndex((message, index) => index > 0 && message.role === 'user' && textOf(message.content) === REFLECTION_REQUEST);
-  const turn = end < 0 ? messages : messages.slice(0, end);
-  const first = turn.find(message => message.role === 'user');
-  record.prompt = first && first.role === 'user' ? textOf(first.content) : '';
-  const block = /<events>\n([\s\S]*?)\n<\/events>/.exec(record.prompt)?.[1] ?? '';
-  record.events = block.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return { line }; } });
+/**
+ * The turns as the session recorded them, each up to its memo request: the first prompt, every event line handed over
+ * (the first turn's, those steered in, and the later turns'), the calls and the tools. The memos are not the turns'.
+ */
+function readTurns(messages: AgentSession['messages'], record: RunRecord, callTimes: number[], callEnds: number[]): void {
   const results = new Map<string, { text: string; isError: boolean }>();
-  for (const message of turn) {
+  for (const message of messages) {
     if (message.role === 'toolResult') results.set(message.toolCallId, { text: textOf(message.content), isError: message.isError });
   }
   const calls: ModelCallRecord[] = [];
   const tools: ToolRecord[] = [];
-  for (const message of turn) {
+  const events: Record<string, unknown>[] = [];
+  let prompt: string | undefined;
+  let inMemo = false;
+  let answered = 0;
+  for (const message of messages) {
+    if (message.role === 'user') {
+      const text = textOf(message.content);
+      inMemo = text === REFLECTION_REQUEST;
+      if (inMemo) continue;
+      prompt ??= text;
+      const block = /<events>\n([\s\S]*?)\n<\/events>/.exec(text)?.[1] ?? '';
+      events.push(...block.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return { line }; } }));
+      continue;
+    }
     if (message.role !== 'assistant') continue;
+    // Every assistant message was timed, the memos' too, in order.
+    const time = callTimes[answered] ?? 0;
+    const end = callEnds[answered++];
+    if (inMemo) continue;
     const number = calls.length + 1;
     let thinkingChars = 0;
     let text = '';
@@ -324,11 +355,31 @@ function readTurn(messages: AgentSession['messages'], record: RunRecord, callTim
         tools.push({ call: number, name: part.name, args: part.arguments as Record<string, unknown>, result: result?.text ?? '', isError: result?.isError ?? false });
       }
     }
-    calls.push({ ms: callTimes[number - 1] ?? 0, ...(callEnds[number - 1] === undefined ? {} : { at: callEnds[number - 1] }), stopReason: message.stopReason, input: message.usage.input, cacheRead: message.usage.cacheRead,
+    calls.push({ ms: time, ...(end === undefined ? {} : { at: end }), stopReason: message.stopReason, input: message.usage.input, cacheRead: message.usage.cacheRead,
       output: message.usage.output, thinkingChars, text });
   }
+  record.prompt = prompt ?? '';
+  record.events = events;
   record.calls = calls;
   record.tools = tools;
+}
+
+/**
+ * The run's copy of a snapshot, made ready to open as a restart would open production's (ADR 0052): the session the
+ * copy of SQLite names as the conversation's is copied in, and what production had left half done is closed without
+ * an event, so that only the scene's event is handled. The events it had queued count as failed, and the tasks it was
+ * waiting on as given up.
+ */
+async function openSnapshot(db: ReturnType<typeof openStateDatabase>, snapshot: string, sessionDirectory: string, now: () => number): Promise<void> {
+  const at = new Date(now()).toISOString();
+  db.prepare(`UPDATE loop_events SET state = 'failed', reason = 'left in the snapshot', updated_at = ? WHERE state IN ('queued', 'processing')`).run(at);
+  db.prepare(`UPDATE agent_tasks SET state = 'gave-up', updated_at = ? WHERE state = 'waiting'`).run(at);
+  const conversation = new ConversationStore(db, now).conversation();
+  if (!conversation) return;
+  const file = join(sessionDirectory, conversation.pi_session_file);
+  await mkdir(dirname(file), { recursive: true });
+  await cp(join(snapshot, 'pi', 'sessions', conversation.pi_session_file), file)
+    .catch(() => { throw new Error(`the snapshot has no session ${conversation.pi_session_file}, which its SQLite names`); });
 }
 
 function textOf(content: unknown): string {
@@ -354,6 +405,11 @@ export interface EvaluationOptions {
   concurrency?: number;
   /** What the branch has; found on the code when absent. */
   features?: Set<Feature>;
+  /** Where the snapshots are (ADR 0052); `~/.local/share/natsumi-eval/snapshots` when absent. */
+  snapshots?: string;
+  /** The workspace runner; built from the repository when absent. */
+  runner?: WorkspaceStarter;
+  actor?: ActorModel;
   log?: (line: string) => void;
 }
 
@@ -368,21 +424,23 @@ export async function runEvaluation(options: EvaluationOptions): Promise<{ recor
   const log = options.log ?? (() => undefined);
   const features = options.features ?? detectFeatures();
   const skipped: Skipped[] = [];
-  const chosen: { scene: Scene; conditions: Condition[] }[] = [];
+  const chosen: { scene: Scene; conditions: Condition[]; snapshot?: SnapshotInfo }[] = [];
   for (const scene of await loadScenes(options.scenes)) {
     if (options.only?.scenes && !options.only.scenes.includes(scene.name)) continue;
     const missing = scene.requires.filter(feature => !features.has(feature));
     if (missing.length > 0) { skipped.push({ scene: scene.name, reason: `requires ${missing.join(', ')}` }); continue; }
+    const snapshot = scene.start ? await findSnapshot(options.snapshots ?? DEFAULT_SNAPSHOT_STORE, scene.start.snapshot) : undefined;
+    if (scene.start && !snapshot) { skipped.push({ scene: scene.name, reason: `no snapshot (${scene.start.snapshot})` }); continue; }
     const picked = conditions(scene).filter(condition => !options.only?.variants || options.only.variants.includes(condition.variant));
-    if (picked.length > 0) chosen.push({ scene, conditions: picked });
+    if (picked.length > 0) chosen.push({ scene, conditions: picked, ...(snapshot ? { snapshot } : {}) });
   }
-  const runner = await WorkspaceRunner.prepare({ repository: options.repository, cache: join(directory, 'runner') });
-  const jobs: { condition: Condition; run: number }[] = [];
+  const runner = options.runner ?? await WorkspaceRunner.prepare({ repository: options.repository, cache: join(directory, 'runner') });
+  const jobs: { condition: Condition; run: number; snapshot?: SnapshotInfo }[] = [];
   const rounds = Math.max(0, ...chosen.map(({ scene }) => options.runs ?? scene.runs));
   for (let run = 1; run <= rounds; run += 1) {
-    for (const { scene, conditions: list } of chosen) {
+    for (const { scene, conditions: list, snapshot } of chosen) {
       if (run > (options.runs ?? scene.runs)) continue;
-      for (const condition of list) jobs.push({ condition, run });
+      for (const condition of list) jobs.push({ condition, run, ...(snapshot ? { snapshot } : {}) });
     }
   }
   const records: RunRecord[] = new Array(jobs.length);
@@ -396,7 +454,8 @@ export async function runEvaluation(options: EvaluationOptions): Promise<{ recor
       const record = await runCondition(job.condition, { run: job.run, dryRun: options.dryRun, repository: options.repository,
         work: join(directory, 'work'), runner, ...(options.model ? { model: options.model } : {}), ...(options.judge ? { judge: options.judge } : {}),
         ...(options.sandbox ? { sandbox: options.sandbox } : {}), ...(options.memo ? { memo: options.memo } : {}),
-        ...(options.limits ? { limits: options.limits } : {}) });
+        ...(options.limits ? { limits: options.limits } : {}), ...(job.snapshot ? { snapshot: job.snapshot } : {}),
+        ...(options.actor ? { actor: options.actor } : {}) });
       records[index] = record;
       done += 1;
       const passed = record.checks.filter(check => check.pass === true).length;

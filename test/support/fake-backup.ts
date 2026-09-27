@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
@@ -20,7 +21,6 @@ export async function makeFakeBackup(root: string): Promise<void> {
   const files: Record<string, string> = {
     'data/memory/personality.md': '# 性格・話し方\nFIXTURE-SNAPSHOT-PERSONALITY\n',
     'data/memory/plans/2026-09.md': '- 9/28（日）10:00 架空の打ち合わせ\n',
-    'data/memory/.git/HEAD': 'ref: refs/heads/main\n',
     'data/sources/slack/fixture/2026-09-27.md': '# #fixture\n- 10:00 架空の人: FIXTURE-SOURCE-LINE\n',
     'data/work/draft.md': 'FIXTURE-WORK-NOTE\n',
     'data/.natsumi/images/fixture.png': 'not really a png\n',
@@ -36,6 +36,12 @@ export async function makeFakeBackup(root: string): Promise<void> {
     await mkdir(join(mirror, path, '..'), { recursive: true });
     await writeFile(join(mirror, path), text);
   }
+  // The memory is a repository with its history, as the server keeps it (ADR 0018).
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', ...args],
+    { cwd: join(mirror, 'data', 'memory'), stdio: 'ignore' });
+  git('init', '-q', '-b', 'main');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'fixture memory');
   const session = new SessionRecord('fixture-session', '2026-09-27T04:00:00.000Z');
   session.events('2026-09-27T04:10:00.000Z', [{ type: 'mac_message', received_at: '2026-09-27T04:10:00.000Z', text: 'FIXTURE-SNAPSHOT-EARLIER' }]);
   session.assistant('2026-09-27T04:10:05.000Z', [{ type: 'text', text: 'うん' }]);
@@ -47,7 +53,8 @@ export async function makeFakeBackup(root: string): Promise<void> {
   for (const stamp of BACKUP_STAMPS) {
     const db = new DatabaseSync(join(root, 'sqlite', `state-${stamp}.sqlite`));
     try {
-      migrate(db, MIGRATIONS);
+      // Production runs the release before the branch: one migration behind.
+      migrate(db, MIGRATIONS.slice(0, -1));
       const at = '2026-09-27T04:00:00.000Z';
       db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
         .run('conversation-fixture', 'fixture-session', SESSION_FILE, at);

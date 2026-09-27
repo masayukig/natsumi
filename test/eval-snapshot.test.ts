@@ -77,8 +77,10 @@ test('a pull runs the backup job, reads its result through a pod of its own and 
     assert.deepEqual(pod.spec.nodeSelector, { 'kubernetes.io/arch': 'amd64' });
 
     const directory = join(store, pulled.name);
-    assert.deepEqual(await files(directory), [
-      'data/.natsumi/images/fixture.png', 'data/.natsumi/state.sqlite', 'data/memory/.git/HEAD', 'data/memory/personality.md',
+    const taken = await files(directory);
+    assert.ok(taken.includes('data/memory/.git/HEAD'), 'the history of the memory comes with it');
+    assert.deepEqual(taken.filter(path => !path.startsWith('data/memory/.git/')), [
+      'data/.natsumi/images/fixture.png', 'data/.natsumi/state.sqlite', 'data/memory/personality.md',
       'data/memory/plans/2026-09.md', 'data/sources/slack/fixture/2026-09-27.md', 'data/work/draft.md',
       `pi/sessions/2026-09-26T04-00-00-000Z_older.jsonl`, `pi/sessions/${SESSION_FILE}`, 'snapshot.json',
     ]);

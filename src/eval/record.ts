@@ -1,3 +1,5 @@
+import type { ActorExchange } from './actors.ts';
+
 /**
  * One run of one scene, as a line of `runs.jsonl` (ADR 0051). It carries what the turn was handed and what it did, never
  * a key or an endpoint: the model is named by its provider and id alone.
@@ -37,6 +39,12 @@ export interface RunRecord {
   replies: { kind: 'reply' | 'notice'; text: string; expression: string | null; call?: number }[];
   /** Requests to the dove, whether or not it took them. Nothing was sent anywhere. */
   dove: { message: string; ok: boolean }[];
+  /** How many turns were run (absent in results made before ADR 0052): 1, or more when the scene follows the actors' replies (ADR 0052). */
+  turns?: number;
+  /** What the actors were asked and answered: the stand-ins of the outside agents and the dove (ADR 0052). */
+  actors?: ActorExchange[];
+  /** The snapshot the run started from, by name, when it started from one. */
+  snapshot?: string;
   checks: CheckResult[];
   /** The run's own copy of the Pi session, outside the repository. */
   session?: string;
