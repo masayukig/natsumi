@@ -1,3 +1,5 @@
+import { posix } from 'node:path';
+import { filesUrl } from './dashboard-files.ts';
 import { localTime, page, TURNS_PATH, turnPath } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
 import { REFLECTION_REQUEST } from './prompts.ts';
@@ -197,10 +199,27 @@ ${content.map(block => {
     }
     if (block.type === 'text') return html`<div class="prose said">${String(block.text ?? '')}</div>`;
     if (block.type === 'toolCall') {
-      return html`<div class="call"><p><strong>${String(block.name)}</strong></p><pre>${json(block.arguments ?? {})}</pre>${resultOf(block)}</div>`;
+      return html`<div class="call"><p><strong>${String(block.name)}</strong></p><pre>${json(block.arguments ?? {})}</pre>${fileLink(block)}${resultOf(block)}</div>`;
     }
     return html`<pre>${json(block)}</pre>`;
   })}</div>`;
+}
+
+/** Pi's own file tools, which name a file by `path`; of them only `read` is given to her (ADR 0047). */
+const FILE_TOOLS = new Set(['read', 'write', 'edit']);
+/** Where the workspace takes a relative path from. */
+const WORKSPACE_DIRECTORY = '/work';
+
+/**
+ * A file tool's path, when it is inside her places, as a link to the file as it is now (ADR 0054). A shell command's
+ * paths and those in a result are not looked for.
+ */
+function fileLink(block: Block): Html {
+  const path = FILE_TOOLS.has(String(block.name)) ? (block.arguments as { path?: unknown } | undefined)?.path : undefined;
+  if (typeof path !== 'string' || path.includes('\u0000')) return html``;
+  const resolved = posix.resolve(WORKSPACE_DIRECTORY, path);
+  const url = filesUrl(resolved);
+  return url ? html`<p class="file-link"><a href="${url}">${resolved}</a> <small>今の中身です。このターンの時点のものではありません。</small></p>` : html``;
 }
 
 /** A tool's result under its call, or on its own when its call is not in the turn. */

@@ -134,3 +134,31 @@ test('the turn in progress is shown as such, before it has a row', () => {
   assert.match(text, /実行中/);
   assert.match(text, /本人の質問/);
 });
+
+/** A turn whose calls name paths: read inside and outside the places, a relative one, and a shell command. */
+function pathsTurn() {
+  const r = new SessionRecord('path-session');
+  const at = '2026-01-01T00:00:01.000Z';
+  r.assistant(at, [
+    { type: 'toolCall', id: 'p1', name: 'read', arguments: { path: '/memory/notes/a b.md' } },
+    { type: 'toolCall', id: 'p2', name: 'read', arguments: { path: 'drafts/plan.md' } },
+    { type: 'toolCall', id: 'p3', name: 'read', arguments: { path: '/etc/passwd' } },
+    { type: 'toolCall', id: 'p4', name: 'read', arguments: { path: '/work/../etc/shadow' } },
+    { type: 'toolCall', id: 'p5', name: 'run_shell', arguments: { command: 'cat /memory/notes/shell.md' } },
+    { type: 'toolCall', id: 'p6', name: 'read', arguments: { path: `/memory/${HOSTILE}` } },
+    { type: 'toolCall', id: 'p7', name: 'reply_to_mac', arguments: { text: 'see /work/x.md', expression: 'happy' } },
+  ]);
+  r.toolResult(at, 'p1', 'read', 'the file mentions /memory/notes/result.md');
+  return r.lines.slice(1).map(line => JSON.parse(line) as RecordEntry);
+}
+
+test('a file tool’s path inside her places links to the file as it is now, and says it is not the turn’s', () => {
+  const text = turnPage({ row: row(), reading: { found: true, estimated: false, sessionFile: 'a.jsonl', entries: pathsTurn() } }, ZONE).text;
+  assert.match(text, /<a href="\/dashboard\/files\/memory\/notes\/a%20b\.md">\/memory\/notes\/a b\.md<\/a>/);
+  assert.match(text, /<a href="\/dashboard\/files\/work\/drafts\/plan\.md">\/work\/drafts\/plan\.md<\/a>/, 'a relative path is taken from /work');
+  assert.match(text, /href="\/dashboard\/files\/memory\/%3Cimg%20src%3Dx%20onerror%3Dalert\(1\)%3E">\/memory\/&lt;img/);
+  assert.equal(text.match(/今の中身です。このターンの時点のものではありません/g)?.length, 3);
+  assert.doesNotMatch(text, /href="\/dashboard\/files\/etc|href="[^"]*passwd|href="[^"]*shadow/, 'a path outside her places is not a link');
+  assert.doesNotMatch(text, /shell\.md"|result\.md"|x\.md"/, 'nor a path in a command, a result or another tool');
+  assert.ok(!text.includes('<img src=x'));
+});
