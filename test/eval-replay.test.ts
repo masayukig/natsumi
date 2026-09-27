@@ -9,13 +9,15 @@ import { EVAL_A2A_TOKEN_FILE, Stage, type ActorModel } from '../src/eval/actors.
 import { runCondition, runEvaluation } from '../src/eval/run.ts';
 import { conditions, loadScene } from '../src/eval/scene.ts';
 import { pullSnapshot } from '../src/eval/snapshot.ts';
-import { goAvailable, WorkspaceRunner } from '../src/eval/workspace.ts';
+import { bwrapAvailable, goAvailable, WorkspaceRunner } from '../src/eval/workspace.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import type { RunRecord } from '../src/eval/record.ts';
 import { makeFakeBackup } from './support/fake-backup.ts';
 
 const REPOSITORY = join(import.meta.dirname, '..');
 const skip = (await goAvailable()) ? false : 'go is not installed, so the runner cannot be built';
+// A scene that reads the workspace's paths (/manual, /memory, /sources) needs them laid out, which only bubblewrap does.
+const sandboxed = skip || ((await bwrapAvailable()) ? false : 'bubblewrap cannot make a sandbox here');
 
 const DOVE_REQUEST = '返信先: work/#dev 2026-09-27 14:32:05 田中\n種類: 投稿\n表情: happy\n---\nデプロイは毎週木曜だそうです！';
 
@@ -60,7 +62,7 @@ async function scene(root: string, name: string, yaml: string) {
   return conditions(await loadScene(join(root, 'scenes', name)));
 }
 
-test('a followed scene hands the actors\' replies back as events, turn after turn, through the real paths', { skip }, async () => {
+test('a followed scene hands the actors\' replies back as events, turn after turn, through the real paths', { skip: sandboxed }, async () => {
   await withRoot(async (root, runner) => {
     const [condition] = await scene(root, 'followed', FOLLOWED);
     const record = await runCondition(condition!, { run: 1, dryRun: true, repository: REPOSITORY, work: join(root, 'work'), runner });
@@ -139,7 +141,7 @@ test('the loop is given no secret: the A2A token is a file that is not there, an
   assert.equal(new Stage({ actors: {}, dryRun: true }).a2aConfig(), undefined);
 });
 
-test('a scene starts from a working copy of a snapshot: its state, its session, the branch\'s migrations, and the snapshot untouched', { skip }, async () => {
+test('a scene starts from a working copy of a snapshot: its state, its session, the branch\'s migrations, and the snapshot untouched', { skip: sandboxed }, async () => {
   await withRoot(async (root, runner) => {
     await makeFakeBackup(join(root, 'backup'));
     const kubectl = join(root, 'kubectl');

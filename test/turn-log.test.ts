@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -221,21 +222,35 @@ test('opening a turn in a record of tens of megabytes does not hold up the event
     await f.write(NEW_FILE, record.text());
     assert.ok(record.bytes() > 28_000_000, String(record.bytes()));
 
+    // What the reading must not do, timed on this machine: the whole file read and parsed in one synchronous call.
+    let started = performance.now();
+    for (const line of readFileSync(join(f.sessionDirectory, NEW_FILE), 'utf8').split('\n')) { try { JSON.parse(line); } catch { /* the last */ } }
+    const synchronous = performance.now() - started;
+
     const placed = f.record({ place: { sessionFile: NEW_FILE, firstEntryId: turn.first, lastEntryId: turn.last, startOffset: start, endOffset: record.bytes() } });
     const estimated = f.record({ startedAt: T0 });
     for (const row of [placed, estimated]) {
-      const delay = monitorEventLoopDelay({ resolution: 10 });
-      let ticks = 0;
-      const timer = setInterval(() => { ticks += 1; }, 5);
-      delay.enable();
-      const reading = found(await readTurn(f.source, { row }));
-      delay.disable();
-      clearInterval(timer);
-      assert.match(texts(reading).join('\n'), /探している質問/);
-      assert.doesNotMatch(texts(reading).join('\n'), /質問249/);
-      // The longest the loop was held at once. Reading the whole file in one synchronous call takes far longer.
-      assert.ok(delay.max / 1e6 < 100, `held up the event loop for ${(delay.max / 1e6).toFixed(0)} ms`);
-      if (row === estimated) assert.ok(ticks > 0, 'timers ran while the file was scanned');
+      // The longest the loop was held at once, the least of three readings: a stall of the machine's own (another test
+      // process on a shared CI runner, a collection) does not come back each time; holding the loop for the file does.
+      let held = Infinity;
+      for (let attempt = 0; attempt < 3 && held >= synchronous / 2; attempt += 1) {
+        const delay = monitorEventLoopDelay({ resolution: 10 });
+        let ticks = 0;
+        const timer = setInterval(() => { ticks += 1; }, 5);
+        started = performance.now();
+        delay.enable();
+        const reading = found(await readTurn(f.source, { row }));
+        delay.disable();
+        clearInterval(timer);
+        assert.match(texts(reading).join('\n'), /探している質問/);
+        assert.doesNotMatch(texts(reading).join('\n'), /質問249/);
+        if (row === estimated) assert.ok(ticks > 0, 'timers ran while the file was scanned');
+        // A reading shorter than the resolution has no delay to show; it held the loop no longer than it took.
+        held = Math.min(held, delay.max > 0 ? delay.max / 1e6 : performance.now() - started);
+      }
+      // A chunk of 256 KiB is under a hundredth of the file, so the reading holds the loop far below half of what
+      // the synchronous call does; the half, not a fixed number of milliseconds, follows the speed of the machine.
+      assert.ok(held < synchronous / 2, `held up the event loop for ${held.toFixed(0)} ms; reading it at once takes ${synchronous.toFixed(0)} ms`);
     }
   } finally { await f.cleanup(); }
 });

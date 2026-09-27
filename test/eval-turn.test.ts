@@ -7,12 +7,14 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { conditions, loadScene } from '../src/eval/scene.ts';
 import { runCondition, runEvaluation } from '../src/eval/run.ts';
-import { goAvailable, WorkspaceRunner } from '../src/eval/workspace.ts';
+import { bwrapAvailable, goAvailable, WorkspaceRunner } from '../src/eval/workspace.ts';
 import type { RunRecord } from '../src/eval/record.ts';
 
 const run = promisify(execFile);
 const REPOSITORY = join(import.meta.dirname, '..');
 const skip = (await goAvailable()) ? false : 'go is not installed, so the runner cannot be built';
+// A scene that reads the workspace's paths (/manual, /memory, /sources) needs them laid out, which only bubblewrap does.
+const sandboxed = skip || ((await bwrapAvailable()) ? false : 'bubblewrap cannot make a sandbox here');
 
 const GREETING = `
 description: 本人のあいさつに、作業場のメモを見てから返事をする
@@ -214,7 +216,7 @@ test('a run deep in the results still reaches its runner: the socket is not made
 });
 
 // ADR 0050 is on this branch: the repository's sources_updated scene runs on the loop's real side for outside events.
-test('the sources-mention scene of the repository runs dry: the mention and its parent are read, and the dove is asked', { skip }, async () => {
+test('the sources-mention scene of the repository runs dry: the mention and its parent are read, and the dove is asked', { skip: sandboxed }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'natsumi-eval-sources-'));
   try {
     const scene = await loadScene(join(REPOSITORY, 'eval', 'scenes', 'sources-mention'));

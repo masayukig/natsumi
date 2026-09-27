@@ -1,0 +1,34 @@
+# Runs the server's checks on every pull request and on main, so that a change that breaks them is seen before a
+# version tag (images.yml runs the same checks, then builds the images). Nothing is built into an image or pushed.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.12.0"
+          cache: npm
+      # The turn evaluation runs its workspace in bubblewrap (ADR 0051); Ubuntu's AppArmor keeps an unprivileged
+      # process from making the user namespace it needs unless told otherwise.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
