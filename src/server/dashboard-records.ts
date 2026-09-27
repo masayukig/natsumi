@@ -127,6 +127,10 @@ function scores(value: string | null): DoveScore[] {
   if (!value) return [];
   let issues: unknown;
   try { issues = JSON.parse(value); } catch { return []; }
+  return scoresOf(issues);
+}
+
+function scoresOf(issues: unknown): DoveScore[] {
   if (!Array.isArray(issues)) return [];
   return issues.flatMap(issue => {
     const item = issue as { name?: unknown; label?: unknown; score?: unknown; flagged?: unknown };
@@ -180,4 +184,68 @@ export function readDevices(db: DatabaseSync, options: { now: number; isConnecte
       state: state(row.expires_at as string, row.revoked_at as string | null), devices: row.devices as number,
     }));
   return { devices, sessions: { counts: { live: counts.live, ended: counts.ended }, rows } };
+}
+
+/** The outcomes an approval can be in, as the `approvals` table keeps them (ADR 0040). */
+export const APPROVAL_STATES = ['pending', 'approved', 'edited', 'rejected', 'expired'] as const;
+export type ApprovalState = typeof APPROVAL_STATES[number];
+export const APPROVALS_PER_PAGE = 20;
+
+export interface ApprovalRow {
+  approvalId: string; kind: string; state: string; createdAt: string; expiresAt: string;
+  /** Pending past its end, and not settled yet. */
+  expired: boolean;
+  /** What she chose, the text and placement she gave when she edited, and the device she chose on. */
+  decision: string | null; decidedText: string | null; decidedPlacement: string | null; deviceId: string | null;
+  /** When it closed: rejected or run out, or when the send it led to came to something. None while it waits or sends. */
+  resolvedAt: string | null;
+  delivery: string | null; deliveryReason: string | null; sentText: string | null;
+  /** What the owner was shown, from the payload fixed when it was made; empty when the payload cannot be read. */
+  shown: Pick<PendingApproval, 'channel' | 'placement' | 'text' | 'verdict' | 'flagged'> & {
+    scores: DoveScore[]; replyTo?: { speaker?: string; text?: string }; expression?: string;
+  };
+  /** The dove's post it was for, and the page of the dove's list that shows it. */
+  post: { postId: string; state: string; failure: string | null; sentPlacement: string | null; page: number } | null;
+}
+
+/** The approvals, all or those of one outcome, newest first, a page at a time. */
+export function listApprovals(db: DatabaseSync, options: { page: number; now: number; state?: ApprovalState }): { rows: ApprovalRow[]; more: boolean } {
+  const filter = options.state === undefined ? '' : 'WHERE a.state = ?';
+  const values = options.state === undefined ? [] : [options.state];
+  // The post's place in the dove's list, ordered as `listDovePosts` orders it.
+  const rows = db.prepare(`SELECT a.approval_id, a.kind, a.state, a.created_at, a.expires_at, a.decision, a.decided_text, a.decided_placement,
+      a.device_id, a.resolved_at, a.delivery, a.delivery_reason, a.sent_text, a.payload,
+      p.post_id, p.state AS post_state, p.failure, p.sent_placement,
+      (SELECT COUNT(*) FROM dove_posts q WHERE q.created_at > p.created_at OR (q.created_at = p.created_at AND q.rowid > p.rowid)) AS newer_posts
+    FROM approvals a LEFT JOIN dove_posts p ON p.post_id = a.post_id ${filter}
+    ORDER BY a.created_at DESC, a.rowid DESC LIMIT ? OFFSET ?`)
+    .all(...values, APPROVALS_PER_PAGE + 1, (options.page - 1) * APPROVALS_PER_PAGE) as Record<string, string | number | null>[];
+  const now = isoAt(options.now);
+  const text = (value: string | number | null | undefined) => typeof value === 'string' ? value : null;
+  return {
+    rows: rows.slice(0, APPROVALS_PER_PAGE).map(row => ({
+      approvalId: row.approval_id as string, kind: row.kind as string, state: row.state as string, createdAt: row.created_at as string,
+      expiresAt: row.expires_at as string, expired: row.state === 'pending' && (row.expires_at as string) <= now,
+      decision: text(row.decision), decidedText: text(row.decided_text), decidedPlacement: text(row.decided_placement), deviceId: text(row.device_id),
+      resolvedAt: text(row.resolved_at), delivery: text(row.delivery), deliveryReason: text(row.delivery_reason), sentText: text(row.sent_text),
+      shown: shownInFull(row.payload as string),
+      post: row.post_id === null ? null : { postId: row.post_id as string, state: row.post_state as string, failure: text(row.failure),
+        sentPlacement: text(row.sent_placement), page: Math.floor((row.newer_posts as number) / DOVE_POSTS_PER_PAGE) + 1 },
+    })),
+    more: rows.length > APPROVALS_PER_PAGE,
+  };
+}
+
+/** All an approval's payload shows the owner: what `shown` reads, with the judge's scores and what the post answers. */
+function shownInFull(payload: string): ApprovalRow['shown'] {
+  let value: { target?: { replyTo?: { speaker?: unknown; text?: unknown } }; expression?: unknown; reason?: { issues?: unknown } };
+  try { value = JSON.parse(payload) as typeof value; } catch { return { flagged: [], scores: [] }; }
+  if (!value || typeof value !== 'object') return { flagged: [], scores: [] };
+  const text = (item: unknown) => typeof item === 'string' ? item : undefined;
+  const replyTo = value.target?.replyTo;
+  return {
+    ...shown(payload), scores: scoresOf(value.reason?.issues),
+    ...(replyTo && typeof replyTo === 'object' ? { replyTo: { ...optional('speaker', text(replyTo.speaker)), ...optional('text', text(replyTo.text)) } } : {}),
+    ...optional('expression', text(value.expression)),
+  };
 }
