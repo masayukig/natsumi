@@ -1,5 +1,5 @@
 import { parseDoveRequest } from '../server/dove-request.ts';
-import type { CheckResult, RunRecord, ToolRecord } from './record.ts';
+import type { CheckResult, Reached, RunRecord, ToolRecord } from './record.ts';
 import type { Check } from './scene.ts';
 
 /** An LLM judging one rubric on a run (ADR 0051). `pass` null means it answered, but not with a verdict. */
@@ -20,7 +20,8 @@ export interface JudgeOptions {
 export async function judgeChecks(record: RunRecord, checks: Check[], options: JudgeOptions = {}): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const check of checks) {
-    const result = (pass: boolean | null, detail: string): CheckResult => ({ id: check.id, by: check.by, pass, detail });
+    const result = (pass: boolean | null, detail: string, reached?: Reached): CheckResult =>
+      ({ id: check.id, by: check.by, pass, detail, ...(reached ? { reached } : {}) });
     if (check.by === 'rule') { results.push(result(...rule(check.spec, record))); continue; }
     if (check.by === 'function') {
       const name = check.spec.function as string;
@@ -49,32 +50,39 @@ export async function judgeChecks(record: RunRecord, checks: Check[], options: J
 const SHELL = 'run_shell';
 const READ = 'read';
 
-function rule(spec: Record<string, unknown>, record: RunRecord): [boolean, string] {
-  const bounded = (found: number, what: string): [boolean, string] => {
+/**
+ * A rule's verdict and reason, with where it was met when something done in a call met it: the call that brought the
+ * count to its min. A rule met by nothing done (`notCalled`, `notRead`, a min of 0) or by the whole turn has none.
+ */
+function rule(spec: Record<string, unknown>, record: RunRecord): [boolean, string, Reached?] {
+  const bounded = (calls: (number | undefined)[], what: string): [boolean, string, Reached?] => {
     const min = (spec.min as number | undefined) ?? 1;
     const max = spec.max as number | undefined;
+    const found = calls.length;
     const pass = found >= min && (max === undefined || found <= max);
-    return [pass, `${what}: ${found} 回（${min}〜${max ?? ''}）`];
+    const at = min > 0 ? [...calls].sort((a, b) => (a ?? Infinity) - (b ?? Infinity))[min - 1] : undefined;
+    return [pass, `${what}: ${found} 回（${min}〜${max ?? ''}）`, pass && at !== undefined ? reachedAt(at, record) : undefined];
   };
   const none = (found: number, what: string): [boolean, string] => [found === 0, `${what}: ${found} 回（0 回であること）`];
+  const calls = (found: { call?: number }[]) => found.map(item => item.call);
   const tools = record.tools;
   if (spec.called !== undefined) {
     const args = Object.entries((spec.args ?? {}) as Record<string, string>);
     const found = tools.filter(tool => tool.name === spec.called
-      && args.every(([key, pattern]) => new RegExp(pattern, 'u').test(argText(tool.args[key])))).length;
-    return bounded(found, String(spec.called));
+      && args.every(([key, pattern]) => new RegExp(pattern, 'u').test(argText(tool.args[key]))));
+    return bounded(calls(found), String(spec.called));
   }
   if (spec.notCalled !== undefined) return none(tools.filter(tool => tool.name === spec.notCalled).length, String(spec.notCalled));
   if (spec.shell !== undefined) {
     const pattern = new RegExp(spec.shell as string, 'u');
-    return bounded(tools.filter(tool => tool.name === SHELL && pattern.test(argText(tool.args.command))).length, `shell /${spec.shell}/`);
+    return bounded(calls(tools.filter(tool => tool.name === SHELL && pattern.test(argText(tool.args.command)))), `shell /${spec.shell}/`);
   }
   if (spec.output !== undefined) {
-    const found = tools.filter(tool => (tool.name === SHELL || tool.name === READ) && tool.result.includes(spec.output as string)).length;
-    return bounded(found, `出力に「${spec.output}」`);
+    const found = tools.filter(tool => (tool.name === SHELL || tool.name === READ) && tool.result.includes(spec.output as string));
+    return bounded(calls(found), `出力に「${spec.output}」`);
   }
-  if (spec.read !== undefined) return bounded(reads(tools, spec.read as string), `${spec.read} を読んだ`);
-  if (spec.notRead !== undefined) return none(reads(tools, spec.notRead as string), `${spec.notRead} を読んだ`);
+  if (spec.read !== undefined) return bounded(calls(reads(tools, spec.read as string)), `${spec.read} を読んだ`);
+  if (spec.notRead !== undefined) return none(reads(tools, spec.notRead as string).length, `${spec.notRead} を読んだ`);
   if (spec.asked !== undefined) {
     const asked = spec.asked as { agent?: string; message?: string; replyTo?: string };
     const found = tools.filter(tool => {
@@ -84,12 +92,12 @@ function rule(spec: Record<string, unknown>, record: RunRecord): [boolean, strin
       if (asked.message !== undefined && !new RegExp(asked.message, 'u').test(message)) return false;
       if (asked.replyTo !== undefined && replyTo(message) !== asked.replyTo) return false;
       return true;
-    }).length;
-    return bounded(found, `ask_agent ${JSON.stringify(asked)}`);
+    });
+    return bounded(calls(found), `ask_agent ${JSON.stringify(asked)}`);
   }
   if (spec.reply !== undefined) {
     const pattern = new RegExp(spec.reply as string, 'u');
-    return bounded(record.replies.filter(reply => reply.kind === 'reply' && pattern.test(reply.text)).length, `返事 /${spec.reply}/`);
+    return bounded(calls(record.replies.filter(reply => reply.kind === 'reply' && pattern.test(reply.text))), `返事 /${spec.reply}/`);
   }
   if (spec.modelCalls !== undefined) {
     const { min = 0, max } = spec.modelCalls as { min?: number; max?: number };
@@ -100,15 +108,22 @@ function rule(spec: Record<string, unknown>, record: RunRecord): [boolean, strin
   throw new Error(`unknown rule ${JSON.stringify(spec)}`);
 }
 
+/** The tokens and the time up to the end of call `call`. */
+function reachedAt(call: number, record: RunRecord): Reached {
+  const upTo = record.calls.slice(0, call);
+  const sum = (key: 'input' | 'cacheRead' | 'output' | 'ms') => upTo.reduce((total, item) => total + item[key], 0);
+  return { call, ms: upTo.at(-1)?.at ?? sum('ms'), tokens: { input: sum('input'), cacheRead: sum('cacheRead'), output: sum('output') } };
+}
+
 /** Calls that read `path`: `read` of it or of a file under it, or a shell command that names it. */
-function reads(tools: ToolRecord[], path: string): number {
+function reads(tools: ToolRecord[], path: string): ToolRecord[] {
   return tools.filter(tool => {
     if (tool.name === READ) {
       const target = argText(tool.args.path);
       return target === path || target.startsWith(`${path.replace(/\/$/, '')}/`);
     }
     return tool.name === SHELL && argText(tool.args.command).includes(path);
-  }).length;
+  });
 }
 
 /** Where a request to the dove replies to, as natsumi wrote it; the dove's own reading decides. */

@@ -30,8 +30,11 @@ export interface RunRecord {
   events: Record<string, unknown>[];
   calls: ModelCallRecord[];
   tools: ToolRecord[];
-  /** What the owner's devices were shown in the turn. */
-  replies: { kind: 'reply' | 'notice'; text: string; expression: string | null }[];
+  /**
+   * What the owner's devices were shown in the turn, with the model call (1-based) whose tool showed it. Results written
+   * before the call was kept have no `call`.
+   */
+  replies: { kind: 'reply' | 'notice'; text: string; expression: string | null; call?: number }[];
   /** Requests to the dove, whether or not it took them. Nothing was sent anywhere. */
   dove: { message: string; ok: boolean }[];
   checks: CheckResult[];
@@ -42,6 +45,8 @@ export interface RunRecord {
 /** One model call of the turn. */
 export interface ModelCallRecord {
   ms: number;
+  /** When the call ended, in ms from the event being handed over; absent in results written before it was kept. */
+  at?: number;
   stopReason: string;
   input: number;
   cacheRead: number;
@@ -68,4 +73,18 @@ export interface CheckResult {
   by: 'rule' | 'function' | 'llm';
   pass: boolean | null;
   detail: string;
+  /**
+   * The model call (1-based) at which a passed rule was first met, and the tokens and the time spent up to the end of
+   * it. Only rules met by something done in a call have it: not those met by something not done or by the whole turn,
+   * nor functions and rubrics. Absent in results written before it was kept.
+   */
+  reached?: Reached;
+}
+
+export interface Reached {
+  call: number;
+  /** From the event being handed over to the end of the call. */
+  ms: number;
+  /** Summed over the calls up to and including it. */
+  tokens: { input: number; cacheRead: number; output: number };
 }

@@ -84,11 +84,21 @@ test('a dry run goes through the real turn: the event line, the shell in the wor
     assert.match(shell.result, /FIXTURE-NOTE-3301/);
     assert.match(shell.result, /written/);
     // The reply went through the loop into its records, as the Mac would have been shown it.
-    assert.deepEqual(record.replies, [{ kind: 'reply', text: 'おはよう！メモを見たよ', expression: 'happy' }]);
+    assert.deepEqual(record.replies, [{ kind: 'reply', text: 'おはよう！メモを見たよ', expression: 'happy', call: 2 }]);
     assert.equal(record.modelCalls, 3);
     assert.deepEqual(record.checks.map(check => [check.id, check.by, check.pass]), [
       ['replied', 'rule', true], ['looked', 'rule', true], ['saw', 'rule', true], ['wrote', 'rule', true], ['quiet', 'rule', true],
       ['kind', 'llm', true], ['custom', 'function', true]]);
+    // Each check met by a call says which: the shell was the first call, the reply the second. Not doing, rubrics and
+    // functions say none.
+    assert.deepEqual(record.checks.map(check => [check.id, check.reached?.call]), [
+      ['replied', 2], ['looked', 1], ['saw', 1], ['wrote', 1], ['quiet', undefined], ['kind', undefined], ['custom', undefined]]);
+    // Each call ends later than the one before, and the time and tokens up to a check are those of the calls up to it.
+    const ends = record.calls.map(call => call.at!);
+    assert.ok(ends.every((end, index) => end > 0 && (index === 0 || end >= ends[index - 1]!)), ends.join(','));
+    const replied = record.checks[0]!.reached!;
+    assert.equal(replied.ms, ends[1]);
+    assert.equal(replied.tokens.input, record.calls[0]!.input + record.calls[1]!.input);
 
     // A variant that edits the instructions is handed a different prompt; the record tells them apart by a digest.
     const second = await runCondition(edited!, { run: 1, dryRun: true, repository: REPOSITORY, work: join(root, 'work'), runner });
@@ -183,9 +193,13 @@ test('npm run eval runs, summarizes and compares; the model file key and endpoin
 
     const summary = await cli('summarize', join(out, 'a'));
     assert.match(summary.stdout, /replied/);
+    // The reply is the second call in every run, the shell the first.
+    assert.match(summary.stdout, /\| plain \| replied \| rule \| 2\/2 \| 100% \| [^|]+ \| 0 \| 2 \/ 2 \| /);
+    assert.match(summary.stdout, /\| plain \| looked \| rule \| 2\/2 \| 100% \| [^|]+ \| 0 \| 1 \/ 1 \| /);
     const compared = await cli('compare', join(out, 'a'), join(out, 'b'));
     assert.match(compared.stdout, /replied/);
     assert.match(compared.stdout, /\+0/);
+    assert.match(compared.stdout, /\| plain \| replied \| .* \| 2（2 回） \| 2（2 回） \| 0 \|/);
   });
 });
 

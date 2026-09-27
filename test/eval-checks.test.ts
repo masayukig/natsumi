@@ -104,3 +104,54 @@ test('a function may answer with a reason as well as the verdict', async () => {
   const result = await judge({ function: 'why' }, record(), { functions: { why: () => ({ pass: false, detail: '親を読んでいない' }) } });
   assert.deepEqual([result.pass, result.detail], [false, '親を読んでいない']);
 });
+
+/** Three calls of 100, 120 and 150 input tokens, ending 150, 500 and 900 ms after the event was handed over. */
+const CALLS: RunRecord['calls'] = [
+  { ms: 100, at: 150, stopReason: 'toolUse', input: 100, cacheRead: 0, output: 10, thinkingChars: 0, text: '' },
+  { ms: 200, at: 500, stopReason: 'toolUse', input: 120, cacheRead: 80, output: 20, thinkingChars: 0, text: '' },
+  { ms: 300, at: 900, stopReason: 'stop', input: 150, cacheRead: 100, output: 30, thinkingChars: 0, text: '' },
+];
+
+test('a rule met by a call says the first call it was met at, with the tokens and the time up to it', async () => {
+  const run = record({ calls: CALLS, replies: [{ kind: 'reply', text: 'おはよう、今日もよろしくね', expression: 'happy', call: 3 }] });
+  const at = async (spec: Record<string, unknown>) => (await judge(spec, run)).reached?.call;
+  assert.deepEqual((await judge({ called: 'reply_to_mac' }, run)).reached,
+    { call: 3, ms: 900, tokens: { input: 370, cacheRead: 180, output: 60 } });
+  assert.deepEqual((await judge({ read: '/manual/slack.md' }, run)).reached, { call: 1, ms: 150, tokens: { input: 100, cacheRead: 0, output: 10 } });
+  assert.equal(await at({ shell: 'jq -s' }), 1);
+  assert.equal(await at({ output: '@natsumi 見て' }), 1);
+  assert.equal(await at({ read: '/sources/slack/work/dev' }), 1);
+  assert.equal(await at({ asked: { agent: 'poppo' } }), 2);
+  assert.equal(await at({ reply: 'よろしく' }), 3);
+});
+
+test('a rule counted more than once is met at the call that brings the count to its min', async () => {
+  const run = record({ calls: CALLS, tools: [
+    { call: 1, name: 'run_shell', args: { command: 'ls /work' }, result: '', isError: false },
+    { call: 2, name: 'run_shell', args: { command: 'ls /memory' }, result: '', isError: false },
+    { call: 3, name: 'run_shell', args: { command: 'ls /home/natsumi' }, result: '', isError: false },
+  ] });
+  assert.equal((await judge({ shell: '^ls', min: 2 }, run)).reached?.call, 2);
+  assert.equal((await judge({ shell: '^ls', min: 3 }, run)).reached?.call, 3);
+});
+
+test('no call is said when the rule failed, or when it is not met at a call', async () => {
+  const run = record({ calls: CALLS });
+  const reached = async (spec: Record<string, unknown>, options: Parameters<typeof judgeChecks>[2] = {}) =>
+    (await judge(spec, run, options)).reached;
+  // Failed: never met, or met and then gone past its max.
+  assert.equal(await reached({ called: 'notify_owner' }), undefined);
+  assert.equal(await reached({ called: 'reply_to_mac', min: 2 }), undefined);
+  assert.equal(await reached({ read: '/manual/slack.md', max: 0 }), undefined);
+  // Passed, but by something not done or by the whole turn: no call brings it about.
+  assert.equal(await reached({ notCalled: 'notify_owner' }), undefined);
+  assert.equal(await reached({ notRead: '/sources/slack/work/random' }), undefined);
+  assert.equal(await reached({ modelCalls: { max: 3 } }), undefined);
+  assert.equal(await reached({ finished: true }), undefined);
+  assert.equal(await reached({ called: 'notify_owner', min: 0 }), undefined);
+  // A reply recorded before the replies carried their call.
+  assert.equal(await reached({ reply: 'よろしく' }), undefined);
+  // Functions and rubrics decide on the whole record.
+  assert.equal(await reached({ function: 'yes' }, { functions: { yes: () => true } }), undefined);
+  assert.equal(await reached({ rubric: 'x' }, { judge: { judge: async () => ({ pass: true, detail: '' }) } }), undefined);
+});

@@ -126,6 +126,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     let promptError: string | undefined;
     let session: AgentSession | undefined;
     const callTimes: number[] = [];
+    const callEnds: number[] = [];
     let callStarted = 0;
     const configureSession = (created: AgentSession) => {
       session = created;
@@ -149,7 +150,10 @@ export async function runCondition(condition: Condition, options: RunOptions): P
       created.subscribe(event => {
         if (phase.now !== 'turn') return;
         if (event.type === 'message_start' && event.message.role === 'assistant') callStarted = Date.now();
-        if (event.type === 'message_end' && event.message.role === 'assistant') callTimes.push(Date.now() - callStarted);
+        if (event.type === 'message_end' && event.message.role === 'assistant') {
+          callTimes.push(Date.now() - callStarted);
+          callEnds.push(Date.now());
+        }
       });
     };
     const reviseSystemPrompt = (prompt: string) => {
@@ -225,8 +229,9 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     const shown: RunRecord['replies'] = [];
     loop.subscribe((event: LoopClientEvent) => {
       if (phase.now !== 'turn' || event.type !== 'conversation.message' || event.payload.role !== 'natsumi') return;
+      // Shown by a tool of the call that last ended.
       shown.push({ kind: event.payload.kind === 'notice' ? 'notice' : 'reply', text: String(event.payload.text),
-        expression: typeof event.payload.expression === 'string' ? event.payload.expression : null });
+        expression: typeof event.payload.expression === 'string' ? event.payload.expression : null, call: callTimes.length });
     });
     const before = session!.messages.length;
     record.priorMessages = before;
@@ -243,7 +248,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     if (!row) throw new Error(`the turn left no numbers (${logs.at(-1) ?? 'no log'})`);
     Object.assign(record, { outcome: row.outcome, modelCalls: row.model_calls, ms: row.turn_ms,
       tokens: { input: row.input_tokens, cacheRead: row.cache_read_tokens, output: row.output_tokens }, replies: shown });
-    readTurn(session!.messages.slice(before), record, callTimes);
+    readTurn(session!.messages.slice(before), record, callTimes, callEnds.map(end => end - started));
     record.session = session!.sessionFile;
   } catch (error) {
     record.outcome = 'error';
@@ -297,7 +302,7 @@ function padding(chars: number, index: number): string {
 }
 
 /** The turn as the session recorded it, up to the memo request: its prompt, its calls and its tools. */
-function readTurn(messages: AgentSession['messages'], record: RunRecord, callTimes: number[]): void {
+function readTurn(messages: AgentSession['messages'], record: RunRecord, callTimes: number[], callEnds: number[]): void {
   const end = messages.findIndex((message, index) => index > 0 && message.role === 'user' && textOf(message.content) === REFLECTION_REQUEST);
   const turn = end < 0 ? messages : messages.slice(0, end);
   const first = turn.find(message => message.role === 'user');
@@ -323,7 +328,7 @@ function readTurn(messages: AgentSession['messages'], record: RunRecord, callTim
         tools.push({ call: number, name: part.name, args: part.arguments as Record<string, unknown>, result: result?.text ?? '', isError: result?.isError ?? false });
       }
     }
-    calls.push({ ms: callTimes[number - 1] ?? 0, stopReason: message.stopReason, input: message.usage.input, cacheRead: message.usage.cacheRead,
+    calls.push({ ms: callTimes[number - 1] ?? 0, ...(callEnds[number - 1] === undefined ? {} : { at: callEnds[number - 1] }), stopReason: message.stopReason, input: message.usage.input, cacheRead: message.usage.cacheRead,
       output: message.usage.output, thinkingChars, text });
   }
   record.calls = calls;

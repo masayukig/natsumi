@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { newcombe, wilson } from '../src/eval/stats.ts';
+import { newcombe, quantile, wilson } from '../src/eval/stats.ts';
 
 const near = (actual: number, expected: number, digits = 4) =>
   assert.ok(Math.abs(actual - expected) < 10 ** -digits, `${actual} is not ${expected}`);
@@ -35,4 +35,14 @@ test('the difference of two rates has the Newcombe interval (56/70 against 48/80
 
 test('no difference is given when either side has no runs', () => {
   assert.equal(newcombe({ passed: 0, runs: 0 }, { passed: 3, runs: 5 }), undefined);
+});
+
+test('a quantile lies between the two values around it (the median of 1 to 4 is 2.5, the 90th percentile of 1 to 10 is 9.1)', () => {
+  near(quantile([4, 1, 3, 2], 0.5)!, 2.5);
+  near(quantile([10, 9, 8, 7, 6, 5, 4, 3, 2, 1], 0.9)!, 9.1);
+  assert.equal(quantile([3], 0.9), 3);
+});
+
+test('there is no quantile of nothing', () => {
+  assert.equal(quantile([], 0.5), undefined);
 });

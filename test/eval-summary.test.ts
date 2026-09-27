@@ -65,3 +65,47 @@ test('a check found on one side only is listed without a difference', () => {
   assert.equal(quiet.difference, undefined);
   assert.ok(rows.some(row => row.variant === 'other'));
 });
+
+/** A run whose `replied` check was met at `call`, `ms` after the event, with 100 input tokens a call. */
+function reached(variant: string, index: number, call: number | null, pass = call !== null): RunRecord {
+  return run(variant, index, [], {
+    checks: [{ id: 'replied', by: 'rule', pass, detail: '',
+      ...(call === null ? {} : { reached: { call, ms: 1000 * call, tokens: { input: 100 * call, cacheRead: 10 * call, output: call } } }) }],
+  });
+}
+
+test('the steps to a check are counted over the runs that passed it: the median and the 90th percentile of the calls', () => {
+  const summary = summarize([reached('base', 1, 1), reached('base', 2, 2), reached('base', 3, 3), reached('base', 4, 6),
+    reached('base', 5, null)]);
+  const [check] = summary.conditions[0]!.checks;
+  assert.deepEqual([check!.passed, check!.judged], [4, 5]);
+  const { calls, ...rest } = check!.steps!;
+  assert.equal(calls.median, 2.5);
+  assert.ok(Math.abs(calls.p90 - 5.1) < 1e-9, String(calls.p90));
+  assert.deepEqual(rest, { runs: 4, ms: 2500, tokens: { input: 250, cacheRead: 25, output: 2.5 } });
+  const markdown = summaryMarkdown(summary, 'dry');
+  assert.match(markdown, /着くまで/);
+  assert.match(markdown, /\| replied \| rule \| 4\/5 \| 80% \| [^|]+ \| 0 \| 2\.5 \/ 5\.1 \| 2\.5 \| 250 \/ 25 \/ 3 \|/);
+});
+
+test('a result written before the steps were kept reads with the steps left blank', () => {
+  const summary = summarize([run('base', 1, [['replied', true]]), run('base', 2, [['replied', true]])]);
+  const [check] = summary.conditions[0]!.checks;
+  assert.equal(check!.steps, null);
+  assert.match(summaryMarkdown(summary, 'old'), /\| replied \| rule \| 2\/2 \| 100% \| [^|]+ \| 0 \| — \| — \| — \|/);
+});
+
+test('compare puts the median steps of the two results side by side, with their difference', () => {
+  const a = summarize([reached('base', 1, 3), reached('base', 2, 4), reached('base', 3, 5), reached('base', 4, null)]);
+  const b = summarize([reached('base', 1, 2), reached('base', 2, 2), reached('base', 3, 3), reached('base', 4, 1)]);
+  const [row] = compare(a, b).rows;
+  assert.deepEqual(row!.steps, { a: { runs: 3, median: 4 }, b: { runs: 4, median: 2 }, difference: -2 });
+  const markdown = compareMarkdown(compare(a, b), 'before', 'after');
+  assert.match(markdown, /\| 4（3 回） \| 2（4 回） \| -2 \|/);
+
+  // A side without steps (never passed, or written before they were kept) has no difference.
+  const old = summarize([run('base', 1, [['replied', true]])]);
+  const [partial] = compare(old, b).rows;
+  assert.deepEqual(partial!.steps, { a: null, b: { runs: 4, median: 2 } });
+  assert.match(compareMarkdown(compare(old, b), 'old', 'after'), /\| — \| 2（4 回） \| — \|/);
+});
