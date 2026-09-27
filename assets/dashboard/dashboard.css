@@ -133,9 +133,10 @@ section.stale { opacity: 0.6; }
 
 /* The turns (ADR 0049). */
 .table { overflow-x: auto; }
-table.turns { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-table.turns th, table.turns td { padding: 0.35rem 0.5rem; border-top: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
-table.turns th { color: var(--muted); font-weight: 500; }
+table.turns, table.list { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+table.turns th, table.turns td, table.list th, table.list td { padding: 0.35rem 0.5rem; border-top: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+table.turns th, table.list th { color: var(--muted); font-weight: 500; }
+table.list td.words { white-space: pre-wrap; min-width: 14rem; }
 table.turns td.number { text-align: right; font-variant-numeric: tabular-nums; }
 table.turns tr.failed td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
 .estimated { font-size: 0.75em; padding: 0 0.4em; border: 1px dashed var(--muted); border-radius: 4px; color: var(--muted); }
@@ -174,6 +175,16 @@ pre.error { border-color: var(--bad); }
 .result p { margin: 0.2rem 0 0; }
 details > summary { cursor: pointer; color: var(--muted); }
 .step img { display: block; max-width: 100%; max-height: 32rem; margin: 0.4rem 0; border-radius: 6px; border: 1px solid var(--line); }
+
+/* The lists (ADR 0049). */
+main > section + section { margin-top: 1rem; }
+section h3 { font-size: 0.95rem; margin: 1.25rem 0 0.4rem; }
+section h3:first-of-type { margin-top: 0.75rem; }
+.cards { display: grid; gap: 0.6rem; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem 0.8rem; background: var(--bg); }
+.card > p { margin: 0.2rem 0; }
+.card.memo { border-left: 4px solid var(--ok); }
+.card .facts > div { grid-template-columns: 6rem 1fr; padding: 0.25rem 0; }
 
 @media (max-width: 36rem) {
   .facts > div { grid-template-columns: 1fr; gap: 0.1rem; }

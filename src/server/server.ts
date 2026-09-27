@@ -295,7 +295,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, login, loop: thinkingLoop, dataDirectory,
-      db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, now });
+      db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
+      isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard,
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
