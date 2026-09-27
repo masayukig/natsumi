@@ -8,6 +8,7 @@ import {
 } from '../src/server/dashboard-records.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
+import { findTurn } from '../src/server/turn-log.ts';
 import { TurnStats, type TurnRecord } from '../src/server/turn-stats.ts';
 
 // What the dashboard lists from SQLite alone (ADR 0049): the failures and the waits, the dove's posts and the devices.
@@ -68,9 +69,11 @@ test('the turns that did not end cleanly are listed with their outcome, newest f
     f.turn({ outcome: 'ok' });
     const limited = f.turn({ outcome: 'model-call-limit', startedAt: T0 - MINUTE });
     const review = f.turn({ outcome: 'no-handoff', kind: 'review', eventKinds: 'nightly_review', startedAt: T0 });
+    // The curator's night that kept nothing is among them (ADR 0055).
+    const curator = f.turn({ outcome: 'rejected', kind: 'curator', eventKinds: 'memory_curator', startedAt: T0 + MINUTE });
     const waits = readWaits(f.db, options);
     assert.deepEqual(waits.cutTurns.map(turn => [turn.turnId, turn.outcome, turn.kind]),
-      [[review, 'no-handoff', 'review'], [limited, 'model-call-limit', 'events']]);
+      [[curator, 'rejected', 'curator'], [review, 'no-handoff', 'review'], [limited, 'model-call-limit', 'events']]);
   } finally { await f.cleanup(); }
 });
 
@@ -379,5 +382,15 @@ test('an approval whose payload cannot be read is still listed, with nothing sho
     assert.equal(row!.shown.text, undefined);
     assert.deepEqual(row!.shown.scores, []);
     assert.deepEqual(row!.shown.flagged, []);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn read back keeps its kind, the curator\'s included (ADR 0055)', async () => {
+  const f = await setup();
+  try {
+    const curator = f.turn({ kind: 'curator', eventKinds: 'memory_curator' });
+    const review = f.turn({ kind: 'review', eventKinds: 'nightly_review', startedAt: T0 - MINUTE });
+    assert.equal(findTurn(f.db, curator)!.kind, 'curator');
+    assert.equal(findTurn(f.db, review)!.kind, 'review');
   } finally { await f.cleanup(); }
 });
