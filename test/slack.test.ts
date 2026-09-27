@@ -197,6 +197,45 @@ test('her name without a mention, her own posts and other bots are told nothing'
   assert.equal(lines[2]!.mine, undefined);
 });
 
+test('a reply without a mention in a thread she spoke in is told once as a thread-reply, without the eyes reaction', async t => {
+  const f = await setup(t);
+  const parent = tsAt('2026-09-25T05:00:00Z');
+  f.slack.emit(message({ user: 'U2', text: 'デプロイ手順どこだっけ', ts: parent }));
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: 'README にあります', ts: tsAt('2026-09-25T05:01:00Z'), thread_ts: parent }));
+  const reply = message({ user: 'U2', text: 'ありがとう、見てみる', ts: tsAt(AT), thread_ts: parent });
+  f.slack.emit(reply);
+  f.slack.emit(reply);
+  // A thread she began counts too.
+  const hers = tsAt('2026-09-25T05:40:00Z');
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '今日のまとめです', ts: hers }));
+  f.slack.emit(message({ user: 'U2', text: '助かる', ts: tsAt('2026-09-25T05:41:00Z'), thread_ts: hers }));
+  await f.workspace.idle();
+  assert.deepEqual(f.told.map(told => told.kind), ['thread-reply', 'thread-reply']);
+  const lines = await f.lines('work/dev/2026-09-25.jsonl');
+  assert.equal(at(lines, f.told[0]!.path).text, 'ありがとう、見てみる');
+  assert.equal(at(lines, f.told[1]!.path).text, '助かる');
+  assert.equal(f.told[0]!.file, '/sources/slack/work/dev/2026-09-25.jsonl');
+  // The eyes say a mention or a DM was received; a reply in her thread may be people talking among themselves.
+  assert.deepEqual(f.slack.reactions, []);
+});
+
+test('a mention in her thread is told once, as a mention; a thread she never spoke in, her own replies and bots are told nothing', async t => {
+  const f = await setup(t);
+  const parent = tsAt('2026-09-25T05:00:00Z');
+  f.slack.emit(message({ user: 'U2', text: '相談', ts: parent }));
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: 'はい', ts: tsAt('2026-09-25T05:01:00Z'), thread_ts: parent }));
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '追記です', ts: tsAt('2026-09-25T05:02:00Z'), thread_ts: parent }));
+  f.slack.emit(message({ user: undefined, bot_id: 'B2', username: 'ci', subtype: 'bot_message', text: 'build ok',
+    ts: tsAt('2026-09-25T05:03:00Z'), thread_ts: parent }));
+  f.slack.emit(message({ user: 'U2', text: '<@UBOT> これで合ってる？', ts: tsAt('2026-09-25T05:04:00Z'), thread_ts: parent }));
+  const other = tsAt('2026-09-25T05:10:00Z');
+  f.slack.emit(message({ user: 'U2', text: '別の話', ts: other }));
+  f.slack.emit(message({ user: 'U1', text: 'そうだね', ts: tsAt('2026-09-25T05:11:00Z'), thread_ts: other }));
+  await f.workspace.idle();
+  assert.deepEqual(f.told.map(told => told.kind), ['mention']);
+  assert.equal(f.slack.reactions.length, 1);
+});
+
 test('on connecting, what was missed is filled in from the last recorded message, threads included, and nothing is removed', async t => {
   const f = await setup(t, { backfillDays: 2 });
   f.slack.emit(message({ text: '記録済み', ts: tsAt(AT) }));

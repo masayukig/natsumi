@@ -29,9 +29,10 @@ export interface SlackWorkspaceOptions {
 }
 
 /**
- * One Slack workspace, received (ADR 0012, ADR 0039, ADR 0050). Every message of the channels the bot is in goes into
- * the archive; a real mention of the bot, or a DM, is also told to the core as an attention (`mention` or `dm`), and
- * gets the server's reaction as it arrives. Slack's own retries and its twin `app_mention` event tell nothing twice:
+ * One Slack workspace, received (ADR 0012, ADR 0039, ADR 0050, ADR 0053). Every message of the channels the bot is in
+ * goes into the archive; a real mention of the bot, or a DM, is also told to the core as an attention (`mention` or
+ * `dm`), and gets the server's reaction as it arrives. A person's reply without a mention in a thread natsumi spoke in
+ * is told as `thread-reply`, without the reaction: it may be people talking among themselves. Slack's own retries and its twin `app_mention` event tell nothing twice:
  * one message is told once, whichever way and however often it comes.
  *
  * A reaction put on or taken off a recorded message is recorded too (ADR 0043); one on anything else is let go.
@@ -198,12 +199,16 @@ export class SlackWorkspace {
     // What the Web API answers says every reaction; a live event says none.
     const fetched = how.live ? message : { ...message, reactions: message.reactions ?? [] };
     const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, fetched), ...(reply ? { threadTs: reply } : {}) });
-    if (!how.mayRaise || !(isNew || how.live) || !this.forHer(channel, message)) return isNew;
+    if (!how.mayRaise || !(isNew || how.live)) return isNew;
+    const kind = this.forHer(channel, message) ? (channel.is_im ? 'dm' : 'mention')
+      : reply && this.fromPerson(message) && archive.spokeIn(name, channel.channel_id, reply) ? 'thread-reply' : undefined;
+    if (!kind) return isNew;
     // Its line is written by now, so the place told is where natsumi finds it.
     const place = archive.markForHer(name, channel.channel_id, message.ts);
     if (!place) return isNew;
-    this.options.attention({ source: 'slack', kind: channel.is_im ? 'dm' : 'mention', file: place.file, path: place.path,
+    this.options.attention({ source: 'slack', kind, file: place.file, path: place.path,
       ...(place.images.length > 0 ? { images: place.images } : {}) });
+    if (kind === 'thread-reply') return isNew;
     try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
       this.report('the reaction could not be added', error);
     }
@@ -225,9 +230,13 @@ export class SlackWorkspace {
 
   /** A real mention of the bot, or a DM, from a person. No bot is for her, her own least of all. */
   private forHer(channel: ChannelRow, message: SlackMessage): boolean {
-    const self = this.self!;
-    if (message.botId || !message.user || message.user === self.userId) return false;
-    return channel.is_im === 1 || message.text.includes(`<@${self.userId}>`);
+    if (!this.fromPerson(message)) return false;
+    return channel.is_im === 1 || message.text.includes(`<@${this.self!.userId}>`);
+  }
+
+  /** Said by a person other than natsumi: not a bot, her own least of all. */
+  private fromPerson(message: SlackMessage): boolean {
+    return !message.botId && !!message.user && message.user !== this.self!.userId;
   }
 
   private async channel(channelId: string, known?: { name?: string; isIm: boolean; user?: string }): Promise<ChannelRow> {
