@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -26,15 +26,19 @@ const MORNING = Date.parse('2026-09-27T01:00:00Z');
 const NIGHT = Date.parse('2026-09-26T17:00:00Z');
 const SCRIPT = join(import.meta.dirname, '..', 'docker', 'sources-diff', 'sources-diff');
 
-async function setup(t: test.TestContext, start = MORNING, options: { historyDays?: number } = {}) {
+/**
+ * `under` puts the two directories one level down, as the server's data directory holds them (`<under>/sources`,
+ * `<under>/sources.git`), so a test can move them where the workspace sees them.
+ */
+async function setup(t: test.TestContext, start = MORNING, options: { historyDays?: number; under?: string } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-sources-')));
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   let clock = start;
   const now = () => clock;
   const store = new ConversationStore(db, now);
-  const directory = join(root, 'sources');
-  const gitDirectory = join(root, 'sources.git');
+  const directory = join(root, options.under ?? '', 'sources');
+  const gitDirectory = join(root, options.under ?? '', 'sources.git');
   let raised = 0;
   const sources = new Sources({
     db, directory, gitDirectory, timeZone: TIME_ZONE, awakeHours: { start: '08:00', end: '23:00' },
@@ -262,6 +266,49 @@ test('sources-diff shows what the last event showed, one directory of it, or a r
   assert.match(since, /一回目/);
   assert.match(since, /二回目/);
   assert.doesNotMatch(since, /前から/);
+});
+
+test('sources-diff reads the history where the workspace sees it, though the server made it somewhere else', async t => {
+  // The server writes <data>/sources and <data>/sources.git; the workspace sees them as /sources and /sources.git,
+  // and has no <data> at all. Here the server's side is <root>/data, and the workspace's is <root>/ws.
+  const f = await setup(t, MORNING, { under: 'data' });
+  await f.write('chat/work/dev/a.jsonl', '{"text":"前から"}\n');
+  await f.write('chat/work/ops/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(61 * MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"text":"一回目"}\n');
+  await f.sources.tick();
+  await f.take();
+  f.advance(24 * 60 * MINUTE);
+  await f.append('chat/work/dev/a.jsonl', '{"text":"二回目"}\n');
+  await f.append('chat/work/ops/a.jsonl', '{"text":"運用"}\n');
+  await f.sources.tick();
+  await f.take();
+  // A history made by an earlier server names the server's work tree in its config; it must read all the same.
+  await run('git', ['--git-dir', f.gitDirectory, 'config', 'core.worktree', f.directory]);
+  const workspace = join(f.root, 'ws');
+  await rename(join(f.root, 'data'), workspace);
+  const diff = async (options: { root?: string; cwd?: string }, ...args: string[]) => (await run('sh', [SCRIPT, ...args], {
+    cwd: options.cwd,
+    env: { ...process.env, SOURCES_GIT_DIR: join(workspace, 'sources.git'), SOURCES_ROOT: options.root ?? '/sources', TZ: TIME_ZONE },
+  })).stdout;
+  const last = await diff({});
+  assert.match(last, /^\+\+\+ \/sources\/chat\/work\/dev\/a\.jsonl$/m);
+  assert.match(last, /^\+\{"text":"二回目"\}$/m);
+  assert.match(last, /運用/);
+  assert.doesNotMatch(last, /一回目|前から/);
+  const one = await diff({}, '/sources/chat/work/ops');
+  assert.match(one, /運用/);
+  assert.doesNotMatch(one, /二回目/);
+  const since = await diff({}, '--since', '2026-09-27 00:00', '/sources/chat/work/dev');
+  assert.match(since, /一回目/);
+  assert.match(since, /二回目/);
+  assert.doesNotMatch(since, /前から|運用/);
+  // Run from inside the work tree, a directory is still named from its top, not from where she stands.
+  const sources = join(workspace, 'sources');
+  const inside = await diff({ root: sources, cwd: join(sources, 'chat', 'work') }, `${sources}/chat/work/ops`);
+  assert.match(inside, /運用/);
+  assert.doesNotMatch(inside, /二回目/);
 });
 
 test('sources-diff refuses a path outside /sources with an error and a non-zero exit, and shows nothing', async t => {

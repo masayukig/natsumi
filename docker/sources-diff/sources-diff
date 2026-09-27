@@ -31,13 +31,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ ! -f "$git_dir/HEAD" ] || ! git --git-dir="$git_dir" -c safe.directory='*' rev-parse -q --verify HEAD >/dev/null 2>&1; then
+# The work tree is always given, as the workspace sees it: a history made by an earlier server names the server's own
+# path in core.worktree, which is not here, and git would refuse to read it at all.
+if [ ! -f "$git_dir/HEAD" ] || ! git --git-dir="$git_dir" --work-tree="$root" -c safe.directory='*' rev-parse -q --verify HEAD >/dev/null 2>&1; then
   echo "sources-diff: 読みものの履歴がまだありません（$git_dir が見えません）。ファイルを直接読んでください。" >&2
   exit 1
 fi
 
 export GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_PAGER=cat PAGER=cat LESS=
-g() { git --git-dir="$git_dir" -c safe.directory='*' -c core.quotePath=false "$@"; }
+g() { git --git-dir="$git_dir" --work-tree="$root" -c safe.directory='*' -c core.quotePath=false "$@"; }
 # Paths are shown as natsumi reads them (/sources/…). A prefix that starts with / makes git take the file for a new
 # one, so the prefix is relative and the header lines get their / back; a line of a JSON Lines file never starts so.
 show() {
@@ -56,6 +58,7 @@ for dir in "$@"; do
 done
 
 # A directory as the history names it: relative to /sources, without a trailing slash. The paths are checked above.
+# A pathspec says top, so it is read from /sources however deep in it she stands.
 relative() {
   case $1 in
     "$root") printf '' ;;
@@ -71,7 +74,7 @@ if [ -n "$since" ]; then
   [ -n "$base" ] || base=$(g rev-list --max-parents=0 HEAD | tail -n 1)
   paths=
   for dir in "$@"; do paths="$paths
-:(literal)$(relative "$dir")"; done
+:(top,literal)$(relative "$dir")"; done
   if [ $# -eq 0 ]; then out=$(show "$base" HEAD); else
     old_ifs=$IFS; IFS='
 '
@@ -96,6 +99,6 @@ for dir in "$@"; do
     echo "（$root/$rel はまだ更新として見せたことがありません）"
     continue
   fi
-  out=$(show "refs/before/$name" "refs/seen/$name" -- ":(literal)$rel")
+  out=$(show "refs/before/$name" "refs/seen/$name" -- ":(top,literal)$rel")
   if [ -z "$out" ]; then echo "（$root/$rel に変わったものはありません）"; else printf '%s\n' "$out"; fi
 done
