@@ -1,0 +1,55 @@
+# なつみが自分以外（風景・物・ほかの人）を描くとき、manual/images.md の sdctl の使い方を守るか。
+# マニュアルを刈り込む前後で比べるための場面。人物と会話はすべて架空。
+#
+# sdctl の本体は手元に無く、呼ぶと失敗する。判定は、sdctl txt2img のコマンドと、それが読んだプロンプト（を書いた
+# run_shell）で行う（scene.ts）。
+description: 自分以外の絵を頼まれて、プロンプトのファイルを書き、既定の設定のまま sdctl txt2img --prompt で描く
+runs: 5
+time: "2026-09-27T20:30:00+09:00"
+limits: { modelCalls: 10, minutes: 10 }
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+event:
+  mac_message: 夕焼けの海辺の風景を描いて見せて
+variants:
+  landscape:
+    checks:
+      - { id: no-humans, shell: "no humans" }
+  still-life:
+    event:
+      mac_message: 湯気の立つコーヒーとクロワッサンの朝ごはんの絵を描いてほしいな
+  girl:
+    event:
+      mac_message: 図書館で本を読んでる、長い黒髪の女の子の絵を描いて
+  wide:
+    event:
+      mac_message: 山と湖の風景を横長で描いて。壁紙にしたいの
+    checks:
+      - { id: wide, function: wide }
+dryRun:
+  - calls:
+      - tool: run_shell
+        args:
+          command: |
+            mkdir -p /work/prompts
+            cat > /work/prompts/sea.yaml <<'EOF'
+            prompt: |
+              masterpiece, best quality, newest, safe,
+              no humans,
+              A quiet beach at sunset.
+              sea, beach, sunset, orange sky, waves,
+              outdoors, scenery
+            EOF
+            sdctl txt2img --prompt /work/prompts/sea.yaml
+  - calls:
+      - { tool: reply_to_mac, args: { text: 描こうとしたけど、うまく出せなかったよ。, expression: sad } }
+checks:
+  - { id: drew, shell: "sdctl\\s+txt2img" }
+  - { id: from-file, function: fromFile }
+  - { id: defaults, function: noDefaults }
+  - { id: output-in-work, function: outputInWork }
+  - { id: quality, function: quality }
+  - { id: counted, function: counted }
+  - { id: not-me, function: notMe }

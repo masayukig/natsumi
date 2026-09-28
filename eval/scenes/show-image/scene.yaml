@@ -1,0 +1,48 @@
+# 描いた絵を本人に見せる（reply_to_mac の images）・Slack に出す（ポッポさんへの依頼の 画像:）ときに、
+# manual/images.md の手順を守るか。マニュアルを刈り込む前後で比べるための場面。人物と会話はすべて架空。
+#
+# 絵は少し前に描いた体で、setup が /work/images に小さな PNG を置く（scene.ts）。
+description: 少し前に描いた絵を探し、view で確かめてから、本人に見せる・ポッポさんに画像付きで頼む
+runs: 5
+time: "2026-09-27T20:40:00+09:00"
+limits: { modelCalls: 10, minutes: 10 }
+dove: true
+setup: prepare
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+  /work/prompts/sunset.yaml: |
+    prompt: |
+      masterpiece, best quality, newest, safe,
+      no humans,
+      A quiet beach at sunset.
+      sea, beach, sunset, orange sky, waves,
+      outdoors, scenery
+  /sources/slack/work/random/2026-09-27.jsonl: |
+    {"at":"2026-09-27 19:02:11","from":"高橋","text":"週末は晴れるらしいです"}
+    {"at":"2026-09-27 19:05:40","from":"渡辺","text":"海に行きたいですね"}
+event:
+  mac_message: さっき描いてくれた夕焼けの海の絵、もう一回見せて
+variants:
+  mac:
+    checks:
+      - { id: shown, called: reply_to_mac, args: { images: "/work/images/output-20260927-201512-1\\.png" } }
+      - { id: no-notice, notCalled: notify_owner }
+  slack:
+    event:
+      mac_message: "さっき描いてくれた夕焼けの海の絵、Slack の work の #random に貼っておいて"
+    checks:
+      - { id: posted, asked: { agent: poppo, message: "画像: */work/images/output-20260927-201512-1\\.png" } }
+      - { id: to-random, asked: { agent: poppo, message: "返信先: *work/#random" } }
+dryRun:
+  - calls:
+      - { tool: run_shell, args: { command: "ls /work/images" } }
+  - calls:
+      - { tool: run_shell, args: { command: "view /work/images/output-20260927-201512-1.png" } }
+  - calls:
+      - tool: reply_to_mac
+        args: { text: これだよ！, expression: happy, images: [/work/images/output-20260927-201512-1.png] }
+checks:
+  - { id: found, shell: "/work/images" }
+  - { id: viewed, shell: "^\\s*view\\s+\\S*output-20260927-201512-1\\.png" }

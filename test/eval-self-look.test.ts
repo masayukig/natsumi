@@ -41,6 +41,30 @@ test('the prompt she drew is the file named by the last sdctl, as she last wrote
   assert.ok(!prompt?.includes('no humans'), prompt);
 });
 
+test('of two files written in one command, the prompt is the one sdctl read', () => {
+  const record = recordOf([
+    `${write('me.yaml', `${LOOK}\nblack business suit,`)}\n${write('pajamas.yaml', `${LOOK}\nstriped pajamas,`)}`,
+    'cd /work && sdctl txt2img --prompt /work/prompts/pajamas.yaml',
+  ]);
+  assert.equal((noSuit(record) as { pass: boolean }).pass, true, drawnPrompt(record));
+});
+
+test('sdctl behind time or timeout is still a drawing', () => {
+  for (const run of ['cd /work && time sdctl txt2img --prompt /work/prompts/me.yaml 2>&1 | tail -20', 'timeout 300 sdctl txt2img --prompt /work/prompts/me.yaml']) {
+    const record = recordOf([write('me.yaml', `${LOOK}\n1girl`), run]);
+    assert.equal((look(record) as { pass: boolean }).pass, true, run);
+  }
+});
+
+test('sdctl written about in a note is not a drawing', () => {
+  const record = recordOf([
+    write('me.yaml', `${LOOK}\n1girl`),
+    'sdctl txt2img --prompt /work/prompts/me.yaml',
+    "cat >> /memory/always.md <<'EOF'\n- 絵は `sdctl txt2img --prompt <yaml>` で作る\nEOF",
+  ]);
+  assert.equal((look(record) as { pass: boolean }).pass, true, drawnPrompt(record));
+});
+
 test('a grep for her features does not count as having drawn them', () => {
   const record = recordOf([
     write('me.yaml', '<lora:kutara_aki_anima.v3:1> ,\nwoman, low ponytail,\nblack glasses,'),
@@ -54,7 +78,7 @@ test('a grep for her features does not count as having drawn them', () => {
 });
 
 test('her whole look passes only with the LoRA, the freckles and the breasts in the prompt she drew', () => {
-  const kept = recordOf([`${write('me.yaml', `${LOOK}\n1girl, casual clothes, park`)} && sdctl txt2img --prompt /work/prompts/me.yaml`]);
+  const kept = recordOf([`${write('me.yaml', `${LOOK}\n1girl, casual clothes, park`)}\nsdctl txt2img --prompt /work/prompts/me.yaml`]);
   assert.equal((look(kept) as { pass: boolean }).pass, true);
   assert.equal((noSuit(kept) as { pass: boolean }).pass, true);
   const suited = recordOf([write('me.yaml', `${LOOK}\nblack business suit,  collared white shirt,`), 'sdctl txt2img --prompt /work/prompts/me.yaml']);
