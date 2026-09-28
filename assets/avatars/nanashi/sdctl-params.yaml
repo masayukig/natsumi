@@ -1,0 +1,20 @@
+# The server's default for drawing (ADR 0044, ADR 0057), for an avatar without a sdctl-params.yaml of its own. The
+# server writes it to /manual/avatar/sdctl-params.yaml, which /etc/sdctl/config.yaml in the workspace image names:
+# `sdctl txt2img --prompt <file>` uses it, and only the prompt is hers to write. One portrait picture of about a
+# megapixel, with the settings Anima is known to do well at.
+# The model and its modules go with each request (override_settings): the relay refuses to change the server's own.
+negative_prompt: "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"
+steps: 30
+width: 896
+height: 1152
+cfg_scale: 4.5
+sampler: "ER SDE"
+scheduler: "simple"
+seed: -1
+batch_count: 1
+batch_size: 1
+override_settings:
+  sd_model_checkpoint: "anima_mignolia_v10"
+  forge_additional_modules:
+    - "qwen_image_vae.safetensors"
+    - "qwen_3_06b_base.safetensors"

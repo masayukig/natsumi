@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { runAvatarCheck } from './avatar.ts';
 import { parseCli, UsageError } from './cli.ts';
 import { resolveDataDirectory } from './data-directory.ts';
 import { runFoldCommand } from './fold-setting.ts';
@@ -25,6 +26,8 @@ try {
     // Like the model route: the server reads the choice before its next turn (ADR 0047).
     process.exitCode = await runFoldCommand(cli, await resolveDataDirectory(cli.dataDir, process.cwd()),
       line => { process.stdout.write(`${line}\n`); });
+  } else if (cli.command === 'avatar') {
+    process.exitCode = await runAvatarCheck(cli.target, line => { process.stdout.write(`${line}\n`); });
   } else if (cli.command === 'stats') {
     process.exitCode = await runStatsCommand(cli, await resolveDataDirectory(cli.dataDir, process.cwd()),
       line => { process.stdout.write(`${line}\n`); });

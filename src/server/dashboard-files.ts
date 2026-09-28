@@ -3,7 +3,8 @@ import { lstat, open, readdir, readlink, realpath, type FileHandle } from 'node:
 import { join, posix } from 'node:path';
 
 /**
- * Her files as the dashboard reads them (ADR 0054): /memory, /work, /home/natsumi, /manual and /manual/agents, each
+ * Her files as the dashboard reads them (ADR 0054): /memory, /work, /home/natsumi, /manual, /manual/agents and
+ * /manual/avatar (ADR 0057), each
  * at `/dashboard/files` followed by the path she knows it by. Nothing is ever written, and nothing is read but through
  * here, one level of a directory or the head of a file at a time, all of it asynchronously.
  *
@@ -15,19 +16,24 @@ import { join, posix } from 'node:path';
 
 export const FILES_PATH = '/dashboard/files';
 
-/** Where each place really is: the memory repository, `work/`, `home/` and `agents/` of the data directory, and the code's `manual/`. */
+/**
+ * Where each place really is: the memory repository, `work/`, `home/`, `agents/` and `avatar/` of the data directory, and
+ * the code's `manual/`.
+ */
 export interface FileRoots {
   memory: string;
   work: string;
   home: string;
   manual: string;
   agents: string;
+  avatar: string;
 }
 export type RootName = keyof FileRoots;
 
 /** The places by the path she knows them by, the longest first, so /manual/agents is found before /manual. */
 export const PLACES: readonly { root: RootName; place: string }[] = [
   { root: 'agents', place: '/manual/agents' },
+  { root: 'avatar', place: '/manual/avatar' },
   { root: 'home', place: '/home/natsumi' },
   { root: 'memory', place: '/memory' },
   { root: 'manual', place: '/manual' },

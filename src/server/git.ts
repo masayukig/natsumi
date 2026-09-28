@@ -5,8 +5,15 @@ import { execFile } from 'node:child_process';
  * edits by hand, so the history the server writes must be what git itself writes; nothing here reimplements git.
  */
 
-/** Who the server records as the author and the committer of every memory commit. */
-export const GIT_IDENTITY = { name: 'natsumi', email: 'natsumi@natsumi.invalid' };
+export interface GitIdentity { name: string; email: string }
+
+/** Who the server records as the author and the committer of a commit it is not told otherwise about, such as /sources's. */
+export const GIT_IDENTITY: GitIdentity = { name: 'natsumi', email: 'natsumi@natsumi.invalid' };
+
+/** The avatar as the author of her memory commits (ADR 0057): its display name, and an address made from its ID. */
+export function gitIdentity(self: { id: string; name: string }): GitIdentity {
+  return { name: self.name, email: `${self.id}@natsumi.invalid` };
+}
 
 export class GitError extends Error {
   readonly code: number;
@@ -27,9 +34,12 @@ const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 /**
  * Runs git in `directory`. Hooks never run and no user, system or environment configuration is read, so a file
  * left in the repository cannot change what committing does. A failing command throws unless `allowFailure`. `env`
- * adds to the environment, such as the dates a commit is to carry; it cannot take the identity's place.
+ * adds to the environment, such as the dates a commit is to carry; it cannot take the identity's place, which
+ * `identity` gives.
  */
-export function runGit(directory: string, args: string[], options: { allowFailure?: boolean; env?: Record<string, string> } = {}): Promise<GitResult> {
+export function runGit(directory: string, args: string[],
+  options: { allowFailure?: boolean; env?: Record<string, string>; identity?: GitIdentity } = {}): Promise<GitResult> {
+  const identity = options.identity ?? GIT_IDENTITY;
   const full = ['-C', directory, '-c', 'core.hooksPath=/dev/null', '-c', `safe.directory=${directory}`,
     '-c', 'core.quotePath=false', '-c', 'commit.gpgsign=false', ...args];
   return new Promise((resolve, reject) => {
@@ -40,8 +50,8 @@ export function runGit(directory: string, args: string[], options: { allowFailur
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         LC_ALL: 'C',
         // Only the identity below decides who commits.
-        GIT_AUTHOR_NAME: GIT_IDENTITY.name, GIT_AUTHOR_EMAIL: GIT_IDENTITY.email,
-        GIT_COMMITTER_NAME: GIT_IDENTITY.name, GIT_COMMITTER_EMAIL: GIT_IDENTITY.email,
+        GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email,
+        GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email,
         // No global or system config, and no prompt: the server never waits for a person.
         GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
         GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0',

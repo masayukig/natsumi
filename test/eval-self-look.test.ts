@@ -6,8 +6,9 @@ import type { RunRecord } from '../src/eval/record.ts';
 
 // eval/ is not in the server image, where the tests are type-checked too: the scene is loaded at run time.
 type Check = (record: RunRecord) => unknown;
-const { breasts, drawnPrompt, freckles, look, lora, noSuit } = await import(join(import.meta.dirname, '..', 'eval', 'scenes', 'self-look', 'scene.ts')) as
-  Record<'breasts' | 'freckles' | 'look' | 'lora' | 'noSuit', Check> & { drawnPrompt: (record: RunRecord) => string | undefined };
+// Her look is the default avatar's appearance.yaml (ADR 0057): the LoRA, the words to keep and the default clothes.
+const { changedOutfit, drawnPrompt, keep, look, lora } = await import(join(import.meta.dirname, '..', 'eval', 'scenes', 'self-look', 'scene.ts')) as
+  Record<'changedOutfit' | 'keep' | 'look' | 'lora', Check> & { drawnPrompt: (record: RunRecord) => string | undefined };
 
 const LOOK = [
   '<lora:kutara_aki_anima.v3:1> ,',
@@ -46,7 +47,7 @@ test('of two files written in one command, the prompt is the one sdctl read', ()
     `${write('me.yaml', `${LOOK}\nblack business suit,`)}\n${write('pajamas.yaml', `${LOOK}\nstriped pajamas,`)}`,
     'cd /work && sdctl txt2img --prompt /work/prompts/pajamas.yaml',
   ]);
-  assert.equal((noSuit(record) as { pass: boolean }).pass, true, drawnPrompt(record));
+  assert.equal((changedOutfit(record) as { pass: boolean }).pass, true, drawnPrompt(record));
 });
 
 test('sdctl behind time or timeout is still a drawing', () => {
@@ -72,17 +73,16 @@ test('a grep for her features does not count as having drawn them', () => {
     'sdctl txt2img --prompt /work/prompts/me.yaml',
   ]);
   assert.equal((lora(record) as { pass: boolean }).pass, true);
-  assert.equal((freckles(record) as { pass: boolean }).pass, false);
-  assert.equal((breasts(record) as { pass: boolean }).pass, false);
+  assert.deepEqual(keep(record), { pass: false, detail: '無い: freckles, large sagging breasts' });
   assert.equal((look(record) as { pass: boolean }).pass, false);
 });
 
-test('her whole look passes only with the LoRA, the freckles and the breasts in the prompt she drew', () => {
+test('her whole look passes only with the LoRA and every word to keep in the prompt she drew', () => {
   const kept = recordOf([`${write('me.yaml', `${LOOK}\n1girl, casual clothes, park`)}\nsdctl txt2img --prompt /work/prompts/me.yaml`]);
   assert.equal((look(kept) as { pass: boolean }).pass, true);
-  assert.equal((noSuit(kept) as { pass: boolean }).pass, true);
+  assert.equal((changedOutfit(kept) as { pass: boolean }).pass, true);
   const suited = recordOf([write('me.yaml', `${LOOK}\nblack business suit,  collared white shirt,`), 'sdctl txt2img --prompt /work/prompts/me.yaml']);
-  assert.equal((noSuit(suited) as { pass: boolean }).pass, false);
+  assert.equal((changedOutfit(suited) as { pass: boolean }).pass, false);
 });
 
 test('a feature only in the negative prompt is not in the picture', () => {
@@ -90,15 +90,14 @@ test('a feature only in the negative prompt is not in the picture', () => {
     `cat > /work/prompts/me.yaml <<'EOF'\nprompt: |\n  <lora:kutara_aki_anima.v3:1> ,\n  woman, large sagging breasts,\nnegative: |\n  freckles\nEOF`,
     'sdctl txt2img --prompt /work/prompts/me.yaml',
   ]);
-  assert.equal((freckles(record) as { pass: boolean }).pass, false);
-  assert.equal((breasts(record) as { pass: boolean }).pass, true);
+  assert.deepEqual(keep(record), { pass: false, detail: '無い: freckles' });
 });
 
 test('without a drawing there is no prompt, and nothing passes', () => {
   const record = recordOf(['ls /work']);
   assert.equal(drawnPrompt(record), undefined);
   assert.equal((look(record) as { pass: boolean }).pass, false);
-  assert.equal((noSuit(record) as { pass: boolean }).pass, false);
+  assert.equal((changedOutfit(record) as { pass: boolean }).pass, false);
 });
 
 test('the self-look scene asks for her picture in several ways', async () => {
@@ -107,7 +106,7 @@ test('the self-look scene asks for her picture in several ways', async () => {
   assert.deepEqual(variants, ['casual', 'mood', 'pair', 'pajamas', 'scene', 'selfie']);
   for (const condition of conditions(scene)) {
     const ids = condition.checks.map(check => check.id);
-    for (const id of ['drew', 'lora', 'freckles', 'breasts', 'look']) assert.ok(ids.includes(id), `${condition.variant}: ${id}`);
+    for (const id of ['drew', 'lora', 'keep', 'look']) assert.ok(ids.includes(id), `${condition.variant}: ${id}`);
     if (['casual', 'pajamas'].includes(condition.variant)) assert.ok(ids.includes('outfit'), condition.variant);
   }
 });

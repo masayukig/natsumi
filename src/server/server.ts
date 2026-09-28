@@ -4,6 +4,8 @@ import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent
 import { SdkA2AClient } from './a2a-client.ts';
 import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
+import { loadAvatar } from './avatar.ts';
+import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from './avatar-manual.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { catalogContextWindow } from '../pi/auth.ts';
@@ -121,6 +123,12 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
   const log = options.log ?? (() => {});
+  // The avatar is read once, here (ADR 0057): what is broken in it stops the start like any other setting, and what it
+  // lacks is filled in with the faceless pictures. Everything below takes its name and pictures from this one reading.
+  const avatar = await loadAvatar(config.avatar);
+  const self = { id: avatar.id, name: avatar.name };
+  log(`avatar: ${avatar.id} (${avatar.name}), version ${avatar.version}`);
+  for (const item of avatar.filled) log(`avatar: filled with the faceless ${item}`);
   const dataDirectory = await resolveDataDirectory(options.dataDir, options.cwd);
   await initializeDataDirectory(dataDirectory);
   const lock = acquireProcessLock(dataDirectory);
@@ -157,6 +165,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     db = openStateDatabase(join(dataDirectory, STATE_DIRECTORY, 'state.sqlite'));
     const { version } = migrate(db, MIGRATIONS);
     await preparePiState(config.pi, { dataDirectory, home: options.home });
+    // The page on drawing and the sdctl params, for the workspace to read as /manual/avatar (ADR 0057).
+    await writeAvatarManual(join(dataDirectory, AVATAR_MANUAL_DIRECTORY), avatar);
     // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).
     for (const route of config.pi.routes.filter(candidate => !candidate.compatible)) {
       const window = await catalogContextWindow(config.pi.agentDirectory, { provider: route.model.provider, model: route.model.id });
@@ -218,7 +228,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         target: { provider: route.model.provider, model: route.model.id }, compactionThreshold: route.compactionThreshold,
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
-      configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator,
+      configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
@@ -294,7 +304,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const allowedUserId = config.github.allowedUserId;
     const registrations = new PushRegistrations(db, now);
     const connections = hub = new ConnectionHub({
-      publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize,
+      publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize, avatarVersion: avatar.version,
       ...(theDove ? { approvals: { pending: () => theDove.pendingApprovals(), decide: input => theDove.decide(input),
         subscribe: listener => theDove.subscribe(listener) } } : {}),
       // Connecting is a use of the session and renews it (ADR 0030).
@@ -322,18 +332,19 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         origins: options.apns?.origins });
       notifier = new PushNotifier({
         db, loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), registrations, sender: apns, allowedUserId, isConnected: deviceId => connections.isConnected(deviceId),
-        log, retryDelaysMs: options.apns?.retryDelaysMs,
+        log, retryDelaysMs: options.apns?.retryDelaysMs, name: avatar.name,
       });
     } else {
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, login, loop: thinkingLoop, dataDirectory,
+      name: avatar.name,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
       isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
-      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard,
+      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar,
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

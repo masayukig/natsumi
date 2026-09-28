@@ -54,5 +54,6 @@
     "modelCalls": 60,
     "timeoutMinutes": 30,
     "rotateFiles": 2
-  }
+  },
+  "avatar": { "id": "natsumi" }
 }

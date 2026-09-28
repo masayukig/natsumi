@@ -8,6 +8,8 @@ import { routesRuntime } from '../pi/auth.ts';
 import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
 import { readSessionId, type PiTarget } from '../pi/session.ts';
 import { AGENT_LIST_DIRECTORY, writeAgentList } from '../server/agent-list.ts';
+import { loadAvatar } from '../server/avatar.ts';
+import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from '../server/avatar-manual.ts';
 import { LOOP_DEFAULTS } from '../server/config.ts';
 import { ConversationStore } from '../server/conversation-store.ts';
 import { initializeDataDirectory, STATE_DIRECTORY } from '../server/data-directory.ts';
@@ -94,6 +96,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     else await mkdir(data);
     await initializeDataDirectory(data);
     await cp(join(options.repository, 'manual'), manual, { recursive: true });
+    // The page on drawing and the params, as the server writes them from natsumi on every start (ADR 0057).
+    await writeAvatarManual(join(data, AVATAR_MANUAL_DIRECTORY), await loadAvatar(undefined));
     await placeState(condition, data, manual);
     const module = await loadSceneModule(scene.module, scene.setup);
     await module.setup?.({ data, manual, scene: scene.name, variant: condition.variant });
@@ -291,7 +295,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
 /** The scene's copies, then its files, then its edits, each into the place the workspace shows it as. */
 async function placeState(condition: Condition, data: string, manual: string): Promise<void> {
   const host = (path: string) => {
-    const places: [string, string][] = [['/manual/agents', join(data, AGENT_LIST_DIRECTORY)], ['/manual', manual],
+    const places: [string, string][] = [['/manual/agents', join(data, AGENT_LIST_DIRECTORY)],
+      ['/manual/avatar', join(data, AVATAR_MANUAL_DIRECTORY)], ['/manual', manual],
       ['/memory', join(data, 'memory')], ['/work', join(data, WORK_DIRECTORY)], ['/home/natsumi', join(data, HOME_DIRECTORY)],
       ['/sources', join(data, SOURCES_DIRECTORY)]];
     for (const [place, directory] of places) {

@@ -1,4 +1,5 @@
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
+import type { AvatarCommand } from './avatar.ts';
 import type { FoldCommand } from './fold-setting.ts';
 import type { ModelCommand } from './model-routes.ts';
 import { STATS_TIME, type StatsCommand } from './turn-stats.ts';
@@ -12,7 +13,8 @@ export type Command =
   | { command: 'health'; dataDir: string | undefined }
   | ModelCommand
   | FoldCommand
-  | StatsCommand;
+  | StatsCommand
+  | AvatarCommand;
 
 export const USAGE = `usage: natsumi serve [--config <file>] [--data-dir <dir>]
        natsumi health [--data-dir <dir>]
@@ -20,11 +22,23 @@ export const USAGE = `usage: natsumi serve [--config <file>] [--data-dir <dir>]
        natsumi model use <route> [--data-dir <dir>]
        natsumi fold on|off|status [--data-dir <dir>]
        natsumi stats [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--data-dir <dir>]
-       natsumi stats --memos <count> [--config <file>]`;
+       natsumi stats --memos <count> [--config <file>]
+       natsumi avatar check <directory>|<built-in ID>`;
 
 export function parseCli(argv: string[]): Command {
   const [command, ...rest] = argv;
-  if (command !== 'serve' && command !== 'health' && command !== 'model' && command !== 'fold' && command !== 'stats') {
+  if (command !== 'serve' && command !== 'health' && command !== 'model' && command !== 'fold' && command !== 'stats'
+    && command !== 'avatar') {
+    throw new UsageError(USAGE);
+  }
+  if (command === 'avatar') {
+    // The checks the start runs on an avatar directory (ADR 0057), with no data directory and no config.
+    let positionals: string[];
+    try { ({ positionals } = parseArgs({ args: rest, options: {}, strict: true, allowPositionals: true })); } catch (error) {
+      throw new UsageError(`${error instanceof Error ? error.message : error}\n${USAGE}`);
+    }
+    const [action, target, ...extra] = positionals;
+    if (action === 'check' && target !== undefined && extra.length === 0) return { command, action, target };
     throw new UsageError(USAGE);
   }
   const options: ParseArgsOptionsConfig = { 'data-dir': { type: 'string' } };

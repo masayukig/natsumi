@@ -97,6 +97,11 @@ export interface ConnectionHubOptions {
   approvals?: HubApprovals;
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
+  /**
+   * The version of the avatar the apps fetch (ADR 0057), carried in every answer to `session.sync` that starts over.
+   * It changes only with a restart, which a device meets as a new epoch, so no event tells of a change.
+   */
+  avatarVersion?: string;
 }
 
 type Payload = Record<string, unknown>;
@@ -290,7 +295,7 @@ export class ConnectionHub {
     // Every answer to a sync tells the client when its session ends now, as renewed by this connection (ADR 0030).
     const sessionExpiresAt = connection.expiresAt;
     if (loop.unavailable) {
-      stream.publish('service.unavailable', { code: loop.unavailable, deviceId, sessionExpiresAt }, requestId);
+      stream.publish('service.unavailable', { code: loop.unavailable, deviceId, sessionExpiresAt, ...this.avatarVersion() }, requestId);
       return;
     }
     const resume = isObject(payload.resume) ? payload.resume : undefined;
@@ -304,8 +309,12 @@ export class ConnectionHub {
     }
     // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
     // Its own seq is the barrier; events numbered after it apply on top.
-    stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), pendingApprovals: this.options.approvals?.pending() ?? [], sessionExpiresAt },
-      requestId);
+    stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), pendingApprovals: this.options.approvals?.pending() ?? [], sessionExpiresAt,
+      ...this.avatarVersion() }, requestId);
+  }
+
+  private avatarVersion() {
+    return this.options.avatarVersion === undefined ? {} : { avatarVersion: this.options.avatarVersion };
   }
 
   private send(stream: EventStream, deviceId: string, payload: Payload, requestId: string) {

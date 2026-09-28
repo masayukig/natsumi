@@ -1,0 +1,40 @@
+{
+  "id": "nanashi",
+  "name": "名無し",
+  "spritesheet": "spritesheet.webp",
+  "atlas": {
+    "columns": 1,
+    "rows": 1,
+    "cellWidth": 192,
+    "cellHeight": 208
+  },
+  "framesPerSecond": 6,
+  "animations": {
+    "idle": {
+      "row": 0,
+      "frames": 1
+    }
+  },
+  "icons": {
+    "neutral": "icons/neutral.webp",
+    "happy": "icons/happy.webp",
+    "laughing": "icons/laughing.webp",
+    "surprised": "icons/surprised.webp",
+    "thinking": "icons/thinking.webp",
+    "worried": "icons/worried.webp",
+    "sad": "icons/sad.webp",
+    "sleepy": "icons/sleepy.webp",
+    "angry": "icons/angry.webp"
+  },
+  "expressions": {
+    "neutral": "idle",
+    "thinking": "idle",
+    "happy": "idle",
+    "laughing": "idle",
+    "surprised": "idle",
+    "worried": "idle",
+    "sad": "idle",
+    "sleepy": "idle",
+    "angry": "idle"
+  }
+}

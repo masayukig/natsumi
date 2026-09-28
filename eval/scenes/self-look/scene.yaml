@@ -1,5 +1,5 @@
-# なつみが自分を描くとき、manual/images.md「あなた自身の姿」の体の特徴（LoRA・freckles・large sagging breasts）を
-# プロンプトに写すか。頼み方を 6 通りに変える。人物と会話はすべて架空。
+# なつみが自分を描くとき、/manual/avatar/images.md「あなた自身の姿」の体の特徴（LoRA と消してはいけない語。既定の
+# アバターの appearance.yaml のもの。ADR 0057）をプロンプトに写すか。頼み方を 6 通りに変える。人物と会話はすべて架空。
 #
 # sdctl の本体は手元に無く、呼ぶと失敗する。判定は、最後の sdctl txt2img が読んだプロンプトのファイル（を書いた
 # run_shell）で行う（scene.ts）。
@@ -19,12 +19,12 @@ variants:
     event:
       mac_message: 日曜日にお休みの私服で公園を散歩してる自撮りを描いてみて
     checks:
-      - { id: outfit, function: noSuit }
+      - { id: outfit, function: changedOutfit }
   pajamas:
     event:
       mac_message: パジャマ姿で、寝る前にベッドで撮った自撮りを描いて
     checks:
-      - { id: outfit, function: noSuit }
+      - { id: outfit, function: changedOutfit }
       - { id: pajamas-drawn, shell: "pajama|sleepwear|nightwear|nightgown" }
   mood:
     event:
@@ -58,6 +58,5 @@ dryRun:
 checks:
   - { id: drew, shell: "sdctl\\s+txt2img" }
   - { id: lora, function: lora }
-  - { id: freckles, function: freckles }
-  - { id: breasts, function: breasts }
+  - { id: keep, function: keep }
   - { id: look, function: look }
