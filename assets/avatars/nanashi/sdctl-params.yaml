@@ -1,5 +1,7 @@
-# natsumi's default for drawing (ADR 0044), which the workspace image names in /etc/sdctl/config.yaml: `sdctl txt2img --prompt
-# <file>` uses it, and only the prompt is hers to write. One portrait picture of about a megapixel, with the settings Anima is known to do well at.
+# The server's default for drawing (ADR 0044, ADR 0057), for an avatar without a sdctl-params.yaml of its own. The
+# server writes it to /manual/avatar/sdctl-params.yaml, which /etc/sdctl/config.yaml in the workspace image names:
+# `sdctl txt2img --prompt <file>` uses it, and only the prompt is hers to write. One portrait picture of about a
+# megapixel, with the settings Anima is known to do well at.
 # The model and its modules go with each request (override_settings): the relay refuses to change the server's own.
 negative_prompt: "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"
 steps: 30
