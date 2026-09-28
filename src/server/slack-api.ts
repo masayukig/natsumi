@@ -64,6 +64,12 @@ export interface SlackApi {
   uploadFiles(channel: string, files: { filename: string; data: Buffer }[], options: { threadTs?: string; initialComment?: string }): Promise<void>;
   /** A file's bytes, or undefined when it is larger than `maxBytes`. */
   download(url: string, maxBytes: number): Promise<Buffer | undefined>;
+  /** Fork (ADR 0057): the DM channel with one person (`conversations.open`, which needs `im:write`). */
+  openDm(userId: string): Promise<string>;
+  /** Fork (ADR 0057): posts Block Kit blocks as the bot, with `text` for the notification. Returns the new message's ts. */
+  postBlocks(channel: string, text: string, blocks: unknown[]): Promise<string>;
+  /** Fork (ADR 0057): replaces a message the bot posted (`chat.update`). */
+  updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void>;
 }
 
 export interface SlackSocket {
@@ -71,6 +77,8 @@ export interface SlackSocket {
   onEvent(handler: (event: Record<string, unknown>) => void): void;
   /** Every (re)connection, the first included. */
   onConnected(handler: () => void): void;
+  /** Fork (ADR 0057): a Block Kit interaction (`block_actions` and the like), its payload as Slack sent it. */
+  onInteractive(handler: (payload: Record<string, unknown>) => void): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -274,6 +282,19 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
       }
       return Buffer.concat(chunks);
     },
+    async openDm(userId) {
+      const answer = await calling('conversations.open', () => web.conversations.open({ users: userId }));
+      if (!answer.channel?.id) throw new SlackCallError('conversations.open', 'no_channel');
+      return answer.channel.id;
+    },
+    async postBlocks(channel, text, blocks) {
+      const answer = await calling('chat.postMessage', () => web.chat.postMessage({ channel, text, blocks: blocks as never,
+        unfurl_links: false, unfurl_media: false }));
+      return String(answer.ts ?? '');
+    },
+    async updateBlocks(channel, ts, text, blocks) {
+      await calling('chat.update', () => web.chat.update({ channel, ts, text, blocks: blocks as never }));
+    },
   };
   const socket: SlackSocket = {
     onEvent(handler) {
@@ -283,6 +304,12 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
       });
     },
     onConnected(handler) { socketClient.on('connected', () => handler()); },
+    // Fork (ADR 0057): the `slack_event` listener above acknowledges every envelope, this one included.
+    onInteractive(handler) {
+      socketClient.on('interactive', ({ body }: { body?: unknown }) => {
+        if (body && typeof body === 'object') handler(body as Record<string, unknown>);
+      });
+    },
     async start() { await socketClient.start(); },
     async stop() { await socketClient.disconnect(); },
   };

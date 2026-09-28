@@ -599,6 +599,15 @@ Mac も iPhone も使わない本人のために、この fork では Slack の 
 - 本人のほかの人の発言と、ほかのチャンネルでの本人の発言は、これまでどおりです。
 - system prompt に、本人が Slack で読み書きしていることを短く足します。ツールの名前は変えません。
 
+ポッポさんが本人に回した投稿の承認も、bot との DM でできます（[ADR 0057](docs/adr/0057-fork-approving-slack-posts-in-slack.md)）。
+
+- 承認待ちになると、サーバーが本人との DM に、投稿先（スレッドかどうか）・返信先・下書き・判定の理由・期限と、「送る」「見送る」のボタンを 1 通投稿します。
+  サーバーが止まっていた間にできた承認待ちも、起動したときに投稿します。
+- ボタンは本人が押したときだけ効きます。決定は iPhone の `approval.decide` と同じ道を通り、送る前の検査や natsumi への知らせも同じです。
+- 決まると（Slack からでも、iPhone からでも、期限切れでも）、メッセージからボタンを外し、送った・見送った・期限切れ・送れなかった（理由）に書き換えます。
+- 直してから送ることは、まだできません。直したいときは見送って、natsumi に頼み直します。
+- Slack App に Interactivity と `im:write` が要ります（[Slack App の作り方](docs/slack-app.md)）。
+
 ### 読みものの更新（sources_updated）
 
 `/sources` の下の読みもの（いまは Slack だけ）が変わったことを、出来事 `sources_updated` で natsumi に知らせます

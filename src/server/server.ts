@@ -29,6 +29,7 @@ import { LogprobJudgeClient } from './logprob-judge.ts';
 import type { JudgeClient } from './judge.ts';
 import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
+import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
@@ -234,6 +235,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         const ownerHere = owner?.workspace === name ? owner : undefined;
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin, images, log });
+          // Fork (ADR 0057): and approves the dove's drafts in the DM with the bot.
+          if (theDove) new SlackApprovals({ db, dove: theDove, api, socket, workspace: name, ownerUserId: ownerHere.userId, log }).sync();
         }
         const workspace = new SlackWorkspace({
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,

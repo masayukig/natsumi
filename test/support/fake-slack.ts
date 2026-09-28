@@ -57,6 +57,10 @@ export class FakeSlack implements SlackApi, SlackSocket {
   stopped = 0;
   private eventHandler: ((event: Record<string, unknown>) => void) | undefined;
   private connectedHandler: (() => void) | undefined;
+  private interactiveHandler: ((payload: Record<string, unknown>) => void) | undefined;
+  /** Fork (ADR 0057): Block Kit messages posted, and the rewrites of them. */
+  readonly blockPosts: { channel: string; text: string; blocks: unknown[] }[] = [];
+  readonly updates: { channel: string; ts: string; text: string; blocks: unknown[] }[] = [];
 
   addChannel(conversation: SlackConversation): void {
     this.channels.set(conversation.id, conversation);
@@ -84,10 +88,14 @@ export class FakeSlack implements SlackApi, SlackSocket {
   /** Slack (re)connects: the server fills in what it missed. */
   connect(): void { this.connectedHandler?.(); }
 
+  /** Fork (ADR 0057): someone presses a button, as Socket Mode's `interactive` envelope carries it. */
+  interact(payload: Record<string, unknown>): void { this.interactiveHandler?.(payload); }
+
   // SlackSocket
 
   onEvent(handler: (event: Record<string, unknown>) => void): void { this.eventHandler = handler; }
   onConnected(handler: () => void): void { this.connectedHandler = handler; }
+  onInteractive(handler: (payload: Record<string, unknown>) => void): void { this.interactiveHandler = handler; }
   async start(): Promise<void> { this.started += 1; }
   async stop(): Promise<void> { this.stopped += 1; }
 
@@ -146,6 +154,18 @@ export class FakeSlack implements SlackApi, SlackSocket {
     this.check('uploadFiles', channel);
     this.uploads.push({ channel, files: files.map(file => ({ filename: file.filename, data: Buffer.from(file.data) })),
       ...(options.threadTs ? { threadTs: options.threadTs } : {}), ...(options.initialComment ? { initialComment: options.initialComment } : {}) });
+  }
+
+  async openDm(userId: string): Promise<string> { return `D-${userId}`; }
+
+  async postBlocks(channel: string, text: string, blocks: unknown[]): Promise<string> {
+    this.check('postBlocks', channel);
+    this.blockPosts.push({ channel, text, blocks });
+    return `${1_900_000_000 + this.blockPosts.length}.000100`;
+  }
+
+  async updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void> {
+    this.updates.push({ channel, ts, text, blocks });
   }
 
   async download(url: string, maxBytes: number): Promise<Buffer | undefined> {
