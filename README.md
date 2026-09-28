@@ -545,6 +545,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
    | `slack.postImages.maxBytes` / `.maxCount` | | 10 MiB / 4 | ポッポさんに頼む投稿の画像 1 枚の上限（1 KiB〜50 MiB）と、1 回の枚数の上限（1〜10） |
    | `slack.owner` | | | fork: 本人と Slack のチャンネルで話す。下の「本人と Slack のチャンネルで話す（fork）」 |
+   | `slack.avatarBaseUrl` | | `<publicOrigin>/avatar` | fork: Slack が表情のアイコンを取りに行く https の URL（`<avatarBaseUrl>/<表情>.png`）。publicOrigin に Slack から届かないときに、`assets/avatar` を公開した場所を書く |
 
    `slack.mentionContext` と `slack.updates` は使わなくなりました（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
    書かれていても起動は止めず、ログに `config: slack.mentionContext is no longer read (ADR 0050); it can be deleted` と出します。消してかまいません。
@@ -595,6 +596,7 @@ Mac も iPhone も使わない本人のために、この fork では Slack の 
   受け取るとサーバーが `reaction` を付けます。ファイルへの記録はほかの発言と同じです。編集と削除は会話には届けません。本文の無い、画像だけの発言は会話に届けません（画像は会話に載せません）。
 - natsumi の返事と知らせ（`reply_to_mac`・`notify_owner`）は、すべてそのチャンネルに bot として投稿します。判定も承認も通しません。
   アイコンはポッポさんと同じく表情ごとの `<publicOrigin>/avatar/<表情>.png` で、返事に画像があれば画像ごと上げます（このときはアイコンを付けられません）。
+  publicOrigin が LAN の中だけで Slack から取りに行けないときは、`slack.avatarBaseUrl` に `assets/avatar` を公開した場所（リポジトリの raw の URL など）を書くと、ポッポさんの投稿もこのチャンネルもそこからアイコンを取ります。
   投稿に失敗してもログに 1 行出すだけで、会話の記録は残ります。
 - 本人のほかの人の発言と、ほかのチャンネルでの本人の発言は、これまでどおりです。
 - system prompt に、本人が Slack で読み書きしていることを短く足します。ツールの名前は変えません。

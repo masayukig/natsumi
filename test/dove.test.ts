@@ -49,7 +49,7 @@ const RETURN = () => scores([0.9]);
 
 const PARENT = tsAt('2026-09-25T05:32:05Z'); // 14:32:05 in Tokyo
 
-async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
+async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUrl?: string } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-dove-')));
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
@@ -71,7 +71,7 @@ async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
   const open = () => {
     const dove = new SlackDove({
       db, archive, workspaces: { work: slack }, ...(options.jev === false ? {} : { judge: jev }), config: CONFIG, publicOrigin: ORIGIN,
-      workDirectory: work, images,
+      workDirectory: work, images, ...(options.avatarBaseUrl ? { avatarBaseUrl: options.avatarBaseUrl } : {}),
       now: () => clock.now, log: line => { logs.push(line); },
       raise: record => {
         events.push(store.transaction(transaction => {
@@ -129,6 +129,14 @@ test('a draft Jev passes is sent at once, without the owner, into the thread, un
   assert.equal(row.state, 'sent');
   assert.equal(row.sent_text, '大丈夫です。明日の 10 時に始めましょう。');
   assert.equal(JSON.parse(row.scores!).length, JUDGE_ISSUES.length, 'the scores are kept for looking back');
+});
+
+test('fork: with slack.avatarBaseUrl the icon is fetched from there instead of publicOrigin (ADR 0056)', async t => {
+  const f = await setup(t, { avatarBaseUrl: 'https://cdn.example.test/avatar' });
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('大丈夫です。', { expression: 'happy' }));
+  await f.dove.idle();
+  assert.equal(f.slack.posts[0]!.iconUrl, 'https://cdn.example.test/avatar/happy.png');
 });
 
 test('Jev sees the draft and the message it answers, and nothing natsumi said about it', async t => {

@@ -379,7 +379,7 @@ export class SlackWorkspace {
  */
 export function relayToOwner(options: {
   loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
-  api: SlackApi; workspace: string; channel: string; publicOrigin: string;
+  api: SlackApi; workspace: string; channel: string; publicOrigin: string; avatarBaseUrl?: string;
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
   log?: (line: string) => void;
 }): () => void {
@@ -399,7 +399,7 @@ export function relayToOwner(options: {
           if (read) files.push({ filename: `${image.imageId}.${IMAGE_TYPES[read.mimeType] ?? 'png'}`, data: read.data });
         }
         if (files.length > 0) await api.uploadFiles(channel, files, { initialComment: text });
-        else await api.postMessage(channel, text, { iconUrl: `${options.publicOrigin}/avatar/${expression}.png` });
+        else await api.postMessage(channel, text, { iconUrl: `${options.avatarBaseUrl ?? `${options.publicOrigin}/avatar`}/${expression}.png` });
       } catch (error) {
         options.log?.(`slack (${options.workspace}): posting to the owner's channel failed (${describeFailure(error)})`);
       }
