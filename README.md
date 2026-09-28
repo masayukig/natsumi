@@ -544,6 +544,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネル、超えたらスレッドに置く（0〜20） |
    | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
    | `slack.postImages.maxBytes` / `.maxCount` | | 10 MiB / 4 | ポッポさんに頼む投稿の画像 1 枚の上限（1 KiB〜50 MiB）と、1 回の枚数の上限（1〜10） |
+   | `slack.owner` | | | fork: 本人と Slack のチャンネルで話す。下の「本人と Slack のチャンネルで話す（fork）」 |
 
    `slack.mentionContext` と `slack.updates` は使わなくなりました（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
    書かれていても起動は止めず、ログに `config: slack.mentionContext is no longer read (ADR 0050); it can be deleted` と出します。消してかまいません。
@@ -576,6 +577,27 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   Slack の API の失敗は、呼び出したメソッドと Slack のエラーのコード（足りない scope があればそれも）を出します。
   例: `slack (work): filling in a conversation failed (conversations.history: missing_scope, needed im:history)`。
   埋め直しの間は、同じ失敗は 1 度だけ出し、残りは最後の 1 行の件数に数えます。
+
+#### 本人と Slack のチャンネルで話す（fork）
+
+Mac も iPhone も使わない本人のために、この fork では Slack の 1 つのチャンネルを本人との会話の場にできます
+（[ADR 0056](docs/adr/0056-fork-talking-with-the-owner-in-a-slack-channel.md)）。
+
+```json
+"slack": {
+  "workspaces": { "home": { "botTokenFile": "...", "appTokenFile": "..." } },
+  "owner": { "workspace": "home", "userId": "U0123ABCD", "channel": "C0123ABCD" }
+}
+```
+
+- `workspace` は `slack.workspaces` の名前、`userId` は本人の Slack のユーザー ID、`channel` はチャンネル（例: `#natsumi`）の ID です。bot をそのチャンネルに招待しておきます。
+- 本人がそのチャンネル（スレッドを含む）か bot との DM に書いたことは、Mac からの送信と同じく本人との会話（`mac_message`）として natsumi に届き、`attention` にはなりません。
+  受け取るとサーバーが `reaction` を付けます。ファイルへの記録はほかの発言と同じです。編集と削除は会話には届けません。本文の無い、画像だけの発言は会話に届けません（画像は会話に載せません）。
+- natsumi の返事と知らせ（`reply_to_mac`・`notify_owner`）は、すべてそのチャンネルに bot として投稿します。判定も承認も通しません。
+  アイコンはポッポさんと同じく表情ごとの `<publicOrigin>/avatar/<表情>.png` で、返事に画像があれば画像ごと上げます（このときはアイコンを付けられません）。
+  投稿に失敗してもログに 1 行出すだけで、会話の記録は残ります。
+- 本人のほかの人の発言と、ほかのチャンネルでの本人の発言は、これまでどおりです。
+- system prompt に、本人が Slack で読み書きしていることを短く足します。ツールの名前は変えません。
 
 ### 読みものの更新（sources_updated）
 

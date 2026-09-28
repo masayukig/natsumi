@@ -208,6 +208,8 @@ export interface LoopOptions {
   images?: ImageStore;
   /** How large and how many the images of one reply may be. */
   replyImageLimits?: ImageLimits;
+  /** Fork (ADR 0056): the owner reads and writes the conversation in a Slack channel, not on a Mac. */
+  ownerOnSlack?: boolean;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -821,7 +823,8 @@ export class ThinkingLoop {
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
     const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
-      always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice() });
+      always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice(),
+      ownerOnSlack: this.options.ownerOnSlack === true });
     return this.options.reviseSystemPrompt?.(prompt) ?? prompt;
   }
 

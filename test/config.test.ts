@@ -569,6 +569,20 @@ test('the Slack limits are checked', () => {
   rejects({ ...base(), slack: { ...slack(), channels: ['dev'] } }, 'slack.channels', /unknown/);
 });
 
+test('fork: slack.owner names a configured workspace, the owner\'s user ID and the channel\'s ID (ADR 0056)', () => {
+  assert.equal('owner' in parseConfig({ ...base(), slack: slack() }).slack!, false);
+  const owner = { workspace: 'work', userId: 'U0123ABCD', channel: 'C0123ABCD' };
+  assert.deepEqual(parseConfig({ ...base(), slack: { ...slack(), owner } }).slack?.owner, owner);
+  const with_ = (fields: Record<string, unknown>) => ({ ...base(), slack: { ...slack(), owner: { ...owner, ...fields } } });
+  rejects(with_({ workspace: 'home' }), 'slack.owner.workspace', /slack\.workspaces/);
+  rejects(with_({ userId: '' }), 'slack.owner.userId');
+  rejects(with_({ userId: 'u0123abcd' }), 'slack.owner.userId');
+  rejects(with_({ channel: '#natsumi' }), 'slack.owner.channel');
+  rejects(with_({ channel: 'D0123ABCD' }), 'slack.owner.channel');
+  rejects(with_({ extra: 1 }), 'slack.owner.extra', /unknown/);
+  rejects({ ...base(), slack: { ...slack(), owner: { workspace: 'work', userId: 'U0123ABCD' } } }, 'slack.owner.channel', /required/);
+});
+
 /** pi on the owner's own OpenAI-compatible model, whose endpoint, key and model the logprobs judge borrows by default. */
 const compatiblePi = () => ({ ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' },
   compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' } });

@@ -26,6 +26,16 @@
 // ── On the prefix: the system prompt ──
 
 /**
+ * Fork (ADR 0056): where the owner is when they talk with her in Slack. A fixed text added or not, like the workspace's
+ * two alternatives; the tools keep their names.
+ */
+export const OWNER_ON_SLACK_SECTION = `## 本人のいる場所
+- 本人は Mac を使っていません。本人との会話は Slack の本人のチャンネル（と、あなたとの DM）で行います。
+- reply_to_mac と notify_owner で送ったセリフは、そのチャンネルにあなたの投稿として載り、本人はそこで読みます。
+- 本人がそのチャンネルや DM に書いたことは、mac_message として届きます。同じものを /sources で見かけても、改めて返事をする必要はありません。
+- アバターの表情は本人には見えません。`;
+
+/**
  * Memory and the workspace, as natsumi reads them (ADR 0019). Two fixed alternatives rather than one text built from
  * the configuration: the system prompt is made once per session and must stay on the prefix cache.
  */
@@ -78,8 +88,10 @@ ${workspace}
  * a change to one leaves as much of the prefix as possible in front of it. Pure, so that the loop and the replay of
  * past sessions (ADR 0047) build the same prompt from the same memory.
  */
-export function composeSystemPrompt(parts: { workspace: boolean; personality: string; always: string; handoff: string; notice?: string }): string {
-  const instruction = BASE_INSTRUCTION(parts.workspace ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
+export function composeSystemPrompt(parts: { workspace: boolean; personality: string; always: string; handoff: string; notice?: string;
+  ownerOnSlack?: boolean }): string {
+  let instruction = BASE_INSTRUCTION(parts.workspace ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
+  if (parts.ownerOnSlack) instruction += `\n\n${OWNER_ON_SLACK_SECTION}`;
   let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
   if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
   if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;

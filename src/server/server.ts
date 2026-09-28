@@ -29,7 +29,7 @@ import { LogprobJudgeClient } from './logprob-judge.ts';
 import type { JudgeClient } from './judge.ts';
 import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
-import { SlackWorkspace } from './slack.ts';
+import { relayToOwner, SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -213,6 +213,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
+      ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
     });
     raiseInto = thinkingLoop;
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
@@ -227,11 +228,21 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // Each workspace connects in the background: Slack being out of reach, or a token it refuses, must not hold the
     // server's start. The socket reconnects on its own, and every connection fills in what was missed.
     if (archive && slackConfig && !thinkingLoop.unavailable) {
+      const owner = slackConfig.owner;
       for (const { name, api, socket } of slackConnections) {
+        // Fork (ADR 0056): the owner talks with her in their channel, as they would from the Mac.
+        const ownerHere = owner?.workspace === name ? owner : undefined;
+        if (ownerHere) {
+          relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin, images, log });
+        }
         const workspace = new SlackWorkspace({
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
           maxImageBytes: slackConfig.maxImageBytes, now, log,
           attention: attention => { sources?.attention(attention); },
+          ...(ownerHere ? { owner: { userId: ownerHere.userId, channel: ownerHere.channel, say: ({ requestId, text }) => {
+            const outcome = thinkingLoop.send({ requestId, deviceId: 'slack', text });
+            if (outcome.kind !== 'accepted') log(`slack (${name}): the owner's message was not taken (${outcome.code})`);
+          } } } : {}),
         });
         slackWorkspaces.push(workspace);
         void workspace.start().then(

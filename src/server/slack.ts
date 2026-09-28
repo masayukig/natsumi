@@ -26,6 +26,12 @@ export interface SlackWorkspaceOptions {
   maxImageBytes: number;
   now: () => number;
   log?: (line: string) => void;
+  /**
+   * Fork (ADR 0056): the owner, in this workspace. What they say in their channel or in the DM with the bot is handed
+   * to `say` as a message of the conversation, never told as an attention. `requestId` is the same for one message
+   * however often it comes.
+   */
+  owner?: { userId: string; channel: string; say: (input: { requestId: string; text: string }) => void };
 }
 
 /**
@@ -200,6 +206,7 @@ export class SlackWorkspace {
     const fetched = how.live ? message : { ...message, reactions: message.reactions ?? [] };
     const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, fetched), ...(reply ? { threadTs: reply } : {}) });
     if (!how.mayRaise || !(isNew || how.live)) return isNew;
+    if (await this.toOwner(channel, message)) return isNew;
     const kind = this.forHer(channel, message) ? (channel.is_im ? 'dm' : 'mention')
       : reply && this.fromPerson(message) && archive.spokeIn(name, channel.channel_id, reply) ? 'thread-reply' : undefined;
     if (!kind) return isNew;
@@ -226,6 +233,25 @@ export class SlackWorkspace {
       await this.options.archive.record(this.options.name, channel.channel_id,
         await this.archived(channel, { ...parent, reactions: parent.reactions ?? [] }));
     }
+  }
+
+  /**
+   * Fork (ADR 0056): the owner's own message in their channel or in the DM, handed to the conversation with the
+   * server's reaction. One without text, images alone, is left to the path of anyone else's: the conversation takes text.
+   */
+  private async toOwner(channel: ChannelRow, message: SlackMessage): Promise<boolean> {
+    const owner = this.options.owner;
+    if (!owner || message.botId || message.user !== owner.userId) return false;
+    if (channel.channel_id !== owner.channel && channel.is_im !== 1) return false;
+    const text = await this.plainText(message.text);
+    if (text.trim() === '') return false;
+    // The same mark as a mention's: one message is handed on once, whichever way and however often it comes.
+    if (!this.options.archive.markForHer(this.options.name, channel.channel_id, message.ts)) return true;
+    owner.say({ requestId: `slack:${channel.channel_id}:${message.ts}`, text });
+    try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
+      this.report('the reaction could not be added', error);
+    }
+    return true;
   }
 
   /** A real mention of the bot, or a DM, from a person. No bot is for her, her own least of all. */
@@ -344,6 +370,41 @@ export class SlackWorkspace {
   }
 
   private log(line: string) { this.options.log?.(`slack (${this.options.name}): ${line}`); }
+}
+
+/**
+ * Fork (ADR 0056): everything natsumi says to the owner, a reply or a notice, is also posted in the owner's channel,
+ * under the icon of her expression like the dove's posts, and with the images of a reply as one upload. There is no
+ * judge and no approval: the channel is the owner's own. A failure is logged and the line stays said.
+ */
+export function relayToOwner(options: {
+  loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
+  api: SlackApi; workspace: string; channel: string; publicOrigin: string;
+  images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
+  log?: (line: string) => void;
+}): () => void {
+  const { api, channel } = options;
+  let chain: Promise<void> = Promise.resolve();
+  return options.loop.subscribe(({ type, payload }) => {
+    if (type !== 'conversation.message' || payload.role !== 'natsumi' || typeof payload.text !== 'string') return;
+    const text = payload.text;
+    const expression = typeof payload.expression === 'string' ? payload.expression : 'neutral';
+    const shown = Array.isArray(payload.images) ? payload.images as { imageId: string; mimeType: string }[] : [];
+    // One at a time, so the channel reads in the order she said them.
+    chain = chain.then(async () => {
+      try {
+        const files = [];
+        for (const image of shown) {
+          const read = await options.images.read(image.imageId);
+          if (read) files.push({ filename: `${image.imageId}.${IMAGE_TYPES[read.mimeType] ?? 'png'}`, data: read.data });
+        }
+        if (files.length > 0) await api.uploadFiles(channel, files, { initialComment: text });
+        else await api.postMessage(channel, text, { iconUrl: `${options.publicOrigin}/avatar/${expression}.png` });
+      } catch (error) {
+        options.log?.(`slack (${options.workspace}): posting to the owner's channel failed (${describeFailure(error)})`);
+      }
+    });
+  });
 }
 
 async function exists(path: string): Promise<boolean> {
