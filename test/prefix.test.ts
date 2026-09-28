@@ -74,6 +74,12 @@ const MEMORY: Record<string, string> = {
   'handoff.md': '# 引き継ぎ\n\n固定の引き継ぎ。\n',
 };
 
+/**
+ * The manual's index as the server hands it over (ADR 0056), fixed for the same reason: the frame around it is what is
+ * pinned. It is given without a workspace too, where it must not appear.
+ */
+const MANUAL_INDEX = '固定の目次。';
+
 /** Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made. */
 async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: string[] }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-prefix-')));
@@ -89,7 +95,7 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
   let session: AgentSession | undefined;
   const loop = await ThinkingLoop.open({
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-    runtime: fixtureRuntime,
+    runtime: fixtureRuntime, manualIndex: MANUAL_INDEX,
     configureSession: captured => { session = captured; },
     loop: { ...LOOP_DEFAULTS, ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}) },
   });

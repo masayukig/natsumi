@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { AGENT_LIST_PATH } from '../src/server/agent-requests.ts';
 import { AGENT_LIST_DIRECTORY, AGENT_LIST_FILE } from '../src/server/agent-list.ts';
-import { ASK_AGENT_DESCRIPTION, WORKSPACE_SECTION } from '../src/server/prompts.ts';
+import { ASK_AGENT_DESCRIPTION, workspaceSection } from '../src/server/prompts.ts';
 
 const root = new URL('..', import.meta.url).pathname;
 const read = (path: string) => readFile(`${root}${path}`, 'utf8');
@@ -15,7 +15,7 @@ const mentioned = (text: string) => [...text.matchAll(/\/manual\/[\w./-]*[\w]/g)
 // ADR 0036: what she is pointed at must be there. A renamed page would leave her reading nothing.
 test('every page of the manual that the prompt, the tool and the manual itself name exists', async () => {
   const pages = await readdir(`${root}manual`);
-  const texts = [WORKSPACE_SECTION, ASK_AGENT_DESCRIPTION, AGENT_LIST_PATH, ...await Promise.all(pages.map(page => read(`manual/${page}`)))];
+  const texts = [workspaceSection(), ASK_AGENT_DESCRIPTION, AGENT_LIST_PATH, ...await Promise.all(pages.map(page => read(`manual/${page}`)))];
   const named = new Set(texts.flatMap(mentioned));
   assert.ok(named.has('/manual/INDEX.md'));
   assert.ok(named.has(LIST));
