@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Secrets are not here: natsumi-github, natsumi-slack and direct-backup-creds are made by hand (README.md).
+resources:
+  - scc.yaml
+  - namespace.yaml
+  - service-route.yaml
+  - statefulset.yaml
+  - backup-cronjob.yaml
+configMapGenerator:
+  # The hash suffix restarts natsumi-0 when config.json changes.
+  - name: natsumi-config
+    namespace: natsumi
+    files:
+      - config.json
+# The version to run, in one place: both images are built from the same v0.x.y tag (.github/workflows/images.yml).
+images:
+  - name: ghcr.io/masayukig/natsumi
+    newTag: vX.Y.Z
+  - name: ghcr.io/masayukig/natsumi-workspace
+    newTag: vX.Y.Z

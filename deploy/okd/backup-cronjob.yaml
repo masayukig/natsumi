@@ -1,0 +1,161 @@
+# Daily backup to RGW, in the shape of the cluster's other <app>-backup-direct jobs (ADR 0033).
+#
+# Unlike most of them, this job mounts the PVC itself instead of `oc exec`-ing into the app: the RWO volume can be
+# mounted by a second pod on the same node, so the job is pinned next to natsumi-0 (podAffinity) and needs no RBAC.
+# If that node has no room the job does not run that day (accepted in ADR 0033).
+# It runs as the server's UID and group (1000/1000) under the natsumi SCC, so it can read everything the server and
+# the workspace wrote, and its fsGroup matches the volume's, so nothing on the volume is re-grouped.
+#
+# What lands in s3 okd-backup-natsumi:natsumi-direct-backup/natsumi/:
+#   sqlite/state-<UTC timestamp>.sqlite  consistent copy (SQLite online backup), the last 14 days kept
+#   mirror/                              the whole volume (data/ and pi/), with mode/uid/gid as rclone metadata,
+#                                        minus the live state.sqlite (the copy above is the consistent one)
+# Memory keeps its own generations in git; Pi's sessions are mirror only (ADR 0033).
+# The bucket has versioning (lab-ops#702): what the mirror overwrites or deletes stays as noncurrent versions.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: natsumi-backup-direct
+  namespace: natsumi
+spec:
+  schedule: "25 3 * * *"
+  timeZone: Asia/Tokyo
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: natsumi
+            app.kubernetes.io/component: backup
+          annotations:
+            openshift.io/required-scc: natsumi
+        spec:
+          restartPolicy: Never
+          serviceAccountName: natsumi
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: natsumi
+                      app.kubernetes.io/component: app
+          initContainers:
+            # A consistent copy of the live database while the server keeps running (`.backup`, through node:sqlite
+            # in the server image; the image has no sqlite3 CLI). Checked before anything is uploaded (lab-ops#1062):
+            # quick_check, and file size == page_size * page_count.
+            - name: sqlite-snapshot
+              image: ghcr.io/masayukig/natsumi:TAG
+              env:
+                - name: SRC
+                  value: /pvc/data/.natsumi/state.sqlite
+                - name: DST
+                  value: /work/state.sqlite
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  # Opening a missing file would create an empty database in the server's place.
+                  [ -f "$SRC" ] || { echo "ERROR: $SRC not found" >&2; exit 1; }
+                  node --input-type=module -e '
+                  import { DatabaseSync, backup } from "node:sqlite";
+                  import { statSync } from "node:fs";
+                  const { SRC, DST } = process.env;
+                  const source = new DatabaseSync(SRC);
+                  source.exec("PRAGMA busy_timeout = 5000");
+                  await backup(source, DST);
+                  source.close();
+                  const copy = new DatabaseSync(DST, { readOnly: true });
+                  const { page_size } = copy.prepare("PRAGMA page_size").get();
+                  const { page_count } = copy.prepare("PRAGMA page_count").get();
+                  const { quick_check } = copy.prepare("PRAGMA quick_check").get();
+                  copy.close();
+                  const size = statSync(DST).size;
+                  if (quick_check !== "ok" || size !== page_size * page_count) {
+                    console.error(`ERROR: snapshot is not whole (quick_check=${quick_check}, size=${size}, pages=${page_size}x${page_count})`);
+                    process.exit(1);
+                  }
+                  console.log(`snapshot ok: ${size} bytes`);
+                  '
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                # Read-write: a WAL database needs its -shm writable even to be read.
+                - name: data
+                  mountPath: /pvc
+                - name: work
+                  mountPath: /work
+          containers:
+            - name: backup
+              # The per-namespace rclone mirror every direct backup uses (oc import-image, README).
+              image: image-registry.openshift-image-registry.svc:5000/natsumi/rclone:latest
+              imagePullPolicy: Always
+              env:
+                - name: RCLONE_S3_ENDPOINT
+                  value: http://192.168.1.71:8000
+                - name: HOME
+                  value: /tmp
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  cp /creds/rclone.conf /tmp/rclone.conf
+                  rc() { rclone --config /tmp/rclone.conf "$@"; }
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  DEST="okd-backup-natsumi:natsumi-direct-backup/natsumi"
+                  echo "Uploading the SQLite copy..."
+                  rc copyto /work/state.sqlite "${DEST}/sqlite/state-${TS}.sqlite" --s3-storage-class HOT
+                  echo "Mirroring the volume..."
+                  # Files natsumi writes while this runs (Pi sessions, sources) are copied as they are then.
+                  rc sync /pvc "${DEST}/mirror" --metadata --local-no-check-updated --s3-storage-class HOT \
+                    --exclude '/lost+found/**' --exclude '/data/.natsumi/state.sqlite*'
+                  echo "Pruning SQLite copies older than 14 days..."
+                  rc delete "${DEST}/sqlite" --min-age 14d
+                  # This job's duty ends at RGW; offsite pulls from RGW (lab-ops#214). Heartbeat after RGW (lab-ops#199).
+                  wget -q -O /dev/null "$(cat /creds/push-url)" || echo "WARNING: uptime-kuma heartbeat push failed" >&2
+                  echo "Done: ${TS}"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: data
+                  mountPath: /pvc
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                  readOnly: true
+                - name: creds
+                  mountPath: /creds
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: natsumi-data
+            - name: work
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+            - name: creds
+              secret:
+                secretName: direct-backup-creds
