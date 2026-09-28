@@ -195,6 +195,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       config: { thresholds: slackConfig.judge?.thresholds ?? JUDGE_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
         placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
       publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
+      ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR 0056)
       images,
       now, log, raise: record => raiseInto?.raise('dove-reply', record),
     }) : undefined;
@@ -234,7 +235,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         // Fork (ADR 0056): the owner talks with her in their channel, as they would from the Mac.
         const ownerHere = owner?.workspace === name ? owner : undefined;
         if (ownerHere) {
-          relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin, images, log });
+          relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
+            ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), images, log });
           // Fork (ADR 0057): and approves the dove's drafts in the DM with the bot.
           if (theDove) new SlackApprovals({ db, dove: theDove, api, socket, workspace: name, ownerUserId: ownerHere.userId, log }).sync();
         }

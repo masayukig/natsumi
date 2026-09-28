@@ -97,3 +97,13 @@ test('what natsumi says to the owner is posted in the channel, under her express
   assert.deepEqual(slack.uploads, [{ channel: 'C1', files: [{ filename: 'img1.png', data: PNG }], initialComment: '描きました' }]);
   assert.deepEqual(logs, []);
 });
+
+test('with slack.avatarBaseUrl the owner\'s channel gets her icon from there', async () => {
+  const slack = new FakeSlack();
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  relayToOwner({ loop: { subscribe: l => { listener = l; return () => {}; } }, api: slack, workspace: 'work', channel: 'C1',
+    publicOrigin: 'https://natsumi.example.test', avatarBaseUrl: 'https://cdn.example.test/avatar', images: { read: async () => undefined } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: 'おはよう', expression: 'smile' } });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(slack.posts[0]!.iconUrl, 'https://cdn.example.test/avatar/smile.png');
+});

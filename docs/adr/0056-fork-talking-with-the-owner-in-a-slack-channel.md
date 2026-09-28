@@ -24,6 +24,9 @@ Slack は読みもので、本人の発言も `attention` として届き、nats
   返事の画像（[ADR 0045](0045-showing-the-owner-images-with-a-reply.md)）は、ポッポさんと同じ `uploadFiles` で本文をコメントにして上げる。失敗はログに 1 行出すだけにする。
 - system prompt には、本人が Slack で読み書きしていることを固定の短い節として足す。ツールの名前は変えない。
 - `slack.owner` が無ければ、上流と同じに動く。
+- 追記: publicOrigin が LAN の中だけだと、Slack のサーバーは `icon_url` の `<publicOrigin>/avatar/<表情>.png` を取れず、アイコンが出ない。
+  設定 `slack.avatarBaseUrl`（https だけ、末尾の `/` は落とす）があれば、ポッポさんの投稿と本人のチャンネルへの投稿は `<avatarBaseUrl>/<表情>.png` を使う。
+  無ければ上流と同じ `<publicOrigin>/avatar`。置き場所は `assets/avatar` を公開したところならどこでもよい。
 
 退けた案:
 

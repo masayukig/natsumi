@@ -250,6 +250,11 @@ export interface SlackConfig {
    * (ADR 0056). Absent, the owner is only on the Mac and the iPhone, as upstream.
    */
   owner?: { workspace: string; userId: string; channel: string };
+  /**
+   * Fork (ADR 0056): where Slack fetches her icons, `<avatarBaseUrl>/<expression>.png`, without a trailing slash. Absent,
+   * `<publicOrigin>/avatar`, as upstream; set it when publicOrigin is out of Slack's reach.
+   */
+  avatarBaseUrl?: string;
 }
 
 /**
@@ -742,7 +747,7 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   // The list of reactions was dropped (ADR 0042); one still written would promise a limit that is no longer there.
   if ('reactions' in slack) throw new ConfigError(`${path}.reactions`, 'was removed: any emoji that exists may be asked for (ADR 0042); delete it');
   onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', ...IGNORED_SLACK_KEYS, 'judge', 'approvalExpiryDays',
-    'placementFollowing', 'judgeContext', 'postImages', 'owner']);
+    'placementFollowing', 'judgeContext', 'postImages', 'owner', 'avatarBaseUrl']);
   const ignored = IGNORED_SLACK_KEYS.filter(key => key in slack).map(key => `${path}.${key}`);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
@@ -803,7 +808,16 @@ function parseSlack(value: unknown, path: string): SlackConfig {
     approvalExpiryDays: expiry as number, placementFollowing: following,
     judgeContext: { messages: judgeMessages as number, chars: judgeChars as number },
     postImages: { maxBytes: imageBytes as number, maxCount: imageCount as number },
-    ...(slack.owner === undefined ? {} : { owner: parseSlackOwner(slack.owner, `${path}.owner`, workspaces) }) };
+    ...(slack.owner === undefined ? {} : { owner: parseSlackOwner(slack.owner, `${path}.owner`, workspaces) }),
+    ...(slack.avatarBaseUrl === undefined ? {} : { avatarBaseUrl: parseAvatarBaseUrl(slack.avatarBaseUrl, `${path}.avatarBaseUrl`) }) };
+}
+
+/** Fork (ADR 0056): an https URL Slack's servers can fetch the icons under. No credentials, query or fragment. */
+function parseAvatarBaseUrl(value: unknown, path: string): string {
+  const url = parseUrl(value, path);
+  if (url.protocol !== 'https:') throw new ConfigError(path, 'must use https');
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError(path, 'must not carry credentials, a query or a fragment');
+  return url.href.replace(/\/+$/, '');
 }
 
 /** Fork (ADR 0056): the owner's workspace, their Slack user ID and the channel's ID, as Slack writes them. */

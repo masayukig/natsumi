@@ -583,6 +583,19 @@ test('fork: slack.owner names a configured workspace, the owner\'s user ID and t
   rejects({ ...base(), slack: { ...slack(), owner: { workspace: 'work', userId: 'U0123ABCD' } } }, 'slack.owner.channel', /required/);
 });
 
+test('fork: slack.avatarBaseUrl is an https URL without its trailing slash, and absent unless written (ADR 0056)', () => {
+  assert.equal('avatarBaseUrl' in parseConfig({ ...base(), slack: slack() }).slack!, false);
+  const with_ = (avatarBaseUrl: unknown) => ({ ...base(), slack: { ...slack(), avatarBaseUrl } });
+  assert.equal(parseConfig(with_('https://cdn.example.test/natsumi/avatar/')).slack?.avatarBaseUrl, 'https://cdn.example.test/natsumi/avatar');
+  assert.equal(parseConfig(with_('https://cdn.example.test/avatar')).slack?.avatarBaseUrl, 'https://cdn.example.test/avatar');
+  rejects(with_('http://cdn.example.test/avatar'), 'slack.avatarBaseUrl', /https/);
+  rejects(with_('http://127.0.0.1/avatar'), 'slack.avatarBaseUrl', /https/);
+  rejects(with_('https://user:pass@cdn.example.test/avatar'), 'slack.avatarBaseUrl', /credentials/);
+  rejects(with_('https://cdn.example.test/avatar?x=1'), 'slack.avatarBaseUrl', /query/);
+  rejects(with_('not a url'), 'slack.avatarBaseUrl');
+  rejects(with_(''), 'slack.avatarBaseUrl');
+});
+
 /** pi on the owner's own OpenAI-compatible model, whose endpoint, key and model the logprobs judge borrows by default. */
 const compatiblePi = () => ({ ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' },
   compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' } });
