@@ -64,11 +64,11 @@ export interface SlackApi {
   uploadFiles(channel: string, files: { filename: string; data: Buffer }[], options: { threadTs?: string; initialComment?: string }): Promise<void>;
   /** A file's bytes, or undefined when it is larger than `maxBytes`. */
   download(url: string, maxBytes: number): Promise<Buffer | undefined>;
-  /** Fork (ADR 0057): the DM channel with one person (`conversations.open`, which needs `im:write`). */
+  /** Fork (ADR F02): the DM channel with one person (`conversations.open`, which needs `im:write`). */
   openDm(userId: string): Promise<string>;
-  /** Fork (ADR 0057): posts Block Kit blocks as the bot, with `text` for the notification. Returns the new message's ts. */
+  /** Fork (ADR F02): posts Block Kit blocks as the bot, with `text` for the notification. Returns the new message's ts. */
   postBlocks(channel: string, text: string, blocks: unknown[]): Promise<string>;
-  /** Fork (ADR 0057): replaces a message the bot posted (`chat.update`). */
+  /** Fork (ADR F02): replaces a message the bot posted (`chat.update`). */
   updateBlocks(channel: string, ts: string, text: string, blocks: unknown[]): Promise<void>;
 }
 
@@ -77,7 +77,7 @@ export interface SlackSocket {
   onEvent(handler: (event: Record<string, unknown>) => void): void;
   /** Every (re)connection, the first included. */
   onConnected(handler: () => void): void;
-  /** Fork (ADR 0057): a Block Kit interaction (`block_actions` and the like), its payload as Slack sent it. */
+  /** Fork (ADR F02): a Block Kit interaction (`block_actions` and the like), its payload as Slack sent it. */
   onInteractive(handler: (payload: Record<string, unknown>) => void): void;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -304,7 +304,7 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
       });
     },
     onConnected(handler) { socketClient.on('connected', () => handler()); },
-    // Fork (ADR 0057): the `slack_event` listener above acknowledges every envelope, this one included.
+    // Fork (ADR F02): the `slack_event` listener above acknowledges every envelope, this one included.
     onInteractive(handler) {
       socketClient.on('interactive', ({ body }: { body?: unknown }) => {
         if (body && typeof body === 'object') handler(body as Record<string, unknown>);

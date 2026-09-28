@@ -27,7 +27,7 @@ export interface SlackWorkspaceOptions {
   now: () => number;
   log?: (line: string) => void;
   /**
-   * Fork (ADR 0056): the owner, in this workspace. What they say in their channel or in the DM with the bot is handed
+   * Fork (ADR F01): the owner, in this workspace. What they say in their channel or in the DM with the bot is handed
    * to `say` as a message of the conversation, never told as an attention. `requestId` is the same for one message
    * however often it comes.
    */
@@ -236,7 +236,7 @@ export class SlackWorkspace {
   }
 
   /**
-   * Fork (ADR 0056): the owner's own message in their channel or in the DM, handed to the conversation with the
+   * Fork (ADR F01): the owner's own message in their channel or in the DM, handed to the conversation with the
    * server's reaction. One without text, images alone, is left to the path of anyone else's: the conversation takes text.
    */
   private async toOwner(channel: ChannelRow, message: SlackMessage): Promise<boolean> {
@@ -373,7 +373,7 @@ export class SlackWorkspace {
 }
 
 /**
- * Fork (ADR 0056): everything natsumi says to the owner, a reply or a notice, is also posted in the owner's channel,
+ * Fork (ADR F01): everything natsumi says to the owner, a reply or a notice, is also posted in the owner's channel,
  * under the icon of her expression like the dove's posts, and with the images of a reply as one upload. There is no
  * judge and no approval: the channel is the owner's own. A failure is logged and the line stays said.
  */

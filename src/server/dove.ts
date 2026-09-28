@@ -66,7 +66,7 @@ export interface SlackDoveOptions {
   config: DoveConfig;
   /** Where Slack fetches the icons from: `<publicOrigin>/avatar/<feeling>.png` (ADR 0040). */
   publicOrigin: string;
-  /** Fork (ADR 0056): where the icons are fetched instead, `<avatarBaseUrl>/<feeling>.png`, when publicOrigin is out of Slack's reach. */
+  /** Fork (ADR F01): where the icons are fetched instead, `<avatarBaseUrl>/<feeling>.png`, when publicOrigin is out of Slack's reach. */
   avatarBaseUrl?: string;
   /** natsumi's `/work` as the server sees it: the only place images are taken from. */
   workDirectory: string;

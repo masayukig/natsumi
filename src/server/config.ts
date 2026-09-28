@@ -247,11 +247,11 @@ export interface SlackConfig {
   postImages: { maxBytes: number; maxCount: number };
   /**
    * Fork: the owner talks with her in one channel of one workspace, and in the DM with the bot, instead of on a Mac
-   * (ADR 0056). Absent, the owner is only on the Mac and the iPhone, as upstream.
+   * (ADR F01). Absent, the owner is only on the Mac and the iPhone, as upstream.
    */
   owner?: { workspace: string; userId: string; channel: string };
   /**
-   * Fork (ADR 0056): where Slack fetches her icons, `<avatarBaseUrl>/<expression>.png`, without a trailing slash. Absent,
+   * Fork (ADR F01): where Slack fetches her icons, `<avatarBaseUrl>/<expression>.png`, without a trailing slash. Absent,
    * `<publicOrigin>/avatar`, as upstream; set it when publicOrigin is out of Slack's reach.
    */
   avatarBaseUrl?: string;
@@ -812,7 +812,7 @@ function parseSlack(value: unknown, path: string): SlackConfig {
     ...(slack.avatarBaseUrl === undefined ? {} : { avatarBaseUrl: parseAvatarBaseUrl(slack.avatarBaseUrl, `${path}.avatarBaseUrl`) }) };
 }
 
-/** Fork (ADR 0056): an https URL Slack's servers can fetch the icons under. No credentials, query or fragment. */
+/** Fork (ADR F01): an https URL Slack's servers can fetch the icons under. No credentials, query or fragment. */
 function parseAvatarBaseUrl(value: unknown, path: string): string {
   const url = parseUrl(value, path);
   if (url.protocol !== 'https:') throw new ConfigError(path, 'must use https');
@@ -820,7 +820,7 @@ function parseAvatarBaseUrl(value: unknown, path: string): string {
   return url.href.replace(/\/+$/, '');
 }
 
-/** Fork (ADR 0056): the owner's workspace, their Slack user ID and the channel's ID, as Slack writes them. */
+/** Fork (ADR F01): the owner's workspace, their Slack user ID and the channel's ID, as Slack writes them. */
 function parseSlackOwner(value: unknown, path: string, workspaces: SlackConfig['workspaces']): NonNullable<SlackConfig['owner']> {
   const owner = object(value, path);
   onlyKeys(owner, path, ['workspace', 'userId', 'channel']);

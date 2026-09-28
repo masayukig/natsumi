@@ -1,4 +1,4 @@
-# 0056. fork: 本人と Slack のチャンネルで話す
+# F01. fork: 本人と Slack のチャンネルで話す
 
 - Date: 2026-09-28
 - Status: Accepted（この fork だけの決定）

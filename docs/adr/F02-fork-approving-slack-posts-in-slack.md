@@ -1,4 +1,4 @@
-# 0057. fork: Slack の投稿を Slack で承認する
+# F02. fork: Slack の投稿を Slack で承認する
 
 - Date: 2026-09-28
 - Status: Accepted（この fork だけの決定）
@@ -8,7 +8,7 @@
 ポッポさんが本人に回した下書き（`to_owner`）は承認待ちになり、本人は iPhone のアプリの `approval.decide` で決める
 （[ADR 0040](0040-the-dove-sends-what-the-judge-passes.md)、[ADR 0041](0041-approving-slack-posts-on-the-iphone.md)）。
 この fork の本人は iPhone も Mac も持たないので、承認待ちは誰にも見られないまま `slack.approvalExpiryDays` で期限切れになる。
-本人と natsumi の会話は、すでに Slack にある（[ADR 0056](0056-fork-talking-with-the-owner-in-a-slack-channel.md)）。
+本人と natsumi の会話は、すでに Slack にある（[ADR F01](F01-fork-talking-with-the-owner-in-a-slack-channel.md)）。
 
 ## Decision
 
