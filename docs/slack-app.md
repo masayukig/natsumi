@@ -39,7 +39,10 @@ Slack の画面の名前は変わることがあります。見当たらない�
          - chat:write.customize
          - emoji:read
          - files:write
+         - im:write
    settings:
+     interactivity:
+       is_enabled: true
      event_subscriptions:
        bot_events:
          - message.channels
@@ -92,7 +95,12 @@ Socket Mode は natsumi から Slack へ外向きにつなぐので、公開す�
 | `emoji:read` | ポッポさんに頼まれたリアクションが、ワークスペースのカスタム絵文字にあるか確かめる（`emoji.list`）。無ければ標準の絵文字だけを付けます |
 | `files:write` | ポッポさんが画像を投稿する（`files.getUploadURLExternal`・`files.completeUploadExternal`）。無ければ画像付きの投稿は Slack に断られ、なつみには届けられなかったと伝わります |
 
+| `im:write` | fork: 本人との DM を開いて、承認のメッセージを投稿する（`conversations.open`、[ADR 0057](adr/0057-fork-approving-slack-posts-in-slack.md)）。書き換え（`chat.update`）は `chat:write` で足ります |
+
 User Token Scopes には何も足しません。natsumi は本人の user token を使いません。
+
+fork: 承認のボタンを受け取るため、「Interactivity & Shortcuts」を有効にします（マニフェストの `settings.interactivity.is_enabled: true`）。
+Socket Mode なので Request URL は要りません。押したことは Socket Mode の接続で届きます。
 
 ## 4. イベントを購読する
 
