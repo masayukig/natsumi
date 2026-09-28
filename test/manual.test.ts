@@ -98,6 +98,26 @@ test('the page on images says how to draw with the default params, where to put 
   ].join('\n')));
 });
 
+// Her body is copied into every picture of her; only the clothes change with the scene.
+test('the page on images says her body lines go into every picture of her, whatever she wears or however it is asked', async () => {
+  const page = await read('manual/images.md');
+  const self = page.slice(page.indexOf('## あなた自身の姿'));
+  assert.ok(self.startsWith('## あなた自身の姿'));
+  // Which lines are her body and which are her clothes, and that the body is kept even when written as a scene.
+  for (const word of ['体の行', '服の行', '自撮りでなくても', 'freckles', 'large sagging breasts']) assert.ok(self.includes(word), word);
+  // A check to run on the prompt before drawing.
+  assert.match(self, /grep -q .*\/work\/prompts\//);
+  // Examples in other clothes and of a mood, and every prompt of her in them keeps her body lines as the owner wrote them.
+  const blocks = [...self.matchAll(/```\n([\s\S]*?)```/g)].map(match => match[1]!);
+  const prompts = blocks.filter(block => block.includes('<lora:kutara_aki_anima.v3:1>'));
+  assert.ok(prompts.length >= 3, `${prompts.length} prompts of her`);
+  for (const prompt of prompts) {
+    for (const line of ['woman, low ponytail, freckles, large sagging breasts,', 'black glasses,']) assert.ok(prompt.includes(line), `${line}\n${prompt}`);
+  }
+  assert.ok(prompts.some(prompt => !prompt.includes('business suit')), 'no example in other clothes');
+  assert.ok(prompts.some(prompt => /mood|feeling/i.test(prompt) || !/looking at viewer/.test(prompt)), 'no example that is not a selfie');
+});
+
 test('the Slack page says how to name images for the dove', async () => {
   const page = await read('manual/slack.md');
   assert.ok(page.includes('画像: /work/'));
