@@ -12,6 +12,7 @@
  * **Changing one of them costs every running session its cache until the nightly switch replaces it**, and until
  * then every turn pays to read the whole prompt again. For the same reason nothing here may be built out of a
  * setting or out of what the image happens to hold: a deployment would then move the prefix on its own.
+ * The manual's index is the one part read from a file, and that file is the code's own `manual/INDEX.md` (ADR 0056).
  *
  * ## On a turn's input: may differ every turn
  *
@@ -27,9 +28,11 @@
 
 /**
  * Memory and the workspace, as natsumi reads them (ADR 0019). Two fixed alternatives rather than one text built from
- * the configuration: the system prompt is made once per session and must stay on the prefix cache.
+ * the configuration: the system prompt is made once per session and must stay on the prefix cache. The one part not
+ * written here is the manual's index (ADR 0056), which `manual/INDEX.md` holds: a file of the code, read when the
+ * server starts, that changes only when the image does.
  */
-export const WORKSPACE_SECTION = `## 記憶と作業場
+const WORKSPACE_BULLETS = `## 記憶と作業場
 - あなたには自分の作業環境があります。run_shell でコマンドを動かして、記憶を読み書きし、調べものも下書きも集計もそこで行います。
 - 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、探して読みます。
 - 記憶を探すときは、まず /memory/INDEX.md（記憶の索引）を読みます。言葉で探すときは search_memory を使います。見つけたファイルは read で読みます。
@@ -40,8 +43,33 @@ export const WORKSPACE_SECTION = `## 記憶と作業場
 - その日に起きたことや経緯は、/memory/diary/ のその日のファイル（YYYY-MM-DD.md）に書きます。
 - ファイルの統合・分割・置き場所の整理と INDEX.md は、夜に記憶の整理係が行います。INDEX.md はあなたには書き換えられません。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
-- 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、本人の目にも触れません。残したいものは必ず /memory に書きます。
-- やり方が分からないとき（外のエージェントに頼みたいときなど）は、まず /manual/INDEX.md を読みます。`;
+- 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、本人の目にも触れません。残したいものは必ず /memory に書きます。`;
+
+/** Where to look when she does not know how, with the index below it (ADR 0056). */
+const MANUAL_POINTER = '- やり方が分からないとき（外のエージェントに頼みたいときなど）は、下のマニュアルの目次から、合うページを read で読みます。';
+
+/** The one sentence of ADR 0036, for a server that could not read the manual's index. */
+export const MANUAL_FALLBACK = '- やり方が分からないとき（外のエージェントに頼みたいときなど）は、まず /manual/INDEX.md を読みます。';
+
+/**
+ * The commands only the workspace has, one fixed line each (ADR 0056): what it does, how it does not work, and the
+ * page to read. Written here rather than listed from the image (ADR 0019). `view` is the server's own and answers only
+ * a command that is `view` and a path alone (ADR 0039).
+ */
+export const WORKSPACE_COMMANDS = `### 作業環境だけのコマンド
+普通の Debian には無い、この作業環境だけのコマンドです。run_shell で動かします。
+- \`sdctl\`: 絵・画像を作ります（\`sdctl txt2img --prompt <YAML のファイル>\`）。Python などで画像を自分で描かずに、これを使います。作る前に /manual/images.md を読みます。
+- \`sources-diff\`: /sources の読みもの（Slack など）の、前に見せてからの差分を見ます。/sources で git diff をしても差分は出ません。使い方は /manual/slack.md にあります。
+- \`view <パス>\`: /work か /sources の下の画像を見ます。run_shell のコマンドを \`view /work/images/cat.png\` のような 1 行だけにします。\`cd\` や \`&&\`・\`;\` とつなぐと、ただのコマンドとして動いて見られません。詳しくは /manual/slack.md にあります。`;
+
+/**
+ * The section for a session with a workspace: the fixed lines, the commands, and the manual's index as the server
+ * read it at start. Without the index, the sentence that points at it stands in its place.
+ */
+export function workspaceSection(manualIndex?: string): string {
+  if (!manualIndex) return `${WORKSPACE_BULLETS}\n${MANUAL_FALLBACK}\n\n${WORKSPACE_COMMANDS}`;
+  return `${WORKSPACE_BULLETS}\n${MANUAL_POINTER}\n\n${WORKSPACE_COMMANDS}\n\n### マニュアルの目次（/manual/INDEX.md）\n\n${manualIndex}`;
+}
 
 export const NO_WORKSPACE_SECTION = `## 記憶と作業場
 - いまは作業環境につながっていないので、記憶を読むことも書くこともできません。
@@ -73,13 +101,15 @@ ${workspace}
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
 
 /**
- * The system prompt from its parts, each already read and stripped of its opening heading: the base instruction, the
- * personality, the always-memory, the handoff, and what the last commit put back. Sections stand steadiest first, so
- * a change to one leaves as much of the prefix as possible in front of it. Pure, so that the loop and the replay of
- * past sessions (ADR 0047) build the same prompt from the same memory.
+ * The system prompt from its parts, each already read and stripped of its opening heading: the base instruction with
+ * the manual's index, the personality, the always-memory, the handoff, and what the last commit put back. Sections
+ * stand steadiest first, so a change to one leaves as much of the prefix as possible in front of it. Pure, so that the
+ * loop and the replay of past sessions (ADR 0047) build the same prompt from the same memory.
  */
-export function composeSystemPrompt(parts: { workspace: boolean; personality: string; always: string; handoff: string; notice?: string }): string {
-  const instruction = BASE_INSTRUCTION(parts.workspace ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
+export function composeSystemPrompt(parts: {
+  workspace: boolean; manualIndex?: string; personality: string; always: string; handoff: string; notice?: string;
+}): string {
+  const instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex) : NO_WORKSPACE_SECTION);
   let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
   if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
   if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;

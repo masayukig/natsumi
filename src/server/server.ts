@@ -15,6 +15,7 @@ import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from '
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
 import { bearerToken, openListener, type Listener } from './http.ts';
 import { acquireProcessLock, type ProcessLock } from './lock.ts';
+import { codeManualDirectory, readManualIndex } from './manual.ts';
 import { MIGRATIONS } from './migrations.ts';
 import { isoAt } from './nightly.ts';
 import { createModelRuntime } from './pi-runtime.ts';
@@ -202,6 +203,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         : 'slack: no judge is configured; every draft goes to the owner');
     }
 
+    // The manual's index goes into her instructions (ADR 0056). Without it she is pointed at /manual/INDEX.md instead,
+    // which the workspace still holds: a guide that is missing never stops the start.
+    const manualIndex = await readManualIndex(await codeManualDirectory());
+    if (!manualIndex) log('manual: INDEX.md could not be read; the instructions point at /manual/INDEX.md instead');
+
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
@@ -211,6 +217,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator,
+      ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
     });

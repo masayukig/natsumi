@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -21,6 +21,7 @@ import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
 import type { Html } from './html.ts';
 import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
+import { codeManualDirectory } from './manual.ts';
 import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
 import { checkHealth, readStatus } from './status.ts';
@@ -84,8 +85,6 @@ const STATIC_TYPES: Record<string, string> = {
   [STATIC_FILES.js]: 'text/javascript; charset=utf-8',
 };
 const staticCache = new Map<string, Buffer>();
-/** `manual/` beside `src/` in a checkout, and beside `dist/` in the image, as the workspace has it at /manual (ADR 0054). */
-const MANUAL_DIRECTORIES = ['../../manual/', '../../../manual/'].map(path => fileURLToPath(new URL(path, import.meta.url)));
 
 /**
  * The images a turn's page shows, by their recorded type: those a browser takes as a picture and nothing more. An SVG
@@ -283,7 +282,7 @@ export class Dashboard {
     const { dataDirectory, memoryDirectory, manualDirectory } = this.options;
     return {
       memory: memoryDirectory, work: join(dataDirectory, WORK_DIRECTORY), home: join(dataDirectory, HOME_DIRECTORY),
-      agents: join(dataDirectory, AGENT_LIST_DIRECTORY), manual: manualDirectory ?? await codeManual(),
+      agents: join(dataDirectory, AGENT_LIST_DIRECTORY), manual: manualDirectory ?? await codeManualDirectory(),
     };
   }
 
@@ -364,14 +363,6 @@ function cookieValue(request: IncomingMessage): string | undefined {
 function send(response: ServerResponse, status: number, body: Html, headers: Record<string, string> = {}) {
   const text = Buffer.from(body.text, 'utf8');
   response.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': text.length, ...headers }).end(text);
-}
-
-/** The code's own manual: the first of its places that is there. */
-async function codeManual(): Promise<string> {
-  for (const directory of MANUAL_DIRECTORIES) {
-    if (await stat(directory).then(found => found.isDirectory(), () => false)) return directory;
-  }
-  return MANUAL_DIRECTORIES[0]!;
 }
 
 interface FileQuery {

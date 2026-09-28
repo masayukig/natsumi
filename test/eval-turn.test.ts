@@ -125,6 +125,25 @@ prompt:
   });
 });
 
+// ADR 0056: the run's copy of the manual is the one whose index goes into the instructions, as the server reads its own.
+test('the index of the run\'s manual is in the instructions, so an edit can find it', { skip }, async () => {
+  await withScenes({ index: { yaml: `
+event: { mac_message: やあ }
+files:
+  /manual/INDEX.md: |
+    # マニュアル
+    FIXTURE-INDEX-7710
+prompt:
+  - replace: "FIXTURE-INDEX-7710"
+    with: "x"
+` } }, async root => {
+    const [condition] = conditions(await loadScene(join(root, 'scenes', 'index')));
+    const runner = await WorkspaceRunner.prepare({ repository: REPOSITORY, cache: join(root, 'cache') });
+    const record = await runCondition(condition!, { run: 1, dryRun: true, repository: REPOSITORY, work: join(root, 'work'), runner });
+    assert.equal(record.outcome, 'ok', record.error);
+  });
+});
+
 test('the turn before sets the context: a prelude, and a session copied from an earlier run', { skip }, async () => {
   await withScenes({
     prelude: { yaml: `

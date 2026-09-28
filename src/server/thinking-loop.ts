@@ -179,6 +179,11 @@ export interface LoopOptions {
    */
   reviseSystemPrompt?: (prompt: string) => string;
   /**
+   * The manual's index as it was read when the server started, without its heading (ADR 0056). It goes into the
+   * workspace section of every session's instructions; without it, the one sentence that points at /manual/INDEX.md.
+   */
+  manualIndex?: string;
+  /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
@@ -820,7 +825,8 @@ export class ThinkingLoop {
       try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
-    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
+    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex,
+      personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice() });
     return this.options.reviseSystemPrompt?.(prompt) ?? prompt;
   }
