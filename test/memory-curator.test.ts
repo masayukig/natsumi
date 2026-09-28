@@ -37,7 +37,7 @@ test('the files in turn are those left longest, never curated first, leaving out
 test('the brief maps all of memory with sizes and headings, marks what is not to be changed, and names what may be rewritten', () => {
   const headings = Array.from({ length: 35 }, (_, i) => `## 2026-09-${String(i).padStart(2, '0')}: 出来事`);
   const brief = curationBrief({
-    date: '2026-09-28', fileMaxChars: 32000,
+    name: 'なつみ', date: '2026-09-28', fileMaxChars: 32000,
     files: [
       { path: 'INDEX.md', chars: 50, headings: ['# 記憶の索引'] },
       { path: 'always.md', chars: 300, headings: ['# 常時記憶'] },
@@ -66,7 +66,7 @@ test('the brief maps all of memory with sizes and headings, marks what is not to
   assert.match(rewritable, /順番が回ってきたもの\n- 予定\.md/);
   assert.match(brief, /<\/curation>$/);
 
-  const quiet = curationBrief({ date: '2026-09-28', fileMaxChars: 32000, files: [], changed: [], rotated: [] });
+  const quiet = curationBrief({ name: 'なつみ', date: '2026-09-28', fileMaxChars: 32000, files: [], changed: [], rotated: [] });
   assert.match(quiet, /前回の整理から変わったもの\n（なし）/);
 });
 

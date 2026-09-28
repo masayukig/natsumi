@@ -10,7 +10,7 @@ const run = promisify(execFile);
  * natsumi's workspace for a turn evaluation (ADR 0051): the real runner, built from `runner/`, answering on a Unix socket
  * the server side reaches through the real `WorkspaceShell`. In `bwrap` it runs inside bubblewrap, laid out as the
  * workspace container (compose.yaml, Dockerfile): /memory with its .git read-only, /work and /home/natsumi writable,
- * /manual, /manual/agents and /sources read-only, the image's /usr/local/bin scripts, and no network. In `host` it
+ * /manual, /manual/agents, /manual/avatar and /sources read-only, the image's /usr/local/bin scripts, and no network. In `host` it
  * runs unconfined in the run's work directory, with none of those paths: only for the scripted model of a dry run
  * where bubblewrap cannot make a sandbox (CI).
  */
@@ -106,8 +106,9 @@ export class WorkspaceRunner implements WorkspaceStarter {
 
   async start(options: StartOptions): Promise<RunningWorkspace> {
     await mkdir(options.socketDirectory, { recursive: true });
-    // The mount point of /manual/agents, as the image makes it.
+    // The mount points of /manual/agents and /manual/avatar, as the image makes them.
     await mkdir(join(options.manual, 'agents'), { recursive: true });
+    await mkdir(join(options.manual, 'avatar'), { recursive: true });
     const socketPath = join(options.socketDirectory, SOCKET_NAME);
     const limit = `${options.responseLimitSeconds ?? 60}s`;
     let child: ChildProcess;
@@ -171,6 +172,7 @@ export class WorkspaceRunner implements WorkspaceStarter {
     try { await lstat(join(data, 'memory', '.git')); args.push('--ro-bind', join(data, 'memory', '.git'), '/memory/.git'); } catch { /* not a repository yet */ }
     args.push('--bind', join(data, 'work'), '/work', '--bind', join(data, 'home'), '/home/natsumi',
       '--ro-bind', options.manual, '/manual', '--ro-bind', join(data, 'agents'), '/manual/agents',
+      '--ro-bind', join(data, 'avatar'), '/manual/avatar',
       '--ro-bind', join(data, 'sources'), '/sources');
     try { await lstat(join(data, 'sources.git')); args.push('--ro-bind', join(data, 'sources.git'), '/sources.git'); } catch { /* before ADR 0050 */ }
     args.push('--chdir', '/work', '--clearenv', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin', '--setenv', 'HOME', '/home/natsumi');

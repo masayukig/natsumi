@@ -43,21 +43,22 @@ RUN groupadd --gid 1000 natsumi \
   && chown natsumi:natsumi /work /home/natsumi
 # Outside PATH, so running it by its path gives nothing bash does not already have.
 COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
-# sdctl and its defaults (ADR 0044): the relay, the params and /work/images, baked in, so changing them is a new image.
+# sdctl and its defaults (ADR 0044): the relay and /work/images, baked in, so changing them is a new image. The params
+# are the avatar's, which the server writes on every start and the workspace sees as /manual/avatar (ADR 0057).
 # They are in a config file and not in ENV, because the runner gives natsumi's commands none of the image's environment
 # (ADR 0019); the sdctl in PATH is a wrapper that always points the real one at that file. With these, `sdctl txt2img
 # --prompt <file>` needs nothing else, and prints only the path it saved to.
 COPY --from=sdctl /out/sdctl /usr/libexec/sdctl
 COPY --chmod=755 docker/sdctl/sdctl /usr/local/bin/sdctl
 COPY docker/sdctl/config.yaml /etc/sdctl/config.yaml
-COPY docker/sdctl/anima.yaml /etc/sdctl/anima.yaml
 # sources-diff (ADR 0050): what changed under /sources, read from the history the server keeps in /sources.git, which
 # is mounted read-only. The runner gives it none of the image's environment, so the script knows the place itself.
 COPY --chmod=755 docker/sources-diff/sources-diff /usr/local/bin/sources-diff
 # natsumi's manual (ADR 0036), read-only like the rest of the root. The list of agents the server writes on every
-# start is mounted over /manual/agents.
+# start is mounted over /manual/agents, and the page on drawing and the sdctl params it writes from the avatar over
+# /manual/avatar (ADR 0057).
 COPY manual/ /manual/
-RUN mkdir -p /manual/agents
+RUN mkdir -p /manual/agents /manual/avatar
 USER 1000:1000
 WORKDIR /work
 ENTRYPOINT ["/usr/libexec/natsumi-workspace-runner"]
@@ -79,8 +80,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 # checkout, not here, and nothing under src/server or src/pi imports it.
 COPY --from=build /app/dist/src/server ./dist/src/server
 COPY --from=build /app/dist/src/pi ./dist/src/pi
-# The faces Slack shows beside what the dove posts, served at /avatar/ (ADR 0040).
-COPY assets/avatar/*.png ./assets/avatar/
+# natsumi, the avatar used when the config names none, and the faceless pictures and default params that fill in what
+# an avatar lacks (ADR 0057). The apps fetch the avatar at /v1/avatar, and Slack its icons at /avatar/ (ADR 0040).
+COPY assets/avatars/ ./assets/avatars/
+# The page on drawing the server writes for the workspace from the avatar (ADR 0057).
+COPY assets/manual/ ./assets/manual/
 # The dashboard's style sheet and script, served at /dashboard/static/ (ADR 0049).
 COPY assets/dashboard/ ./assets/dashboard/
 # natsumi's manual (ADR 0036), the same as the workspace's /manual, read by the dashboard to show it (ADR 0054). The

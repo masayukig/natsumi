@@ -72,6 +72,7 @@ test('the shipped example config is valid', async () => {
   const config = await loadConfig(new URL('../config.example.json', import.meta.url).pathname);
   assert.equal(config.pi.voiceEnabled, false);
   assert.notEqual(config.listen.tls, false);
+  assert.deepEqual(config.avatar, { id: 'natsumi' });
 });
 
 test('invalid values name the offending setting', () => {

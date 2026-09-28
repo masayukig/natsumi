@@ -1,7 +1,9 @@
 import type { RunRecord } from '../../../src/eval/record.ts';
+import { loadAvatar } from '../../../src/server/avatar.ts';
 
 /**
- * Whether she kept her own look when drawing herself (manual/images.md「あなた自身の姿」). sdctl does not run here, so
+ * Whether she kept her own look when drawing herself (/manual/avatar/images.md「あなた自身の姿」). Her look is the
+ * default avatar's appearance.yaml (ADR 0057): its LoRA, the words she must keep, and her default clothes. sdctl does not run here, so
  * what is judged is the prompt she drew with: the file named by her last `sdctl txt2img`, as the last heredoc that
  * wrote it had it, with the sdctl command itself for a prompt given inline. A grep for her features, a note that
  * mentions sdctl, or a negative prompt holding her features, does not count.
@@ -53,18 +55,22 @@ function holds(record: RunRecord, words: [label: string, pattern: RegExp][]): Ve
   return missing.length === 0 ? { pass: true, detail: 'そろっている' } : { pass: false, detail: `無い: ${missing.join(', ')}` };
 }
 
-const LORA: [string, RegExp] = ['LoRA', /<lora:kutara_aki_anima\.v3/];
-const FRECKLES: [string, RegExp] = ['freckles', /\bfreckles\b/];
-const BREASTS: [string, RegExp] = ['large sagging breasts', /\blarge sagging breasts\b/];
+const appearance = (await loadAvatar(undefined)).appearance!;
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const LORA: [string, RegExp][] = appearance.lora ? [['LoRA', new RegExp(`<lora:${escaped(appearance.lora)}`)]] : [];
+const KEEP: [string, RegExp][] = appearance.keep.map(word => [word, new RegExp(`\\b${escaped(word)}\\b`)]);
+/** The first tag of her default clothes, which a change of clothes leaves out. */
+const OUTFIT = appearance.outfit.split(',')[0]!.trim();
 
-export const lora = (record: RunRecord) => holds(record, [LORA]);
-export const freckles = (record: RunRecord) => holds(record, [FRECKLES]);
-export const breasts = (record: RunRecord) => holds(record, [BREASTS]);
-export const look = (record: RunRecord) => holds(record, [LORA, FRECKLES, BREASTS]);
+/** The LoRA of her look, as the owner named it. */
+export const lora = (record: RunRecord) => holds(record, LORA);
+/** Every word she must keep whatever she wears. */
+export const keep = (record: RunRecord) => holds(record, KEEP);
+export const look = (record: RunRecord) => holds(record, [...LORA, ...KEEP]);
 
-/** The outfit was changed for the scene: the default suit is not in the prompt she drew. */
-export function noSuit(record: RunRecord): Verdict {
+/** The outfit was changed for the scene: her default clothes are not in the prompt she drew. */
+export function changedOutfit(record: RunRecord): Verdict {
   const prompt = drawnPrompt(record);
   if (prompt === undefined) return { pass: false, detail: 'sdctl txt2img で描いていない' };
-  return /business suit/.test(prompt) ? { pass: false, detail: 'スーツのまま' } : { pass: true, detail: 'スーツではない' };
+  return prompt.includes(OUTFIT) ? { pass: false, detail: '既定の服のまま' } : { pass: true, detail: '既定の服ではない' };
 }

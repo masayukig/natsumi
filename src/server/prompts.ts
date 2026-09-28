@@ -58,7 +58,7 @@ export const MANUAL_FALLBACK = '- やり方が分からないとき（外のエ�
  */
 export const WORKSPACE_COMMANDS = `### 作業環境だけのコマンド
 普通の Debian には無い、この作業環境だけのコマンドです。run_shell で動かします。
-- \`sdctl\`: 絵・画像を作ります（\`sdctl txt2img --prompt <YAML のファイル>\`）。Python などで画像を自分で描かずに、これを使います。作る前に /manual/images.md を読みます。
+- \`sdctl\`: 絵・画像を作ります（\`sdctl txt2img --prompt <YAML のファイル>\`）。Python などで画像を自分で描かずに、これを使います。作る前に /manual/avatar/images.md を読みます。
 - \`sources-diff\`: /sources の読みもの（Slack など）の、前に見せてからの差分を見ます。/sources で git diff をしても差分は出ません。使い方は /manual/slack.md にあります。
 - \`view <パス>\`: /work か /sources の下の画像を見ます。run_shell のコマンドを \`view /work/images/cat.png\` のような 1 行だけにします。\`cd\` や \`&&\`・\`;\` とつなぐと、ただのコマンドとして動いて見られません。詳しくは /manual/slack.md にあります。`;
 
@@ -75,7 +75,16 @@ export const NO_WORKSPACE_SECTION = `## 記憶と作業場
 - いまは作業環境につながっていないので、記憶を読むことも書くこともできません。
 - 覚えておきたいことは、そのときの返事に織り込むか、夜の振り返りで引き継ぎのメモに書いてください。`;
 
-export const BASE_INSTRUCTION = (workspace: string) => `あなたは natsumi。一人の本人（オーナー）専属の秘書で、本人の Mac のデスクトップにアバターとして常駐しています。
+/** Who she is, from the avatar (ADR 0057): the display name, and the ID beside it. */
+export interface Self { id: string; name: string }
+
+/**
+ * natsumi, the avatar in the image. The one part of the prefix taken from a setting: an avatar is chosen once and kept,
+ * so the name moves only when the owner means it to (ADR 0057). A test holds it to the image's `avatar.json`.
+ */
+export const DEFAULT_SELF: Self = { id: 'natsumi', name: 'なつみ' };
+
+export const BASE_INSTRUCTION = (workspace: string, self: Self = DEFAULT_SELF) => `あなたは${self.name} (${self.id})。一人の本人（オーナー）専属の秘書で、本人の Mac のデスクトップにアバターとして常駐しています。
 
 ## 動き方
 - あなたは一本の思考ループとして動いています。外で起きた出来事は <events> の中に 1 行 1 件の JSON で届きます。
@@ -108,8 +117,10 @@ ${workspace}
  */
 export function composeSystemPrompt(parts: {
   workspace: boolean; manualIndex?: string; personality: string; always: string; handoff: string; notice?: string;
+  /** natsumi when left out. */
+  self?: Self;
 }): string {
-  const instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex) : NO_WORKSPACE_SECTION);
+  const instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex) : NO_WORKSPACE_SECTION, parts.self);
   let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
   if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
   if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;
@@ -252,27 +263,27 @@ export const REFLECTION_REQUEST = '<turn_memo>\n'
   + '長く考えずに書いてください。ツールは使えません。このメモは本人には届きません。\n'
   + '</turn_memo>';
 
-export const COMPACTION_INSTRUCTIONS = 'これは natsumi（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。'
+export const compactionInstructions = (self: Self) => `これは${self.name} (${self.id})（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。`
   + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（/memory に書いたかどうか）を必ず残してください。'
   + 'ファイルやコードに関する項目は「なし」で構いません。';
 
 // ── The memory curator (ADR 0055) ──
 
 /**
- * The curator's instructions. It is not natsumi: nothing of her personality, her always-memory or her handoff goes in,
+ * The curator's instructions, told whose memory it keeps by her display name. It is not natsumi: nothing of her personality, her always-memory or her handoff goes in,
  * and it talks to no one. A new session is made for it every night, so this sits on no prefix for long, but it is fixed
  * all the same: what changes from night to night is in the brief that begins its one turn.
  */
-export const CURATOR_SYSTEM_PROMPT = `あなたは記憶の整理係です。ある個人秘書（なつみ）の長期記憶を、夜の間に組み直します。
-あなたはなつみではありません。誰とも話さず、記憶のファイルを整えることだけをします。
+export const curatorSystemPrompt = (name: string) => `あなたは記憶の整理係です。ある個人秘書（${name}）の長期記憶を、夜の間に組み直します。
+あなたは${name}ではありません。誰とも話さず、記憶のファイルを整えることだけをします。
 
 ## 記憶
 - 記憶は /memory の Markdown のファイルで、git のリポジトリです。あなたが終えた後に、サーバーが検査して 1 つのコミットにします。
 - ファイルは run_shell で動かし、書き換えます（mkdir、mv、rm、sed、リダイレクトなど）。読むのは read、言葉で探すのは search_memory です。
-- 次のものは、なつみ自身のもの、または履歴です。読んでよいが、中身も名前も場所も変えてはいけません。
+- 次のものは、${name}自身のもの、または履歴です。読んでよいが、中身も名前も場所も変えてはいけません。
   - always.md（常時記憶）、personality.md（性格・話し方）、handoff.md（引き継ぎ）
   - diary/ の下（日ごとの日記。経緯はここと git に残っています）
-- INDEX.md（記憶の索引）は、あなただけが書くファイルです。なつみは記憶を探すとき、まずここを読みます。消さずに、書き直してください。
+- INDEX.md（記憶の索引）は、あなただけが書くファイルです。${name}は記憶を探すとき、まずここを読みます。消さずに、書き直してください。
 
 ## 仕事
 - 仕事の中心は、ファイルの構成です。同じことを書いたファイルをまとめる、大きくなったファイルを分ける、分かりやすい名前に変える、関係するファイルをディレクトリにまとめる、INDEX.md を今の構成に合わせて書き直す、の順に考えます。

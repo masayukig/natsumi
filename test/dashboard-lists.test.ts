@@ -231,3 +231,9 @@ test('the approvals can be narrowed to an outcome, and the pages keep to it', ()
   assert.match(text, /href="\/dashboard\/approvals\?state=rejected&amp;page=3"/);
   assert.match(approvalsPage({ page: 1, more: false, rows: [] }, ZONE).text, /まだ承認はありません/);
 });
+
+// ADR 0057: the avatar's display name in the dashboard's words.
+test('the dove\'s list names her by the display name', () => {
+  assert.match(dovePage({ page: 1, more: false, rows: [] }, ZONE, 'はな').text, /はながポッポさんに頼んだ投稿/);
+  assert.match(dovePage({ page: 1, more: false, rows: [] }, ZONE).text, /なつみがポッポさんに頼んだ投稿/);
+});

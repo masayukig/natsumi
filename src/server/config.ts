@@ -342,7 +342,14 @@ export interface ServerConfig {
   slack?: SlackConfig;
   sources: SourcesConfig;
   curator: CuratorConfig;
+  /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
+  avatar?: AvatarConfig;
 }
+
+/** A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start. */
+export type AvatarConfig = { id: string } | { directory: string };
+
+const AVATAR_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
 
@@ -363,6 +370,7 @@ const SECTIONS = {
   slack: parseSlack,
   sources: parseSources,
   curator: parseCurator,
+  avatar: parseAvatar,
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -402,6 +410,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
     sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
+    ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
   if (config.curator.route !== undefined && !config.pi.routes.some(route => route.name === config.curator.route)) {
     throw new ConfigError('curator.route', 'must be one of pi.routes');
@@ -816,6 +825,21 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   }
   return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
     rotateFiles: files as number };
+}
+
+function parseAvatar(value: unknown, path: string): AvatarConfig {
+  const avatar = object(value, path);
+  onlyKeys(avatar, path, ['id', 'directory']);
+  if (avatar.id !== undefined && avatar.directory !== undefined) throw new ConfigError(path, 'set id or directory, not both');
+  if (avatar.id === undefined && avatar.directory === undefined) {
+    throw new ConfigError(path, 'set id (a built-in avatar) or directory (an avatar of your own)');
+  }
+  if (avatar.directory !== undefined) return { directory: absolutePath(avatar.directory, `${path}.directory`) };
+  // Whether it is one of the image's is known only once the image is looked at, when the avatar is read.
+  if (typeof avatar.id !== 'string' || !AVATAR_ID.test(avatar.id)) {
+    throw new ConfigError(`${path}.id`, 'must be lowercase letters, digits and "-", starting with a letter');
+  }
+  return { id: avatar.id };
 }
 
 function parseSources(value: unknown, path: string): SourcesConfig {

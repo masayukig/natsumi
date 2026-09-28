@@ -9,7 +9,7 @@ import { composeSystemPrompt, MANUAL_FALLBACK, WORKSPACE_COMMANDS } from '../src
 /** The index of the manual and the workspace's own commands in the system prompt (ADR 0056). */
 
 const parts = { personality: '', always: '', handoff: '' };
-const INDEX = '| やりたいこと | 読むもの |\n| --- | --- |\n| FIXTURE-INDEX-4410 | `/manual/images.md` |';
+const INDEX = '| やりたいこと | 読むもの |\n| --- | --- |\n| FIXTURE-INDEX-4410 | `/manual/avatar/images.md` |';
 
 test('with a workspace, the index the server read goes into the prompt in place of the sentence that points at it', () => {
   const prompt = composeSystemPrompt({ workspace: true, manualIndex: INDEX, ...parts });
@@ -35,7 +35,7 @@ test('the three commands of the workspace are there, one line each, with the pag
   assert.equal(lines.length, 3);
   const [sdctl, diff, view] = lines as [string, string, string];
   assert.match(sdctl, /^- `sdctl/);
-  assert.match(sdctl, /\/manual\/images\.md/);
+  assert.match(sdctl, /\/manual\/avatar\/images\.md/);
   assert.match(sdctl, /Python/);
   assert.match(diff, /^- `sources-diff/);
   assert.match(diff, /\/manual\/slack\.md/);

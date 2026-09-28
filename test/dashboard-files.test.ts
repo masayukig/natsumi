@@ -13,7 +13,7 @@ import {
 async function withRoots(fn: (roots: FileRoots, outside: string) => Promise<void>) {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-files-')));
   const roots: FileRoots = { memory: join(base, 'data/memory'), work: join(base, 'data/work'), home: join(base, 'data/home'),
-    manual: join(base, 'code/manual'), agents: join(base, 'data/agents') };
+    manual: join(base, 'code/manual'), agents: join(base, 'data/agents'), avatar: join(base, 'data/avatar') };
   for (const directory of Object.values(roots)) await mkdir(directory, { recursive: true });
   const outside = join(base, 'data/.natsumi');
   await mkdir(outside);
@@ -235,4 +235,9 @@ test('text cut at the limit is cut on a character, and says it was cut', () => {
   const head = whole.subarray(0, 4);
   assert.deepEqual(classify(head, whole.length, 4), { type: 'text', text: 'あ', truncated: true });
   assert.equal(TEXT_LIMIT, 1024 * 1024);
+});
+
+// ADR 0057: the page on drawing and the params the server writes from the avatar, seen as /manual/avatar.
+test('/manual/avatar is a place of its own, found before /manual', () => {
+  assert.deepEqual(locate('/dashboard/files/manual/avatar/images.md'), { root: 'avatar', place: '/manual/avatar', segments: ['images.md'] });
 });

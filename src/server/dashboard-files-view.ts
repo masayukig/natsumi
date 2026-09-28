@@ -6,6 +6,7 @@ import {
 } from './dashboard-files.ts';
 import { localTime, page } from './dashboard-view.ts';
 import { html, markdownMarkup, type Html } from './html.ts';
+import { DEFAULT_SELF } from './prompts.ts';
 
 /**
  * The pages of her files (ADR 0054): the places, a directory one level down, and a file — its text escaped, an image
@@ -15,20 +16,23 @@ import { html, markdownMarkup, type Html } from './html.ts';
 
 const CURRENT = 'ファイル';
 
-const PLACE_NOTES: Record<string, string> = {
+const PLACE_NOTES = (name: string): Record<string, string> => ({
   '/memory': '記憶（git で持つもの）',
   '/work': '手を動かす場所',
-  '/home/natsumi': 'なつみのホーム',
+  '/home/natsumi': `${name}のホーム`,
   '/manual': 'マニュアル',
   '/manual/agents': '頼める相手の一覧（サーバーが書くもの）',
-};
+  '/manual/avatar': '画像のページと画像生成の設定（サーバーがアバターから書くもの）',
+});
 
-export function filesIndexPage(): Html {
+/** The places, with her named by the avatar's display name (ADR 0057). */
+export function filesIndexPage(name = DEFAULT_SELF.name): Html {
+  const notes = PLACE_NOTES(name);
   const places = [...PLACES].sort((a, b) => a.place.localeCompare(b.place));
   const main = html`<section id="files">
 <h2>ファイル</h2>
-<p><small>なつみの作業環境・記憶・マニュアルの今の中身です。読み取り専用で、symlink はたどりません。</small></p>
-<ul class="places">${places.map(({ place }) => html`<li><a href="${FILES_PATH}${place}"><code>${place}</code></a> <small>${PLACE_NOTES[place]}</small></li>`)}</ul>
+<p><small>${name}の作業環境・記憶・マニュアルの今の中身です。読み取り専用で、symlink はたどりません。</small></p>
+<ul class="places">${places.map(({ place }) => html`<li><a href="${FILES_PATH}${place}"><code>${place}</code></a> <small>${notes[place]}</small></li>`)}</ul>
 </section>`;
   return page('ファイル', main, { signedIn: true, current: CURRENT });
 }
@@ -134,13 +138,13 @@ const REFUSALS: Record<RefusalReason, string> = {
   unreadable: '読めません',
 };
 
-export function refusedFilePage(refused: { location: Location; reason: RefusalReason; target?: string }): Html {
+export function refusedFilePage(refused: { location: Location; reason: RefusalReason; target?: string }, name = DEFAULT_SELF.name): Html {
   const { location, reason, target } = refused;
   const main = html`<section id="file">
 ${breadcrumb(location)}
 <h2>${REFUSALS[reason]}</h2>
 <p><code>${workspacePath(location)}</code>${target !== undefined && html` <small>→ ${target}</small>`}</p>
-${reason === 'symlink' && html`<p><small>このパスには symlink が含まれています。指す先がなつみの場所の中なら、そのパスを開いてください。</small></p>`}
+${reason === 'symlink' && html`<p><small>このパスには symlink が含まれています。指す先が${name}の場所の中なら、そのパスを開いてください。</small></p>`}
 </section>`;
   return page(REFUSALS[reason], main, { signedIn: true, current: CURRENT });
 }
