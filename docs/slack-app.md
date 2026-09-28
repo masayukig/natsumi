@@ -95,7 +95,7 @@ Socket Mode は natsumi から Slack へ外向きにつなぐので、公開す�
 | `emoji:read` | ポッポさんに頼まれたリアクションが、ワークスペースのカスタム絵文字にあるか確かめる（`emoji.list`）。無ければ標準の絵文字だけを付けます |
 | `files:write` | ポッポさんが画像を投稿する（`files.getUploadURLExternal`・`files.completeUploadExternal`）。無ければ画像付きの投稿は Slack に断られ、なつみには届けられなかったと伝わります |
 
-| `im:write` | fork: 本人との DM を開いて、承認のメッセージを投稿する（`conversations.open`、[ADR 0057](adr/0057-fork-approving-slack-posts-in-slack.md)）。書き換え（`chat.update`）は `chat:write` で足ります |
+| `im:write` | fork: 本人との DM を開いて、承認のメッセージを投稿する（`conversations.open`、[ADR F02](adr/F02-fork-approving-slack-posts-in-slack.md)）。書き換え（`chat.update`）は `chat:write` で足ります |
 
 User Token Scopes には何も足しません。natsumi は本人の user token を使いません。
 

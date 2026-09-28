@@ -12,6 +12,7 @@ import { LOOP_DEFAULTS } from '../server/config.ts';
 import { ConversationStore } from '../server/conversation-store.ts';
 import { initializeDataDirectory, STATE_DIRECTORY } from '../server/data-directory.ts';
 import { DOVE_NAME } from '../server/dove.ts';
+import { readManualIndex } from '../server/manual.ts';
 import { MIGRATIONS } from '../server/migrations.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from '../server/paths.ts';
 import { REFLECTION_REQUEST } from '../server/prompts.ts';
@@ -96,6 +97,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     await placeState(condition, data, manual);
     const module = await loadSceneModule(scene.module, scene.setup);
     await module.setup?.({ data, manual, scene: scene.name, variant: condition.variant });
+    // The index of the run's own manual, read as the server reads its own at start (ADR 0056).
+    const manualIndex = await readManualIndex(manual);
     const t0 = Date.now();
     const now = scene.time === undefined ? Date.now : () => scene.time! + (Date.now() - t0);
     // Who stands in for the outside agents and the dove, reached only through the loop's injection points (ADR 0052).
@@ -188,6 +191,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     const loopOptions = {
       db, dataDirectory: data, sessionDirectory, agentDirectory, target, thinking: real?.file.thinking ?? 'on',
       runtime: async () => runtime, configureSession, reviseSystemPrompt, now, log: (line: string) => logs.push(line),
+      ...(manualIndex ? { manualIndex } : {}),
       loop: { ...LOOP_DEFAULTS, timeZone: scene.timeZone, workspaceSocket: join(socketDirectory, 'runner.sock'),
         compactionThreshold: NO_COMPACTION,
         ...(limits.modelCalls === undefined ? {} : { eventModelCalls: limits.modelCalls }),

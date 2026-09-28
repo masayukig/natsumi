@@ -3,7 +3,7 @@ import type { DecideInput, DecideOutcome } from './dove.ts';
 import { describeFailure, type SlackApi, type SlackSocket } from './slack-api.ts';
 
 /**
- * Fork (ADR 0057): the owner approves the dove's drafts in their DM with the bot. Each approval is posted there once,
+ * Fork (ADR F02): the owner approves the dove's drafts in their DM with the bot. Each approval is posted there once,
  * with two buttons; a press by the owner goes to the dove's own `decide`, as `approval.decide` does, and the message
  * is rewritten to what came of it, however it was decided.
  *

@@ -15,6 +15,7 @@ import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from '
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
 import { bearerToken, openListener, type Listener } from './http.ts';
 import { acquireProcessLock, type ProcessLock } from './lock.ts';
+import { codeManualDirectory, readManualIndex } from './manual.ts';
 import { MIGRATIONS } from './migrations.ts';
 import { isoAt } from './nightly.ts';
 import { createModelRuntime } from './pi-runtime.ts';
@@ -195,7 +196,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       config: { thresholds: slackConfig.judge?.thresholds ?? JUDGE_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
         placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
       publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
-      ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR 0056)
+      ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR F01)
       images,
       now, log, raise: record => raiseInto?.raise('dove-reply', record),
     }) : undefined;
@@ -203,6 +204,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       log(slackConfig.judge ? `slack: drafts are judged by ${slackConfig.judge.method}`
         : 'slack: no judge is configured; every draft goes to the owner');
     }
+
+    // The manual's index goes into her instructions (ADR 0056). Without it she is pointed at /manual/INDEX.md instead,
+    // which the workspace still holds: a guide that is missing never stops the start.
+    const manualIndex = await readManualIndex(await codeManualDirectory());
+    if (!manualIndex) log('manual: INDEX.md could not be read; the instructions point at /manual/INDEX.md instead');
 
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
@@ -213,6 +219,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator,
+      ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
@@ -232,12 +239,12 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     if (archive && slackConfig && !thinkingLoop.unavailable) {
       const owner = slackConfig.owner;
       for (const { name, api, socket } of slackConnections) {
-        // Fork (ADR 0056): the owner talks with her in their channel, as they would from the Mac.
+        // Fork (ADR F01): the owner talks with her in their channel, as they would from the Mac.
         const ownerHere = owner?.workspace === name ? owner : undefined;
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
             ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), images, log });
-          // Fork (ADR 0057): and approves the dove's drafts in the DM with the bot.
+          // Fork (ADR F02): and approves the dove's drafts in the DM with the bot.
           if (theDove) new SlackApprovals({ db, dove: theDove, api, socket, workspace: name, ownerUserId: ownerHere.userId, log }).sync();
         }
         const workspace = new SlackWorkspace({

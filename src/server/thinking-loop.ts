@@ -179,6 +179,11 @@ export interface LoopOptions {
    */
   reviseSystemPrompt?: (prompt: string) => string;
   /**
+   * The manual's index as it was read when the server started, without its heading (ADR 0056). It goes into the
+   * workspace section of every session's instructions; without it, the one sentence that points at /manual/INDEX.md.
+   */
+  manualIndex?: string;
+  /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
@@ -208,7 +213,7 @@ export interface LoopOptions {
   images?: ImageStore;
   /** How large and how many the images of one reply may be. */
   replyImageLimits?: ImageLimits;
-  /** Fork (ADR 0056): the owner reads and writes the conversation in a Slack channel, not on a Mac. */
+  /** Fork (ADR F01): the owner reads and writes the conversation in a Slack channel, not on a Mac. */
   ownerOnSlack?: boolean;
   now?: () => number;
   log?: (line: string) => void;
@@ -822,7 +827,8 @@ export class ThinkingLoop {
       try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
-    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, personality: await read(PERSONALITY_FILE),
+    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex,
+      personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice(),
       ownerOnSlack: this.options.ownerOnSlack === true });
     return this.options.reviseSystemPrompt?.(prompt) ?? prompt;

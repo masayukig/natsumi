@@ -131,7 +131,7 @@ test('a draft Jev passes is sent at once, without the owner, into the thread, un
   assert.equal(JSON.parse(row.scores!).length, JUDGE_ISSUES.length, 'the scores are kept for looking back');
 });
 
-test('fork: with slack.avatarBaseUrl the icon is fetched from there instead of publicOrigin (ADR 0056)', async t => {
+test('fork: with slack.avatarBaseUrl the icon is fetched from there instead of publicOrigin (ADR F01)', async t => {
   const f = await setup(t, { avatarBaseUrl: 'https://cdn.example.test/avatar' });
   f.jev.answers.push(SEND());
   await f.dove.ask(post('大丈夫です。', { expression: 'happy' }));

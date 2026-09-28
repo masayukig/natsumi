@@ -582,7 +582,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
 #### 本人と Slack のチャンネルで話す（fork）
 
 Mac も iPhone も使わない本人のために、この fork では Slack の 1 つのチャンネルを本人との会話の場にできます
-（[ADR 0056](docs/adr/0056-fork-talking-with-the-owner-in-a-slack-channel.md)）。
+（[ADR F01](docs/adr/F01-fork-talking-with-the-owner-in-a-slack-channel.md)）。
 
 ```json
 "slack": {
@@ -601,7 +601,7 @@ Mac も iPhone も使わない本人のために、この fork では Slack の 
 - 本人のほかの人の発言と、ほかのチャンネルでの本人の発言は、これまでどおりです。
 - system prompt に、本人が Slack で読み書きしていることを短く足します。ツールの名前は変えません。
 
-ポッポさんが本人に回した投稿の承認も、bot との DM でできます（[ADR 0057](docs/adr/0057-fork-approving-slack-posts-in-slack.md)）。
+ポッポさんが本人に回した投稿の承認も、bot との DM でできます（[ADR F02](docs/adr/F02-fork-approving-slack-posts-in-slack.md)）。
 
 - 承認待ちになると、サーバーが本人との DM に、投稿先（スレッドかどうか）・返信先・下書き・判定の理由・期限と、「送る」「見送る」のボタンを 1 通投稿します。
   サーバーが止まっていた間にできた承認待ちも、起動したときに投稿します。

@@ -12,7 +12,7 @@ import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
 
 /**
- * Fork (ADR 0057): the owner approves the dove's drafts with two buttons in their DM with the bot. A press goes to the
+ * Fork (ADR F02): the owner approves the dove's drafts with two buttons in their DM with the bot. A press goes to the
  * dove's own `decide`, and the message is rewritten to what came of it.
  */
 

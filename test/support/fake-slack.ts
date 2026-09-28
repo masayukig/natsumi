@@ -58,7 +58,7 @@ export class FakeSlack implements SlackApi, SlackSocket {
   private eventHandler: ((event: Record<string, unknown>) => void) | undefined;
   private connectedHandler: (() => void) | undefined;
   private interactiveHandler: ((payload: Record<string, unknown>) => void) | undefined;
-  /** Fork (ADR 0057): Block Kit messages posted, and the rewrites of them. */
+  /** Fork (ADR F02): Block Kit messages posted, and the rewrites of them. */
   readonly blockPosts: { channel: string; text: string; blocks: unknown[] }[] = [];
   readonly updates: { channel: string; ts: string; text: string; blocks: unknown[] }[] = [];
 
@@ -88,7 +88,7 @@ export class FakeSlack implements SlackApi, SlackSocket {
   /** Slack (re)connects: the server fills in what it missed. */
   connect(): void { this.connectedHandler?.(); }
 
-  /** Fork (ADR 0057): someone presses a button, as Socket Mode's `interactive` envelope carries it. */
+  /** Fork (ADR F02): someone presses a button, as Socket Mode's `interactive` envelope carries it. */
   interact(payload: Record<string, unknown>): void { this.interactiveHandler?.(payload); }
 
   // SlackSocket

@@ -11,7 +11,7 @@ import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
 
 /**
- * Fork (ADR 0056): the owner talks with natsumi in their own Slack channel. What they say there becomes a message of
+ * Fork (ADR F01): the owner talks with natsumi in their own Slack channel. What they say there becomes a message of
  * the conversation, not an attention; what she says to them is posted there.
  */
 
