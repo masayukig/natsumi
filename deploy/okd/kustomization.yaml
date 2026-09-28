@@ -16,6 +16,6 @@ configMapGenerator:
 # The version to run, in one place: both images are built from the same v0.x.y tag (.github/workflows/images.yml).
 images:
   - name: ghcr.io/masayukig/natsumi
-    newTag: vX.Y.Z
+    newTag: v0.1.9-mig.1
   - name: ghcr.io/masayukig/natsumi-workspace
-    newTag: vX.Y.Z
+    newTag: v0.1.9-mig.1
