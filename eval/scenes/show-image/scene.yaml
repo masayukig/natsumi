@@ -1,5 +1,5 @@
 # 描いた絵を本人に見せる（reply_to_mac の images）・Slack に出す（ポッポさんへの依頼の 画像:）ときに、
-# manual/images.md の手順を守るか。マニュアルを刈り込む前後で比べるための場面。人物と会話はすべて架空。
+# /manual/avatar/images.md の手順を守るか。マニュアルを刈り込む前後で比べるための場面。人物と会話はすべて架空。
 #
 # 絵は少し前に描いた体で、setup が /work/images に小さな PNG を置く（scene.ts）。
 description: 少し前に描いた絵を探し、view で確かめてから、本人に見せる・ポッポさんに画像付きで頼む

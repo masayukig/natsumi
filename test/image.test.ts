@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { promisify } from 'node:util';
+import { parse } from 'yaml';
+import { loadAvatar } from '../src/server/avatar.ts';
+import { writeAvatarManual } from '../src/server/avatar-manual.ts';
 
 const dockerfile = () => readFile(new URL('../Dockerfile', import.meta.url).pathname, 'utf8');
 
@@ -71,11 +75,15 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });
 
-test('the default params are in the workspace image, for Anima, with a negative prompt and the model set per request', async () => {
-  const copy = /^COPY (docker\/sdctl\/\S+) (\/etc\/sdctl\/anima\.yaml)$/m.exec(await workspaceStage());
-  assert.ok(copy, 'the params are not copied into the workspace image');
-  assert.equal(copy[2], '/etc/sdctl/anima.yaml');
-  const params = await readFile(`${root}${copy[1]}`, 'utf8');
+// ADR 0057: the params are the avatar's, or the server's default, and the server writes them where the image's config
+// points; the image holds none of its own.
+test('the default params are the server\'s, for Anima, with a negative prompt and the model set per request', async () => {
+  assert.doesNotMatch(await workspaceStage(), /anima\.yaml/);
+  const config = parse(await readFile(`${root}docker/sdctl/config.yaml`, 'utf8')) as Record<string, unknown>;
+  assert.equal(config.params, '/manual/avatar/sdctl-params.yaml');
+  assert.match(await workspaceStage(), /^RUN mkdir -p \/manual\/agents \/manual\/avatar$/m);
+  const params = (await loadAvatar(undefined)).sdctlParams;
+  assert.equal(params, await readFile(`${root}assets/avatars/nanashi/sdctl-params.yaml`, 'utf8'));
   assert.match(params, /^negative_prompt: "[^"]+"$/m);
   // The model and its modules go with each request: the relay refuses POST options, so `models set` is no way.
   assert.match(params, /^override_settings:\n  sd_model_checkpoint: "anima_mignolia_v10"\n  forge_additional_modules:\n    - "qwen_image_vae\.safetensors"\n    - "qwen_3_06b_base\.safetensors"$/m);
@@ -95,7 +103,7 @@ test('the workspace image gives sdctl its defaults in a config file that the sdc
   const config = await readFile(`${root}docker/sdctl/config.yaml`, 'utf8');
   // The relay's address is the environment overlay's promise: the egress proxy listens there.
   assert.match(config, /^url: http:\/\/127\.0\.0\.1:17860$/m);
-  assert.match(config, /^params: \/etc\/sdctl\/anima\.yaml$/m);
+  assert.match(config, /^params: \/manual\/avatar\/sdctl-params\.yaml$/m);
   assert.match(config, /^output_dir: \/work\/images$/m);
 });
 
@@ -150,8 +158,17 @@ async function startWorkspace(t: TestContext, name: string) {
   await docker(['run', '--detach', '--rm', '--name', container, '--network', 'none', '--read-only', '--init',
     '--tmpfs', '/tmp:mode=1777', '--tmpfs', '/run/natsumi-workspace:uid=1000,gid=1000,mode=755',
     '--tmpfs', '/work:uid=1000,gid=1000,mode=755', '--tmpfs', '/home/natsumi:uid=1000,gid=1000,mode=755',
-    workspaceTag, 'serve']);
+    '--tmpfs', '/manual/avatar:mode=755', workspaceTag, 'serve']);
   t.after(() => docker(['rm', '--force', container]).catch(() => undefined));
+  // What the server writes from the avatar on every start, which the deployment shows read-only as /manual/avatar
+  // (ADR 0057). Put in by root, as the Docker daemon may not see this host's files to bind them.
+  const avatar = await mkdtemp(join(tmpdir(), 'natsumi-workspace-avatar-'));
+  t.after(() => rm(avatar, { recursive: true, force: true }));
+  await writeAvatarManual(avatar, await loadAvatar(undefined));
+  for (const file of ['images.md', 'sdctl-params.yaml']) {
+    await docker(['exec', '-i', '--user', '0', container, 'sh', '-c', `cat > /manual/avatar/${file} && chmod 644 /manual/avatar/${file}`],
+      await readFile(join(avatar, file), 'utf8'));
+  }
   for (let attempt = 0; ; attempt++) {
     const ready = await docker(['exec', container, '/usr/libexec/natsumi-workspace-runner', 'check']).then(() => true, () => false);
     if (ready) break;
@@ -209,7 +226,7 @@ test('through the runner, as run_shell runs it, sdctl draws through the relay wi
   const prompt = await throughRunner(container, `mkdir -p /work/prompts && printf 'prompt: "a white cat"\\n' > /work/prompts/cat.yaml`);
   assert.equal(prompt.exitCode, 0, prompt.stderr);
 
-  const params = await readFile(`${root}docker/sdctl/anima.yaml`, 'utf8');
+  const params = (await loadAvatar(undefined)).sdctlParams;
   const negative = /^negative_prompt: "([^"]+)"$/m.exec(params)![1];
   const drawn = async (saved: string) => {
     assert.match(saved, /^\/work\/images\/output-[^/\s]+\.png\n$/);

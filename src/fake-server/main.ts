@@ -12,7 +12,8 @@
  * the fake token (the faces of the avatar stand in for pictures she drew). The conversation holds a reply showing two
  * images the same way, and a message that asks for a picture (`絵` or `画像`) is answered with one. It lists three
  * model routes (ADR 0046) — `local` in use, `plus` ready and `spare` not — and `model.use` moves to the chosen one
- * `--switch-delay` seconds after accepting it, the way the server moves between turns. Logging out puts the
+ * `--switch-delay` seconds after accepting it, the way the server moves between turns. natsumi's avatar is handed out
+ * at `/v1/avatar` without a login, with its version in the snapshot (ADR 0057). Logging out puts the
  * approvals and the routes back as they were at the start. Everything it says is fictional and kept in memory only.
  */
 import { readFileSync } from 'node:fs';
@@ -20,6 +21,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { parseArgs } from 'node:util';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { avatarManifest, loadAvatar } from '../server/avatar.ts';
 
 export interface FakeServerOptions {
   /** 0 picks a free port. */
@@ -116,7 +118,9 @@ const promise: Issue = { name: 'promise-for-owner', label: '本人に代わる�
 
 /** The images the approvals show, by ID: two of the avatar's faces, read once. */
 const IMAGES = new Map(['happy', 'laughing'].map(face => [`image-fake-${face}`,
-  readFileSync(new URL(`../../assets/avatar/${face}.png`, import.meta.url))]));
+  readFileSync(new URL(`../../assets/avatars/natsumi/slack/${face}.png`, import.meta.url))]));
+/** natsumi from the image, handed out as the server hands out its avatar (ADR 0057). */
+const AVATAR = await loadAvatar(undefined);
 const listed = (imageId: string) => ({ imageId, mimeType: 'image/png', bytes: IMAGES.get(imageId)!.length });
 /** A line's images also say their size, read from the PNG header (ADR 0045). */
 const sized = (imageId: string): ShownImage => {
@@ -232,7 +236,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         broadcast('session.snapshot', {
           deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
           readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
-          pendingApprovals: approvals, modelRoutes: routeStatus(), sessionExpiresAt: sessionEnd(),
+          pendingApprovals: approvals, modelRoutes: routeStatus(), sessionExpiresAt: sessionEnd(), avatarVersion: AVATAR.version,
         }, requestId);
         if (!laterScheduled && options.approvalDelayMs > 0) {
           laterScheduled = true;
@@ -365,6 +369,12 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       } else {
         response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': image.length }).end(image);
       }
+    } else if (url.pathname === '/v1/avatar' && request.method === 'GET') {
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(avatarManifest(AVATAR)));
+    } else if (url.pathname.startsWith(`/v1/avatar/${AVATAR.version}/`) && request.method === 'GET') {
+      const file = AVATAR.files.get(url.pathname.slice(`/v1/avatar/${AVATAR.version}/`.length));
+      if (file) response.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.data.length }).end(file.data);
+      else response.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not-found' }));
     } else if (url.pathname === '/auth/logout' && request.method === 'POST') {
       // The next login finds the approvals as they were at the start, so a walkthrough can be run again.
       approvals = startingApprovals();

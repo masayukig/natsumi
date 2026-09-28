@@ -102,7 +102,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 
 | サーバー event | 内容 |
 | --- | --- |
-| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`modelRoutes`（モデルの経路。下記「モデルの経路」）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence |
+| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`modelRoutes`（モデルの経路。下記「モデルの経路」）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）、`avatarVersion`（アバターの版。下記「アバター」）。envelope の seq が snapshot の sequence |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026）。reply は、natsumi が画像を添えたときだけ images（画像の一覧。下記「会話の画像」）を持つ。画像の無い行には欄が無い（空の配列も送らない） |
@@ -115,7 +115,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `model.routes` | `modelRoutes` と同じ形。使っている経路・選ばれた経路・経路の一覧・使える状態かのどれかが変わったときに全端末に届く。下記「モデルの経路」 |
 | `session.renewed` | expiresAt（延びたセッションの期限）。接続中に期限が動いたときだけ、その接続に届く。その場限りで、採番せず、再送もしない。上記「セッションの延長」 |
 | `command.accepted` | command ごとの結果（`conversation.send` は messageId・eventId・state、`session.sync` の再送は deviceId・mode: resume・sessionExpiresAt） |
-| `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping。`session.sync` への答えのときは deviceId と sessionExpiresAt も付く |
+| `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping。`session.sync` への答えのときは deviceId・sessionExpiresAt・avatarVersion も付く |
 
 ### 端末の登録と stream
 
@@ -224,6 +224,54 @@ natsumi は返事（kind: reply）に画像を添えることがある（[ADR 00
 - `images` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
 - 画像が取れないとき（404、つながらない）は、画像の場所に取れなかったことを示し、本文はそのまま出す。
 - iPhone の通知には画像は載らない。本文の末尾に画像の枚数の印が付く（下記「iPhone への通知」の「e の暗号」）。
+
+## アバター
+
+姿と名前は、サーバーの設定で選ぶアバター（組み込みのものは ID、足すものはディレクトリのパス）から決まる（[ADR 0057](adr/0057-an-avatar-directory-named-in-the-server-config.md)）。
+アプリはアバターを同梱せず、サーバーから丸ごと受け取って手元に控える。受け取るものは、今の Mac のアバターのディレクトリと同じ形である。
+
+### 一覧とファイル
+
+どちらも**ログインが要らない**（姿と名前は秘密ではない）。サーバーを設定した直後、ログインの前にも取れる。
+
+- `GET /v1/avatar`: 一覧を JSON で返す。
+  - `version`: 版（16 進 32 文字）。配る組の中身のハッシュで、中身が同じならどのサーバーでも同じ。
+  - `id`: アバターの ID（英小文字で始まり、英小文字・数字・`-` の 32 文字まで）。手元の控えの置き場所に使える。
+  - `name`: 表示名（1〜32 文字）。アプリの表示（メニューバー・会話のウィンドウのタイトル・履歴など）に使う。
+  - `files`: ファイルごとの `path`・`bytes`・`sha256`（16 進）。path の順に並ぶ。
+- `GET /v1/avatar/<version>/<path>`: ファイルの中身。`Content-Type` は `image/webp`・`image/png`・`application/json`。
+  - `version` が今の版でなければ、`path` が一覧に無ければ 404（`{"error":"not-found"}`）。そのときは一覧から取り直す。
+  - 版ごとに中身は変わらないので、`cache-control: public, max-age=31536000, immutable` が付く。
+
+```json
+{"version":"9591a91aad82f61ecb637fde6430fd75","id":"natsumi","name":"なつみ","files":[{"path":"avatar.json","bytes":1277,"sha256":"<hex>"},{"path":"icons/happy.webp","bytes":25758,"sha256":"<hex>"},{"path":"pet.json","bytes":266,"sha256":"<hex>"},{"path":"spritesheet.webp","bytes":1701104,"sha256":"<hex>"}]}
+```
+
+例は一部のファイルだけを載せ、ハッシュは省いた。
+
+配るファイルの path は決まっている。
+
+| path | 中身 |
+| --- | --- |
+| `pet.json` | Codex pet の定義 |
+| `avatar.json` | `id`・`name`・`spritesheet`・`atlas`・`framesPerSecond`（無いことがある）・`animations`・`expressions`（無いことがある）・`icons`。今の Mac の `avatar.json` と同じ形に、`id`・`name` が足されたもの |
+| `spritesheet.webp` または `spritesheet.png` | spritesheet。`avatar.json` の `spritesheet` がこの path を指す |
+| `icons/<表情>.webp` または `.png` | 表情ごとの顔。8 つの表情（`avatar.expression` と同じ候補）すべてにある。`avatar.json` の `icons` がこの path を指す。アバターの仕様にある `angry` は、サーバーの表情の候補に入るまで配らない |
+
+- アバターに無い素材は、サーバーが名無し（`nanashi`）の、のっぺらぼうの素材で埋めてから配る。アプリはどれが埋めたものかを区別しなくてよい。
+- `expressions` が無い、または表情が欠けているときは、今の Mac と同じく既定の対応表で読む。
+
+### 取り直すとき
+
+- 手元の控えの版と、`session.snapshot` の `avatarVersion`（会話が使えないときは `service.unavailable` の `avatarVersion`）が違えば、一覧から取り直す。
+- 取り直すときは、一覧の全ファイルを取り、`bytes` と `sha256` を確かめてから、控えを丸ごと置き換える。途中で失敗したら、前の控えを使い続ける。
+- **版が変わるのはサーバーの再起動のときだけ**である。サーバーはアバターを起動時に 1 度だけ読む。再起動で epoch が変わるので、再接続では必ず snapshot が届き、そこで新しい版を知る。
+  そのため、接続中に版の変化を知らせるイベントは無い。
+- アバターは基本的に切り替えない。版が変わるのは主に、サーバーの改修（のっぺらぼうの素材が増えた等）と素材の手直しである。
+
+### Slack のアイコン
+
+`GET /avatar/<表情>.png`（ログイン不要）は Slack がアイコンとして取るもので、アプリは使わない（ADR 0040）。
 
 ## 考えている 1 行
 

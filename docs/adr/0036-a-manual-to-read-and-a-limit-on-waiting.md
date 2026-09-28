@@ -1,7 +1,7 @@
 # 0036. 読み取り専用のマニュアルと、返事を待ち続ける上限
 
 - Date: 2026-09-24
-- Status: Accepted（作業環境に見せる読み取り専用の場所に `/sources` を加える点と、Slack の送信役のポッポさんを頼める相手の一覧に載せる点は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で追加。サーバーの image にも `manual/` を置き、ダッシュボードで読むことは [ADR 0054](0054-her-files-on-the-dashboard.md) で追加。system prompt に固定の 1 文だけを足し、道具が増えても system prompt を変えない点は、目次の中身とシステム独自のコマンドを入れる形に [ADR 0056](0056-the-manual-index-and-the-workspace-commands-in-the-prompt.md) で置き換え）
+- Status: Accepted（作業環境に見せる読み取り専用の場所に `/sources` を加える点と、Slack の送信役のポッポさんを頼める相手の一覧に載せる点は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で追加。サーバーの image にも `manual/` を置き、ダッシュボードで読むことは [ADR 0054](0054-her-files-on-the-dashboard.md) で追加。system prompt に固定の 1 文だけを足し、道具が増えても system prompt を変えない点は、目次の中身とシステム独自のコマンドを入れる形に [ADR 0056](0056-the-manual-index-and-the-workspace-commands-in-the-prompt.md) で置き換え、画像のページはサーバーが書くものとして `/manual/avatar/images.md` に移る点を [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) で追加）
 
 ## Context
 

@@ -1,6 +1,7 @@
 import { copyFile, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runGit } from './git.ts';
+import { runGit, type GitIdentity } from './git.ts';
+import { DEFAULT_SELF } from './prompts.ts';
 import { findControlStrings, findForeignScript, hasControlCharacters } from './output-checks.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
 
@@ -84,6 +85,8 @@ export interface MemoryRepositoryOptions {
   fileMaxChars?: number;
   /** `loop.alwaysMemoryMaxChars`, for `always.md` alone. */
   alwaysMaxChars?: number;
+  /** Who commits: the avatar (ADR 0057). The server's fixed identity when left out. */
+  identity?: GitIdentity;
   log?: (line: string) => void;
 }
 
@@ -127,6 +130,11 @@ export class MemoryRepository {
     this.directory = options.directory;
   }
 
+  /** git in the repository, as the avatar. */
+  private git(args: string[], options: { allowFailure?: boolean; env?: Record<string, string> } = {}) {
+    return runGit(this.directory, args, { ...options, ...(this.options.identity ? { identity: this.options.identity } : {}) });
+  }
+
   private get fileMaxChars(): number { return this.options.fileMaxChars ?? DEFAULT_FILE_MAX_CHARS; }
 
   private get alwaysMaxChars(): number { return this.options.alwaysMaxChars ?? DEFAULT_ALWAYS_MAX_CHARS; }
@@ -144,12 +152,12 @@ export class MemoryRepository {
   async initialize(handoff?: string): Promise<void> {
     await makeSharedDirectory(this.directory, { recursive: true });
     const fresh = !(await this.isRepository());
-    if (fresh) await runGit(this.directory, ['init', '-b', 'main']);
+    if (fresh) await this.git(['init', '-b', 'main']);
     const placed = await this.placeFixedFiles(handoff);
-    if (fresh) await runGit(this.directory, ['add', '-A', '--', '.']);
-    else if (placed.length > 0) await runGit(this.directory, ['add', '--', ...placed]);
+    if (fresh) await this.git(['add', '-A', '--', '.']);
+    else if (placed.length > 0) await this.git(['add', '--', ...placed]);
     else return;
-    const staged = (await runGit(this.directory, ['diff', '--cached', '--name-only', '-z'])).stdout.split('\0').filter(Boolean);
+    const staged = (await this.git(['diff', '--cached', '--name-only', '-z'])).stdout.split('\0').filter(Boolean);
     if (staged.length === 0) return;
     await this.commitStaged('start', staged);
     this.log(`memory: ${fresh ? 'made the repository' : 'wrote the missing files'} (${staged.length} file(s))`);
@@ -174,7 +182,7 @@ export class MemoryRepository {
     }
     const files = (await this.status()).map(entry => entry.path);
     if (files.length === 0) return { committed: false, files: [], reverted };
-    await runGit(this.directory, ['add', '-A', '--', '.']);
+    await this.git(['add', '-A', '--', '.']);
     await this.commitStaged(input.event, files, input.message);
     if (reverted.length > 0) this.log(`memory: ${reverted.length} changed file(s) went back to the previous commit`);
     return { committed: true, files, reverted };
@@ -200,15 +208,15 @@ export class MemoryRepository {
     }
     const files = entries.map(entry => entry.path);
     if (files.length === 0) return { committed: false, files: [], rejected };
-    await runGit(this.directory, ['add', '-A', '--', '.']);
+    await this.git(['add', '-A', '--', '.']);
     await this.commitStaged('memory_curator', files, input.message);
     return { committed: true, files, rejected };
   }
 
   /** Throws away whatever the last commit does not hold: changes, removals, and new files and folders alike. */
   async discardChanges(): Promise<void> {
-    await runGit(this.directory, ['reset', '--hard', '--quiet', 'HEAD']);
-    await runGit(this.directory, ['clean', '-f', '-d', '--quiet']);
+    await this.git(['reset', '--hard', '--quiet', 'HEAD']);
+    await this.git(['clean', '-f', '-d', '--quiet']);
   }
 
   /** Whether the working tree is what the last commit holds. */
@@ -221,7 +229,7 @@ export class MemoryRepository {
    * memory the curator starts from (ADR 0055). Read straight from the working tree; `.git` is not memory.
    */
   async listFiles(): Promise<MemoryFile[]> {
-    const { stdout } = await runGit(this.directory, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+    const { stdout } = await this.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
     const paths = [...new Set(stdout.split('\0').filter(Boolean))].sort();
     const files: MemoryFile[] = [];
     for (const path of paths) {
@@ -239,11 +247,11 @@ export class MemoryRepository {
    */
   async changedSince(base: string | undefined): Promise<string[]> {
     let from = base;
-    if (!from || (await runGit(this.directory, ['cat-file', '-e', `${from}^{commit}`], { allowFailure: true })).code !== 0) {
-      const older = (await runGit(this.directory, ['rev-list', '-1', '--before=24 hours ago', 'HEAD'])).stdout.trim();
+    if (!from || (await this.git(['cat-file', '-e', `${from}^{commit}`], { allowFailure: true })).code !== 0) {
+      const older = (await this.git(['rev-list', '-1', '--before=24 hours ago', 'HEAD'])).stdout.trim();
       from = older || EMPTY_TREE;
     }
-    const { stdout } = await runGit(this.directory, ['diff', '--name-only', '-z', '--no-renames', '--diff-filter=AM', from, 'HEAD']);
+    const { stdout } = await this.git(['diff', '--name-only', '-z', '--no-renames', '--diff-filter=AM', from, 'HEAD']);
     return stdout.split('\0').filter(Boolean).sort();
   }
 
@@ -272,7 +280,7 @@ export class MemoryRepository {
 
   /** The commit the working tree was last brought level with: what a switch records as the handoff it started from. */
   async head(): Promise<string> {
-    return (await runGit(this.directory, ['rev-parse', 'HEAD'])).stdout.trim();
+    return (await this.git(['rev-parse', 'HEAD'])).stdout.trim();
   }
 
   /** True when the directory is a repository of its own, rather than a directory inside somebody else's. */
@@ -332,12 +340,12 @@ export class MemoryRepository {
   }
 
   private async commitStaged(event: string, files: string[], message?: string): Promise<void> {
-    await runGit(this.directory, ['commit', '--no-verify', '--quiet', '-m', message?.trim() || subject(event, files)]);
+    await this.git(['commit', '--no-verify', '--quiet', '-m', message?.trim() || subject(event, files)]);
   }
 
   /** What differs from the last commit, one entry per path. Renames come back as a removal and an addition. */
   private async status(): Promise<StatusEntry[]> {
-    const { stdout } = await runGit(this.directory, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames']);
+    const { stdout } = await this.git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames']);
     return stdout.split('\0').filter(entry => entry.length > 3).map(entry => {
       const code = entry.slice(0, 2);
       const deleted = code[0] === 'D' || code[1] === 'D';
@@ -369,7 +377,7 @@ export class MemoryRepository {
     if (writer === 'day' && NIGHT_ONLY_FILES.includes(path)) {
       return `${path} は毎回のプロンプトに入るので、夜の再構成のターンでだけ書き換えられます`;
     }
-    if (writer === 'curator' && NATSUMI_ONLY_FILES.includes(path)) return `${path} はなつみ自身のファイルなので、整理係は変えられません`;
+    if (writer === 'curator' && NATSUMI_ONLY_FILES.includes(path)) return `${path} は${this.options.identity?.name ?? DEFAULT_SELF.name}自身のファイルなので、整理係は変えられません`;
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は変えられません`;
     let info;
     try { info = await lstat(join(this.directory, path)); } catch { return undefined; }
@@ -393,9 +401,9 @@ export class MemoryRepository {
 
   /** Back to the last commit, or removed when the last commit did not have it. */
   private async restore(path: string): Promise<void> {
-    const known = await runGit(this.directory, ['cat-file', '-e', `HEAD:${path}`], { allowFailure: true });
+    const known = await this.git(['cat-file', '-e', `HEAD:${path}`], { allowFailure: true });
     if (known.code === 0) {
-      await runGit(this.directory, ['checkout', 'HEAD', '--', path]);
+      await this.git(['checkout', 'HEAD', '--', path]);
       return;
     }
     await rm(join(this.directory, path), { force: true, recursive: true });

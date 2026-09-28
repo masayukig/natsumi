@@ -14,10 +14,11 @@ test('the real runner answers inside bubblewrap, laid out as the workspace conta
   const root = await mkdtemp(join(tmpdir(), 'natsumi-sandbox-'));
   try {
     const data = join(root, 'data');
-    for (const dir of ['memory/.git', 'work', 'home', 'sources/slack', 'agents']) await mkdir(join(data, dir), { recursive: true });
+    for (const dir of ['memory/.git', 'work', 'home', 'sources/slack', 'agents', 'avatar']) await mkdir(join(data, dir), { recursive: true });
     await writeFile(join(data, 'memory', 'always.md'), 'FIXTURE-MEMORY\n');
     await writeFile(join(data, 'sources', 'slack', 'INDEX.md'), 'FIXTURE-SOURCES\n');
     await writeFile(join(data, 'agents', 'INDEX.md'), 'FIXTURE-AGENTS\n');
+    await writeFile(join(data, 'avatar', 'images.md'), 'FIXTURE-AVATAR\n');
     const manual = join(root, 'manual');
     await mkdir(manual);
     await writeFile(join(manual, 'INDEX.md'), 'FIXTURE-MANUAL\n');
@@ -25,14 +26,14 @@ test('the real runner answers inside bubblewrap, laid out as the workspace conta
     const workspace = await runner.start({ data, manual, socketDirectory: join(root, 'socket'), sandbox: 'bwrap', timeZone: 'Asia/Tokyo' });
     try {
       const shell = new WorkspaceShell({ socketPath: workspace.socketPath, timeoutMs: 20_000, timeZone: 'Asia/Tokyo' });
-      const read = await shell.run('cat /memory/always.md /sources/slack/INDEX.md /manual/INDEX.md /manual/agents/INDEX.md; pwd; echo $HOME');
-      assert.match(read.text, /FIXTURE-MEMORY\nFIXTURE-SOURCES\nFIXTURE-MANUAL\nFIXTURE-AGENTS\n\/work\n\/home\/natsumi/);
+      const read = await shell.run('cat /memory/always.md /sources/slack/INDEX.md /manual/INDEX.md /manual/agents/INDEX.md /manual/avatar/images.md; pwd; echo $HOME');
+      assert.match(read.text, /FIXTURE-MEMORY\nFIXTURE-SOURCES\nFIXTURE-MANUAL\nFIXTURE-AGENTS\nFIXTURE-AVATAR\n\/work\n\/home\/natsumi/);
       const written = await shell.run('echo kept > /work/out.txt && echo home > /home/natsumi/h.txt && echo mem >> /memory/always.md');
       assert.match(written.text, /終了コード 0/);
       assert.equal(await readFile(join(data, 'work', 'out.txt'), 'utf8'), 'kept\n');
       assert.equal(await readFile(join(data, 'home', 'h.txt'), 'utf8'), 'home\n');
       // What the container keeps read-only stays so.
-      for (const place of ['/sources/x', '/manual/x', '/manual/agents/x', '/memory/.git/x', '/usr/x']) {
+      for (const place of ['/sources/x', '/manual/x', '/manual/agents/x', '/manual/avatar/x', '/memory/.git/x', '/usr/x']) {
         const refused = await shell.run(`touch ${place}`);
         assert.doesNotMatch(refused.text, /終了コード 0/, place);
       }

@@ -1,7 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
-import { AVATAR_PATH, avatarImage } from './avatar.ts';
+import { avatarManifest, type Avatar } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
 import { Dashboard } from './dashboard.ts';
@@ -11,6 +11,10 @@ import type { SessionStore } from './sessions.ts';
 const MAX_BODY_BYTES = 8 * 1024;
 /** `/v1/images/<imageId>`: the ID is the server's own, of letters, digits and hyphens. */
 const IMAGE_PATH = /^\/v1\/images\/([A-Za-z0-9-]{1,128})$/;
+/** The Slack icon of a feeling (ADR 0040): `/avatar/<feeling>.png`. */
+const SLACK_ICON_PATH = /^\/avatar\/([a-z]+)\.png$/;
+/** One file of the avatar's bundle under its version (ADR 0057): `/v1/avatar/<version>/<path>`. */
+const AVATAR_FILE_PATH = /^\/v1\/avatar\/([0-9a-f]{32})\/(.+)$/;
 
 export interface ListenerOptions {
   listen: ListenConfig;
@@ -24,6 +28,8 @@ export interface ListenerOptions {
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
   /** The read-only dashboard in the browser (ADR 0049). It alone reads its cookie; every other route ignores it. */
   dashboard: Dashboard;
+  /** The avatar read at start (ADR 0057): its bundle for the apps and its Slack icons, all served without a login. */
+  avatar: Avatar;
 }
 
 export interface Listener {
@@ -91,12 +97,23 @@ async function route(request: IncomingMessage, response: ServerResponse, options
   const url = new URL(request.url ?? '/', 'http://request.invalid');
   const method = request.method;
 
-  const avatar = method === 'GET' ? AVATAR_PATH.exec(url.pathname) : null;
-  if (avatar) {
-    const image = await avatarImage(avatar[1]!);
+  // The avatar is the character's public art and name, and nothing else is reachable under these paths (ADR 0057).
+  const icon = method === 'GET' ? SLACK_ICON_PATH.exec(url.pathname) : null;
+  if (icon) {
+    const image = options.avatar.slack(icon[1]!);
     if (!image) return json(response, 404, { error: 'not-found' });
-    // Slack fetches and keeps it; the art changes with a release, not by the minute.
+    // Slack fetches and keeps it; the art changes with a restart, not by the minute.
     response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400', 'content-length': image.length }).end(image);
+    return;
+  }
+  if (method === 'GET' && url.pathname === '/v1/avatar') return json(response, 200, avatarManifest(options.avatar));
+  const bundled = method === 'GET' ? AVATAR_FILE_PATH.exec(url.pathname) : null;
+  if (bundled) {
+    const file = bundled[1] === options.avatar.version ? options.avatar.files.get(bundled[2]!) : undefined;
+    if (!file) return json(response, 404, { error: 'not-found' });
+    // A version names one content for good, so what was fetched under it never needs fetching again.
+    response.writeHead(200, { 'content-type': file.contentType, 'cache-control': 'public, max-age=31536000, immutable',
+      'content-length': file.data.length }).end(file.data);
     return;
   }
   if (method === 'GET' && url.pathname.startsWith('/v1/images/')) {

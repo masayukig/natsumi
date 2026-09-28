@@ -1,8 +1,9 @@
 import type { RunRecord } from '../../../src/eval/record.ts';
+import { loadAvatar } from '../../../src/server/avatar.ts';
 import { drawnPrompt, sdctlCalls, shellCommands } from '../self-look/scene.ts';
 
 /**
- * Whether she drew someone or something else as manual/images.md teaches: a prompt file under /work/prompts handed to
+ * Whether she drew someone or something else as /manual/avatar/images.md teaches: a prompt file under /work/prompts handed to
  * `sdctl txt2img --prompt`, no flags for what the defaults already set, the image left under /work, and a prompt in the
  * Anima order (the quality line, then the head count). sdctl does not run here, so the command and the prompt it read
  * are judged, not the picture.
@@ -56,8 +57,12 @@ export const quality = (record: RunRecord) =>
 export const counted = (record: RunRecord) =>
   withPrompt(record, prompt => /\b(no humans|\d\+?(girl|boy)s?)\b/.test(prompt) ? verdict(true, 'あり') : verdict(false, '人数のタグが無い'));
 
+/** Her own LoRA, from the default avatar's appearance.yaml (ADR 0057). */
+const LORA = (await loadAvatar(undefined)).appearance?.lora;
+
 export const notMe = (record: RunRecord) =>
-  withPrompt(record, prompt => /kutara_aki_anima/.test(prompt) ? verdict(false, 'なつみの LoRA が付いている') : verdict(true, '付いていない'));
+  withPrompt(record, prompt => LORA !== undefined && prompt.includes(`<lora:${LORA}`)
+    ? verdict(false, '自分の LoRA が付いている') : verdict(true, '付いていない'));
 
 /** The last drawing is landscape: wider than tall, as asked. */
 export function wide(record: RunRecord): Verdict {

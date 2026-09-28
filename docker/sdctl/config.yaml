@@ -6,5 +6,6 @@
 # The relay in the same Pod: the egress proxy listens on this loopback address and adds the token. The port is the
 # environment overlay's promise too (it also gives the workspace SDCTL_URL with it); change both together.
 url: http://127.0.0.1:17860
-params: /etc/sdctl/anima.yaml
+# The avatar's params, or the server's default, written by the server on every start (ADR 0057).
+params: /manual/avatar/sdctl-params.yaml
 output_dir: /work/images

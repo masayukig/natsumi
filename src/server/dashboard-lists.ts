@@ -1,6 +1,7 @@
 import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DovePostRow, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
+import { DEFAULT_SELF } from './prompts.ts';
 import type { MemoReading, TurnRow } from './turn-log.ts';
 
 /**
@@ -108,11 +109,11 @@ ${pages(MEMOS_PATH, list.page, list.more, '新しいメモ', '古いメモ')}
   return page('一行メモ', main, { signedIn: true, current: '一行メモ' });
 }
 
-export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[] }, timeZone: string): Html {
+export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[] }, timeZone: string, name = DEFAULT_SELF.name): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const main = html`<section id="dove">
 <h2>ポッポさん</h2>
-<p><small>なつみがポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。</small></p>
+<p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。</small></p>
 ${list.rows.length === 0 ? html`<p>まだ依頼はありません。</p>` : html`<div class="cards">${list.rows.map(post => html`<article class="card" id="${post.postId}">
 <p><strong>${post.kind === 'reaction' ? 'リアクション' : '投稿'}</strong> ${post.channel} <small>${post.reference}</small>
 <small>${at(post.createdAt)}</small></p>

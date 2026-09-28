@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ApnsEnvironment, ApnsRequest, ApnsResponse } from './apns.ts';
 import { isoAt } from './nightly.ts';
 import { decodePublicKey, PUSH_TEXT_MAX_CHARS, pushPlaintext, sealPush } from './push-crypto.ts';
+import { DEFAULT_SELF } from './prompts.ts';
 import { ReadState } from './read-state.ts';
 
 /** APNs refuses a payload over 4 KiB. */
@@ -15,13 +16,19 @@ const DEVICE_TOKEN = /^(?:[0-9a-f]{2}){16,100}$/;
 
 /**
  * What natsumi says on the lock screen for each kind of line she pushes, before the device replaces it with the
- * decrypted text. A new kind (approvals, later) is a new entry here.
+ * decrypted text. A new kind is a new entry here. The title is the avatar's display name (ADR 0057).
  */
-const ALERTS: Record<string, { title: string; body: string }> = {
-  reply: { title: 'なつみ', body: '返事があります' },
-  notice: { title: 'なつみ', body: '知らせがあります' },
-  approval: { title: 'なつみ', body: '承認待ちがあります' },
+const ALERT_BODIES: Record<string, string> = {
+  reply: '返事があります',
+  notice: '知らせがあります',
+  approval: '承認待ちがあります',
 };
+
+/** The lock screen's words for a kind of line, or undefined for a kind that is not pushed. */
+export function pushAlert(kind: string, name: string): { title: string; body: string } | undefined {
+  const body = Object.hasOwn(ALERT_BODIES, kind) ? ALERT_BODIES[kind] : undefined;
+  return body === undefined ? undefined : { title: name, body };
+}
 
 export interface Registration { token: string; publicKey: Buffer; environment: ApnsEnvironment }
 export interface PushTarget extends Registration { deviceId: string }
@@ -101,6 +108,8 @@ export interface PushNotifierOptions {
   /** Fixed lines naming devices and APNs answers only: never the text, a whole token or a key. */
   log: (line: string) => void;
   retryDelaysMs?: readonly number[];
+  /** The avatar's display name, the title of every alert (ADR 0057). natsumi's when left out. */
+  name?: string;
 }
 
 /**
@@ -116,9 +125,11 @@ export class PushNotifier {
   private readonly unsubscribe: () => void;
   private readonly unsubscribeApprovals: () => void;
   private closed = false;
+  private readonly name: string;
 
   constructor(options: PushNotifierOptions) {
     this.options = options;
+    this.name = options.name ?? DEFAULT_SELF.name;
     this.readState = new ReadState(options.db, Date.now);
     this.delays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     const listener = (event: PushEvent) => {
@@ -145,7 +156,7 @@ export class PushNotifier {
   private handle(event: PushEvent) {
     const { type, payload } = event;
     if (type === 'conversation.message') {
-      const alert = typeof payload.kind === 'string' ? ALERTS[payload.kind] : undefined;
+      const alert = typeof payload.kind === 'string' ? pushAlert(payload.kind, this.name) : undefined;
       if (payload.role !== 'natsumi' || !alert || typeof payload.messageId !== 'string' || typeof payload.text !== 'string') return;
       const position = this.positionOf(payload.messageId);
       if (position === undefined) return;
@@ -166,7 +177,7 @@ export class PushNotifier {
       const channel = target.channel;
       const badge = this.badge();
       for (const target of this.awayTargets()) {
-        const body = alertPayload({ alert: ALERTS.approval!, badge, plain: { kind: 'approval', approvalId }, sealedTo: approvalId,
+        const body = alertPayload({ alert: pushAlert('approval', this.name)!, badge, plain: { kind: 'approval', approvalId }, sealedTo: approvalId,
           devicePublicKey: target.publicKey, plaintext: maxChars => approvalPlaintext(text, channel, maxChars) });
         this.dispatch(target, { environment: target.environment, token: target.token, pushType: 'alert', payload: body, id: randomUUID() });
       }
