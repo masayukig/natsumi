@@ -21,7 +21,7 @@
 1. **image**: fork で版の tag（`v0.x.y`）を push し、`images.yml` が `ghcr.io/masayukig/natsumi` と
    `ghcr.io/masayukig/natsumi-workspace` を作るのを待つ（image 名は `github.repository_owner` から決まる）。
    ghcr の package は既定で private なので、**public にする**か、SA `natsumi` に pull secret を足す。
-   `kustomization.yaml` の `newTag: vX.Y.Z` を 2 か所とも書き換える。
+   版を上げるときは `kustomization.yaml` の `newTag`（2 か所、初版は `v0.1.9-mig.1`）を書き換える。
 2. **GitHub OAuth App**: Homepage URL `https://natsumi.apps.lab.igawa.io`、
    callback URL `https://natsumi.apps.lab.igawa.io/auth/github/callback`。
    Client ID を `config.json` の `github.clientId` に、`gh api user --jq .id` の値を `github.allowedUserId` に書く。
