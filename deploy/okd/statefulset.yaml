@@ -149,6 +149,9 @@ spec:
             - name: slack
               mountPath: /run/secrets/natsumi-slack
               readOnly: true
+            - name: judge
+              mountPath: /run/secrets/natsumi-judge
+              readOnly: true
             - name: server-tmp
               mountPath: /tmp
         # natsumi's workspace (ADR 0019): no secrets, no egress (egress-rules), and only the places below.
@@ -229,6 +232,11 @@ spec:
         - name: slack
           secret:
             secretName: natsumi-slack
+            defaultMode: 288  # 0440: owner root, readable by the fsGroup (1000)
+        # The dove's judge (README 判定の方式): an OpenAI API key of its own, used for logprobs only.
+        - name: judge
+          secret:
+            secretName: natsumi-judge
             defaultMode: 288  # 0440: owner root, readable by the fsGroup (1000)
         - name: server-tmp
           emptyDir: {}
