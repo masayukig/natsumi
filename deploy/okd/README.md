@@ -20,7 +20,9 @@
 
 1. **image**: fork で版の tag（`v0.x.y`）を push し、`images.yml` が `ghcr.io/masayukig/natsumi` と
    `ghcr.io/masayukig/natsumi-workspace` を作るのを待つ（image 名は `github.repository_owner` から決まる）。
-   ghcr の package は既定で private なので、**public にする**か、SA `natsumi` に pull secret を足す。
+   package は **private のまま**にし、SA `natsumi` の `imagePullSecrets` に `ghcr-pull` を付けてある。
+   pull 用に classic PAT（scope は `read:packages` だけ、名前は `okd-natsumi-ghcr-pull`）を作り、
+   Vaultwarden の `OKD Secret: natsumi/ghcr-pull`（フィールド `password`）へ入れる。fine-grained PAT は ghcr に使えない。
    版を上げるときは `kustomization.yaml` の `newTag`（2 か所、初版は `v0.1.9-mig.1`）を書き換える。
 2. **GitHub OAuth App**: Homepage URL `https://natsumi.apps.lab.igawa.io`、
    callback URL `https://natsumi.apps.lab.igawa.io/auth/github/callback`。
@@ -38,10 +40,12 @@
 5. **Secret**（値は端末に出さない）:
    ```sh
    oc create secret generic natsumi-github -n natsumi \
-     --from-file=client-secret=<(vaultwarden-safe-ops.py get-field 'OKD Secret: natsumi/natsumi-github' client-secret)
+     --from-file=client-secret=<(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/natsumi-github' client-secret)
    oc create secret generic natsumi-slack -n natsumi \
-     --from-file=bot-token=<(vaultwarden-safe-ops.py get-field 'OKD Secret: natsumi/natsumi-slack' bot-token) \
-     --from-file=app-token=<(vaultwarden-safe-ops.py get-field 'OKD Secret: natsumi/natsumi-slack' app-token)
+     --from-file=bot-token=<(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/natsumi-slack' bot-token) \
+     --from-file=app-token=<(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/natsumi-slack' app-token)
+   oc create secret docker-registry ghcr-pull -n natsumi --docker-server=ghcr.io --docker-username=masayukig \
+     --docker-password="$(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/ghcr-pull' password)"
    ```
 6. **backup の下準備**（`~/work-reports/k8s/direct-backup/rgw-provisioning/`。`setup-direct-backup.sh` の手順 1〜4 を個別に。
    手順 5 は work-reports 側のマニフェストを当てるので使わない）:

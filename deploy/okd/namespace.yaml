@@ -11,6 +11,9 @@ metadata:
   name: natsumi
   namespace: natsumi
 automountServiceAccountToken: false
+# The fork's ghcr packages are private; the StatefulSet and the backup CronJob both run as this account.
+imagePullSecrets:
+  - name: ghcr-pull
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
