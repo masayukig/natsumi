@@ -245,6 +245,11 @@ export interface SlackConfig {
   judgeContext: { messages: number; chars: number };
   /** The images natsumi asks the dove to post (ADR 0044): the largest one taken, and the most in one request. */
   postImages: { maxBytes: number; maxCount: number };
+  /**
+   * Fork: the owner talks with her in one channel of one workspace, and in the DM with the bot, instead of on a Mac
+   * (ADR 0056). Absent, the owner is only on the Mac and the iPhone, as upstream.
+   */
+  owner?: { workspace: string; userId: string; channel: string };
 }
 
 /**
@@ -737,7 +742,7 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   // The list of reactions was dropped (ADR 0042); one still written would promise a limit that is no longer there.
   if ('reactions' in slack) throw new ConfigError(`${path}.reactions`, 'was removed: any emoji that exists may be asked for (ADR 0042); delete it');
   onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', ...IGNORED_SLACK_KEYS, 'judge', 'approvalExpiryDays',
-    'placementFollowing', 'judgeContext', 'postImages']);
+    'placementFollowing', 'judgeContext', 'postImages', 'owner']);
   const ignored = IGNORED_SLACK_KEYS.filter(key => key in slack).map(key => `${path}.${key}`);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
@@ -797,7 +802,21 @@ function parseSlack(value: unknown, path: string): SlackConfig {
     ignored,
     approvalExpiryDays: expiry as number, placementFollowing: following,
     judgeContext: { messages: judgeMessages as number, chars: judgeChars as number },
-    postImages: { maxBytes: imageBytes as number, maxCount: imageCount as number } };
+    postImages: { maxBytes: imageBytes as number, maxCount: imageCount as number },
+    ...(slack.owner === undefined ? {} : { owner: parseSlackOwner(slack.owner, `${path}.owner`, workspaces) }) };
+}
+
+/** Fork (ADR 0056): the owner's workspace, their Slack user ID and the channel's ID, as Slack writes them. */
+function parseSlackOwner(value: unknown, path: string, workspaces: SlackConfig['workspaces']): NonNullable<SlackConfig['owner']> {
+  const owner = object(value, path);
+  onlyKeys(owner, path, ['workspace', 'userId', 'channel']);
+  const workspace = required(owner, 'workspace', path);
+  if (typeof workspace !== 'string' || !(workspace in workspaces)) throw new ConfigError(`${path}.workspace`, 'must name one of slack.workspaces');
+  const userId = required(owner, 'userId', path);
+  if (typeof userId !== 'string' || !/^[UW][A-Z0-9]{2,}$/.test(userId)) throw new ConfigError(`${path}.userId`, 'must be a Slack user ID, such as U0123ABCD');
+  const channel = required(owner, 'channel', path);
+  if (typeof channel !== 'string' || !/^[CG][A-Z0-9]{2,}$/.test(channel)) throw new ConfigError(`${path}.channel`, 'must be a Slack channel ID, such as C0123ABCD');
+  return { workspace, userId, channel };
 }
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
