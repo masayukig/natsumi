@@ -8,7 +8,7 @@ import type { Context } from '@earendil-works/pi-ai';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { CURATOR_DEFAULTS, LOOP_DEFAULTS, type CuratorConfig, type LoopConfig } from '../src/server/config.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { CURATOR_SYSTEM_PROMPT } from '../src/server/prompts.ts';
+import { curatorSystemPrompt } from '../src/server/prompts.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
@@ -83,7 +83,7 @@ const textOf = (message: Context['messages'][number]) => {
   return (content as { type: string; text?: string }[]).filter(part => part.type === 'text').map(part => part.text).join('');
 };
 const call = (name: string, args: Record<string, unknown>) => ({ name, arguments: args });
-const isCurator = (context: Context) => context.systemPrompt?.startsWith(CURATOR_SYSTEM_PROMPT) === true;
+const isCurator = (context: Context) => context.systemPrompt?.startsWith(curatorSystemPrompt('なつみ')) === true;
 const firstUser = (context: Context) => textOf(context.messages.find(message => message.role === 'user')!);
 
 /**

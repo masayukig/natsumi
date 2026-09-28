@@ -149,3 +149,14 @@ test('a refused path says why without showing anything of it', () => {
   assert.match(refusedFilePage({ location: at('/work/pipe'), reason: 'other' }).text, /ファイルでもディレクトリでもありません/);
   assert.match(refusedFilePage({ location: at('/work/locked'), reason: 'unreadable' }).text, /読めません/);
 });
+
+// ADR 0057: the avatar's pages are one more place, and the words name her by the avatar's display name.
+test('the first page lists the avatar\'s pages and names her by the display name', () => {
+  const text = filesIndexPage('はな').text;
+  assert.match(text, /href="\/dashboard\/files\/manual\/avatar"/);
+  assert.match(text, /はなの作業環境・記憶・マニュアル/);
+  assert.match(text, /はなのホーム/);
+  assert.doesNotMatch(text, /なつみ/);
+  assert.match(filesIndexPage().text, /なつみのホーム/);
+  assert.match(refusedFilePage({ location: at('/work/out/x'), reason: 'symlink' }, 'はな').text, /指す先がはなの場所の中なら/);
+});

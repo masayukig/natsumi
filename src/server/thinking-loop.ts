@@ -18,7 +18,9 @@ import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownIm
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
-import { COMPACTION_INSTRUCTIONS, composeSystemPrompt, CURATOR_SYSTEM_PROMPT, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS } from './prompts.ts';
+import { gitIdentity } from './git.ts';
+import { compactionInstructions, composeSystemPrompt, curatorSystemPrompt, DEFAULT_SELF, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
+  type Self } from './prompts.ts';
 import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
 import { TurnStats, type Confusion, type TokenCounts, type TurnKind, type TurnPlace } from './turn-stats.ts';
@@ -184,6 +186,11 @@ export interface LoopOptions {
    */
   manualIndex?: string;
   /**
+   * Who she is, from the avatar the server read at start (ADR 0057): the name in every session's instructions, the
+   * curator's, and the memory commits. natsumi when left out.
+   */
+  self?: Self;
+  /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
@@ -340,16 +347,19 @@ export class ThinkingLoop {
   private curatorSession: AgentSession | undefined;
   private measured: { tokens: number; at: number } | undefined;
   private compactedAt: number | undefined;
+  /** Who she is (ADR 0057). */
+  private readonly self: Self;
 
   private constructor(options: LoopOptions) {
     this.options = options;
+    this.self = options.self ?? DEFAULT_SELF;
     this.now = options.now ?? Date.now;
     const loop = options.loop;
     // One directory, two ways in: the shell writes the files, and the repository is what commits them.
     const memoryDirectory = loop.memoryRepository ?? join(options.dataDirectory, 'memory');
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
-      alwaysMaxChars: loop.alwaysMemoryMaxChars,
+      alwaysMaxChars: loop.alwaysMemoryMaxChars, identity: gitIdentity(this.self),
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);
@@ -827,7 +837,7 @@ export class ThinkingLoop {
       try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
-    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex,
+    const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex, self: this.self,
       personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice(),
       ownerOnSlack: this.options.ownerOnSlack === true });
@@ -1269,7 +1279,7 @@ export class ThinkingLoop {
     const existing = files.map(file => file.path);
     const changed = (await this.memoryRepository.changedSince(this.curation.base())).filter(isRewritable);
     const rotated = chooseRotation(existing, this.curation.curatedAt(), new Set(changed), config.rotateFiles);
-    const brief = curationBrief({ date: localDate(this.now(), this.options.loop.timeZone), fileMaxChars: this.options.loop.memoryFileMaxChars,
+    const brief = curationBrief({ name: this.self.name, date: localDate(this.now(), this.options.loop.timeZone), fileMaxChars: this.options.loop.memoryFileMaxChars,
       files, changed, rotated });
 
     let note: string | undefined;
@@ -1287,7 +1297,7 @@ export class ThinkingLoop {
     this.curation.begin();
     const session = await createPersistedPiSession({
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: join(sessionDirectory, CURATOR_SESSION_DIRECTORY),
-      modelRuntime: this.modelRuntime!, target: route.target, systemPrompt: CURATOR_SYSTEM_PROMPT, thinkingLevel: this.thinkingLevel(),
+      modelRuntime: this.modelRuntime!, target: route.target, systemPrompt: curatorSystemPrompt(this.self.name), thinkingLevel: this.thinkingLevel(),
       tools: { names: tools.map(tool => tool.name), definitions: tools },
     });
     this.curatorSession = session;
@@ -1433,7 +1443,7 @@ export class ThinkingLoop {
     if (tokens === undefined || tokens === null || tokens <= limit) return false;
     if (this.compactionRetryAbove !== undefined && tokens <= this.compactionRetryAbove) return false;
     try {
-      await session.compact(COMPACTION_INSTRUCTIONS);
+      await session.compact(compactionInstructions(this.self));
       this.compactionRetryAbove = undefined;
       this.log('thinking loop: the session was compacted');
       return true;

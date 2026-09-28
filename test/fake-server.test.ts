@@ -277,3 +277,20 @@ test('logging out puts the routes back to the default', () => withServer(async p
   assert.equal(snapshot.payload.modelRoutes.chosen, 'local');
   client.close();
 }));
+
+// ADR 0057: the avatar the apps fetch without a login, and its version in the snapshot, as the server gives them.
+test('the fake server hands out natsumi\'s avatar and its version, as the server does', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  client.close();
+  const manifest = await (await fetch(`http://localhost:${port}/v1/avatar`)).json() as
+    { version: string; id: string; name: string; files: { path: string; bytes: number }[] };
+  assert.equal(snapshot.payload.avatarVersion, manifest.version);
+  assert.equal(manifest.id, 'natsumi');
+  assert.equal(manifest.name, 'なつみ');
+  for (const file of manifest.files) {
+    const res = await fetch(`http://localhost:${port}/v1/avatar/${manifest.version}/${file.path}`);
+    assert.equal(res.status, 200, file.path);
+    assert.equal((await res.arrayBuffer()).byteLength, file.bytes, file.path);
+  }
+  assert.equal((await fetch(`http://localhost:${port}/v1/avatar/0123456789abcdef0123456789abcdef/pet.json`)).status, 404);
+}));

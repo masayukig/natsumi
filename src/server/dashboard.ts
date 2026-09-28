@@ -22,6 +22,7 @@ import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } f
 import type { Html } from './html.ts';
 import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
 import { codeManualDirectory } from './manual.ts';
+import { AVATAR_MANUAL_DIRECTORY } from './avatar-manual.ts';
 import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
 import { checkHealth, readStatus } from './status.ts';
@@ -66,6 +67,8 @@ export interface DashboardOptions {
   memoryDirectory: string;
   /** The manual seen as /manual; by default the `manual/` that came with the code (ADR 0054). */
   manualDirectory?: string;
+  /** The avatar's display name, in the dashboard's words (ADR 0057). natsumi's when left out. */
+  name?: string;
   /** The state database, read for the turns' rows and the session files the conversation used (ADR 0049). */
   db: DatabaseSync;
   /** Where the Pi session records are; nothing outside it is opened. */
@@ -157,7 +160,7 @@ export class Dashboard {
       return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone), renewed);
     }
     if (path === STATS_PATH) return this.stats(response, url, renewed);
-    if (path === FILES_PATH) return send(response, 200, filesIndexPage(), renewed);
+    if (path === FILES_PATH) return send(response, 200, filesIndexPage(this.options.name), renewed);
     if (path.startsWith(`${FILES_PATH}/`)) return this.files(response, url, renewed);
     const turn = TURN_ROUTE.exec(path);
     if (turn) return this.turn(response, turn[1]!, turn[2] === undefined ? undefined : Number(turn[2]), renewed);
@@ -193,7 +196,7 @@ export class Dashboard {
   private dove(response: ServerResponse, url: URL, headers: Record<string, string>): void {
     const page = pageNumber(url);
     if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
-    send(response, 200, dovePage({ ...listDovePosts(this.options.db, page), page }, this.options.timeZone), headers);
+    send(response, 200, dovePage({ ...listDovePosts(this.options.db, page), page }, this.options.timeZone, this.options.name), headers);
   }
 
   /** The charts of a period, from `turn_stats` alone and counted by SQLite (ADR 0049), with the series of tokens chosen. */
@@ -242,7 +245,7 @@ export class Dashboard {
     if (!location || !query) return send(response, 404, messagePage('見つかりません', true), headers);
     const roots = await this.fileRoots();
     const refused = (reason: Parameters<typeof refusedFilePage>[0]['reason'], target?: string) =>
-      send(response, 404, refusedFilePage({ location, reason, ...(target === undefined ? {} : { target }) }), headers);
+      send(response, 404, refusedFilePage({ location, reason, ...(target === undefined ? {} : { target }) }, this.options.name), headers);
     if (query.download || query.image) {
       const opened = await openFile(roots, location);
       if (opened.kind === 'refused') return refused(opened.reason, opened.target);
@@ -282,7 +285,8 @@ export class Dashboard {
     const { dataDirectory, memoryDirectory, manualDirectory } = this.options;
     return {
       memory: memoryDirectory, work: join(dataDirectory, WORK_DIRECTORY), home: join(dataDirectory, HOME_DIRECTORY),
-      agents: join(dataDirectory, AGENT_LIST_DIRECTORY), manual: manualDirectory ?? await codeManualDirectory(),
+      agents: join(dataDirectory, AGENT_LIST_DIRECTORY), avatar: join(dataDirectory, AVATAR_MANUAL_DIRECTORY),
+      manual: manualDirectory ?? await codeManualDirectory(),
     };
   }
 

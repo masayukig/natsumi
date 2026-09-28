@@ -112,6 +112,14 @@ services:
         volume:
           subpath: agents
           nocopy: true
+      # The page on drawing and the sdctl params, written by natsumi from the avatar on every start (ADR 0057). Read-only.
+      - type: volume
+        source: natsumi-data
+        target: /manual/avatar
+        read_only: true
+        volume:
+          subpath: avatar
+          nocopy: true
       # What she reads besides memory, such as the Slack channels, written by natsumi (ADR 0039). Read-only.
       - type: volume
         source: natsumi-data

@@ -44,7 +44,7 @@ export function chooseRotation(files: readonly string[], curated: ReadonlyMap<st
 }
 
 /** What begins the curator's one turn: the map of memory, and the files whose content it may rewrite tonight. */
-export function curationBrief(input: { date: string; fileMaxChars: number; files: readonly MemoryFile[]; changed: readonly string[];
+export function curationBrief(input: { name: string; date: string; fileMaxChars: number; files: readonly MemoryFile[]; changed: readonly string[];
   rotated: readonly string[] }): string {
   const lines = [`今夜は ${input.date} です。1 ファイルの上限は ${input.fileMaxChars} 文字です。`, '',
     `## 記憶のファイル（${input.files.length} 件）`];
@@ -57,7 +57,7 @@ export function curationBrief(input: { date: string; fileMaxChars: number; files
       lines.push(`- ${DIARY_DIRECTORY}/: ${diary.length} ファイル（${diary[0]!.path} 〜 ${diary.at(-1)!.path}・日記、変えない）`);
       continue;
     }
-    if (NATSUMI_ONLY_FILES.includes(file.path)) { lines.push(`- ${file.path}（${file.chars} 文字・なつみのもの、変えない）`); continue; }
+    if (NATSUMI_ONLY_FILES.includes(file.path)) { lines.push(`- ${file.path}（${file.chars} 文字・${input.name}のもの、変えない）`); continue; }
     if (file.path === INDEX_FILE) { lines.push(`- ${file.path}（${file.chars} 文字・あなたが書く索引）`); continue; }
     lines.push(`- ${file.path}（${file.chars} 文字）`);
     for (const heading of file.headings.slice(0, BRIEF_HEADINGS_PER_FILE)) lines.push(`  - ${shorten(heading)}`);
