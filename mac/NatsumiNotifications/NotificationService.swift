@@ -1,6 +1,4 @@
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 import UserNotifications
 
 /// Opens natsumi's line before the notification shows (ADR 0029). The server sealed it to this iPhone's key; the
@@ -24,8 +22,8 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         content.body = line.text
         if alert.kind == .notice { content.subtitle = "知らせ" }
-        // Her face for the feeling in the line; the neutral one when the line has none.
-        if let face = Face.attachment(line.expression ?? "neutral") { content.attachments = [face] }
+        // Her face is not added: the avatar is the server's and the app keeps its copy where this extension cannot
+        // read it, and none is bundled any more (ADR 0057).
         contentHandler(content)
     }
 
@@ -39,20 +37,5 @@ final class NotificationService: UNNotificationServiceExtension {
         content.subtitle = "承認待ち · \(draft.channel)"
         content.body = draft.text
         return content
-    }
-}
-
-/// The faces in `icons/` are WebP, which a notification cannot show, so the one needed is written out as PNG.
-private enum Face {
-    static func attachment(_ expression: String) -> UNNotificationAttachment? {
-        guard let source = Bundle.main.url(forResource: expression, withExtension: "webp", subdirectory: "icons"),
-              let image = CGImageSourceCreateWithURL(source as CFURL, nil).flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) })
-        else { return nil }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).png")
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
-        else { return nil }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return try? UNNotificationAttachment(identifier: "face", url: url)
     }
 }
