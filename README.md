@@ -79,6 +79,11 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
      係のターンの上限 `modelCalls`（既定 60 回）と `timeoutMinutes`（既定 30 分）、一晩に順番で回すファイルの数 `rotateFiles`
      （既定 2、0〜10）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
+   - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
+     組み込みのアバターの ID `id`（`natsumi` か `nanashi`。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
+     省略すると、組み込みのなつみ（`id` が `natsumi`）です。
+     壊れていれば起動せず、素材が足りないだけなら、名無し（`nanashi`）の、のっぺらぼうの素材で埋めて起動します。
+     作り方と検査のコマンド `natsumi avatar check <ディレクトリか ID>` は [アバターの作り方](docs/avatar.md)、決めたことは [ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md) にあります。
 4. ビルドして起動します。
 
 ```sh
@@ -620,7 +625,7 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
 - 本人に回した投稿は承認待ちになり、iPhone で承認・修正・却下を選びます（API と通知は [サーバーと Mac の契約](docs/client-contract.md) の「承認と外部実行」）。
   期限（既定 7 日）を過ぎると閉じます。修正した本文は判定に掛け直しません。送る直前には、どの本文にも機械的な検査を掛けます。
 - 投稿のアイコンは、natsumi の表情ごとの顔です。サーバーが認証なしの `/avatar/<表情>.png` で配り、`chat.postMessage` の `icon_url` に渡します
-  （画像は `assets/avatar/`）。Slack App に `chat:write`・`chat:write.customize` が要ります（[Slack App の作り方](docs/slack-app.md)）。
+  （画像はアバターのディレクトリの `slack/<表情>.png`。無ければのっぺらぼうの画像）。Slack App に `chat:write`・`chat:write.customize` が要ります（[Slack App の作り方](docs/slack-app.md)）。
 - リアクションは、実在する絵文字ならどれでも付けます（[ADR 0042](docs/adr/0042-any-emoji-that-exists.md)）。標準の絵文字（肌の色を含む）と、
   ワークスペースのカスタム絵文字（`emoji.list`、別名を含む）にある名前だけを受け付け、判定も承認も通しません。
   カスタム絵文字の一覧は起動時にワークスペースごとに読み、1 時間持ちます。一覧に無い名前を頼まれたら読み直しますが、1 分に 1 度までです。
@@ -707,9 +712,11 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   | `/home/natsumi` | する | しない | natsumi のホーム。`natsumi-data` の `home/` |
   | `/tmp` | しない | — | 128 MB の tmpfs。コンテナの再起動で消えます |
 
-  ほかに、読むだけの場所が 2 つあります（[ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。
+  ほかに、読むだけの場所が 3 つあります（[ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。
   `/manual` は natsumi 向けのマニュアル（リポジトリの [manual/](manual/) を image に焼いたもの）で、
   `/manual/agents` は natsumi が起動のたびに書き出す、頼める相手の一覧（`natsumi-data` の `agents/`、読み取り専用）です。
+  `/manual/avatar` は natsumi が起動のたびにアバターから書き出す、画像を作るページ `images.md` と画像生成の設定 `sdctl-params.yaml`
+  （`natsumi-data` の `avatar/`、読み取り専用。[ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)）です。
   system prompt には「やり方が分からないときは `/manual/INDEX.md` を読む」の 1 文だけがあり、使い方の説明はマニュアルの側に足します。
 
   `/work` と `/home/natsumi` にはターンの終わりの検査もコミットも掛からず、git の差分でも見られません。
@@ -717,10 +724,11 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   それにダッシュボードの「ファイル」でオーナーが開いたもの（読み取り専用）だけです。
 - 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
   - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.1。image の build でソースから入れます）を使い、
-    Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの [manual/images.md](manual/images.md) にあります。
-  - 既定の設定は image の `/etc/sdctl/anima.yaml`（リポジトリの [docker/sdctl/anima.yaml](docker/sdctl/anima.yaml)）です。
-    Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
-    変えるには image を作り直します。
+    Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの `/manual/avatar/images.md` にあります。
+    サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさを差し込んで書き出します。
+  - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。アバターの `sdctl-params.yaml`、無ければサーバーの既定
+    （名無しの [assets/avatars/nanashi/sdctl-params.yaml](assets/avatars/nanashi/sdctl-params.yaml)）を、サーバーが起動のたびに書き出します。
+    サーバーの既定は、Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
   - 接続先・既定の設定・出力の既定の `/work/images` は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
     PATH の `sdctl` は、本物（`/usr/libexec/sdctl`）にいつもこのファイルを `--config` で渡すラッパーです。
     runner はコマンドにコンテナの環境変数を渡さないので（下の「環境変数」）、image の環境変数では natsumi のコマンドに届きません。
@@ -1048,13 +1056,14 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
 ## ライセンス
 
 - コードは [MIT License](LICENSE) です。
-- `mac/Avatars/` のアバターのアセットは [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) です。
-  キャラクターの参照画像は Anima で、spritesheet は OpenAI の画像生成で作りました（[詳細](mac/Avatars/natsumi/README.md)）。
+- なつみのアバターのアセット（`assets/avatars/natsumi/` と `mac/Avatars/`）は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) です。
+  キャラクターの参照画像は Anima で、spritesheet は OpenAI の画像生成で作りました（[詳細](assets/avatars/natsumi/README.md)）。
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)、[終わったターンを畳んで一行メモを残し、read で読んだものは残す](docs/adr/0047-folding-ended-turns-with-a-memo.md)、[外のエージェントが返事に付けた画像を、サーバーが /work に取り込む](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)、[ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する](docs/adr/0051-evaluating-one-turn-on-the-real-path.md)、[本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す](docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)、[ダッシュボードで、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る](docs/adr/0054-her-files-on-the-dashboard.md)、[記憶の組み直しは、人格を持たない整理係が夜に行う](docs/adr/0055-a-memory-curator-at-night.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)、[終わったターンを畳んで一行メモを残し、read で読んだものは残す](docs/adr/0047-folding-ended-turns-with-a-memo.md)、[外のエージェントが返事に付けた画像を、サーバーが /work に取り込む](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)、[ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する](docs/adr/0051-evaluating-one-turn-on-the-real-path.md)、[本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す](docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)、[ダッシュボードで、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る](docs/adr/0054-her-files-on-the-dashboard.md)、[記憶の組み直しは、人格を持たない整理係が夜に行う](docs/adr/0055-a-memory-curator-at-night.md)、[アバターと名前を、サーバーの設定で指すアバターのディレクトリから決める](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
+- [アバターの作り方](docs/avatar.md): 自分のアバターのディレクトリを作り、検査して、サーバーで使うまで
 - [権限と秘密の一覧](docs/permissions.md): サーバーが外に対して持つ権限・秘密・外への出口と、受け付ける認証
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [1 ターンの評価](eval/README.md): 使い方、場面の書き方、私的な場面、本番の session の写しの取り出し方
