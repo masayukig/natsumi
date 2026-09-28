@@ -1,7 +1,7 @@
 # 0040. ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう
 
 - Date: 2026-09-26
-- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え、依頼の見出しの `画像` と、判定にも承認にも通さない画像だけの投稿は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加、判定が使い回す pi の設定は既定の経路のものに固定し、経路の切り替えで変わらないことは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で具体化）
+- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え、依頼の見出しの `画像` と、判定にも承認にも通さない画像だけの投稿は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加、判定が使い回す pi の設定は既定の経路のものに固定し、経路の切り替えで変わらないことは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で具体化、Slack のアイコンの置き場所は [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) でアバターのディレクトリの `slack/` に置き換え）
 
 ## Context
 

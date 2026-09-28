@@ -1,7 +1,7 @@
 # 0056. マニュアルの目次と作業環境のコマンドを system prompt に置く
 
 - Date: 2026-09-28
-- Status: Accepted
+- Status: Accepted（画像のページのパスが `/manual/avatar/images.md` に変わる点を [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) で追加）
 
 ## Context
 
