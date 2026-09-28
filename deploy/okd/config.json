@@ -20,10 +20,10 @@
     "behindProxy": true
   },
   "github": {
-    "clientId": "<GITHUB_OAUTH_CLIENT_ID>",
+    "clientId": "Ov23liK6NOzWHcsmDrjJ",
     "clientSecretFile": "/run/secrets/natsumi-github/client-secret",
     "callbackUrl": "https://natsumi.apps.lab.igawa.io/auth/github/callback",
-    "allowedUserId": 0
+    "allowedUserId": 116281
   },
   "slack": {
     "workspaces": {
