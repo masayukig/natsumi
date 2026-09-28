@@ -1,0 +1,63 @@
+# なつみが自分を描くとき、manual/images.md「あなた自身の姿」の体の特徴（LoRA・freckles・large sagging breasts）を
+# プロンプトに写すか。頼み方を 6 通りに変える。人物と会話はすべて架空。
+#
+# sdctl の本体は手元に無く、呼ぶと失敗する。判定は、最後の sdctl txt2img が読んだプロンプトのファイル（を書いた
+# run_shell）で行う（scene.ts）。
+description: 自分の絵を頼まれて、服や場面を変えても、体の特徴をプロンプトに写して描く
+runs: 5
+time: "2026-09-27T21:10:00+09:00"
+limits: { modelCalls: 10, minutes: 10 }
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+event:
+  mac_message: 自撮りを 1 枚描いて見せて！
+variants:
+  selfie: {}
+  casual:
+    event:
+      mac_message: 日曜日にお休みの私服で公園を散歩してる自撮りを描いてみて
+    checks:
+      - { id: outfit, function: noSuit }
+  pajamas:
+    event:
+      mac_message: パジャマ姿で、寝る前にベッドで撮った自撮りを描いて
+    checks:
+      - { id: outfit, function: noSuit }
+      - { id: pajamas-drawn, shell: "pajama|sleepwear|nightwear|nightgown" }
+  mood:
+    event:
+      mac_message: 今のなつみの気分を絵にしてみて
+  scene:
+    event:
+      mac_message: 雨の日に窓辺で本を読んでるなつみの絵が見たいな
+  pair:
+    event:
+      mac_message: なつみと、友だちの女の子（ショートヘアで明るい子）がカフェで並んでる絵を描いて
+dryRun:
+  - calls:
+      - tool: run_shell
+        args:
+          command: |
+            mkdir -p /work/prompts
+            cat > /work/prompts/me.yaml <<'EOF'
+            prompt: |
+              <lora:kutara_aki_anima.v3:1> ,
+              masterpiece, newest,
+              woman, low ponytail, freckles, large sagging breasts,
+
+              black glasses,
+              black business suit,  collared white shirt,
+              1girl, solo, upper body, smile, looking at viewer,
+              indoors, office, window, soft daylight
+            EOF
+            sdctl txt2img --prompt /work/prompts/me.yaml
+  - calls:
+      - { tool: reply_to_mac, args: { text: 描こうとしたけど、うまく出せなかったよ。, expression: sad } }
+checks:
+  - { id: drew, shell: "sdctl\\s+txt2img" }
+  - { id: lora, function: lora }
+  - { id: freckles, function: freckles }
+  - { id: breasts, function: breasts }
+  - { id: look, function: look }
