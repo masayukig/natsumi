@@ -4,7 +4,7 @@ import AppIntents
 /// extension: the lock screen control names it, and the system runs it in the
 /// app, which it brings to the front.
 struct OpenNatsumiIntent: AppIntent {
-    static let title: LocalizedStringResource = "なつみを開く"
+    static let title: LocalizedStringResource = "会話を開く"
     static let supportedModes: IntentModes = .foreground
 
     func perform() async throws -> some IntentResult {

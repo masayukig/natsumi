@@ -27,7 +27,7 @@ public struct PhoneMediator {
         // MARK: The app and the world outside
         case .launched(let serverOrigin):
             state.serverOrigin = serverOrigin
-            return [.loadAvatar] + resume()
+            return [.loadAvatar] + resume() + avatar(state.avatars.check(origin: serverOrigin))
 
         case .sessionResumed(let hasSession, let deviceId):
             // A session is for a server; without one there is nothing to use it with, and only the login to show.
@@ -50,8 +50,15 @@ public struct PhoneMediator {
             state.status = .needsLogin
             return [.disconnect]
 
-        case .avatarLoaded(let art):
-            state.avatar = art
+        case .avatarLoaded(let copy):
+            state.avatars.loaded(copy)
+            return []
+
+        case .avatarListingFetched(let origin, let listing):
+            return avatar(state.avatars.listed(listing, from: origin, current: state.serverOrigin))
+
+        case .avatarReceived(let received):
+            state.avatars.delivered(received)
             return []
 
         case .loginFinished(.succeeded):
@@ -129,11 +136,14 @@ public struct PhoneMediator {
             state.status = .loggingIn
             // The next session starts on the main screen, whatever was open when the last one ended.
             closePage()
-            guard address.origin.absoluteString != state.serverOrigin else { return [.startLogin] }
+            // Her avatar needs no login, so it is asked for together with it (ADR 0057).
+            guard address.origin.absoluteString != state.serverOrigin else {
+                return [.startLogin] + avatar(state.avatars.check(origin: state.serverOrigin))
+            }
             state.serverOrigin = address.origin.absoluteString
             state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
             forgetImages()
-            return [.saveServerAddress(address), .startLogin]
+            return [.saveServerAddress(address), .startLogin] + avatar(state.avatars.check(origin: state.serverOrigin))
 
         // MARK: The main screen
         case .reconnectRequested:
@@ -349,6 +359,16 @@ public struct PhoneMediator {
         return [.tidyNotifications(tidy)]
     }
 
+    /// What the avatar book asks for, as the mediator's own effects.
+    private func avatar(_ actions: [AvatarAction]) -> [PhoneEffect] {
+        actions.map { action in
+            switch action {
+            case .fetchListing(let origin): .fetchAvatarListing(origin: origin)
+            case .receive(let origin, let listing): .receiveAvatar(origin: origin, listing)
+            }
+        }
+    }
+
     /// Drops the connection and asks whether there is still a session to come back with.
     private mutating func resume() -> [PhoneEffect] {
         _ = state.session.stop()
@@ -369,6 +389,8 @@ public struct PhoneMediator {
             case .send(let envelope): out.append(.sendToServer(envelope))
             case .saveDeviceId(let id): out.append(.saveDeviceId(id))
             case .extendSession(let expiresAt): out.append(.extendSession(until: expiresAt))
+            case .avatarVersion(let version):
+                out += avatar(state.avatars.seen(version: version, origin: state.serverOrigin))
             case .requireLogin:
                 state.hasSession = false
                 forgetImages()

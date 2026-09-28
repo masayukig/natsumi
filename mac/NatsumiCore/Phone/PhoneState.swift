@@ -11,7 +11,8 @@ public struct PhoneState {
     public internal(set) var serverOrigin: String?
     /// What the login screen says about the server entered or the login that did not go through.
     public internal(set) var loginMessage: String?
-    public internal(set) var avatar = AvatarArt.placeholder
+    /// The server's avatar as this iPhone has it, and when to fetch it again (ADR 0057).
+    public internal(set) var avatars = AvatarBook()
 
     /// The owner is in the text field of the main screen, with the keyboard over half of it.
     public internal(set) var isComposing = false
@@ -36,6 +37,7 @@ public struct PhoneState {
 
     public var conversation: ConversationState { session.conversation }
     public var approvals: ApprovalBook { session.approvals }
+    public var avatar: AvatarArt { avatars.art }
 
     /// The owner is reading the history: what is in sight there is read and checked.
     public var isReadingHistory: Bool { hasSession && page == .history }

@@ -246,6 +246,7 @@ struct PhonePushTests {
         var counter = 0
         var mediator = PhoneMediator { counter += 1; return "r\(counter)" }
         _ = mediator.handle(.launched(serverOrigin: "https://natsumi.example.net"))
+        _ = mediator.handle(.avatarLoaded(Fixture.receivedAvatar))
         _ = mediator.handle(.sessionResumed(hasSession: hasSession, deviceId: nil))
         return mediator
     }
@@ -262,10 +263,12 @@ struct PhonePushTests {
     func asksForNotifications() {
         var withSession = PhoneMediator()
         _ = withSession.handle(.launched(serverOrigin: "https://natsumi.example.net"))
+        _ = withSession.handle(.avatarLoaded(Fixture.receivedAvatar))
         #expect(withSession.handle(.sessionResumed(hasSession: true, deviceId: nil)).contains(.registerForNotifications))
 
         var without = PhoneMediator()
         _ = without.handle(.launched(serverOrigin: "https://natsumi.example.net"))
+        _ = without.handle(.avatarLoaded(Fixture.receivedAvatar))
         #expect(!without.handle(.sessionResumed(hasSession: false, deviceId: nil)).contains(.registerForNotifications))
     }
 

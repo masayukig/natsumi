@@ -14,6 +14,7 @@ struct PhoneNavigationTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(serverOrigin: "https://natsumi.example.net"))
+        _ = mediator.handle(.avatarLoaded(Fixture.receivedAvatar))
         _ = mediator.handle(.sessionResumed(hasSession: true, deviceId: nil))
         _ = mediator.handle(.socketOpened)
         _ = mediator.handle(.socketReceived(Fixture.snapshot(

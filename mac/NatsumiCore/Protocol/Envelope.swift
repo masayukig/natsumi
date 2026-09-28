@@ -43,12 +43,19 @@ public struct ServerEnvelope: Equatable, Sendable {
     /// The session's expiry on an answer to `session.sync` (the snapshot, the resume's `command.accepted`, or
     /// `service.unavailable`), or nil when the server did not say (ADR 0030).
     public let sessionExpiresAt: Date?
+    /// The version of the avatar the server hands out, on `session.snapshot` and `service.unavailable`, or nil when
+    /// the server did not say (ADR 0057).
+    public let avatarVersion: String?
 
-    public init(position: StreamPosition, requestId: String?, event: ServerEvent?, sessionExpiresAt: Date? = nil) {
+    public init(
+        position: StreamPosition, requestId: String?, event: ServerEvent?, sessionExpiresAt: Date? = nil,
+        avatarVersion: String? = nil
+    ) {
         self.position = position
         self.requestId = requestId
         self.event = event
         self.sessionExpiresAt = sessionExpiresAt
+        self.avatarVersion = avatarVersion
     }
 
     public static func decode(_ data: Data) throws -> ServerEnvelope {
@@ -91,9 +98,13 @@ public struct ServerEnvelope: Equatable, Sendable {
             payload(ExpiryPayload.self)?.sessionExpiresAt.flatMap(parseTimestamp)
         default: nil
         }
+        let avatarVersion: String? = switch type {
+        case "session.snapshot", "service.unavailable": payload(AvatarVersionPayload.self)?.avatarVersion
+        default: nil
+        }
         return ServerEnvelope(
             position: StreamPosition(epoch: epoch, streamId: streamId, seq: seq), requestId: head.requestId, event: event,
-            sessionExpiresAt: expiresAt)
+            sessionExpiresAt: expiresAt, avatarVersion: avatarVersion)
     }
 
     private struct Head: Decodable {
@@ -142,6 +153,8 @@ public struct ServerEnvelope: Equatable, Sendable {
     private struct RenewedPayload: Decodable { let expiresAt: String }
 
     private struct ExpiryPayload: Decodable { let sessionExpiresAt: String? }
+
+    private struct AvatarVersionPayload: Decodable { let avatarVersion: String? }
 
     private struct CodePayload: Decodable {
         let code: String

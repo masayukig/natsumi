@@ -55,15 +55,16 @@ public struct ModelRoutesProps: Equatable, Sendable {
 }
 
 extension UIProps {
-    /// The routes and the owner's choice, the same on both clients. Nothing can be chosen unless connected.
-    public static func modelRoutes(_ book: ModelRouteBook, isConnected: Bool) -> ModelRoutesProps {
+    /// The routes and the owner's choice, the same on both clients. Nothing can be chosen unless connected. `name` is
+    /// what she is called, as the avatar says.
+    public static func modelRoutes(_ book: ModelRouteBook, isConnected: Bool, name: String) -> ModelRoutesProps {
         guard let routes = book.routes else {
             return ModelRoutesProps(summary: "経路はまだ分かりません", menuTitle: "モデル: 不明")
         }
         let current = routes.current.flatMap(routes.route)
         let sending = book.choice?.status == .sending
 
-        var summary = "なつみはいま話せません（使える経路がありません）"
+        var summary = "\(name)はいま話せません（使える経路がありません）"
         var menuTitle = "モデル: 話せません"
         if let name = routes.current {
             summary = current.map { "\($0.name)（\($0.model)）で話しています" } ?? "\(name) で話しています"
@@ -93,7 +94,7 @@ extension UIProps {
             case .failed(let code):
                 message = "\(choice.route) に切り替えられませんでした（\(code)）"
             case .unavailable(let code):
-                message = "なつみが話せないため、切り替えられません（\(code)）"
+                message = "\(name)が話せないため、切り替えられません（\(code)）"
             }
             isFailure = !sending
         }

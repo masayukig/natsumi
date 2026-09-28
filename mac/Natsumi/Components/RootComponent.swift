@@ -85,7 +85,9 @@ final class RootComponent: Component {
     /// The cards' frames on the screen, as last laid out, for telling a pointer on a card from one on its way past.
     private var cardRects: [CGRect] = []
 
-    private static let avatarDirectoryKey = "avatarDirectory"
+    /// Where an earlier version kept the owner's own avatar directory. The avatar is the server's now (ADR 0057), and
+    /// the setting is thrown away unread.
+    private static let legacyAvatarDirectoryKey = "avatarDirectory"
     private static let characterOriginKey = "natsumi.characterOrigin"
     /// Where an earlier version saved her window's frame.
     private static let legacyCharacterFrameKey = "NSWindow Frame natsumi.character"
@@ -163,14 +165,14 @@ final class RootComponent: Component {
             let visible = NSScreen.main?.visibleFrame ?? .zero
             characterFrame = CGRect(x: visible.maxX - 160, y: visible.minY + 40, width: size.width, height: size.height)
         }
+        UserDefaults.standard.removeObject(forKey: Self.legacyAvatarDirectoryKey)
+        // The stage comes out once there is someone to stand on it: her avatar may not have been received yet.
         placeStage()
-        stage.orderFrontRegardless()
         watchPointer()
         deliver(.launched(LaunchInfo(
             characterScale: overlaySettings.characterScale, columnWidth: overlaySettings.columnWidth,
             conversationWindow: overlaySettings.conversationWindow, hotKey: overlaySettings.hotKey,
-            serverOrigin: account.serverAddress?.origin.absoluteString, avatarDirectory: avatarDirectory,
-            defaultAvatarDirectory: Self.defaultAvatarDirectory.path)))
+            serverOrigin: account.serverAddress?.origin.absoluteString)))
         deliver(.characterFrameChanged(characterFrame, visible: visibleFrame))
     }
 
@@ -277,6 +279,12 @@ final class RootComponent: Component {
 
     /// Hands the stage and every window their drawing parameters, when they are not the ones they already have.
     private func render(_ props: RootProps, layout: OverlayLayout, transition: StageTransition) {
+        // Without her avatar there is no one to show: the stage and her cards stay away (ADR 0057).
+        if props.showsCharacter, !stage.isVisible {
+            stage.orderFrontRegardless()
+        } else if !props.showsCharacter, stage.isVisible {
+            stage.orderOut(nil)
+        }
         let stageProps = StageProps.make(
             root: props, character: characterFrame, layout: layout, stage: stage.frame, transition: transition)
         if stageProps != appliedStage {
@@ -546,14 +554,18 @@ final class RootComponent: Component {
             overlaySettings.hotKey = key
         case .registerHotKey(let key):
             if !hotKey.register(key), let key { deliver(.hotKeyRegistrationFailed(key)) }
-        case .saveAvatarDirectory(let path):
-            if let path {
-                UserDefaults.standard.set(path, forKey: Self.avatarDirectoryKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Self.avatarDirectoryKey)
+        case .loadAvatar:
+            deliver(.avatarLoaded(AvatarReceiver.copy.load()))
+        case .fetchAvatarListing(let origin):
+            Task { [weak self] in
+                let listing = await AvatarReceiver.listing(origin: origin)
+                self?.deliver(.avatarListingFetched(origin: origin, listing))
             }
-        case .loadAvatar(let directory):
-            loadAvatar(directory)
+        case .receiveAvatar(let origin, let listing):
+            Task { [weak self] in
+                let received = await AvatarReceiver.receive(listing, origin: origin)
+                self?.deliver(.avatarReceived(received))
+            }
         case .focusInput:
             conversation.focus()
         case .moveCharacter(let origin):
@@ -719,33 +731,6 @@ final class RootComponent: Component {
         let size = settings.panel.frame.size
         settings.panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2))
         settings.panel.makeKeyAndOrderFront(nil)
-    }
-
-    // MARK: - The avatar and the settings on this Mac
-
-    private var avatarDirectory: String {
-        UserDefaults.standard.string(forKey: Self.avatarDirectoryKey) ?? Self.defaultAvatarDirectory.path
-    }
-
-    static var defaultAvatarDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("natsumi/avatar", isDirectory: true)
-    }
-
-    /// The owner's own avatar directory wins over the bundled one; the placeholder is the last resort.
-    private func loadAvatar(_ directory: String) {
-        let external = URL(fileURLWithPath: (directory as NSString).expandingTildeInPath, isDirectory: true)
-        let bundled = Bundle.main.resourceURL?.appendingPathComponent("Avatars/natsumi", isDirectory: true)
-        let art = AvatarLoader.resolve(candidates: [external] + (bundled.map { [$0] } ?? []))
-        let description = switch art {
-        case .sprite(let asset) where asset.directory.path.hasPrefix(Bundle.main.bundlePath):
-            "同梱のアバターを使っています"
-        case .sprite(let asset):
-            "\(asset.directory.path) のアバターを使っています"
-        case .placeholder:
-            "アバターを読み込めないため、仮の絵を使っています"
-        }
-        deliver(.avatarLoaded(art, description: description))
     }
 }
 

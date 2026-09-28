@@ -162,8 +162,7 @@ struct SessionRenewalTests {
         var counter = 0
         var mediator = UIMediator { counter += 1; return "r\(counter)" }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, serverOrigin: "https://natsumi.example.net",
-            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+            characterScale: .default, serverOrigin: "https://natsumi.example.net")))
         _ = mediator.handle(.sessionResumed(hasSession: true, deviceId: nil))
         _ = mediator.handle(.socketOpened)
         #expect(mediator.handle(.socketReceived(snapshot(seq: 1, requestId: "r1"))).contains(.extendSession(until: Self.laterDate)))
@@ -174,6 +173,7 @@ struct SessionRenewalTests {
         var counter = 0
         var mediator = PhoneMediator { counter += 1; return "r\(counter)" }
         _ = mediator.handle(.launched(serverOrigin: "https://natsumi.example.net"))
+        _ = mediator.handle(.avatarLoaded(Fixture.receivedAvatar))
         _ = mediator.handle(.sessionResumed(hasSession: true, deviceId: nil))
         _ = mediator.handle(.socketOpened)
         #expect(mediator.handle(.socketReceived(snapshot(seq: 1, requestId: "r1"))).contains(.extendSession(until: Self.laterDate)))
