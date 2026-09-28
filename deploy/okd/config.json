@@ -32,7 +32,7 @@
         "appTokenFile": "/run/secrets/natsumi-slack/app-token"
       }
     },
-    "owner": { "workspace": "openstackwarrior", "userId": "<OWNER_SLACK_USER_ID>", "channel": "<NATSUMI_CHANNEL_ID>" }
+    "owner": { "workspace": "openstackwarrior", "userId": "U0C5SR7G7LY", "channel": "C0C4GQ5PUHM" }
   },
   "loop": {
     "timeZone": "Asia/Tokyo",
