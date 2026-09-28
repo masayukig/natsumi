@@ -22,7 +22,7 @@
    `ghcr.io/masayukig/natsumi-workspace` を作るのを待つ（image 名は `github.repository_owner` から決まる）。
    package は **private のまま**にし、SA `natsumi` の `imagePullSecrets` に `ghcr-pull` を付けてある。
    pull 用に classic PAT（scope は `read:packages` だけ、名前は `okd-natsumi-ghcr-pull`）を作り、
-   Vaultwarden の `OKD Secret: natsumi/ghcr-pull`（フィールド `password`）へ入れる。fine-grained PAT は ghcr に使えない。
+   Vaultwarden の `OKD Secret: natsumi/ghcr-pull`（フィールド `token`）へ入れる。fine-grained PAT は ghcr に使えない。
    版を上げるときは `kustomization.yaml` の `newTag`（2 か所、初版は `v0.1.9-mig.1`）を書き換える。
 2. **GitHub OAuth App**: Homepage URL `https://natsumi.apps.lab.igawa.io`、
    callback URL `https://natsumi.apps.lab.igawa.io/auth/github/callback`。
@@ -45,7 +45,7 @@
      --from-file=bot-token=<(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/natsumi-slack' bot-token) \
      --from-file=app-token=<(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/natsumi-slack' app-token)
    oc create secret docker-registry ghcr-pull -n natsumi --docker-server=ghcr.io --docker-username=masayukig \
-     --docker-password="$(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/ghcr-pull' password)"
+     --docker-password="$(vaultwarden-safe-ops.py get-field --allow-sensitive 'OKD Secret: natsumi/ghcr-pull' token)"
    ```
 6. **backup の下準備**（`~/work-reports/k8s/direct-backup/rgw-provisioning/`。`setup-direct-backup.sh` の手順 1〜4 を個別に。
    手順 5 は work-reports 側のマニフェストを当てるので使わない）:
