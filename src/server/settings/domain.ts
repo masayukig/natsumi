@@ -31,6 +31,27 @@ export interface SettingValues {
   pingIntervalMinutes: number | false;
 }
 
+/** A route as the owner is shown it (ADR 0046): never its endpoint or its key. */
+export interface RouteView { name: string; provider: string; model: string; ready: boolean }
+
+/** One setting in the list: the value in force, the config's, and whether it is overridden. */
+export interface SettingItem<T> { value: T; config: T; overridden: boolean }
+
+/**
+ * The list as every device is shown it (docs/client-contract.md, 実行中の設定). It is here, with the values' shapes,
+ * so that the browser's app is written against the same type as the server without taking any of its code.
+ */
+export interface SettingsView {
+  modelRoute: SettingItem<string> & { inUse: string | null; routes: RouteView[] };
+  turnFold: SettingItem<Fold> & { inUse: Fold };
+  eventModelCalls: SettingItem<number>;
+  eventTimeoutMinutes: SettingItem<number>;
+  reviewModelCalls: SettingItem<number>;
+  reviewTimeoutMinutes: SettingItem<number>;
+  awakeHours: SettingItem<AwakeHours> & { timeZone: string };
+  pingIntervalMinutes: SettingItem<number | false>;
+}
+
 /** The limits of one turn, as the thinking loop reads them before it starts one. */
 export type TurnLimits = Pick<SettingValues, 'eventModelCalls' | 'eventTimeoutMinutes' | 'reviewModelCalls' | 'reviewTimeoutMinutes'>;
 

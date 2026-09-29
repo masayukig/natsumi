@@ -1,4 +1,7 @@
-import { checkSetting, isSettingKey, type AwakeHours, type Fold, type SettingKey, type SettingValues, type TurnLimits } from './domain.ts';
+import {
+  checkSetting, isSettingKey, type AwakeHours, type Fold, type RouteView, type SettingItem, type SettingKey, type SettingsView,
+  type SettingValues, type TurnLimits,
+} from './domain.ts';
 import { clearOverride, readOverrides, writeOverride, type Overrides } from './store.ts';
 
 /**
@@ -12,8 +15,8 @@ import { clearOverride, readOverrides, writeOverride, type Overrides } from './s
  * read by the loop and the scheduler from here, between turns and on every tick, so a change needs nothing more.
  */
 
-/** A route as the owner is shown it, as the loop reports it (ADR 0046). */
-export interface RouteView { name: string; provider: string; model: string; ready: boolean }
+/** The list and the routes as the devices are shown them; their shapes are the domain's, shared with the browser's app. */
+export type { RouteView, SettingsView } from './domain.ts';
 
 /** The loop's side of the route and the fold: what the settings need of it, and nothing more. */
 export interface RouteControl {
@@ -31,20 +34,6 @@ export interface RouteControl {
 /** The config's values of the settings, and the time zone the awake hours are in. The route's is the loop's default. */
 type Configured = Omit<SettingValues, 'modelRoute'>;
 export type SettingsDefaults = Configured & { timeZone: string };
-
-interface Item<T> { value: T; config: T; overridden: boolean }
-
-/** The list as every device is shown it: for each setting, the value in force, the config's, and whether it is overridden. */
-export interface SettingsView {
-  modelRoute: Item<string> & { inUse: string | null; routes: RouteView[] };
-  turnFold: Item<Fold> & { inUse: Fold };
-  eventModelCalls: Item<number>;
-  eventTimeoutMinutes: Item<number>;
-  reviewModelCalls: Item<number>;
-  reviewTimeoutMinutes: Item<number>;
-  awakeHours: Item<AwakeHours> & { timeZone: string };
-  pingIntervalMinutes: Item<number | false>;
-}
 
 export type SettingsOutcome =
   | { kind: 'accepted'; settings: SettingsView }
@@ -98,7 +87,7 @@ export class RuntimeSettings {
     const status = routes.routeStatus();
     const o = this.overrides;
     const configured: Configured = defaults;
-    const item = <K extends keyof Configured>(key: K): Item<Configured[K]> => {
+    const item = <K extends keyof Configured>(key: K): SettingItem<Configured[K]> => {
       const config = configured[key];
       return { value: o[key] ?? config, config, overridden: o[key] !== undefined };
     };
