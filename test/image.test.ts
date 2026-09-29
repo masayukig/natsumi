@@ -133,6 +133,15 @@ test('sdctl writes JPEG by default in the workspace', async () => {
   assert.equal(config.format, 'jpeg');
 });
 
+// A name given with -o wins over the config by its extension, so an example with `.png` would have her draw PNG.
+test('the manuals name what natsumi draws with .jpg, not .png', async () => {
+  for (const page of ['assets/manual/images.md', 'manual/slack.md']) {
+    const text = await readFile(`${root}${page}`, 'utf8');
+    assert.doesNotMatch(text, /\/work\/images\/[^\s`]*\.png/, page);
+  }
+  assert.match(await readFile(`${root}assets/manual/images.md`, 'utf8'), /JPEG/);
+});
+
 // natsumi reads and shapes JSON in the workspace (ADR 0019): jq, beside python3.
 test('the workspace image installs jq', async () => {
   const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(await workspaceStage());
