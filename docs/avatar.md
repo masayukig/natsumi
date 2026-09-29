@@ -17,8 +17,10 @@ natsumi の姿と名前は、サーバーの設定で選ぶ「アバター」か
 - Mac と iPhone に出る姿（spritesheet と表情のアイコン）と名前。アプリはサーバーから受け取ります
 - Slack に投稿するときのアイコン
 - 自分を描くときのプロンプト（作業環境の `/manual/avatar/images.md` の「あなた自身の姿」）と、画像生成の既定の設定
+- 性格・話し方の初期値（記憶に `personality.md` がまだ無いときだけ。[ADR 0060](adr/0060-a-personality-to-start-from-in-the-avatar.md)）
 
 アバターは、最初に決めたらそのまま使う前提です。途中で替えても動きますが、記憶の中の古い名前や自己認識は書き換わりません（記憶はアバターごとに分けていません）。
+性格も入れ替わりません。記憶の `personality.md` は夜に natsumi 自身が育てるもので、すでにあればアバターの `personality.md` で上書きしません。
 
 ## ディレクトリの構成
 
@@ -33,6 +35,7 @@ natsumi の姿と名前は、サーバーの設定で選ぶ「アバター」か
 | `slack/<表情>.png` | 省略可 | Slack のアイコン。PNG で、名前は表情のとおりにします |
 | `appearance.yaml` | 省略可 | 自分を描くときのプロンプト |
 | `sdctl-params.yaml` | 省略可 | 画像生成の既定の設定（sdctl の params） |
+| `personality.md` | 省略可 | 性格・話し方の初期値（Markdown）。記憶に `personality.md` が無いときだけ、そのまま写します。アプリには渡しません |
 | `README.md` | 推奨 | ライセンスと出どころ。サーバーは読みません |
 
 表情は、次の 9 つです: `neutral`・`happy`・`laughing`・`surprised`・`thinking`・`worried`・`sad`・`sleepy`・`angry`。
@@ -46,13 +49,14 @@ natsumi の姿と名前は、サーバーの設定で選ぶ「アバター」か
 
 - **書いてあるのに壊れているものがあると、サーバーは起動しません。** 設定の誤りとして、`avatar.directory`（組み込みなら `avatar.id`）の名前と理由をログに出して止まります。
   たとえば、ディレクトリが無い、`avatar.json` が無い・JSON として読めない、`id` か `name` が無い、`avatar.json` の欄の形が合わない、
-  ファイルの場所がディレクトリの外を指す（symlink を含む）、`appearance.yaml` や `sdctl-params.yaml` が YAML として読めない、などです。
+  ファイルの場所がディレクトリの外を指す（symlink を含む）、`appearance.yaml` や `sdctl-params.yaml` が YAML として読めない、`personality.md` が空、などです。
 - **無いものは、名無し（`nanashi`）の、のっぺらぼうの素材で埋めて起動します。** なつみの素材では埋めません。
   - spritesheet が無ければ、spritesheet と動作の定義をまとめて、のっぺらぼうのものにします（顔の無い人形が 1 コマだけ）。
   - 表情のアイコンや Slack の PNG が無ければ、その表情だけ、のっぺらぼうの顔にします。
   - 埋めたものは、起動のたびにログに 1 行ずつ出ます。
 - **無くてもサーバーの既定を使うもの**もあります。`pet.json`（サーバーが作る）、`appearance.yaml`（自分の姿の節が「決まった姿は無い」旨になる）、
-  `sdctl-params.yaml`（名無しの持つサーバーの既定の、Anima の汎用の設定）です。
+  `sdctl-params.yaml`（名無しの持つサーバーの既定の、Anima の汎用の設定）、
+  `personality.md`（記憶の `personality.md` を、表示名だけが入った固定の枠で始める）です。
 
 サーバーの改修で素材の種類が増えたときも、足りない分はのっぺらぼうの素材で埋まります。
 
@@ -140,7 +144,17 @@ natsumi は、自分が入る絵（自撮り、気分の絵、ほかの人と並
 - `prompt` は書きません。プロンプトは natsumi が毎回書くものです。
 - `/manual/avatar/images.md` の「既定はモデル…、896×1152（縦長）」の行は、この `override_settings.sd_model_checkpoint`・`width`・`height` から作られます。
 
-### 7. 検査する
+### 7. 性格・話し方の初期値を書く（任意）
+
+natsumi が最初に持つ性格と話し方を決めたいときだけ、`personality.md` を置きます。中身は自由な Markdown で、見出しは記憶の枠にそろえて `# 性格・話し方` にすると読みやすくなります。
+
+- 使われるのは、記憶のリポジトリに `personality.md` がまだ無いときだけです（初回の起動、または手で消したあと）。サーバーはそのまま写してコミットします。
+- 記憶にすでに `personality.md` があれば、何もしません。アバターを替えても、書き直しても、記憶の性格は変わりません。
+  育った性格を捨ててアバターの初期値からやり直したいときは、記憶のリポジトリの `personality.md` を消してからサーバーを再起動します。
+- 写したあとは記憶の一部です。夜の再構成で natsumi が書き換え、日中の変更は戻されます（[ADR 0018](adr/0018-memory-in-git-and-the-nightly-rebuild.md)）。記憶のファイルの長さの上限（`loop.memoryFileMaxChars`）に収めます。
+- 置かなければ、「〇〇の性格と話し方をここに書きます。」（〇〇は表示名）という枠で始まります。
+
+### 8. 検査する
 
 置いたら、サーバーの起動と同じ検査を手元で走らせます。
 

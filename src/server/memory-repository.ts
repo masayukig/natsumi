@@ -49,9 +49,10 @@ const ALWAYS_TEMPLATE = `# 常時記憶
 毎回思い出したいことだけを書きます。夜の再構成のときに見直し、長くなりすぎたら削ります。
 `;
 
-const PERSONALITY_TEMPLATE = `# 性格・話し方
+/** For an avatar without a `personality.md` of its own (ADR 0060), named by the avatar's name. */
+const personalityTemplate = (name: string) => `# 性格・話し方
 
-natsumi の性格と話し方をここに書きます。夜の再構成のときだけ書き換えられます。
+${name}の性格と話し方をここに書きます。夜の再構成のときだけ書き換えられます。
 `;
 
 const HANDOFF_TEMPLATE = `# 引き継ぎ
@@ -87,6 +88,11 @@ export interface MemoryRepositoryOptions {
   alwaysMaxChars?: number;
   /** Who commits: the avatar (ADR 0057). The server's fixed identity when left out. */
   identity?: GitIdentity;
+  /**
+   * The avatar's `personality.md` (ADR 0060): written when the repository has no personality and no older layout left
+   * one, and never over one that is there. The template, named by the identity, when left out.
+   */
+  personality?: string;
   log?: (line: string) => void;
 }
 
@@ -294,7 +300,10 @@ export class MemoryRepository {
     if (!(await this.exists(PERSONALITY_FILE))) {
       const previous = join(this.options.dataDirectory, PERSONALITY_FILE);
       const moved = await this.move(previous, join(this.directory, PERSONALITY_FILE));
-      if (!moved) await writeFile(join(this.directory, PERSONALITY_FILE), PERSONALITY_TEMPLATE, { mode: SHARED_FILE_MODE });
+      if (!moved) {
+        const text = this.options.personality ?? personalityTemplate(this.options.identity?.name ?? DEFAULT_SELF.name);
+        await writeFile(join(this.directory, PERSONALITY_FILE), text, { mode: SHARED_FILE_MODE });
+      }
       placed.push(PERSONALITY_FILE);
     }
     if (!(await this.exists(ALWAYS_FILE))) {

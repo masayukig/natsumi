@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from '../src/server/memory-repository.ts';
+import { gitIdentity, type GitIdentity } from '../src/server/git.ts';
 import { SERVER_UMASK } from '../src/server/permissions.ts';
 
 // Fictional memories only.
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
 
-async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number } = {}) {
+async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number; personality?: string; identity?: GitIdentity } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-memory-repo-')));
   const data = join(root, 'data');
   const directory = join(data, 'memory');
@@ -70,6 +71,75 @@ test('a start with nothing to take in still leaves the fixed files committed, IN
     for (const name of [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE]) assert.match(await f.read(name), /\S/);
     // The template says who writes it, for whoever opens it first (ADR 0055).
     assert.match(await f.read(INDEX_FILE), /整理係/);
+  } finally { await f.cleanup(); }
+});
+
+/**
+ * The avatar's personality.md (ADR 0060) is where her personality starts from, and only that: it is written when the
+ * repository has no personality.md and no older layout left one, and never over one that is there, since what is there
+ * is what she has grown into at night. Switching the avatar does not switch the personality.
+ */
+const HANA_PERSONALITY = '# 性格・話し方\n\nのんびりしていて、語尾をのばす。\n';
+
+test('the avatar\'s personality is where a new memory\'s personality starts', async () => {
+  const f = await setup({ personality: HANA_PERSONALITY });
+  try {
+    await f.repository.initialize(undefined);
+    assert.equal(await f.read(PERSONALITY_FILE), HANA_PERSONALITY);
+    assert.equal(f.git('show', `HEAD:${PERSONALITY_FILE}`) + '\n', HANA_PERSONALITY);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('without the avatar\'s personality the template names the avatar', async () => {
+  const f = await setup({ identity: gitIdentity({ id: 'hana', name: 'はな' }) });
+  try {
+    await f.repository.initialize(undefined);
+    assert.equal(await f.read(PERSONALITY_FILE), '# 性格・話し方\n\nはなの性格と話し方をここに書きます。夜の再構成のときだけ書き換えられます。\n');
+  } finally { await f.cleanup(); }
+  const plain = await setup();
+  try {
+    await plain.repository.initialize(undefined);
+    assert.match(await plain.read(PERSONALITY_FILE), /^# 性格・話し方\n\nなつみの性格と話し方をここに書きます。/);
+  } finally { await plain.cleanup(); }
+});
+
+test('a personality the older layout left wins over the avatar\'s', async () => {
+  const f = await setup({ personality: HANA_PERSONALITY });
+  try {
+    await writeFile(join(f.data, PERSONALITY_FILE), '# 性格・話し方\n\n落ち着いた話し方\n');
+    await f.repository.initialize(undefined);
+    assert.equal(await f.read(PERSONALITY_FILE), '# 性格・話し方\n\n落ち着いた話し方\n');
+    assert.deepEqual((await readdir(f.data)).sort(), ['memory']);
+  } finally { await f.cleanup(); }
+});
+
+test('a personality the memory has is kept, whichever avatar the server starts with', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    await f.write(PERSONALITY_FILE, '# 性格・話し方\n\n夜に育った性格\n');
+    f.git('-c', 'user.name=owner', '-c', 'user.email=owner@example.net', 'commit', '-am', 'grown');
+    const commits = f.commits();
+
+    // The server comes back with another avatar, one that has a personality of its own.
+    await new MemoryRepository({ directory: f.directory, dataDirectory: f.data, personality: HANA_PERSONALITY }).initialize(undefined);
+    assert.equal(await f.read(PERSONALITY_FILE), '# 性格・話し方\n\n夜に育った性格\n');
+    assert.equal(f.commits(), commits);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('an existing repository without a personality takes the avatar\'s, and keeps its history', async () => {
+  const f = await setup({ personality: HANA_PERSONALITY });
+  try {
+    execFileSync('git', ['-C', f.directory, 'init', '-b', 'main'], { stdio: 'ignore' });
+    await f.write('予定.md', '# 予定\n\n- 2026-09-16: 歯医者は金曜\n');
+    f.git('add', '-A');
+    f.git('-c', 'user.name=owner', '-c', 'user.email=owner@example.net', 'commit', '-m', 'my memory');
+    await f.repository.initialize(undefined);
+    assert.equal(f.commits(), 2);
+    assert.equal(await f.read(PERSONALITY_FILE), HANA_PERSONALITY);
   } finally { await f.cleanup(); }
 });
 
