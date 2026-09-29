@@ -1,5 +1,5 @@
-import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, type JudgeClient, type JudgeState,
-  type Judgement } from './judge.ts';
+import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, type JudgeClient, type JudgeState,
+  type Judgement, type Placement } from './judge.ts';
 
 /**
  * The dove's judge by the logprobs of an OpenAI-compatible model (ADR 0040): by default pi's own, which the owner runs.
@@ -34,6 +34,8 @@ export interface LogprobJudgeOptions {
   concurrency?: number;
   /** The limit on the judgement as a whole, every question included. */
   timeoutMs?: number;
+  /** The order the placement's options are lettered in; only the evaluation changes it. */
+  placementOrder?: readonly Placement[];
   /** Replaced by the tests; nothing here ever reaches the network in them. */
   fetch?: typeof fetch;
 }
@@ -56,15 +58,16 @@ export class LogprobJudgeClient implements JudgeClient {
         if (!(yes! + no! > 0)) throw new JudgeError('no-answer-token');
         return yes! / (yes! + no!);
       });
-      const options_ = Object.entries(JUDGE_PLACEMENT.criteria) as ['thread' | 'channel', string][];
+      const order = this.options.placementOrder ?? PLACEMENT_ORDER;
       const placement = options.placement
-        ? ask(`Question: ${JUDGE_PLACEMENT.instructions}\n\nOptions:\n${options_.map(([name, meaning], index) => `${LETTERS[index]}) ${name}: ${meaning}`).join('\n')}`
+        ? ask(`Question: ${JUDGE_PLACEMENT.instructions}\n\nOptions:\n${order.map((name, index) => `${LETTERS[index]}) ${name}: ${JUDGE_PLACEMENT.criteria[name]}`).join('\n')}`
           + `\n\nAnswer with exactly one letter: ${LETTERS.join(' or ')}.`).then(candidates => {
           const letters = mass(candidates, LETTERS.map(letter => letter.toLowerCase()));
           const total = LETTERS.reduce((sum, letter) => sum + letters[letter.toLowerCase()]!, 0);
           if (!(total > 0)) throw new JudgeError('no-answer-token');
-          const thread = letters.a! / total;
-          const channel = letters.b! / total;
+          const of = (name: Placement) => letters[LETTERS[order.indexOf(name)]!.toLowerCase()]! / total;
+          const thread = of('thread');
+          const channel = of('channel');
           return { choice: thread >= channel ? 'thread' as const : 'channel' as const, probabilities: { thread, channel } };
         })
         : undefined;

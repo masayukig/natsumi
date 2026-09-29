@@ -98,6 +98,18 @@ function optional<K extends string>(key: K, value: string | undefined): Partial<
 }
 
 export interface DoveScore { label: string; score: number; flagged: boolean }
+/** What one judge made of a draft (ADR 0059): its verdict by its own thresholds, its scores and placement, or why it had none. */
+export type DoveJudgement =
+  | { verdict: string; scores: DoveScore[]; placement: string | null; probabilities?: { thread: number; channel: number } }
+  | { error: string };
+export interface DoveJudges {
+  adopted: 'logprobs' | 'jev';
+  /** The judge that decided; null when neither had an answer. */
+  decidedBy: 'logprobs' | 'jev' | null;
+  /** Null for a judge that was off. */
+  logprobs: DoveJudgement | null;
+  jev: DoveJudgement | null;
+}
 export interface DovePostRow {
   postId: string; kind: 'post' | 'reaction';
   /** The channel's label from the channel files, or its ID when it is not there. */
@@ -105,11 +117,16 @@ export interface DovePostRow {
   reference: string; text: string; expression: string | null; verdict: string | null; scores: DoveScore[];
   placement: string | null; state: string; sentText: string | null; sentPlacement: string | null; failure: string | null;
   createdAt: string; updatedAt: string;
+  /** Both judges side by side; null for a post from before them, or one no judge was asked about (ADR 0059). */
+  judges: DoveJudges | null;
+  /** What the owner made of it when it was handed to her: the approval's state. */
+  ownerDecision: string | null;
 }
 
 export function listDovePosts(db: DatabaseSync, page: number): { rows: DovePostRow[]; more: boolean } {
-  const rows = db.prepare(`SELECT p.*, c.label FROM dove_posts p
+  const rows = db.prepare(`SELECT p.*, c.label, a.state AS approval_state FROM dove_posts p
     LEFT JOIN slack_channels c ON c.workspace = p.workspace AND c.channel_id = p.channel_id
+    LEFT JOIN approvals a ON a.post_id = p.post_id
     ORDER BY p.created_at DESC, p.rowid DESC LIMIT ? OFFSET ?`).all(DOVE_POSTS_PER_PAGE + 1, (page - 1) * DOVE_POSTS_PER_PAGE) as Record<string, string | null>[];
   return {
     rows: rows.slice(0, DOVE_POSTS_PER_PAGE).map(row => ({
@@ -117,9 +134,30 @@ export function listDovePosts(db: DatabaseSync, page: number): { rows: DovePostR
       text: row.text!, expression: row.expression ?? null, verdict: row.verdict ?? null, scores: scores(row.scores ?? null),
       placement: row.placement ?? null, state: row.state!, sentText: row.sent_text ?? null, sentPlacement: row.sent_placement ?? null,
       failure: row.failure ?? null, createdAt: row.created_at!, updatedAt: row.updated_at!,
+      judges: judgesOf(row), ownerDecision: row.approval_state ?? null,
     })),
     more: rows.length > DOVE_POSTS_PER_PAGE,
   };
+}
+
+const judgeName = (value: string | null | undefined) => value === 'logprobs' || value === 'jev' ? value : null;
+
+/** Both judges as a post keeps them (migration 23); null for a post from before, whose columns are all empty. */
+function judgesOf(row: Record<string, string | null>): DoveJudges | null {
+  const adopted = judgeName(row.judge_adopted);
+  if (!adopted) return null;
+  return { adopted, decidedBy: judgeName(row.judge_decided_by), logprobs: judgement(row.judgement_logprobs ?? null), jev: judgement(row.judgement_jev ?? null) };
+}
+
+function judgement(value: string | null): DoveJudgement | null {
+  if (!value) return null;
+  let kept: { verdict?: unknown; issues?: unknown; placement?: { choice?: unknown; probabilities?: { thread?: unknown; channel?: unknown } }; error?: unknown };
+  try { kept = JSON.parse(value) as typeof kept; } catch { return { error: 'unreadable' }; }
+  if (typeof kept?.error === 'string') return { error: kept.error };
+  if (typeof kept?.verdict !== 'string') return { error: 'unreadable' };
+  const { thread, channel } = kept.placement?.probabilities ?? {};
+  return { verdict: kept.verdict, scores: scoresOf(kept.issues), placement: typeof kept.placement?.choice === 'string' ? kept.placement.choice : null,
+    ...(typeof thread === 'number' && typeof channel === 'number' ? { probabilities: { thread, channel } } : {}) };
 }
 
 /** The judge's score per issue (ADR 0039); none when there were none or they cannot be read. */

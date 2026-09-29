@@ -5,9 +5,20 @@ import { checkSetting, ROUTE_NAME, SETTING_KEYS } from '../src/shared/protocol/s
 
 /** The settings the owner may change while natsumi runs (ADR 0058), and the rules their values keep: the config's. */
 
-test('the settings are the route, the fold, the four limits of a turn, the awake hours and the ping interval', () => {
+test('the settings are the route, the fold, the four limits of a turn, the awake hours, the ping interval and the dove\'s judges', () => {
   assert.deepEqual([...SETTING_KEYS], ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls',
-    'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes']);
+    'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds']);
+});
+
+test('each of the dove\'s judges is on or off, and the one adopted is logprobs or jev (ADR 0059)', () => {
+  for (const key of ['judgeLogprobs', 'judgeJev']) {
+    assert.deepEqual(checkSetting(key, 'on'), { ok: true, key, value: 'on' });
+    assert.deepEqual(checkSetting(key, 'off'), { ok: true, key, value: 'off' });
+    for (const value of [true, 'ON', '', 1]) assert.deepEqual(checkSetting(key, value), { ok: false, code: 'invalid-value' }, `${key} ${String(value)}`);
+  }
+  assert.deepEqual(checkSetting('judgeAdopted', 'jev'), { ok: true, key: 'judgeAdopted', value: 'jev' });
+  assert.deepEqual(checkSetting('judgeAdopted', 'logprobs'), { ok: true, key: 'judgeAdopted', value: 'logprobs' });
+  for (const value of ['both', 'Jev', null]) assert.deepEqual(checkSetting('judgeAdopted', value), { ok: false, code: 'invalid-value' });
 });
 
 test('a name that is not one of them is an unknown setting, whatever its value', () => {
@@ -79,4 +90,15 @@ test('the config keeps the same rules: what the settings refuse, the config refu
   refused({ turnFold: 'ON' }, 'loop.turnFold');
   const parsed = parseConfig(config({ pingIntervalMinutes: false, awakeHours: { start: '22:00', end: '02:00' } }));
   assert.equal(parsed.loop.pingIntervalMinutes, false);
+});
+
+test('each judge\'s thresholds are two numbers over 0 and at most 1, owner not over return, as the config has them (ADR 0059)', () => {
+  for (const key of ['judgeLogprobsThresholds', 'judgeJevThresholds']) {
+    assert.deepEqual(checkSetting(key, { owner: 0.6, return: 0.95 }), { ok: true, key, value: { owner: 0.6, return: 0.95 } });
+    assert.deepEqual(checkSetting(key, { owner: 0.9, return: 0.9 }), { ok: true, key, value: { owner: 0.9, return: 0.9 } });
+    for (const value of [{ owner: 0, return: 0.9 }, { owner: 0.5, return: 1.1 }, { owner: 0.9, return: 0.5 }, { owner: 0.5 }, { owner: '0.5', return: 0.9 },
+      { owner: 0.5, return: 0.9, extra: 1 }, 0.5, null]) {
+      assert.deepEqual(checkSetting(key, value), { ok: false, code: 'invalid-value' }, `${key} ${JSON.stringify(value)}`);
+    }
+  }
 });

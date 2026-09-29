@@ -55,8 +55,11 @@ export interface SlackApi {
   addReaction(channel: string, ts: string, name: string): Promise<void>;
   /** The names of the workspace's custom emoji, aliases included (`emoji.list`, which needs `emoji:read`). */
   customEmoji(): Promise<string[]>;
-  /** Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts. */
-  postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string>;
+  /**
+   * Posts as the bot, in a thread when `threadTs` is given and shown in the channel too when `replyBroadcast` is (ADR 0059),
+   * under the icon at `iconUrl`. Returns the new message's ts.
+   */
+  postMessage(channel: string, text: string, options: { threadTs?: string; replyBroadcast?: boolean; iconUrl: string }): Promise<string>;
   /**
    * Posts images as the bot, as one message with the comment when given, in a thread when `threadTs` is given: the three
    * calls of `files.uploadV2` (ADR 0044). Slack takes no icon here, so the bot's own is shown.
@@ -225,10 +228,12 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
       const answer = await calling('emoji.list', () => web.emoji.list());
       return Object.keys(answer.emoji ?? {});
     },
-    async postMessage(channel, text, { threadTs, iconUrl }) {
-      // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged.
-      const answer = await calling('chat.postMessage', () => web.chat.postMessage({ channel, text, icon_url: iconUrl,
-        unfurl_links: false, unfurl_media: false, ...(threadTs ? { thread_ts: threadTs } : {}) }));
+    async postMessage(channel, text, { threadTs, replyBroadcast, iconUrl }) {
+      // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged. A reply in a
+      // thread shown in the channel too (reply_broadcast, ADR 0059) needs nothing more than chat:write.
+      const message = { channel, text, icon_url: iconUrl, unfurl_links: false, unfurl_media: false };
+      const answer = await calling('chat.postMessage', () => web.chat.postMessage(!threadTs ? message
+        : replyBroadcast ? { ...message, thread_ts: threadTs, reply_broadcast: true } : { ...message, thread_ts: threadTs }));
       return String(answer.ts ?? '');
     },
     async uploadFiles(channel, files, { threadTs, initialComment }) {
