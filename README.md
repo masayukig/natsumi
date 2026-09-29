@@ -597,6 +597,7 @@ Mac も iPhone も使わない本人のために、この fork では Slack の 
 ```
 
 - `workspace` は `slack.workspaces` の名前、`userId` は本人の Slack のユーザー ID、`channel` はチャンネル（例: `#natsumi`）の ID です。bot をそのチャンネルに招待しておきます。
+- `username`（任意、1〜80 文字、制御文字なし）を書くと、このチャンネルへの投稿にその名前を出します。無ければ Slack はボットのプロフィール名（`natsumi`）を出します。
 - 本人がそのチャンネル（スレッドを含む）か bot との DM に書いたことは、Mac からの送信と同じく本人との会話（`mac_message`）として natsumi に届き、`attention` にはなりません。
   受け取るとサーバーが `reaction` を付けます。ファイルへの記録はほかの発言と同じです。編集と削除は会話には届けません。本文の無い、画像だけの発言は会話に届けません（画像は会話に載せません）。
 - natsumi の返事と知らせ（`reply_to_mac`・`notify_owner`）は、すべてそのチャンネルに bot として投稿します。判定も承認も通しません。

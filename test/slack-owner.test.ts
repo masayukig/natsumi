@@ -164,3 +164,23 @@ test('with slack.avatarBaseUrl the owner\'s channel gets her icon from there', a
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(slack.posts[0]!.iconUrl, 'https://cdn.example.test/avatar/smile.png');
 });
+
+test('with slack.owner.username the owner\'s channel shows it over every post, text and image blocks alike; absent, it is not sent', async () => {
+  const named = new FakeSlack();
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  relayToOwner({ loop: { subscribe: l => { listener = l; return () => {}; } }, api: named, workspace: 'work', channel: 'C1',
+    publicOrigin: 'https://natsumi.example.test', username: 'natsumi (owner)',
+    images: { read: async id => id === 'img1' ? { mimeType: 'image/png', data: PNG } : undefined } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: 'おはよう', expression: 'smile' } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: '描きました',
+    images: [{ imageId: 'img1', mimeType: 'image/png' }] } });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(named.posts.map(post => post.username), ['natsumi (owner)', 'natsumi (owner)']);
+
+  const unnamed = new FakeSlack();
+  relayToOwner({ loop: { subscribe: l => { listener = l; return () => {}; } }, api: unnamed, workspace: 'work', channel: 'C1',
+    publicOrigin: 'https://natsumi.example.test', images: { read: async () => undefined } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: 'おはよう', expression: 'smile' } });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal('username' in unnamed.posts[0]!, false);
+});

@@ -382,12 +382,14 @@ export class SlackWorkspace {
 export function relayToOwner(options: {
   loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
   api: SlackApi; workspace: string; channel: string; publicOrigin: string; avatarBaseUrl?: string;
+  /** Shown over the bot's posts here instead of its profile name (ADR F01), when `slack.owner.username` is set. */
+  username?: string;
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
   log?: (line: string) => void;
   /** The waits before trying image blocks again that Slack refused, perhaps while the files were still processing. */
   retryDelays?: number[];
 }): () => void {
-  const { api, channel } = options;
+  const { api, channel, username } = options;
   const retryDelays = options.retryDelays ?? [1000, 2000];
   let chain: Promise<void> = Promise.resolve();
   return options.loop.subscribe(({ type, payload }) => {
@@ -404,7 +406,7 @@ export function relayToOwner(options: {
           if (read) files.push({ filename: `${image.imageId}.${IMAGE_TYPES[read.mimeType] ?? 'png'}`, data: read.data });
         }
         const iconUrl = `${options.avatarBaseUrl ?? `${options.publicOrigin}/avatar`}/${expression}.png`;
-        if (files.length === 0) return void await api.postMessage(channel, text, { iconUrl });
+        if (files.length === 0) return void await api.postMessage(channel, text, { iconUrl, ...(username ? { username } : {}) });
         const ids = await api.uploadUnshared(files);
         // A section holds mrkdwn as the plain `text` would show it, up to 3000 characters.
         const blocks = [
@@ -412,7 +414,7 @@ export function relayToOwner(options: {
           ...ids.map((id, index) => ({ type: 'image', slack_file: { id }, alt_text: files[index]!.filename })),
         ];
         for (let attempt = 0; ; attempt += 1) {
-          try { return void await api.postMessage(channel, text, { iconUrl, blocks }); } catch (error) {
+          try { return void await api.postMessage(channel, text, { iconUrl, blocks, ...(username ? { username } : {}) }); } catch (error) {
             const delay = retryDelays[attempt];
             if (delay !== undefined && (error as { reason?: unknown }).reason === 'invalid_blocks') { await sleep(delay); continue; }
             options.log?.(`slack (${options.workspace}): images went up without her icon (${describeFailure(error)})`);

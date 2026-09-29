@@ -46,7 +46,7 @@ export class FakeSlack implements SlackApi, SlackSocket {
   readonly emoji = new Map<string, string>();
   emojiCalls = 0;
   /** What the dove posted, as `chat.postMessage` was called. */
-  readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string; blocks?: unknown[] }[] = [];
+  readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string; blocks?: unknown[]; username?: string }[] = [];
   /** What the dove uploaded, one entry per files.uploadV2 (its three calls taken as one). */
   readonly uploads: { channel: string; files: { filename: string; data: Buffer }[]; threadTs?: string; initialComment?: string }[] = [];
   readonly historyCalls: { channel: string; oldest: string }[] = [];
@@ -146,10 +146,10 @@ export class FakeSlack implements SlackApi, SlackSocket {
     return [...this.emoji.keys()];
   }
 
-  async postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string; blocks?: unknown[] }): Promise<string> {
+  async postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string; blocks?: unknown[]; username?: string }): Promise<string> {
     this.check('postMessage', channel);
     this.posts.push({ channel, text, ...(options.threadTs ? { threadTs: options.threadTs } : {}), iconUrl: options.iconUrl,
-      ...(options.blocks ? { blocks: options.blocks } : {}) });
+      ...(options.blocks ? { blocks: options.blocks } : {}), ...(options.username ? { username: options.username } : {}) });
     return `${1_800_000_000 + this.posts.length}.000100`;
   }
 
