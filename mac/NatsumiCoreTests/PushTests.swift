@@ -85,6 +85,17 @@ struct PushCryptoTests {
     func withoutExpression() throws {
         #expect(try PushText(json: Data(#"{"text":"古いセリフ"}"#.utf8)) == PushText(text: "古いセリフ", expression: nil))
     }
+
+    @Test("平文の icon は、https の URL なら顔として読む。それ以外は顔なしにして、本文はそのまま読む")
+    func icon() throws {
+        let face = try PushText(json: Data(#"{"text":"晴れです","expression":"happy","icon":"https://natsumi.example.net/avatar/happy.png"}"#.utf8))
+        #expect(face == PushText(text: "晴れです", expression: "happy", icon: URL(string: "https://natsumi.example.net/avatar/happy.png")))
+        for icon in [#""http://natsumi.example.net/avatar/happy.png""#, #""file:///tmp/happy.png""#, #""javascript:alert(1)""#,
+                     #""not a url""#, #""""#, "42", "null"] {
+            let line = try PushText(json: Data(#"{"text":"晴れです","icon":\#(icon)}"#.utf8))
+            #expect(line == PushText(text: "晴れです", expression: nil), "\(icon)")
+        }
+    }
 }
 
 @Suite("通知の payload を読む")
