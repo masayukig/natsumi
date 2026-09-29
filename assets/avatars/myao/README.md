@@ -5,6 +5,7 @@
 
 直下の PNG は新しく生成した表情 9 枚です。`icons/` は顔の 512×512 WebP、`slack/` は同じ切り出しの 256×256 RGB PNG です。
 `avatar.json` と `pet.json` が動作を定義し、`appearance.yaml` と `sdctl-params.yaml` が描画の既定値を持ちます。
+`personality.md` は性格・話し方の初期値で、本人が決めた文をそのまま写しています（記憶に性格がまだ無いときだけ使われます）。
 
 ## 出どころと生成設定
 

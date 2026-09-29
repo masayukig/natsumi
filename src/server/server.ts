@@ -260,6 +260,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
+      ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours() },
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),

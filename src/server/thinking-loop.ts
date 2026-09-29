@@ -190,6 +190,8 @@ export interface LoopOptions {
    * curator's, and the memory commits. natsumi when left out.
    */
   self?: Self;
+  /** The avatar's `personality.md`, where the memory's personality starts when it has none (ADR 0060). */
+  personality?: string;
   /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
@@ -369,6 +371,7 @@ export class ThinkingLoop {
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
       alwaysMaxChars: loop.alwaysMemoryMaxChars, identity: gitIdentity(this.self),
+      ...(options.personality !== undefined ? { personality: options.personality } : {}),
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);

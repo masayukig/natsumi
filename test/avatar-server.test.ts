@@ -16,6 +16,7 @@ import { login, startFixture, type Fixture } from './support/server-fixture.ts';
 const NATSUMI = join(import.meta.dirname, '..', 'assets', 'avatars', 'natsumi');
 const FALLBACK = join(import.meta.dirname, '..', 'assets', 'avatars', 'nanashi');
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'avatar');
+const HANA_PERSONALITY = '# 性格・話し方\n\nのんびりしていて、語尾をのばす。\n';
 
 async function withServer(fn: (f: Fixture) => Promise<void>, avatar?: (root: string) => Promise<Record<string, unknown>>) {
   const f = await startFixture(avatar ? { avatar } : {});
@@ -116,10 +117,14 @@ test('an avatar the config names gives its name, its faceless fill-ins and its v
   const deadline = Date.now() + 5_000;
   while (f.model.contexts.length === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
   assert.ok(f.model.contexts[0]?.systemPrompt?.startsWith('あなたははな (hana)。'), f.model.contexts[0]?.systemPrompt?.slice(0, 40));
+  // Her personality starts from the avatar's (ADR 0060), and the session is made with it.
+  assert.equal(await readFile(join(f.data, 'memory', 'personality.md'), 'utf8'), HANA_PERSONALITY);
+  assert.ok(f.model.contexts[0]?.systemPrompt?.includes('語尾をのばす'), f.model.contexts[0]?.systemPrompt);
 }, async root => {
   const dir = join(root, 'avatars', 'hana');
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'avatar.json'), JSON.stringify({ id: 'hana', name: 'はな' }));
+  await writeFile(join(dir, 'personality.md'), HANA_PERSONALITY);
   return { directory: dir };
 }));
 
