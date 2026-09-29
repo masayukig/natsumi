@@ -1,7 +1,7 @@
 # 0057. アバターと名前を、サーバーの設定で指すアバターのディレクトリから決める
 
 - Date: 2026-09-28
-- Status: Accepted
+- Status: Accepted（アバターのディレクトリに、性格・話し方の初期値の `personality.md` を足すことは [ADR 0060](0060-a-personality-to-start-from-in-the-avatar.md) で追加）
 
 ## Context
 
