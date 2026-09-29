@@ -1,0 +1,21 @@
+lora: myao_anima.v1
+body: |
+  masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest, scenery,
+  1girl, normal skin, pale blue-gray hair, amber eyes, cat ears,
+  <lora:myao_anima.v1:1>, myao,
+outfit: "yellow shirt,"
+outfitName: 黄色いシャツ
+keep:
+  - pale blue-gray hair
+  - amber eyes
+  - cat ears
+examples:
+  - title: 公園での自撮り
+    outfit: yellow shirt,
+    scene: |
+      solo, selfie, upper body, smile, looking at viewer,
+      outdoors, park, sunlight
+  - title: 読書の時間
+    outfit: yellow shirt,
+    scene: |
+      solo, reading book, sitting, indoors, relaxed expression
