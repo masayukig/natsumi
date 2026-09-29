@@ -716,7 +716,8 @@ logprobs は並べて記録を取り、Jev が答えないときの控えにな�
   JUDGE_BASE_URL=https://llm.example.net/v1 JUDGE_MODEL=my-model JUDGE_API_KEY_ENV=MY_KEY npm run probe:jev -- --thresholds 0.5,0.9
   ```
 
-  `JUDGE_METHOD`（`logprobs` か `jev`）、`JUDGE_CONCURRENCY`、`JUDGE_TIMEOUT_SECONDS` も指定できます。
+  `JUDGE_METHOD`（`logprobs` か `jev`）、`JUDGE_CONCURRENCY`、`JUDGE_TIMEOUT_SECONDS` も指定できます。2 つの判定は、`JUDGE_METHOD` を変えて 1 つずつ評価します。
+  返信先のある場面は置き場所も聞き、場面が決めている置き場所との一致を数えます。`--order-check` を付けると、置き場所の選択肢を逆の順にしてもう一度聞き、答えが変わった数と確率の差の最大を出します。
   キーは値ではなく、キーを入れた環境変数の名前を `JUDGE_API_KEY_ENV` で渡します。結果にキーの値は出ません。
 
 ### natsumi の作業環境（natsumi-workspace）
