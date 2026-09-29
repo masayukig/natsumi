@@ -533,6 +533,10 @@ test('an event line is handed over once: its text is emptied from the record aft
 // ADR 0044: images named under `画像:`, taken and copied at once, sent with files.uploadV2's three calls.
 const withImages = (body: string, images: string[], to = 'work/#dev 2026-09-25 14:32:05 山田') =>
   `返信先: ${to}\n種類: 投稿\n${images.map(image => `画像: ${image}\n`).join('')}---\n${body}`;
+/** Fork (ADR F03): the cat uploaded unshared and shown by an image block, under her icon, after the body if any. */
+const catPost = (text: string, threadTs?: string) => ({ channel: 'C1', text, ...(threadTs ? { threadTs } : {}),
+  iconUrl: `${ORIGIN}/avatar/neutral.png`, blocks: [...(text ? [{ type: 'section', text: { type: 'mrkdwn', text } }] : []),
+    { type: 'image', slack_file: { id: 'F1' }, alt_text: 'cat.png' }] });
 
 test('images alone are sent at once, with neither Jev nor the owner, placed by the server\'s rule', async t => {
   const f = await setup(t);
@@ -542,9 +546,10 @@ test('images alone are sent at once, with neither Jev nor the owner, placed by t
   await f.dove.idle();
   assert.equal(f.jev.asked.length, 0, 'Jev is not asked about images');
   assert.equal(f.clientEvents.length, 0, 'nothing waits for the owner');
-  assert.equal(f.slack.posts.length, 0);
   // A top-level message with nothing after it: the reply goes to the channel, as without a verdict.
-  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }] }]);
+  assert.deepEqual(f.slack.posts, [catPost('')]);
+  assert.deepEqual(f.slack.unshared, [{ id: 'F1', filename: 'cat.png', data: PNG }]);
+  assert.deepEqual(f.slack.uploads, [], 'nothing is shared by the upload itself');
   const [line] = f.lines();
   assert.equal(line!.result, 'sent');
   assert.deepEqual(line!.images, ['/work/images/cat.png']);
@@ -560,7 +565,7 @@ test('images alone into a thread go to the thread, as the server\'s rule has it 
   await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: '絵をお願い', files: [], edited: false });
   await f.dove.ask(withImages('', ['/work/images/cat.png'], 'work/#dev 2026-09-25 14:40:10 佐藤'));
   await f.dove.idle();
-  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT }]);
+  assert.deepEqual(f.slack.posts, [catPost('', PARENT)]);
 });
 
 test('with a body, only the body is judged, and a pass sends the images with the body as their comment', async t => {
@@ -571,9 +576,7 @@ test('with a body, only the body is judged, and a pass sends the images with the
   assert.equal(f.jev.asked.length, 1);
   assert.equal(f.jev.asked[0]!.state.draft, '描いてみました。');
   assert.doesNotMatch(JSON.stringify(f.jev.asked[0]!.state), /cat\.png|\/work\//, 'Jev is shown nothing of the images');
-  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT,
-    initialComment: '描いてみました。' }]);
-  assert.equal(f.slack.posts.length, 0);
+  assert.deepEqual(f.slack.posts, [catPost('描いてみました。', PARENT)]);
   const [line] = f.lines();
   assert.equal(line!.result, 'sent');
   assert.equal(line!.draft, '描いてみました。');
@@ -601,8 +604,8 @@ test('a body the judge hands to the owner takes its images to the approval, and 
   await writeFile(join(f.work, 'images', 'cat.png'), Buffer.concat([PNG, Buffer.from('redrawn')]));
   f.dove.decide({ approvalId: pending!.payload.approvalId, revision: 1, decision: 'approve', deviceId: 'd1' });
   await f.dove.idle();
-  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT,
-    initialComment: '描いてみました。' }]);
+  assert.deepEqual(f.slack.posts, [catPost('描いてみました。', PARENT)]);
+  assert.deepEqual(f.slack.unshared.map(file => file.data), [PNG]);
 });
 
 test('an approval lists only its own images, and one without images has no field for them', async t => {
@@ -661,13 +664,25 @@ test('an image too large is refused at once with the limit', async t => {
 
 test('Slack refusing the upload is told to natsumi as not sent', async t => {
   const f = await setup(t);
-  f.slack.fail('uploadFiles', 'C1', 'files.completeUploadExternal', 'ratelimited');
+  f.slack.fail('uploadUnshared', '', 'files.completeUploadExternal', 'ratelimited');
   await f.dove.ask(withImages('', ['/work/images/cat.png']));
   await f.dove.idle();
   const [line] = f.lines();
   assert.equal(line!.result, 'not_sent');
   assert.match(String(line!.text), /Slack に断られた/);
   assert.ok(f.logs.some(line => line.includes('files.completeUploadExternal: ratelimited')));
+});
+
+test('fork (ADR F03): image blocks Slack refuses fall back to the upload with the body as its comment, still sent', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  f.slack.fail('postMessage', 'C1', 'chat.postMessage', 'missing_scope');
+  await f.dove.ask(withImages('描いてみました。', ['/work/images/cat.png']));
+  await f.dove.idle();
+  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT,
+    initialComment: '描いてみました。' }]);
+  assert.equal(f.lines()[0]!.result, 'sent');
+  assert.deepEqual(f.logs, ['slack (work): images went up without her icon (chat.postMessage: missing_scope)']);
 });
 
 // ADR 0044: the devices are given only the images of an approval, never those that went out without one.

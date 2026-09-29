@@ -32,7 +32,7 @@ Slack は読みもので、本人の発言も `attention` として届き、nats
   そこで本人のチャンネルでは、画像をチャンネルに共有せずに上げ（`files.completeUploadExternal` に `channel_id` を渡さない）、
   その ID を `slack_file` で指す `image` ブロックを、本文の `section`（mrkdwn）の後ろに並べて、表情のアイコンの `chat.postMessage` 1 通で出す。
   上げた直後のファイルは Slack がまだ処理中で `invalid_blocks` と断られることがあるので、1 秒・2 秒おいて計 3 回試し、
-  それでも通らなければ（ほかの理由で断られたときはすぐに）これまでどおり `uploadFiles` で本文をコメントにして上げ、ログに 1 行出す。ポッポさんの投稿は変えない。
+  それでも通らなければ（ほかの理由で断られたときはすぐに）これまでどおり `uploadFiles` で本文をコメントにして上げ、ログに 1 行出す。ポッポさんの画像の投稿も、のちに同じ道にした（[ADR F03](F03-fork-icons-on-image-posts.md)）。
 
 退けた案:
 

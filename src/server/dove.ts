@@ -12,6 +12,7 @@ import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { describeFailure, SlackCallError, type SlackApi } from './slack-api.ts';
 import type { ResolvedTarget, SlackArchive } from './slack-archive.ts';
 import { SlackEmoji } from './slack-emoji.ts';
+import { postWithImages } from './slack-images.ts';
 
 /**
  * The dove, ポッポさん (ADR 0012, ADR 0039, ADR 0040, ADR 0042): the only way anything natsumi writes reaches Slack.
@@ -459,7 +460,10 @@ export class SlackDove {
         // The copies taken when she asked, never /work again. Slack takes no icon with an upload.
         const files = await Promise.all(images.map(async image => ({ filename: basename(image.source),
           data: await readFile(this.options.images.path(image.file)) })));
-        await api.uploadFiles(post.channel_id, files, { ...(threadTs ? { threadTs } : {}), ...(text !== '' ? { initialComment: text } : {}) });
+        // Fork (ADR F03): shown by image blocks under her icon instead, the upload kept as the fallback.
+        await postWithImages(api, post.channel_id, text, files, { ...(threadTs ? { threadTs } : {}),
+          iconUrl: `${this.options.avatarBaseUrl ?? `${this.options.publicOrigin}/avatar`}/${expression}.png`,
+          log: line => this.log(`slack (${post.workspace}): ${line}`) });
         return true;
       }
       await api.postMessage(post.channel_id, text, { ...(threadTs ? { threadTs } : {}),
