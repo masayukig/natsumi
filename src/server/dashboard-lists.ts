@@ -1,4 +1,4 @@
-import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DovePostRow, type SessionState, type Waits } from './dashboard-records.ts';
+import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
 import { DEFAULT_SELF } from './prompts.ts';
@@ -113,14 +113,17 @@ export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[
   const at = (iso: string) => localTime(iso, timeZone);
   const main = html`<section id="dove">
 <h2>ポッポさん</h2>
-<p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。</small></p>
+<p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。
+2 つの判定を掛けた投稿は、それぞれの判定と、決めた方を並べます。投稿先の channel は、返信先があればスレッドに返してチャンネルにも出したものです。</small></p>
 ${list.rows.length === 0 ? html`<p>まだ依頼はありません。</p>` : html`<div class="cards">${list.rows.map(post => html`<article class="card" id="${post.postId}">
 <p><strong>${post.kind === 'reaction' ? 'リアクション' : '投稿'}</strong> ${post.channel} <small>${post.reference}</small>
 <small>${at(post.createdAt)}</small></p>
 <dl class="facts">
 <div><dt>状態</dt><dd>${doveState(post.state)}${post.failure && html` <code>${post.failure}</code>`} <small>${at(post.updatedAt)} に更新</small></dd></div>
-<div><dt>判定</dt><dd>${post.verdict ?? '—'}${post.scores.length > 0 && html` ${post.scores.map(score => html`<small${score.flagged ? html` class="bad"` : ''}>${score.label} ${score.score.toFixed(2)}</small> `)}`}</dd></div>
+<div><dt>判定</dt><dd>${post.verdict ?? '—'}${post.scores.length > 0 && html` ${scoreList(post.scores)}`}</dd></div>
+${post.judges && judgeRows(post.judges)}
 <div><dt>投稿先</dt><dd>${post.placement ?? '—'}${post.sentPlacement && post.sentPlacement !== post.placement && html` <small>送った先 ${post.sentPlacement}</small>`}</dd></div>
+${post.ownerDecision && html`<div><dt>本人の判断</dt><dd>${APPROVAL_LABELS[post.ownerDecision as ApprovalState] ?? post.ownerDecision}</dd></div>`}
 ${post.expression && html`<div><dt>表情</dt><dd>${post.expression}</dd></div>`}
 </dl>
 <div class="prose">${post.text}</div>
@@ -129,6 +132,28 @@ ${post.sentText && post.sentText !== post.text && html`<p><small>送った文</s
 ${pages(DOVE_PATH, list.page, list.more, '新しい依頼', '古い依頼')}
 </section>`;
   return page('ポッポさん', main, { signedIn: true, current: 'ポッポさん' });
+}
+
+function scoreList(scores: DoveScore[]): Html {
+  return html`${scores.map(score => html`<small${score.flagged ? html` class="bad"` : ''}>${score.label} ${score.score.toFixed(2)}</small> `)}`;
+}
+
+const JUDGE_LABELS = { logprobs: 'logprobs', jev: 'Jev' } as const;
+
+/** The two judges side by side (ADR 0059): each one's verdict, scores and placement, or why it had none, or that it was off. */
+function judgeRows(judges: DoveJudges): Html {
+  const row = (method: 'logprobs' | 'jev') => {
+    const judged = judges[method];
+    const body = !judged ? html`無効` : 'error' in judged ? html`判定なし <code>${judged.error}</code>`
+      : html`${judged.verdict} ${scoreList(judged.scores)}${judged.placement && html`<small>${judged.placement === 'channel' ? 'チャンネルにも' : 'スレッド'}${
+        judged.probabilities && ` ${judged.probabilities[judged.placement === 'channel' ? 'channel' : 'thread'].toFixed(2)}`}</small>`}`;
+    return html`<div><dt>${JUDGE_LABELS[method]} の判定${judges.adopted === method ? '（採用）' : ''}</dt><dd>${body}</dd></div>`;
+  };
+  const decided = judges.decidedBy === null ? 'どちらも答えなかった（本人へ）'
+    : judges.decidedBy === judges.adopted ? judges.decidedBy : `${judges.decidedBy}（採用した方が答えなかった）`;
+  return html`${row('logprobs')}
+${row('jev')}
+<div><dt>決めた方</dt><dd>${decided}</dd></div>`;
 }
 
 function doveState(state: string): Html {
