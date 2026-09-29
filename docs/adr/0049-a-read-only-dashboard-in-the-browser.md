@@ -1,7 +1,7 @@
 # 0049. ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る
 
 - Date: 2026-09-27
-- Status: Accepted（画面に並べるものに、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る閲覧を加えることと、そのための Markdown の整形の依存は [ADR 0054](0054-her-files-on-the-dashboard.md) で追加、ターンの種類に記憶の整理係のターンを加え、統計には混ぜないことは [ADR 0055](0055-a-memory-curator-at-night.md) で追加）
+- Status: Accepted（画面に並べるものに、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る閲覧を加えることと、そのための Markdown の整形の依存は [ADR 0054](0054-her-files-on-the-dashboard.md) で追加、ターンの種類に記憶の整理係のターンを加え、統計には混ぜないことは [ADR 0055](0055-a-memory-curator-at-night.md) で追加、「足りなくなったら作り方を決め直す」をチャットと設定の画面のために決め直し、cookie を `natsumi_session`・`Path=/` に置き換えることは [ADR 0058](0058-settings-and-chat-in-the-browser.md) で改める。ダッシュボードの中の読み取り専用は保つ）
 
 ## Context
 
