@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { promisify } from 'node:util';
 import { parse } from 'yaml';
@@ -32,9 +32,29 @@ const buildCopies = (stage: string[]) => stage
     return { source: source!, destination: destination! };
   });
 
+// The directories under src/ that the server's entrypoint reaches through the imports that stay in the output (an
+// `import type` is erased by the build). A new one, like src/shared, has to be copied into the image too.
+async function directoriesTheServerRuns() {
+  const source = new URL('../src/', import.meta.url).pathname;
+  const imports = /^(?:import|export)\s+(type\s+)?(?:[^;']*?\sfrom\s+)?'(\.{1,2}\/[^']+)'/gm;
+  const seen = new Set<string>();
+  const pending = [join(source, 'server/main.ts')];
+  for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const [, typeOnly, specifier] of (await readFile(file, 'utf8')).matchAll(imports)) {
+      if (!typeOnly) pending.push(resolve(dirname(file), specifier!));
+    }
+  }
+  return [...new Set([...seen].map(file => relative(source, file).split(sep)[0]!))];
+}
+
 test('the image takes from the build only the code the server runs and the browser’s bundle, never the probe', async () => {
   const sources = buildCopies(await shippingStage()).map(copy => copy.source).sort();
-  assert.deepEqual(sources, ['/app/dist/src/pi', '/app/dist/src/server', '/app/dist/web']);
+  const directories = await directoriesTheServerRuns();
+  assert.ok(directories.includes('shared'), `the walk missed src/shared: ${directories.join(' ')}`);
+  assert.ok(!directories.includes('probe'));
+  assert.deepEqual(sources, [...directories.map(directory => `/app/dist/src/${directory}`), '/app/dist/web'].sort());
 });
 
 test('the entrypoint runs a file that the image has copied in', async () => {
@@ -265,15 +285,30 @@ test('through the runner, as run_shell runs it, jq is on PATH', {
   assert.equal(filtered.stdout, '[2,4]\n');
 });
 
+const serverTag = 'natsumi-server:test';
+let serverImage: Promise<string> | undefined;
+// Built once for the tests below. The host network only for the build, as for the workspace.
+const buildServer = () => serverImage ??= docker(['build', '--network', 'host', '--tag', serverTag, root]);
+
 // The same, in the image that ships: Pi finds the commands on PATH under these names.
 test('the server image has rg and fdfind on PATH', {
   skip: hasDocker ? false : 'docker is not available',
   timeout: 30 * 60_000,
 }, async () => {
-  const serverTag = 'natsumi-server:test';
-  await docker(['build', '--network', 'host', '--tag', serverTag, root]);
+  await buildServer();
   for (const command of ['rg', 'fdfind']) {
     const version = await docker(['run', '--rm', '--network', 'none', '--entrypoint', command, serverTag, '--version']);
     assert.match(version, /\d+\.\d+/, `${command} --version printed ${version}`);
   }
+});
+
+// The entrypoint loads every module the server runs before it reads its arguments, so a file the image left out fails
+// here as it would on start. `avatar check` needs no config, no data directory and no network.
+test('the server image runs its entrypoint', {
+  skip: hasDocker ? false : 'docker is not available',
+  timeout: 30 * 60_000,
+}, async () => {
+  await buildServer();
+  const checked = await docker(['run', '--rm', '--network', 'none', '--read-only', serverTag, 'avatar', 'check', 'nanashi']);
+  assert.match(checked, /^errors \(the server does not start\): none$/m);
 });
