@@ -98,6 +98,16 @@ test('without a comment or a thread, completing names only the files and the cha
   assert.deepEqual(Object.keys(completed).filter(key => key !== 'token').sort(), ['channel_id', 'files']);
 });
 
+// Fork (ADR F01): the same upload, completed in no channel, for image blocks to show.
+test('images uploaded unshared are completed without a channel, and their IDs come back in order', async t => {
+  const f = await fakeWebApi(t);
+  const ids = await f.api.uploadUnshared([{ filename: 'cat.png', data: Buffer.from('c') }, { filename: 'dog.jpg', data: Buffer.from('d') }]);
+  assert.deepEqual(ids, ['F1', 'F2']);
+  const completed = Object.fromEntries(new URLSearchParams(f.calls.at(-1)!.body.toString()));
+  assert.deepEqual(Object.keys(completed).filter(key => key !== 'token').sort(), ['files']);
+  assert.deepEqual(JSON.parse(completed.files!), [{ id: 'F1', title: 'cat.png' }, { id: 'F2', title: 'dog.jpg' }]);
+});
+
 test('an upload that fails stops before completing, and says which step failed', async t => {
   const f = await fakeWebApi(t, { uploadStatus: 500 });
   await assert.rejects(f.api.uploadFiles('C1', [{ filename: 'cat.png', data: Buffer.from('x') }], {}),

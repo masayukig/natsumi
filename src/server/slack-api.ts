@@ -55,13 +55,21 @@ export interface SlackApi {
   addReaction(channel: string, ts: string, name: string): Promise<void>;
   /** The names of the workspace's custom emoji, aliases included (`emoji.list`, which needs `emoji:read`). */
   customEmoji(): Promise<string[]>;
-  /** Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts. */
-  postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string>;
+  /**
+   * Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts.
+   * Fork (ADR F01): with `blocks`, Slack shows them and `text` is only the notification.
+   */
+  postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string; blocks?: unknown[] }): Promise<string>;
   /**
    * Posts images as the bot, as one message with the comment when given, in a thread when `threadTs` is given: the three
    * calls of `files.uploadV2` (ADR 0044). Slack takes no icon here, so the bot's own is shown.
    */
   uploadFiles(channel: string, files: { filename: string; data: Buffer }[], options: { threadTs?: string; initialComment?: string }): Promise<void>;
+  /**
+   * Fork (ADR F01): uploads files as the bot without sharing them anywhere, for an image block of a message to show.
+   * Returns their IDs, in order.
+   */
+  uploadUnshared(files: { filename: string; data: Buffer }[]): Promise<string[]>;
   /** A file's bytes, or undefined when it is larger than `maxBytes`. */
   download(url: string, maxBytes: number): Promise<Buffer | undefined>;
   /** Fork (ADR F02): the DM channel with one person (`conversations.open`, which needs `im:write`). */
@@ -178,6 +186,30 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
   // `apiUrl` is for the tests, which answer the Web API on loopback.
   const web = new WebClient(botToken, { logLevel: LogLevel.ERROR, ...(options.apiUrl ? { slackApiUrl: options.apiUrl } : {}) });
   const socketClient = new SocketModeClient({ appToken, logLevel: LogLevel.ERROR });
+  /**
+   * The first two calls of `files.uploadV2`: 1. A URL for each file. 2. Its bytes to that URL, which is Slack's own and
+   * signed: the token is not sent there. Returns what completing them takes.
+   */
+  async function uploadBytes(files: { filename: string; data: Buffer }[]): Promise<{ id: string; title: string }[]> {
+    const targets = await Promise.all(files.map(async file => {
+      const answer = await calling('files.getUploadURLExternal', () =>
+        web.files.getUploadURLExternal({ filename: file.filename, length: file.data.length }));
+      if (!answer.upload_url || !answer.file_id) throw new SlackCallError('files.getUploadURLExternal', 'no_upload_url');
+      return { url: answer.upload_url, id: answer.file_id, file };
+    }));
+    for (const { url, file } of targets) {
+      let response: Response;
+      try {
+        response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Uint8Array(file.data) });
+      } catch (error) {
+        const cause = (error as { cause?: { code?: unknown } }).cause;
+        throw new SlackCallError('files.upload', plain(cause?.code) ?? 'request_error');
+      }
+      await response.arrayBuffer().catch(() => undefined);
+      if (!response.ok) throw new SlackCallError('files.upload', `http_${response.status}`);
+    }
+    return targets.map(({ id, file }) => ({ id, title: file.filename }));
+  }
   const api: SlackApi = {
     async whoAmI() {
       const answer = await calling('auth.test', () => web.auth.test());
@@ -233,36 +265,25 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
       const answer = await calling('emoji.list', () => web.emoji.list());
       return Object.keys(answer.emoji ?? {});
     },
-    async postMessage(channel, text, { threadTs, iconUrl }) {
+    async postMessage(channel, text, { threadTs, iconUrl, blocks }) {
       // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged.
       const answer = await calling('chat.postMessage', () => web.chat.postMessage({ channel, text, icon_url: iconUrl,
-        unfurl_links: false, unfurl_media: false, ...(threadTs ? { thread_ts: threadTs } : {}) }));
+        unfurl_links: false, unfurl_media: false, ...(threadTs ? { thread_ts: threadTs } : {}), ...(blocks ? { blocks: blocks as never } : {}) }));
       return String(answer.ts ?? '');
     },
     async uploadFiles(channel, files, { threadTs, initialComment }) {
-      // 1. A URL for each file. 2. Its bytes to that URL, which is Slack's own and signed: the token is not sent there.
       // 3. One completion that shares them all in the channel, as one message.
-      const targets = await Promise.all(files.map(async file => {
-        const answer = await calling('files.getUploadURLExternal', () =>
-          web.files.getUploadURLExternal({ filename: file.filename, length: file.data.length }));
-        if (!answer.upload_url || !answer.file_id) throw new SlackCallError('files.getUploadURLExternal', 'no_upload_url');
-        return { url: answer.upload_url, id: answer.file_id, file };
-      }));
-      for (const { url, file } of targets) {
-        let response: Response;
-        try {
-          response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Uint8Array(file.data) });
-        } catch (error) {
-          const cause = (error as { cause?: { code?: unknown } }).cause;
-          throw new SlackCallError('files.upload', plain(cause?.code) ?? 'request_error');
-        }
-        await response.arrayBuffer().catch(() => undefined);
-        if (!response.ok) throw new SlackCallError('files.upload', `http_${response.status}`);
-      }
-      const [first, ...rest] = targets.map(({ id, file }) => ({ id, title: file.filename }));
+      const [first, ...rest] = await uploadBytes(files);
       if (!first) return;
       await calling('files.completeUploadExternal', () => web.files.completeUploadExternal({ files: [first, ...rest], channel_id: channel,
         ...(initialComment ? { initial_comment: initialComment } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) }));
+    },
+    async uploadUnshared(files) {
+      // 3. One completion with no channel: the files are the bot's own until a message shows them.
+      const [first, ...rest] = await uploadBytes(files);
+      if (!first) return [];
+      await calling('files.completeUploadExternal', () => web.files.completeUploadExternal({ files: [first, ...rest] }));
+      return [first, ...rest].map(file => file.id);
     },
     async download(url, maxBytes) {
       let response: Response;

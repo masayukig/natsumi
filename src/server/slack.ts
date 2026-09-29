@@ -1,5 +1,6 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { ArchivedMessage, ArchivedReaction, ChannelRow, Reactor, SlackArchive } from './slack-archive.ts';
 import type { Attention } from './sources.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
@@ -374,16 +375,20 @@ export class SlackWorkspace {
 
 /**
  * Fork (ADR F01): everything natsumi says to the owner, a reply or a notice, is also posted in the owner's channel,
- * under the icon of her expression like the dove's posts, and with the images of a reply as one upload. There is no
- * judge and no approval: the channel is the owner's own. A failure is logged and the line stays said.
+ * under the icon of her expression like the dove's posts. The images of a reply are uploaded unshared and shown by
+ * image blocks of the same message, since an upload takes no icon. There is no judge and no approval: the channel is
+ * the owner's own. A failure is logged and the line stays said.
  */
 export function relayToOwner(options: {
   loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
   api: SlackApi; workspace: string; channel: string; publicOrigin: string; avatarBaseUrl?: string;
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
   log?: (line: string) => void;
+  /** The waits before trying image blocks again that Slack refused, perhaps while the files were still processing. */
+  retryDelays?: number[];
 }): () => void {
   const { api, channel } = options;
+  const retryDelays = options.retryDelays ?? [1000, 2000];
   let chain: Promise<void> = Promise.resolve();
   return options.loop.subscribe(({ type, payload }) => {
     if (type !== 'conversation.message' || payload.role !== 'natsumi' || typeof payload.text !== 'string') return;
@@ -393,13 +398,29 @@ export function relayToOwner(options: {
     // One at a time, so the channel reads in the order she said them.
     chain = chain.then(async () => {
       try {
-        const files = [];
+        const files: { filename: string; data: Buffer }[] = [];
         for (const image of shown) {
           const read = await options.images.read(image.imageId);
           if (read) files.push({ filename: `${image.imageId}.${IMAGE_TYPES[read.mimeType] ?? 'png'}`, data: read.data });
         }
-        if (files.length > 0) await api.uploadFiles(channel, files, { initialComment: text });
-        else await api.postMessage(channel, text, { iconUrl: `${options.avatarBaseUrl ?? `${options.publicOrigin}/avatar`}/${expression}.png` });
+        const iconUrl = `${options.avatarBaseUrl ?? `${options.publicOrigin}/avatar`}/${expression}.png`;
+        if (files.length === 0) return void await api.postMessage(channel, text, { iconUrl });
+        const ids = await api.uploadUnshared(files);
+        // A section holds mrkdwn as the plain `text` would show it, up to 3000 characters.
+        const blocks = [
+          ...(text.match(/[\s\S]{1,3000}/g) ?? []).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })),
+          ...ids.map((id, index) => ({ type: 'image', slack_file: { id }, alt_text: files[index]!.filename })),
+        ];
+        for (let attempt = 0; ; attempt += 1) {
+          try { return void await api.postMessage(channel, text, { iconUrl, blocks }); } catch (error) {
+            const delay = retryDelays[attempt];
+            if (delay !== undefined && (error as { reason?: unknown }).reason === 'invalid_blocks') { await sleep(delay); continue; }
+            options.log?.(`slack (${options.workspace}): images went up without her icon (${describeFailure(error)})`);
+            break;
+          }
+        }
+        // The upload as it was, under the bot's icon: the owner still gets the picture.
+        await api.uploadFiles(channel, files, { initialComment: text });
       } catch (error) {
         options.log?.(`slack (${options.workspace}): posting to the owner's channel failed (${describeFailure(error)})`);
       }

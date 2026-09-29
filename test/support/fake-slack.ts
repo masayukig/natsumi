@@ -46,7 +46,7 @@ export class FakeSlack implements SlackApi, SlackSocket {
   readonly emoji = new Map<string, string>();
   emojiCalls = 0;
   /** What the dove posted, as `chat.postMessage` was called. */
-  readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string }[] = [];
+  readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string; blocks?: unknown[] }[] = [];
   /** What the dove uploaded, one entry per files.uploadV2 (its three calls taken as one). */
   readonly uploads: { channel: string; files: { filename: string; data: Buffer }[]; threadTs?: string; initialComment?: string }[] = [];
   readonly historyCalls: { channel: string; oldest: string }[] = [];
@@ -60,6 +60,8 @@ export class FakeSlack implements SlackApi, SlackSocket {
   private interactiveHandler: ((payload: Record<string, unknown>) => void) | undefined;
   /** Fork (ADR F02): Block Kit messages posted, and the rewrites of them. */
   readonly blockPosts: { channel: string; text: string; blocks: unknown[] }[] = [];
+  /** Fork (ADR F01): files uploaded unshared, each given the ID `F<n>`. */
+  readonly unshared: { id: string; filename: string; data: Buffer }[] = [];
   readonly updates: { channel: string; ts: string; text: string; blocks: unknown[] }[] = [];
 
   addChannel(conversation: SlackConversation): void {
@@ -144,9 +146,10 @@ export class FakeSlack implements SlackApi, SlackSocket {
     return [...this.emoji.keys()];
   }
 
-  async postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string> {
+  async postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string; blocks?: unknown[] }): Promise<string> {
     this.check('postMessage', channel);
-    this.posts.push({ channel, text, ...(options.threadTs ? { threadTs: options.threadTs } : {}), iconUrl: options.iconUrl });
+    this.posts.push({ channel, text, ...(options.threadTs ? { threadTs: options.threadTs } : {}), iconUrl: options.iconUrl,
+      ...(options.blocks ? { blocks: options.blocks } : {}) });
     return `${1_800_000_000 + this.posts.length}.000100`;
   }
 
@@ -154,6 +157,15 @@ export class FakeSlack implements SlackApi, SlackSocket {
     this.check('uploadFiles', channel);
     this.uploads.push({ channel, files: files.map(file => ({ filename: file.filename, data: Buffer.from(file.data) })),
       ...(options.threadTs ? { threadTs: options.threadTs } : {}), ...(options.initialComment ? { initialComment: options.initialComment } : {}) });
+  }
+
+  async uploadUnshared(files: { filename: string; data: Buffer }[]): Promise<string[]> {
+    this.check('uploadUnshared', '');
+    return files.map(file => {
+      const id = `F${this.unshared.length + 1}`;
+      this.unshared.push({ id, filename: file.filename, data: Buffer.from(file.data) });
+      return id;
+    });
   }
 
   async openDm(userId: string): Promise<string> { return `D-${userId}`; }

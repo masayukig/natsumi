@@ -76,7 +76,7 @@ test('anyone else in the owner\'s channel, and the owner elsewhere, are what the
   assert.deepEqual(f.told.map(attention => attention.kind), ['mention', 'mention']);
 });
 
-test('what natsumi says to the owner is posted in the channel, under her expression, with a reply\'s images uploaded', async t => {
+test('what natsumi says to the owner is posted in the channel, under her expression, with a reply\'s images shown in blocks', async () => {
   const slack = new FakeSlack();
   let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
   const logs: string[] = [];
@@ -93,9 +93,66 @@ test('what natsumi says to the owner is posted in the channel, under her express
   assert.deepEqual(slack.posts, [
     { channel: 'C1', text: 'おはよう', iconUrl: 'https://natsumi.example.test/avatar/smile.png' },
     { channel: 'C1', text: '知らせです', iconUrl: 'https://natsumi.example.test/avatar/neutral.png' },
+    { channel: 'C1', text: '描きました', iconUrl: 'https://natsumi.example.test/avatar/neutral.png', blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: '描きました' } },
+      { type: 'image', slack_file: { id: 'F1' }, alt_text: 'img1.png' },
+    ] },
   ]);
-  assert.deepEqual(slack.uploads, [{ channel: 'C1', files: [{ filename: 'img1.png', data: PNG }], initialComment: '描きました' }]);
+  assert.deepEqual(slack.unshared, [{ id: 'F1', filename: 'img1.png', data: PNG }]);
+  assert.deepEqual(slack.uploads, [], 'nothing is shared by the upload itself');
   assert.deepEqual(logs, []);
+});
+
+function relayed(slack: FakeSlack, logs: string[]) {
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  relayToOwner({ loop: { subscribe: l => { listener = l; return () => {}; } }, api: slack, workspace: 'work', channel: 'C1',
+    publicOrigin: 'https://natsumi.example.test', retryDelays: [0, 0],
+    images: { read: async () => ({ mimeType: 'image/png', data: PNG }) }, log: line => { logs.push(line); } });
+  return listener;
+}
+
+test('each image of a reply gets its own block, after the text', async () => {
+  const slack = new FakeSlack();
+  const logs: string[] = [];
+  relayed(slack, logs)({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: '二枚', expression: 'smile',
+    images: [{ imageId: 'a', mimeType: 'image/png' }, { imageId: 'b', mimeType: 'image/png' }] } });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(slack.posts.map(post => post.blocks), [[
+    { type: 'section', text: { type: 'mrkdwn', text: '二枚' } },
+    { type: 'image', slack_file: { id: 'F1' }, alt_text: 'a.png' },
+    { type: 'image', slack_file: { id: 'F2' }, alt_text: 'b.png' },
+  ]]);
+  assert.equal(slack.posts[0]!.iconUrl, 'https://natsumi.example.test/avatar/smile.png');
+  assert.deepEqual(logs, []);
+});
+
+test('image blocks Slack keeps refusing are tried three times, then the images go up as before, under the bot\'s icon', async () => {
+  const slack = new FakeSlack();
+  const logs: string[] = [];
+  let tries = 0;
+  const post = slack.postMessage.bind(slack);
+  slack.postMessage = async (...args) => { tries += 1; return post(...args); };
+  slack.fail('postMessage', 'C1', 'chat.postMessage', 'invalid_blocks');
+  relayed(slack, logs)({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: '描きました',
+    images: [{ imageId: 'img1', mimeType: 'image/png' }] } });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(tries, 3);
+  assert.deepEqual(slack.uploads, [{ channel: 'C1', files: [{ filename: 'img1.png', data: PNG }], initialComment: '描きました' }]);
+  assert.deepEqual(logs, ['slack (work): images went up without her icon (chat.postMessage: invalid_blocks)']);
+});
+
+test('any other refusal of the blocks goes straight to the upload', async () => {
+  const slack = new FakeSlack();
+  const logs: string[] = [];
+  let tries = 0;
+  const post = slack.postMessage.bind(slack);
+  slack.postMessage = async (...args) => { tries += 1; return post(...args); };
+  slack.fail('postMessage', 'C1', 'chat.postMessage', 'missing_scope');
+  relayed(slack, logs)({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: '描きました',
+    images: [{ imageId: 'img1', mimeType: 'image/png' }] } });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(tries, 1);
+  assert.equal(slack.uploads.length, 1);
 });
 
 test('with slack.avatarBaseUrl the owner\'s channel gets her icon from there', async () => {
