@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { STATE_DIRECTORY } from '../src/server/data-directory.ts';
-import type { Fold } from '../src/server/settings/domain.ts';
+import type { Fold } from '../src/shared/protocol/settings.ts';
 import { RuntimeSettings, type RouteControl, type SettingsDefaults } from '../src/server/settings/service.ts';
 import { readOverrides, RUNTIME_SETTINGS_FILE } from '../src/server/settings/store.ts';
 

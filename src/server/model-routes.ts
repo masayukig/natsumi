@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { writeFileAtomically } from './paths.ts';
-import { ROUTE_NAME } from './settings/domain.ts';
+import { ROUTE_NAME, type RouteView } from '../shared/protocol/settings.ts';
 import { readRouteOverride, writeOverride } from './settings/store.ts';
 import { checkHealth, readStatus } from './status.ts';
 
@@ -17,8 +17,8 @@ import { checkHealth, readStatus } from './status.ts';
  *   chosen. The command line reads it to list the routes and to check a name before writing it.
  */
 
-/** A route as the owner is shown it: never its endpoint or its key. */
-export interface RouteView { name: string; provider: string; model: string; ready: boolean }
+/** A route as the owner is shown it: never its endpoint or its key. The contract's type, shared with the browser. */
+export type { RouteView };
 
 export interface RouteStatus {
   defaultRoute: string;
@@ -30,7 +30,7 @@ export interface RouteStatus {
 }
 
 /** The rule the config gives a route's name, so the command line needs no config to check one. */
-export { ROUTE_NAME } from './settings/domain.ts';
+export { ROUTE_NAME } from '../shared/protocol/settings.ts';
 
 const statusPath = (dataDirectory: string) => join(dataDirectory, STATE_DIRECTORY, 'model-routes.json');
 

@@ -32,7 +32,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { avatarManifest, loadAvatar } from '../server/avatar.ts';
 import { SESSION_COOKIE } from '../server/browser/session-cookie.ts';
 import { readBundleFile, webAppCsp, webAppPage } from '../server/browser/web-app.ts';
-import { checkSetting, isSettingKey, type SettingKey, type SettingValues } from '../server/settings/domain.ts';
+import { checkSetting, isSettingKey, type SettingKey, type SettingValues } from '../shared/protocol/settings.ts';
 
 /** The cookie the fake login sets, as a `Cookie` header's value; a browser test may set it itself. */
 export const FAKE_SESSION_COOKIE = `${SESSION_COOKIE}=fake-session`;

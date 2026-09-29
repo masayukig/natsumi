@@ -33,3 +33,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The browser's app, put together and run in headless Chromium against the fake server (ADR 0058).
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run test:browser

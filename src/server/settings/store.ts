@@ -2,7 +2,7 @@ import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIRECTORY } from '../data-directory.ts';
 import { writeFileAtomically } from '../paths.ts';
-import { checkSetting, isFold, SETTING_KEYS, type SettingKey, type SettingValues } from './domain.ts';
+import { checkSetting, isFold, SETTING_KEYS, type SettingKey, type SettingValues } from '../../shared/protocol/settings.ts';
 
 /**
  * Where the owner's overrides of the config are kept (ADR 0058), in the data directory so that a restart or a release

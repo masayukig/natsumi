@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import type { ShownImage } from '../shared/protocol/conversation.ts';
 import { isWithin } from './paths.ts';
 import { imageType, WORK_PATH } from './view.ts';
 
@@ -47,15 +48,8 @@ export interface TakenImage {
  */
 export const REPLY_IMAGE_LIMITS: ImageLimits = { maxBytes: 10 * 1024 * 1024, maxCount: 4 };
 
-/** An image as the devices are told of it: by ID, with what they need to lay it out before fetching it. */
-export interface ShownImage {
-  imageId: string;
-  mimeType: string;
-  bytes: number;
-  /** Present only when the image's header said it. */
-  width?: number;
-  height?: number;
-}
+/** An image as the devices are told of it: the contract's type, shared with the browser. */
+export type { ShownImage };
 
 /** How an image is shown, without the fields it does not have. */
 export function shownImage(image: { imageId: string; mimeType: string; bytes: number; width?: number | null; height?: number | null }):
