@@ -27,6 +27,11 @@ Slack は読みもので、本人の発言も `attention` として届き、nats
 - 追記: publicOrigin が LAN の中だけだと、Slack のサーバーは `icon_url` の `<publicOrigin>/avatar/<表情>.png` を取れず、アイコンが出ない。
   設定 `slack.avatarBaseUrl`（https だけ、末尾の `/` は落とす）があれば、ポッポさんの投稿と本人のチャンネルへの投稿は `<avatarBaseUrl>/<表情>.png` を使う。
   無ければ上流と同じ `<publicOrigin>/avatar`。置き場所は `assets/avatar` を公開したところならどこでもよい。
+- 追記: 返事の画像を `uploadFiles`（files.uploadV2）で上げると、`icon_url` を渡す口が無く、Slack App の既定のアイコンで出る。App のアイコンは変えられない。
+  そこで本人のチャンネルでは、画像をチャンネルに共有せずに上げ（`files.completeUploadExternal` に `channel_id` を渡さない）、
+  その ID を `slack_file` で指す `image` ブロックを、本文の `section`（mrkdwn）の後ろに並べて、表情のアイコンの `chat.postMessage` 1 通で出す。
+  上げた直後のファイルは Slack がまだ処理中で `invalid_blocks` と断られることがあるので、1 秒・2 秒おいて計 3 回試し、
+  それでも通らなければ（ほかの理由で断られたときはすぐに）これまでどおり `uploadFiles` で本文をコメントにして上げ、ログに 1 行出す。ポッポさんの投稿は変えない。
 
 退けた案:
 
