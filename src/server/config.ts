@@ -12,6 +12,8 @@ import { SOURCES_DEFAULTS } from './sources.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
   type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
+// The settings that may change while natsumi runs keep the rules the config gives them, from one place (ADR 0058).
+import { awakeHoursProblem, isFold, isPingInterval, isTurnLimit, MIN_PING_INTERVAL_MINUTES, ROUTE_NAME } from './settings/domain.ts';
 
 /** A startup-stopping config problem. `path` names the setting (for example `pi.authPath`); values are never echoed. */
 export class ConfigError extends Error {
@@ -167,8 +169,6 @@ export const LOOP_DEFAULTS: LoopConfig = {
   turnFold: 'off',
 };
 
-/** The shortest ping interval, so a typo cannot make natsumi think all day. */
-const MIN_PING_INTERVAL_MINUTES = 5;
 /** Below this a memory file could not hold a topic, and every night's work would go back. */
 const MIN_MEMORY_FILE_MAX_CHARS = 1000;
 /** Under this the always-memory could not hold a line about the owner, and every night's rewrite would go back. */
@@ -435,7 +435,6 @@ export function parseConfig(raw: unknown): ServerConfig {
 type ParsedRoute = Omit<ModelRoute, 'compactionThreshold'> & { compactionThreshold?: number; path: string };
 type ParsedPi = Omit<PiConfig, 'routes'> & { routes: ParsedRoute[] };
 
-const ROUTE_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 function parsePi(value: unknown, path: string): ParsedPi {
   const pi = object(value, path);
@@ -978,43 +977,42 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     throw new ConfigError(`${path}.alwaysMemoryMaxChars`, `must be an integer of at least ${MIN_ALWAYS_MEMORY_MAX_CHARS}`);
   }
   const ping = loop.pingIntervalMinutes ?? LOOP_DEFAULTS.pingIntervalMinutes;
-  if (ping !== false && !positiveInteger(ping, MIN_PING_INTERVAL_MINUTES)) {
+  if (!isPingInterval(ping)) {
     throw new ConfigError(`${path}.pingIntervalMinutes`, `must be an integer of at least ${MIN_PING_INTERVAL_MINUTES}, or false`);
   }
   const reset = loop.expressionResetMinutes ?? LOOP_DEFAULTS.expressionResetMinutes;
   if (!positiveInteger(reset, 1)) throw new ConfigError(`${path}.expressionResetMinutes`, 'must be a positive integer');
   const reviewCalls = loop.reviewModelCalls ?? LOOP_DEFAULTS.reviewModelCalls;
-  if (!positiveInteger(reviewCalls, 1)) throw new ConfigError(`${path}.reviewModelCalls`, 'must be a positive integer');
+  if (!isTurnLimit(reviewCalls)) throw new ConfigError(`${path}.reviewModelCalls`, 'must be a positive integer');
   const reviewMinutes = loop.reviewTimeoutMinutes ?? LOOP_DEFAULTS.reviewTimeoutMinutes;
-  if (!positiveInteger(reviewMinutes, 1)) throw new ConfigError(`${path}.reviewTimeoutMinutes`, 'must be a positive integer');
+  if (!isTurnLimit(reviewMinutes)) throw new ConfigError(`${path}.reviewTimeoutMinutes`, 'must be a positive integer');
   const eventCalls = loop.eventModelCalls ?? LOOP_DEFAULTS.eventModelCalls;
-  if (!positiveInteger(eventCalls, 1)) throw new ConfigError(`${path}.eventModelCalls`, 'must be a positive integer');
+  if (!isTurnLimit(eventCalls)) throw new ConfigError(`${path}.eventModelCalls`, 'must be a positive integer');
   const eventMinutes = loop.eventTimeoutMinutes ?? LOOP_DEFAULTS.eventTimeoutMinutes;
-  if (!positiveInteger(eventMinutes, 1)) throw new ConfigError(`${path}.eventTimeoutMinutes`, 'must be a positive integer');
+  if (!isTurnLimit(eventMinutes)) throw new ConfigError(`${path}.eventTimeoutMinutes`, 'must be a positive integer');
   const turnFold = loop.turnFold ?? LOOP_DEFAULTS.turnFold;
-  if (turnFold !== 'on' && turnFold !== 'off') throw new ConfigError(`${path}.turnFold`, 'must be "on" or "off"');
+  if (!isFold(turnFold)) throw new ConfigError(`${path}.turnFold`, 'must be "on" or "off"');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
     ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
     ...(repository ? { memoryRepository: repository } : {}), memoryFileMaxChars: fileMax as number,
     alwaysMemoryMaxChars: alwaysMax as number,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
-    pingIntervalMinutes: ping as number | false,
+    pingIntervalMinutes: ping,
     selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),
     expressionResetMinutes: reset as number,
-    reviewModelCalls: reviewCalls as number, reviewTimeoutMinutes: reviewMinutes as number,
-    eventModelCalls: eventCalls as number, eventTimeoutMinutes: eventMinutes as number, turnFold,
+    reviewModelCalls: reviewCalls, reviewTimeoutMinutes: reviewMinutes,
+    eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, turnFold,
   };
 }
 
 function parseAwakeHours(value: unknown, path: string): AwakeHours {
   const hours = object(value, path);
   onlyKeys(hours, path, ['start', 'end']);
-  for (const key of ['start', 'end']) {
-    const time = hours[key];
-    if (typeof time !== 'string' || !TIME_OF_DAY.test(time)) throw new ConfigError(`${path}.${key}`, 'must be a 24-hour HH:MM time');
+  const problem = awakeHoursProblem(hours);
+  if (problem && 'reason' in problem) {
+    throw new ConfigError(`${path}.${problem.part}`, problem.reason === 'same-as-start' ? 'must differ from start' : 'must be a 24-hour HH:MM time');
   }
-  if (hours.start === hours.end) throw new ConfigError(`${path}.end`, 'must differ from start');
   return { start: hours.start as string, end: hours.end as string };
 }
 

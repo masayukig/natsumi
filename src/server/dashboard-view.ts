@@ -66,6 +66,7 @@ export function page(title: string, main: Html, options: { signedIn: boolean; cu
 ${options.signedIn && html`<nav aria-label="ダッシュボード"><ul>${SECTIONS.map(section => html`<li>${section.href
     ? html`<a href="${section.href}"${section.label === options.current ? html` aria-current="page"` : ''}>${section.label}</a>`
     : html`<span class="soon">${section.label}<small>準備中</small></span>`}</li>`)}</ul></nav>
+<nav aria-label="ほかの画面"><ul><li><a href="/">話す</a></li><li><a href="/settings">設定</a></li></ul></nav>
 <form method="post" action="${LOGOUT_PATH}"><button type="submit">ログアウト</button></form>`}
 </header>
 <main>
@@ -121,18 +122,18 @@ const PHASES: Record<NonNullable<LoopDashboardState['turn']>['phase'], string> =
 };
 
 /** The callback's own answer: a same-origin page that moves on, so the Strict cookie is sent to /dashboard (ADR 0049). */
-export function signedInPage(): Html {
+export function signedInPage(returnTo: '/' | '/settings' | '/dashboard' = '/dashboard'): Html {
   return html`<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="0; url=/dashboard">
+<meta http-equiv="refresh" content="0; url=${returnTo}">
 <title>ログインしました — natsumi</title>
 <link rel="stylesheet" href="${STATIC_FILES.css}">
 </head>
 <body>
-<main><p>ログインしました。<a href="/dashboard">ダッシュボードへ進む</a></p></main>
+<main><p>ログインしました。<a href="${returnTo}">${returnTo === '/dashboard' ? 'ダッシュボードへ進む' : '開いていたページへ進む'}</a></p></main>
 </body>
 </html>
 `;

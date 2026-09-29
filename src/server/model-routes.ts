@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { writeFileAtomically } from './paths.ts';
+import { ROUTE_NAME } from './settings/domain.ts';
+import { readRouteOverride, writeOverride } from './settings/store.ts';
 import { checkHealth, readStatus } from './status.ts';
 
 /**
@@ -9,7 +11,7 @@ import { checkHealth, readStatus } from './status.ts';
  * data directory, so the command line reaches a running server without a listener of its own, and a choice made
  * while the server is stopped is there when it starts. Nothing here loads Pi.
  *
- * - `model-route.json` is the choice. The command line and the clients' command write it; the server reads it before
+ * - `model-route.json` is the choice, kept by the runtime settings' store (ADR 0058). The command line and the clients' command write it; the server reads it before
  *   every turn and now and then between turns.
  * - `model-routes.json` is what the server publishes: the routes, whether each is ready, the one in use and the one
  *   chosen. The command line reads it to list the routes and to check a name before writing it.
@@ -27,22 +29,21 @@ export interface RouteStatus {
   routes: RouteView[];
 }
 
-/** The rule the config gives a route's name, repeated here so the command line needs no config to check one. */
-export const ROUTE_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** The rule the config gives a route's name, so the command line needs no config to check one. */
+export { ROUTE_NAME } from './settings/domain.ts';
 
-const choicePath = (dataDirectory: string) => join(dataDirectory, STATE_DIRECTORY, 'model-route.json');
 const statusPath = (dataDirectory: string) => join(dataDirectory, STATE_DIRECTORY, 'model-routes.json');
 
-/** The chosen route's name, or undefined when none was chosen or the file cannot be read. */
-export async function readRouteChoice(dataDirectory: string): Promise<string | undefined> {
-  try {
-    const { route } = JSON.parse(await readFile(choicePath(dataDirectory), 'utf8')) as { route?: unknown };
-    return typeof route === 'string' ? route : undefined;
-  } catch { return undefined; }
+/**
+ * The chosen route's name, or undefined when none was chosen or the file cannot be read. The choice is the owner's
+ * override of the config's default route, kept by the runtime settings' store (ADR 0058).
+ */
+export function readRouteChoice(dataDirectory: string): Promise<string | undefined> {
+  return readRouteOverride(dataDirectory);
 }
 
-export async function writeRouteChoice(dataDirectory: string, route: string, now: number): Promise<void> {
-  await writeFileAtomically(choicePath(dataDirectory), `${JSON.stringify({ route, chosenAt: new Date(now).toISOString() })}\n`, 0o600);
+export function writeRouteChoice(dataDirectory: string, route: string, now: number): Promise<void> {
+  return writeOverride(dataDirectory, 'modelRoute', route, now);
 }
 
 export async function readRouteStatus(dataDirectory: string): Promise<RouteStatus | undefined> {

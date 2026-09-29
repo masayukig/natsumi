@@ -14,6 +14,12 @@ export const GITHUB_ENDPOINTS: GitHubEndpoints = {
 export const APP_REDIRECT_URI = 'natsumi://oauth/callback';
 /** Where a browser login ends (ADR 0049). Fixed in code for the same reason; nothing in a request or the config moves it. */
 export const DASHBOARD_PATH = '/dashboard';
+/**
+ * The pages a browser login may go back to (ADR 0058): the one it began at, of these three fixed in code. Nothing a
+ * request carries is ever used as a place to go.
+ */
+export const BROWSER_RETURNS = ['/', '/settings', DASHBOARD_PATH] as const;
+export type BrowserReturn = typeof BROWSER_RETURNS[number];
 export const LOGIN_ATTEMPT_TTL_MS = 10 * 60_000;
 export const LOGIN_CODE_TTL_MS = 60_000;
 const UPSTREAM_TIMEOUT_MS = 10_000;
@@ -30,10 +36,12 @@ export type Outcome = { status: 302; location: string } | { status: number; body
  * How a browser login ended (ADR 0049): a session for the dashboard's cookie, or a fixed code to show with the status.
  * The browser has no app to take a login code to, so the session is issued at the callback itself.
  */
-export type BrowserOutcome = { browser: 'signed-in'; session: IssuedSession } | { browser: 'refused'; status: number; code: string };
+export type BrowserOutcome =
+  | { browser: 'signed-in'; session: IssuedSession; returnTo: BrowserReturn }
+  | { browser: 'refused'; status: number; code: string; returnTo: BrowserReturn };
 
 type Attempt = { githubVerifier: string; expiresAt: number }
-  & ({ kind: 'app'; appChallenge: string; appState: string } | { kind: 'browser' });
+  & ({ kind: 'app'; appChallenge: string; appState: string } | { kind: 'browser'; returnTo: BrowserReturn });
 interface LoginCode { githubUserId: number; appChallenge: string; expiresAt: number }
 
 /** The status a refused browser login is shown with: GitHub failing is not the browser's fault. */
@@ -87,14 +95,14 @@ export class GitHubLogin {
   }
 
   /**
-   * A login from the dashboard (ADR 0049): the same state, GitHub PKCE and account check as the app's, ending at
-   * DASHBOARD_PATH with a session instead of at the app with a login code.
+   * A login from the browser (ADR 0049, ADR 0058): the same state, GitHub PKCE and account check as the app's, ending
+   * with a session instead of at the app with a login code, and going back to the page it began at.
    */
-  startBrowser(): Outcome {
-    return this.toGitHub({ kind: 'browser' });
+  startBrowser(returnTo: BrowserReturn = DASHBOARD_PATH): Outcome {
+    return this.toGitHub({ kind: 'browser', returnTo });
   }
 
-  private toGitHub(attempt: { kind: 'app'; appChallenge: string; appState: string } | { kind: 'browser' }): Outcome {
+  private toGitHub(attempt: { kind: 'app'; appChallenge: string; appState: string } | { kind: 'browser'; returnTo: BrowserReturn }): Outcome {
     const now = this.options.now();
     prune(this.attempts, now - LOGIN_ATTEMPT_TTL_MS);
     if (this.attempts.size >= MAX_PENDING) return failure(429, 'too-many-logins');
@@ -118,10 +126,13 @@ export class GitHubLogin {
 
     const verified = await this.verify(query, attempt);
     if (attempt.kind === 'browser') {
-      if (typeof verified === 'string') return this.refuse({ browser: 'refused', status: BROWSER_STATUS[verified] ?? 400, code: verified }, verified);
+      const { returnTo } = attempt;
+      if (typeof verified === 'string') {
+        return this.refuse({ browser: 'refused', status: BROWSER_STATUS[verified] ?? 400, code: verified, returnTo }, verified);
+      }
       const session = this.options.sessions.create(verified);
-      this.options.log('github login: dashboard session issued');
-      return { browser: 'signed-in', session };
+      this.options.log('github login: browser session issued');
+      return { browser: 'signed-in', session, returnTo };
     }
 
     const toApp = (params: Record<string, string>): Outcome => {
