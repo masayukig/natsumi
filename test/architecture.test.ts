@@ -5,8 +5,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The direction of the imports under src/ (ADR 0058): the layers the runtime settings and the browser's ways in keep,
- * and no cycle anywhere. The imports are read from the text of the files, type-only ones included, since a type
+ * The direction of the imports under src/ (ADR 0058): the layers the runtime settings, the browser's ways in and the
+ * browser's app keep, and no cycle anywhere. The imports are read from the text of the files, type-only ones included, since a type
  * points at what a module is written against as much as a value does.
  */
 
@@ -18,7 +18,7 @@ interface Edge { to: string; specifier: string }
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap(name => {
     const path = join(directory, name);
-    return statSync(path).isDirectory() ? sourceFiles(path) : path.endsWith('.ts') ? [path] : [];
+    return statSync(path).isDirectory() ? sourceFiles(path) : /\.tsx?$/.test(path) ? [path] : [];
   });
 }
 
@@ -39,8 +39,9 @@ function importsOf(file: string): Edge[] {
 const graph = new Map(sourceFiles(SOURCE).map(file => [relative(ROOT, file), importsOf(file)]));
 const internal = (edges: Edge[]) => edges.filter(edge => graph.has(edge.to));
 
-/** The layers of ADR 0058, lowest first. A module takes only from the layers below its own, or its own component. */
-const DOMAIN = 'src/server/settings/domain.ts';
+/** The layers of ADR 0058, lowest first. A module takes only from the layers below its own, or its own component. The
+ * settings' rules and shapes are the contract's, shared with the browser's app, so their lowest layer is there. */
+const DOMAIN = 'src/shared/protocol/settings.ts';
 const STORE = 'src/server/settings/store.ts';
 const SERVICE = 'src/server/settings/service.ts';
 const BROWSER = 'src/server/browser/';
@@ -53,7 +54,7 @@ test('the layers of the runtime settings are where the ADR puts them', () => {
   assert.ok([...graph.keys()].some(file => file.startsWith(BROWSER)), 'the browser’s ways in have a directory of their own');
 });
 
-test('the settings domain imports nothing at all, not even Node', () => {
+test('the settings’ rules and shapes import nothing at all, not even Node', () => {
   assert.deepEqual(importsOf(join(ROOT, DOMAIN)).map(edge => edge.specifier), []);
 });
 
@@ -85,6 +86,74 @@ test('nothing below the ways in reaches up to them', () => {
     if (!file.startsWith('src/server/settings/') && !file.startsWith(BROWSER)) continue;
     for (const edge of internal(edges)) assert.ok(!upper.has(edge.to), `${file} imports ${edge.to}`);
   }
+});
+
+/**
+ * The browser's app (ADR 0058), the way the Mac app is built (mac/CLAUDE.md): a passive view and a mediator.
+ *
+ *   src/shared/protocol/  the contract's types and readers, which the server uses too
+ *   src/web/core/         state, events, effects, the mediator and the derivation of the props: pure functions
+ *   src/web/adapters/     the socket, the storage and the avatar's list: the outside, turned into events
+ *   src/web/view/         Preact components drawing the props and handing back events
+ *   src/web/main.ts       where the real socket and the DOM are put together
+ */
+const PROTOCOL = 'src/shared/protocol/';
+const CORE = 'src/web/core/';
+const ADAPTERS = 'src/web/adapters/';
+const VIEW = 'src/web/view/';
+const MAIN = 'src/web/main.ts';
+const under = (file: string, ...places: string[]) => places.some(place => file === place || file.startsWith(place));
+const isPreact = (specifier: string) => specifier === 'preact' || specifier.startsWith('preact/');
+
+test('the browser’s app has its layers where the design puts them', () => {
+  for (const place of [PROTOCOL, CORE, ADAPTERS, VIEW]) {
+    assert.ok([...graph.keys()].some(file => file.startsWith(place)), `${place} has modules`);
+  }
+  assert.ok(graph.has(MAIN), `${MAIN} exists`);
+});
+
+test('the contract takes nothing but itself: no Node, no DOM library, no package', () => {
+  for (const [file, edges] of graph) {
+    if (!under(file, PROTOCOL)) continue;
+    for (const edge of edges) assert.ok(under(edge.to, PROTOCOL), `${file} imports ${edge.specifier}`);
+  }
+});
+
+test('the core takes only itself and the contract', () => {
+  for (const [file, edges] of graph) {
+    if (!under(file, CORE)) continue;
+    for (const edge of edges) assert.ok(under(edge.to, CORE, PROTOCOL), `${file} imports ${edge.specifier}`);
+  }
+});
+
+test('the adapters and the view take the core and the contract, not each other; only the view takes Preact', () => {
+  for (const [file, edges] of graph) {
+    if (under(file, ADAPTERS)) {
+      for (const edge of edges) assert.ok(under(edge.to, ADAPTERS, CORE, PROTOCOL), `${file} imports ${edge.specifier}`);
+    }
+    if (under(file, VIEW)) {
+      for (const edge of edges) assert.ok(under(edge.to, VIEW, CORE, PROTOCOL) || isPreact(edge.specifier), `${file} imports ${edge.specifier}`);
+    }
+  }
+});
+
+test('only main.ts puts the app together, and it takes nothing from the server', () => {
+  for (const edge of graph.get(MAIN)!) {
+    assert.ok(under(edge.to, 'src/web/', PROTOCOL) || isPreact(edge.specifier), `${MAIN} imports ${edge.specifier}`);
+  }
+  for (const [file, edges] of graph) {
+    for (const edge of edges) {
+      if (edge.to === MAIN) assert.fail(`${file} imports ${MAIN}`);
+      if (under(edge.to, 'src/web/')) assert.ok(under(file, 'src/web/'), `${file} imports ${edge.to}`);
+      if (isPreact(edge.specifier)) assert.ok(under(file, VIEW) || file === MAIN, `${file} imports ${edge.specifier}`);
+    }
+  }
+});
+
+test('the contract is shared: the server takes it, and nothing in it takes the server', () => {
+  const serverTakes = [...graph].filter(([file]) => under(file, 'src/server/'))
+    .flatMap(([, edges]) => edges.map(edge => edge.to)).filter(to => under(to, PROTOCOL));
+  assert.ok(serverTakes.length > 0, 'the server imports the shared contract');
 });
 
 /** The strongly connected components of more than one module, or of one that imports itself (Tarjan). */
