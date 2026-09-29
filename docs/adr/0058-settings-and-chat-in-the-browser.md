@@ -1,7 +1,7 @@
 # 0058. ブラウザで話し、動いている間に変えられる設定をブラウザから変える
 
 - Date: 2026-09-29
-- Status: Accepted
+- Status: Accepted（画面から変えられる設定に、ポッポさんの判定の有効・無効と採用する方を加えることは [ADR 0059](0059-two-judges-side-by-side-and-fewer-issues.md) で追加）
 
 ## Context
 
