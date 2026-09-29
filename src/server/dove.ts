@@ -321,7 +321,7 @@ export class SlackDove {
           reply_to: replyTo ? { from: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, judgeContext.chars) } : null,
           conversation: this.options.archive.around(target, judgeContext.messages, judgeContext.chars),
           draft: post.text,
-        }, { placement: replyTo !== undefined });
+        }, { placement: replyTo !== undefined && !replyTo.threadTs });
         judged = { ...decideVerdict(answer, thresholds), ...(answer.placement ? { placement: answer.placement } : {}) };
       } catch (error) {
         this.log(`dove: ${error instanceof JudgeError ? error.message : `judge: no verdict (${describeFailure(error)})`}`);

@@ -163,6 +163,16 @@ test('a post to the channel itself goes to the channel, and Jev is not asked whe
   assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: 'おはようございます。', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
 });
 
+test('a reply to a message in a thread stays in the thread, and Jev is not asked where', async t => {
+  const f = await setup(t);
+  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:40:10Z'), threadTs: PARENT, speaker: '佐藤', own: false, text: '続きです', files: [], edited: false });
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('了解です。', { to: 'work/#dev 2026-09-25 14:40:10 佐藤' }));
+  await f.dove.idle();
+  assert.equal(f.jev.asked[0]!.placement, false);
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '了解です。', threadTs: PARENT, iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+});
+
 test('a draft Jev hands to the owner waits for her approval, and the approval carries what the contract says', async t => {
   const f = await setup(t);
   f.jev.answers.push(OWNER());
