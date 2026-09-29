@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { settingsProps } from '../src/web/core/props.ts';
+import { parseSettingInput } from '../src/web/core/settings.ts';
+import { Driver, server, settingsView } from './web-core-fixtures.ts';
+
+/**
+ * The settings (`/settings`) as the core decides them (ADR 0058, docs/client-contract.md 実行中の設定): the config's value
+ * beside the one in force, a change checked by the contract's rules before it is sent, a reset, and the words for the
+ * server's refusals.
+ */
+
+const onSettings = (view = settingsView()) => new Driver({ screen: 'settings' }).synced({ settings: view });
+const row = (driver: Driver, key: string) => settingsProps(driver.state).rows.find(item => item.key === key)!;
+
+test('every runtime setting is listed with the config’s value and the one in force', () => {
+  const driver = onSettings(settingsView({ eventModelCalls: { value: 12, config: 8, overridden: true },
+    pingIntervalMinutes: { value: false, config: 180, overridden: true } }));
+  const rows = settingsProps(driver.state).rows;
+  assert.deepEqual(rows.map(item => item.key), ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes',
+    'reviewModelCalls', 'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes']);
+  assert.deepEqual([row(driver, 'eventModelCalls').valueText, row(driver, 'eventModelCalls').configText], ['12 回', '8 回']);
+  assert.equal(row(driver, 'eventModelCalls').overridden, true);
+  assert.equal(row(driver, 'eventModelCalls').canReset, true);
+  assert.equal(row(driver, 'eventTimeoutMinutes').canReset, false);
+  assert.deepEqual([row(driver, 'pingIntervalMinutes').valueText, row(driver, 'pingIntervalMinutes').configText], ['合図しない', '180 分']);
+  assert.equal(row(driver, 'awakeHours').valueText, '07:00〜23:00（Asia/Tokyo）');
+});
+
+test('a route or a fold not in use yet says it takes effect from the next turn', () => {
+  const driver = onSettings(settingsView({
+    modelRoute: { ...settingsView().modelRoute, value: 'plus', overridden: true, inUse: 'local' },
+    turnFold: { value: 'on', config: 'off', overridden: true, inUse: 'off' },
+  }));
+  assert.equal(row(driver, 'modelRoute').note, '次のターンから（いまは local）');
+  assert.equal(row(driver, 'turnFold').note, '次のターンから（いまは off）');
+  assert.equal(row(driver, 'eventModelCalls').note, undefined);
+  driver.dispatch(server('settings.changed', { settings: settingsView({
+    modelRoute: { ...settingsView().modelRoute, value: 'plus', overridden: true, inUse: 'plus' } }) }, { seq: 2 }));
+  assert.equal(row(driver, 'modelRoute').note, undefined, 'another device’s change, or the move itself, is taken');
+});
+
+test('a route that is not ready cannot be chosen', () => {
+  const control = row(onSettings(), 'modelRoute').control;
+  assert.equal(control.kind, 'select');
+  assert.deepEqual(control.kind === 'select' && control.options.map(option => [option.value, option.disabled]),
+    [['local', false], ['plus', false], ['spare', true]]);
+});
+
+test('the input is checked by the contract’s rules before anything is sent', () => {
+  assert.deepEqual(parseSettingInput({ key: 'eventModelCalls', text: '12' }), { ok: true, key: 'eventModelCalls', value: 12 });
+  for (const text of ['0', '1.5', '', 'たくさん']) {
+    const parsed = parseSettingInput({ key: 'eventModelCalls', text });
+    assert.ok(!parsed.ok && /1 以上の整数/.test(parsed.message), text);
+  }
+  assert.deepEqual(parseSettingInput({ key: 'pingIntervalMinutes', text: '', off: true }), { ok: true, key: 'pingIntervalMinutes', value: false });
+  assert.deepEqual(parseSettingInput({ key: 'pingIntervalMinutes', text: '30', off: false }), { ok: true, key: 'pingIntervalMinutes', value: 30 });
+  const short = parseSettingInput({ key: 'pingIntervalMinutes', text: '4', off: false });
+  assert.ok(!short.ok && /5 以上/.test(short.message));
+  assert.deepEqual(parseSettingInput({ key: 'awakeHours', start: '22:00', end: '06:30' }), { ok: true, key: 'awakeHours', value: { start: '22:00', end: '06:30' } });
+  const same = parseSettingInput({ key: 'awakeHours', start: '07:00', end: '07:00' });
+  assert.ok(!same.ok && /同じ時刻/.test(same.message));
+  const bad = parseSettingInput({ key: 'awakeHours', start: '7:00', end: '23:00' });
+  assert.ok(!bad.ok && /始まり/.test(bad.message));
+  assert.deepEqual(parseSettingInput({ key: 'turnFold', fold: 'on' }), { ok: true, key: 'turnFold', value: 'on' });
+});
+
+test('a change is sent as settings.set, shown as saving, and the answer’s list is taken', () => {
+  const driver = onSettings();
+  const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'eventModelCalls', text: '12' } }));
+  assert.deepEqual([set?.type, set?.payload], ['settings.set', { key: 'eventModelCalls', value: 12 }]);
+  assert.equal(row(driver, 'eventModelCalls').busy, true);
+  driver.dispatch(server('command.accepted', { settings: settingsView({ eventModelCalls: { value: 12, config: 8, overridden: true } }) },
+    { seq: 2, requestId: set!.requestId }));
+  assert.equal(row(driver, 'eventModelCalls').busy, false);
+  assert.equal(row(driver, 'eventModelCalls').valueText, '12 回');
+});
+
+test('a value against the rules is not sent, and says why beside the setting', () => {
+  const driver = onSettings();
+  assert.deepEqual(Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'eventModelCalls', text: '0' } })), []);
+  assert.match(row(driver, 'eventModelCalls').error ?? '', /1 以上の整数/);
+  assert.equal(row(driver, 'eventTimeoutMinutes').error, undefined);
+});
+
+test('the server’s refusals are said in words', () => {
+  const driver = onSettings();
+  const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'modelRoute', route: 'plus' } }));
+  driver.dispatch(server('command.rejected', { code: 'route-unavailable' }, { seq: 2, requestId: set!.requestId }));
+  assert.match(row(driver, 'modelRoute').error ?? '', /使える状態にありません/);
+  assert.equal(row(driver, 'modelRoute').busy, false);
+  const [again] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'eventModelCalls', text: '9' } }));
+  driver.dispatch(server('service.unavailable', { code: 'pi-unavailable' }, { seq: 3, requestId: again!.requestId }));
+  assert.match(row(driver, 'eventModelCalls').error ?? '', /話せない/);
+});
+
+test('putting back the config’s value is settings.reset', () => {
+  const driver = onSettings(settingsView({ eventModelCalls: { value: 12, config: 8, overridden: true } }));
+  const [reset] = Driver.sent(driver.dispatch({ type: 'setting-reset', key: 'eventModelCalls' }));
+  assert.deepEqual([reset?.type, reset?.payload], ['settings.reset', { key: 'eventModelCalls' }]);
+  driver.dispatch(server('command.accepted', { settings: settingsView() }, { seq: 2, requestId: reset!.requestId }));
+  assert.equal(row(driver, 'eventModelCalls').overridden, false);
+  assert.equal(row(driver, 'eventModelCalls').valueText, '8 回');
+});
+
+test('before the list has come, the settings say they are waiting for it', () => {
+  const driver = new Driver({ screen: 'settings' });
+  driver.dispatch({ type: 'started' });
+  const props = settingsProps(driver.state);
+  assert.deepEqual(props.rows, []);
+  assert.match(props.status.text, /つない/);
+});

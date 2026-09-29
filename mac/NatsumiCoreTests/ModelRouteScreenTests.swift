@@ -29,7 +29,7 @@ struct ModelRouteScreenTests {
 
     @Test("今の経路と一覧。選んである経路と使えない経路は押せない")
     func settled() {
-        let props = UIProps.modelRoutes(book(), isConnected: true)
+        let props = UIProps.modelRoutes(book(), isConnected: true, name: "なつみ")
         #expect(props.summary == "local（example-model）で話しています")
         #expect(props.menuTitle == "モデル: local")
         #expect(!props.isSilent)
@@ -44,7 +44,7 @@ struct ModelRouteScreenTests {
 
     @Test("選んだ経路が今と違う間は「次のターンから」と示し、今の経路に戻すこともできる")
     func nextTurn() {
-        let props = UIProps.modelRoutes(book(Fixture.modelRoutes(current: "local", chosen: "plus")), isConnected: true)
+        let props = UIProps.modelRoutes(book(Fixture.modelRoutes(current: "local", chosen: "plus")), isConnected: true, name: "なつみ")
         #expect(props.summary == "local（example-model）で話しています")
         #expect(props.pending == "次のターンから plus に切り替わります")
         #expect(props.menuTitle == "モデル: local → plus")
@@ -56,14 +56,14 @@ struct ModelRouteScreenTests {
     @Test("選んだ経路が使えなくなったら、使えるようになるまで移らないことを示す")
     func chosenNotReady() {
         let routes = Fixture.modelRoutes(current: "local", chosen: "plus", ready: ["local": true, "plus": false, "spare": false])
-        let props = UIProps.modelRoutes(book(routes), isConnected: true)
+        let props = UIProps.modelRoutes(book(routes), isConnected: true, name: "なつみ")
         #expect(props.pending == "plus はいま使えません。使えるようになってから切り替わります")
     }
 
     @Test("current が null なら、話せないことを目立たせる")
     func silent() {
         let routes = Fixture.modelRoutes(current: nil, chosen: "local", ready: ["local": false, "plus": true, "spare": false])
-        let props = UIProps.modelRoutes(book(routes), isConnected: true)
+        let props = UIProps.modelRoutes(book(routes), isConnected: true, name: "なつみ")
         #expect(props.isSilent)
         #expect(props.summary == "なつみはいま話せません（使える経路がありません）")
         #expect(props.menuTitle == "モデル: 話せません")
@@ -74,7 +74,7 @@ struct ModelRouteScreenTests {
 
     @Test("送っている間は、どの経路も押せない")
     func sending() {
-        let props = UIProps.modelRoutes(book(choose: "plus"), isConnected: true)
+        let props = UIProps.modelRoutes(book(choose: "plus"), isConnected: true, name: "なつみ")
         #expect(props.message == "plus に切り替えています…")
         #expect(!props.isFailure)
         #expect(props.rows.allSatisfy { !$0.isEnabled })
@@ -85,7 +85,7 @@ struct ModelRouteScreenTests {
         func message(_ type: String, _ code: String) -> ModelRoutesProps {
             UIProps.modelRoutes(
                 book(choose: "plus", answer: Fixture.envelope(type, seq: 2, requestId: "r2", payload: ["code": code])),
-                isConnected: true)
+                isConnected: true, name: "なつみ")
         }
         #expect(message("command.rejected", "unknown-route").message == "plus はサーバーの設定にありません")
         #expect(message("command.rejected", "route-unavailable").message == "plus はいま使えません")
@@ -98,8 +98,8 @@ struct ModelRouteScreenTests {
 
     @Test("つながっていなければ押せない。経路を知らないうちは一覧が無い")
     func notConnected() {
-        #expect(UIProps.modelRoutes(book(), isConnected: false).rows.allSatisfy { !$0.isEnabled })
-        let unknown = UIProps.modelRoutes(book(nil), isConnected: true)
+        #expect(UIProps.modelRoutes(book(), isConnected: false, name: "なつみ").rows.allSatisfy { !$0.isEnabled })
+        let unknown = UIProps.modelRoutes(book(nil), isConnected: true, name: "なつみ")
         #expect(unknown.rows.isEmpty)
         #expect(unknown.summary == "経路はまだ分かりません")
         #expect(unknown.menuTitle == "モデル: 不明")
@@ -115,8 +115,7 @@ struct ModelRouteScreenTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, serverOrigin: "https://natsumi.example.net",
-            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+            characterScale: .default, serverOrigin: "https://natsumi.example.net")))
         _ = mediator.handle(.sessionResumed(hasSession: true, deviceId: nil))
         _ = mediator.handle(.socketOpened)
         _ = mediator.handle(.socketReceived(Fixture.snapshot(
@@ -160,6 +159,7 @@ struct ModelRouteScreenTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(serverOrigin: "https://natsumi.example.net"))
+        _ = mediator.handle(.avatarLoaded(Fixture.receivedAvatar))
         _ = mediator.handle(.sessionResumed(hasSession: true, deviceId: nil))
         _ = mediator.handle(.socketOpened)
         _ = mediator.handle(.socketReceived(Fixture.snapshot(

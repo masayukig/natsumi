@@ -229,6 +229,24 @@ test('a turn that keeps calling tools stops at the model call limit and the even
   } finally { await f.cleanup(); }
 });
 
+test('the limits of a turn are read from the runtime settings before each turn, so a change is in force from the next (ADR 0058)', async () => {
+  const f = await setup();
+  try {
+    let limits = { eventModelCalls: 2, eventTimeoutMinutes: 10, reviewModelCalls: 40, reviewTimeoutMinutes: 30 };
+    const { loop, events } = await f.open({ settings: { turnLimits: () => limits, awakeHours: () => LOOP_DEFAULTS.awakeHours } });
+    f.model.auto = () => ({ calls: [call('set_mac_avatar_expression', { expression: 'thinking' })] });
+    const first = f.send(loop, '一回目');
+    assert.equal((await completed(events, first.eventId)).payload.reason, 'model-call-limit');
+    await loop.idle();
+    assert.equal(f.model.calls, 2, 'the settings, not the config (four in this fixture)');
+    limits = { ...limits, eventModelCalls: 5 };
+    const second = f.send(loop, '二回目');
+    assert.equal((await completed(events, second.eventId)).payload.reason, 'model-call-limit');
+    await loop.idle();
+    assert.equal(f.model.calls, 2 + 5);
+  } finally { await f.cleanup(); }
+});
+
 test('an ordinary turn has as many model calls as the config gives it, eight unless told otherwise', async () => {
   const f = await setup();
   try {

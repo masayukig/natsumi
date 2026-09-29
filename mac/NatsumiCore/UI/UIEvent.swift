@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// What the app knows about itself when it starts: the settings it saved and where the avatar comes from.
+/// What the app knows about itself when it starts: the settings it saved.
 public struct LaunchInfo: Equatable, Sendable {
     public var characterScale: CharacterScale
     public var columnWidth: CGFloat
@@ -10,21 +10,16 @@ public struct LaunchInfo: Equatable, Sendable {
     public var hotKey: HotKey?
     /// The server the owner set, or nil when there is none yet.
     public var serverOrigin: String?
-    public var avatarDirectory: String
-    public var defaultAvatarDirectory: String
 
     public init(
         characterScale: CharacterScale, columnWidth: CGFloat = OverlaySettings.defaultColumnWidth,
-        conversationWindow: ConversationWindow = .default, hotKey: HotKey? = .default, serverOrigin: String?,
-        avatarDirectory: String, defaultAvatarDirectory: String
+        conversationWindow: ConversationWindow = .default, hotKey: HotKey? = .default, serverOrigin: String?
     ) {
         self.characterScale = characterScale
         self.columnWidth = columnWidth
         self.conversationWindow = conversationWindow
         self.hotKey = hotKey
         self.serverOrigin = serverOrigin
-        self.avatarDirectory = avatarDirectory
-        self.defaultAvatarDirectory = defaultAvatarDirectory
     }
 }
 
@@ -47,7 +42,12 @@ public enum UIEvent: Equatable, Sendable {
     case sessionResumed(hasSession: Bool, deviceId: String?)
     /// The server or the session went missing while connecting.
     case credentialsMissing
-    case avatarLoaded(AvatarArt, description: String)
+    /// The answer to `.loadAvatar`: the copy of the server's avatar kept on this Mac, or nil when there is none.
+    case avatarLoaded(ReceivedAvatar?)
+    /// The answer to `.fetchAvatarListing`: the server's listing, or nil when it could not be had.
+    case avatarListingFetched(origin: String, AvatarListing?)
+    /// The answer to `.receiveAvatar`: the copy that replaced the one before, or nil when the one before is kept.
+    case avatarReceived(ReceivedAvatar?)
     case loginFinished(LoginOutcome)
     case socketOpened
     case socketReceived(Data)
@@ -136,8 +136,6 @@ public enum UIEvent: Equatable, Sendable {
     case settingsCloseRequested
     case serverSubmitted(String)
     case characterScaleChanged(CharacterScale)
-    case avatarDirectorySubmitted(String)
-    case avatarDirectoryResetRequested
     /// The shortcut's button in the settings: the next key pressed there is the new shortcut.
     case hotKeyRecordingRequested
     case hotKeyRecorded(HotKey)

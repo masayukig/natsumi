@@ -4,7 +4,8 @@ import WidgetKit
 
 /// Ways to open the app from the lock screen: a button for its bottom corners
 /// (also Control Center and the Action button) and a face under the clock.
-/// Both only open the app; they show nothing of the conversation.
+/// Both only open the app; they show nothing of the conversation. They cannot read the avatar the app received, so
+/// they do not name her (ADR 0057).
 @main
 struct NatsumiWidgets: WidgetBundle {
     var body: some Widget {
@@ -17,11 +18,11 @@ struct LaunchControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "io.github.yuanying.natsumi.phone.launch-control") {
             ControlWidgetButton(action: OpenNatsumiIntent()) {
-                Label("なつみ", systemImage: "bubble.left.fill")
+                Label("会話", systemImage: "bubble.left.fill")
             }
         }
-        .displayName("なつみを開く")
-        .description("なつみのアプリを開きます。")
+        .displayName("会話を開く")
+        .description("会話のアプリを開きます。")
     }
 }
 
@@ -30,8 +31,8 @@ struct LaunchWidget: Widget {
         StaticConfiguration(kind: "io.github.yuanying.natsumi.phone.launch-widget", provider: LaunchTimeline()) { _ in
             LaunchWidgetView()
         }
-        .configurationDisplayName("なつみ")
-        .description("タップするとなつみのアプリを開きます。")
+        .configurationDisplayName("会話を開く")
+        .description("タップすると会話のアプリを開きます。")
         .supportedFamilies([.accessoryCircular])
     }
 }
@@ -61,6 +62,6 @@ struct LaunchWidgetView: View {
             .scaledToFill()
             .clipShape(Circle())
             .containerBackground(for: .widget) { AccessoryWidgetBackground() }
-            .accessibilityLabel("なつみを開く")
+            .accessibilityLabel("会話を開く")
     }
 }

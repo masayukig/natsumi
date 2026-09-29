@@ -203,6 +203,35 @@ final class FakeServerWalkthroughTests: XCTestCase {
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
     }
 
+    /// Her avatar comes from the server (ADR 0057). An iPhone that has never received it starts on the login screen,
+    /// with no one on it; once logged in to the fake server, her avatar is received and she comes out under the name
+    /// the server gave. Logging out first makes sure the start is the login screen and not a session waiting for her.
+    func testAvatarArrivesAfterLogin() throws {
+        app.launch()
+        logInIfAsked()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 15), "つながらない")
+        app.buttons["設定"].tap()
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+        app.terminate()
+
+        app.launchArguments = ["-NatsumiForgetAvatar"]
+        app.launch()
+        let login = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "GitHub でログイン")).firstMatch
+        XCTAssertTrue(login.waitForExistence(timeout: 5), "ログインの画面から始まらない")
+        XCTAssertFalse(app.otherElements["なつみ"].exists)
+        shoot("v1-no-avatar")
+
+        logInIfAsked()
+        XCTAssertTrue(app.otherElements["なつみ"].waitForExistence(timeout: 15), "アバターを受け取ってキャラが出ない")
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 15), "つながらない")
+        shoot("v2-received")
+
+        app.buttons["設定"].tap()
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+    }
+
     /// The row of the list for a channel.
     private func row(_ channel: String) -> XCUIElement {
         let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", channel)).firstMatch

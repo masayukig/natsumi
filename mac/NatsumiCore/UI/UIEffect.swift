@@ -15,7 +15,7 @@ public enum UIEffect: Equatable, Sendable {
     case clearSession
     case scheduleReconnect(after: TimeInterval)
 
-    // MARK: Storage and login
+    // MARK: Storage, login and the avatar
 
     /// Look for a live session and answer with `.sessionResumed`.
     case resumeSession
@@ -26,10 +26,12 @@ public enum UIEffect: Equatable, Sendable {
     case saveConversationWindow(ConversationWindow)
     /// nil saves that there is no shortcut.
     case saveHotKey(HotKey?)
-    /// nil puts the setting back to the default directory.
-    case saveAvatarDirectory(String?)
-    /// Read the avatar and answer with `.avatarLoaded`.
-    case loadAvatar(directory: String)
+    /// Read the copy of the avatar on this Mac and answer with `.avatarLoaded`.
+    case loadAvatar
+    /// `GET /v1/avatar` of this server, answered with `.avatarListingFetched` (ADR 0057).
+    case fetchAvatarListing(origin: String)
+    /// Fetch every file of the listing, check them, put them in place of the copy and answer with `.avatarReceived`.
+    case receiveAvatar(origin: String, AvatarListing)
 
     // MARK: Panels, keyboard and the app
 

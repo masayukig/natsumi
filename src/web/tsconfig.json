@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "types": []
+  },
+  "include": ["./**/*.ts", "./**/*.tsx", "../shared/**/*.ts"]
+}

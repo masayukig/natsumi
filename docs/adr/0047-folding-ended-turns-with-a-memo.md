@@ -1,7 +1,7 @@
 # 0047. 終わったターンを畳んで一行メモを残し、read で読んだものは残す
 
 - Date: 2026-09-26
-- Status: Accepted（`turn_stats` にターンと session のファイルを対応付ける列（位置だけで、本文は持たない）と、夜の振り返りの行を [ADR 0049](0049-a-read-only-dashboard-in-the-browser.md) で追加）
+- Status: Accepted（`turn_stats` にターンと session のファイルを対応付ける列（位置だけで、本文は持たない）と、夜の振り返りの行を [ADR 0049](0049-a-read-only-dashboard-in-the-browser.md) で追加、畳み込みを WebSocket の `settings.set`・`settings.reset` からも切り替えられることを [ADR 0058](0058-settings-and-chat-in-the-browser.md) で追加）
 
 ## Context
 

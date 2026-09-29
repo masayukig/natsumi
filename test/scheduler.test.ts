@@ -558,3 +558,42 @@ test('the sources are looked at on every tick, at night and in the middle of a t
   scheduler.tick();
   assert.equal(looks, 2);
 });
+
+test('the awake hours and the ping interval are read on every tick, so a change made while running is in force from the next (ADR 0058)', () => {
+  const loop = new FakeLoop();
+  let pinged = 0;
+  loop.ping = () => { pinged += 1; return true; };
+  const clock = { now: tokyo('2026-09-18 07:30') };
+  let hours = AWAKE;
+  let interval: number | false = 60;
+  const scheduler = new Scheduler({ loop, now: () => clock.now, timeZone: TZ, awakeHours: () => hours, pingIntervalMinutes: () => interval,
+    expressionResetMinutes: 3, nightlyRotationAt: false });
+  loop.lastActivityAt = tokyo('2026-09-18 06:00');
+  assert.equal(scheduler.tick(), undefined, 'before 08:00 she is asleep');
+  hours = { start: '07:00', end: '23:00' };
+  assert.equal(scheduler.tick(), 'ping', 'up from 07:00 now');
+  interval = false;
+  loop.lastActivityAt = tokyo('2026-09-18 06:00');
+  assert.equal(scheduler.tick(), undefined, 'no pings now');
+  interval = 120;
+  clock.now = tokyo('2026-09-18 07:59');
+  assert.equal(scheduler.tick(), undefined, 'not two hours quiet yet');
+  clock.now = tokyo('2026-09-18 08:00');
+  assert.equal(scheduler.tick(), 'ping');
+  assert.equal(pinged, 2);
+});
+
+test('a booking reads the awake hours in force when it is made (ADR 0058)', async () => {
+  const f = await setup('2026-09-17 21:00');
+  try {
+    let hours = AWAKE;
+    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, limits: LIMITS, awakeHours: () => hours });
+    assert.match(checks.schedule('一件目', { at: '23:30' }).text, /08:00 以降/);
+    hours = { start: '09:00', end: '23:45' };
+    const inside = checks.schedule('二件目', { at: '23:30' });
+    assert.doesNotMatch(inside.text, /以降/);
+    assert.match(checks.schedule('三件目', { at: '23:50' }).text, /09:00 以降/);
+    f.at('2026-09-17 23:31');
+    assert.deepEqual(checks.due().map(check => check.reason).sort(), ['一件目', '二件目'], 'what is due is the same whatever the hours');
+  } finally { await f.cleanup(); }
+});

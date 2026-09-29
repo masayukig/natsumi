@@ -112,7 +112,7 @@ public struct AvatarManifest: Equatable, Sendable {
     }
 
     /// A relative path that stays inside the avatar's directory.
-    private static func isInside(_ path: String) -> Bool {
+    static func isInside(_ path: String) -> Bool {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         return !path.isEmpty && !path.hasPrefix("/") && !parts.contains { $0.isEmpty || $0 == "." || $0 == ".." }
     }
@@ -199,7 +199,7 @@ public struct AvatarAsset: Equatable, @unchecked Sendable {
 /// What the character window draws.
 public enum AvatarArt: Equatable, Sendable {
     case sprite(AvatarAsset)
-    /// No avatar could be loaded; a symbol stands in for each expression.
+    /// There is no avatar yet; a symbol stands in for each expression.
     case placeholder
 }
 
@@ -224,14 +224,6 @@ public enum AvatarLoader {
             }
         }
         return AvatarAsset(manifest: manifest, directory: directory, sheet: sheet, icons: icons)
-    }
-
-    /// The first candidate directory that loads, or the placeholder.
-    public static func resolve(candidates: [URL]) -> AvatarArt {
-        for directory in candidates {
-            if let asset = try? load(directory: directory) { return .sprite(asset) }
-        }
-        return .placeholder
     }
 }
 

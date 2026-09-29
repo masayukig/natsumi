@@ -14,8 +14,7 @@ struct UIMediatorTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, serverOrigin: server,
-            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+            characterScale: .default, serverOrigin: server)))
         _ = mediator.handle(.sessionResumed(hasSession: hasSession, deviceId: nil))
         return mediator
     }
@@ -574,24 +573,12 @@ struct UIMediatorTests {
         let window = ConversationWindow(
             origin: CGPoint(x: 30, y: 40), width: 400, foldedHeight: 150, unfoldedHeight: 600, showsHistory: true)
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, columnWidth: 360, conversationWindow: window, serverOrigin: nil,
-            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+            characterScale: .default, columnWidth: 360, conversationWindow: window, serverOrigin: nil)))
         #expect(props(mediator).balloon == nil)
         #expect(mediator.state.columnWidth == 360)
         #expect(mediator.handle(.characterClicked) == [.focusInput])
         #expect(props(mediator).conversation?.frame == CGRect(x: 30, y: 40, width: 400, height: 600))
         #expect(props(mediator).conversation?.history != nil)
-    }
-
-    @Test("アバターは読み込みを指示し、結果を受け取って描く")
-    func avatar() {
-        var mediator = launched()
-        let effects = mediator.handle(.avatarDirectorySubmitted("/tmp/another"))
-        #expect(effects == [.saveAvatarDirectory("/tmp/another"), .loadAvatar(directory: "/tmp/another")])
-        _ = mediator.handle(.avatarLoaded(.placeholder, description: "架空の説明"))
-        #expect(props(mediator).settings.avatarDescription == "架空の説明")
-        #expect(mediator.handle(.avatarDirectoryResetRequested)
-            == [.saveAvatarDirectory(nil), .loadAvatar(directory: "/tmp/avatar")])
     }
 
     // MARK: - Connection
@@ -665,14 +652,13 @@ struct UIMediatorTests {
     func registersTheShortcutAtLaunch() {
         var mediator = UIMediator()
         let effects = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, serverOrigin: nil, avatarDirectory: "/a", defaultAvatarDirectory: "/a")))
+            characterScale: .default, serverOrigin: nil)))
         #expect(effects.contains(.registerHotKey(.default)))
         #expect(props(mediator).settings.hotKey == "⌃⌥N")
 
         var none = UIMediator()
         let quiet = none.handle(.launched(LaunchInfo(
-            characterScale: .default, hotKey: nil, serverOrigin: nil, avatarDirectory: "/a",
-            defaultAvatarDirectory: "/a")))
+            characterScale: .default, hotKey: nil, serverOrigin: nil)))
         #expect(!quiet.contains { if case .registerHotKey = $0 { true } else { false } })
         #expect(props(none).settings.hotKey == "なし")
     }

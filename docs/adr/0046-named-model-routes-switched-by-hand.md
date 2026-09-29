@@ -1,7 +1,7 @@
 # 0046. モデルの経路に名前を付けて並べ、本人が手で切り替える
 
 - Date: 2026-09-26
-- Status: Accepted
+- Status: Accepted（経路を WebSocket の `settings.set`・`settings.reset` からも選べることと、「config に戻す」で選んだ記録を消すことを [ADR 0058](0058-settings-and-chat-in-the-browser.md) で追加）
 
 ## Context
 

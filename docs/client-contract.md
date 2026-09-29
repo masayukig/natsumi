@@ -1,4 +1,4 @@
-# サーバーと Mac の契約 v1
+# サーバーとクライアント（Mac・iPhone・ブラウザ）の契約 v1
 
 これは後続実装の契約であり、このリポジトリの検証ハーネスが公開 API を提供するわけではない。
 日時は UTC の RFC 3339、ID は内容を含まない opaque string とする。
@@ -11,6 +11,7 @@ HTTPS の GitHub OAuth callback 後、セッションで WSS に接続する。
 セッション失効・本人以外のアカウントは接続と全コマンドを拒否する。
 Mac の `deviceId` はサーバー登録の ID であり、認証を代替しない。
 方式の理由は [ADR 0006](adr/0006-github-login-and-transport.md) にある。
+ブラウザも同じ約束事を話すもう 1 台の端末で、ログインと接続だけが違う（下記「ブラウザ」、[ADR 0058](adr/0058-settings-and-chat-in-the-browser.md)）。
 
 ### ログインとセッション
 
@@ -56,11 +57,12 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 `wss://<publicOrigin のホスト>/v1/ws` に Bearer 付きで upgrade する。
 セッションがない・失効・期限切れ・本人以外なら 401、Origin ヘッダーが `publicOrigin` と一致しなければ 403 を返し、接続を確立しない。
 ネイティブクライアントは Origin を省略してよい。
+Bearer が無いときだけ、ブラウザのログインの cookie を見る。cookie は Origin が `publicOrigin` のときだけ受け付け、Origin が無い・違えば 403（`origin-not-allowed`）を返す（下記「ブラウザ」）。
 
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
 未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびと、定期的に期限を確かめる）。
-下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use` は実装済みで、それ以外の command は
+下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`・`settings.list`・`settings.set`・`settings.reset` は実装済みで、それ以外の command は
 `command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
 会話の扱いの理由は [ADR 0008](adr/0008-single-thinking-loop-and-mac-conversation.md)、
 既読と知らせの確認の理由は [ADR 0013](adr/0013-read-state-on-the-server.md) にある。
@@ -99,10 +101,13 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
 | `model.list` | — | `command.accepted`（`modelRoutes` と同じ形: defaultRoute、current、chosen、routes）、または `service.unavailable`。下記「モデルの経路」 |
 | `model.use` | route（経路の名前） | `command.accepted`（chosen、current）、または unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「モデルの経路」 |
+| `settings.list` | — | `command.accepted`（settings: 設定の一覧）、または `service.unavailable`。下記「実行中の設定」 |
+| `settings.set` | key（設定の名前）、value（値） | `command.accepted`（settings: 変えた後の一覧）、または unknown-setting / invalid-value / unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「実行中の設定」 |
+| `settings.reset` | key（設定の名前） | `command.accepted`（settings: 戻した後の一覧）、または unknown-setting / invalid-request / `service.unavailable`。下記「実行中の設定」 |
 
 | サーバー event | 内容 |
 | --- | --- |
-| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`modelRoutes`（モデルの経路。下記「モデルの経路」）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）、`avatarVersion`（アバターの版。下記「アバター」）。envelope の seq が snapshot の sequence |
+| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`modelRoutes`（モデルの経路。下記「モデルの経路」）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）、`avatarVersion`（アバターの版。下記「アバター」）、`settings`（実行中の設定の一覧。下記「実行中の設定」）。envelope の seq が snapshot の sequence |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026）。reply は、natsumi が画像を添えたときだけ images（画像の一覧。下記「会話の画像」）を持つ。画像の無い行には欄が無い（空の配列も送らない） |
@@ -113,6 +118,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `approval.resolved` | approvalId、revision、state（approved / edited / rejected / expired）、resolvedAt。送ったときは delivery（sent / failed）、sent なら sentText、failed なら reason（mechanical-check / slack-error / target-gone）。全端末に届く |
 | `notification.batch` | 未実装で、送られない。知らせは `conversation.message`（kind: notice）で届く。下記「通知と定期処理」 |
 | `model.routes` | `modelRoutes` と同じ形。使っている経路・選ばれた経路・経路の一覧・使える状態かのどれかが変わったときに全端末に届く。下記「モデルの経路」 |
+| `settings.changed` | settings（実行中の設定の一覧の全体）。一覧のどれかが変わったときに全端末に届く。下記「実行中の設定」 |
 | `session.renewed` | expiresAt（延びたセッションの期限）。接続中に期限が動いたときだけ、その接続に届く。その場限りで、採番せず、再送もしない。上記「セッションの延長」 |
 | `command.accepted` | command ごとの結果（`conversation.send` は messageId・eventId・state、`session.sync` の再送は deviceId・mode: resume・sessionExpiresAt） |
 | `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping。`session.sync` への答えのときは deviceId・sessionExpiresAt・avatarVersion も付く |
@@ -126,7 +132,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
    サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
 3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
 4. 会話が使えない場合は `service.unavailable` が届く（deviceId と sessionExpiresAt も付く）。
-5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`）は `sync-required`、
+5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`・`settings.list`・`settings.set`・`settings.reset`）は `sync-required`、
    接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
 6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
 
@@ -198,6 +204,50 @@ natsumi の思考のモデルは、サーバーの設定に名前付きで並べ
 - 切り替えても会話の履歴（snapshot の messages）は変わらない。思考の記録も同じ session のまま続く。
 - 画面は、`current` を今の経路として示し、`chosen` が違うあいだは「次のターンから」と示すとよい。`ready` が false の経路は選べないように見せる。
 
+## 実行中の設定
+
+natsumi が動いている最中に変えられる設定を、端末から読み書きする（[ADR 0058](adr/0058-settings-and-chat-in-the-browser.md)）。
+サーバーの設定ファイル（config）の値が既定で、端末から変えた値はその上書きとしてサーバーに残る。再起動やリリースでは戻らない。
+上書きを消す（`settings.reset`）と config の値に戻る。サーバーのコマンド（`natsumi model use`・`natsumi fold on|off`）も同じ上書きを書く。
+
+| key | 値 | 効く時 |
+| --- | --- | --- |
+| `modelRoute` | 経路の名前（文字列）。config にあり、使える状態のもの | 次のターンの前に移る（上記「モデルの経路」） |
+| `turnFold` | `"on"` / `"off"` | 次のターンから |
+| `eventModelCalls` | 出来事ごとのターンのモデルの呼び出しの上限。1 以上の整数 | 次のターンから |
+| `eventTimeoutMinutes` | 出来事ごとのターンの時間の上限（分）。1 以上の整数 | 次のターンから |
+| `reviewModelCalls` | 夜の振り返りのターンの呼び出しの上限。1 以上の整数 | 次の振り返りから |
+| `reviewTimeoutMinutes` | 夜の振り返りのターンの時間の上限（分）。1 以上の整数 | 次の振り返りから |
+| `awakeHours` | `{"start":"HH:MM","end":"HH:MM"}`（24 時間制、同じ時刻は不可。日をまたいでよい）。時間帯は `timeZone` | 次の見回りから（10 秒ごと） |
+| `pingIntervalMinutes` | 静かな時間が続いたときの合図の間隔（分）。5 以上の整数、または `false`（合図しない） | 次の見回りから |
+
+一覧（`settings`: `session.snapshot` の欄、`settings.list`・`settings.set`・`settings.reset` の答え、`settings.changed` の payload）は、key ごとに次の欄を持つオブジェクトである。
+
+| 欄 | 内容 |
+| --- | --- |
+| `value` | 今の値（上書きがあればそれ、無ければ config の値） |
+| `config` | config の値 |
+| `overridden` | 上書きがあるか。config と同じ値で上書きしていても true |
+| `inUse` | `modelRoute` と `turnFold` だけ。いま実際に使っているもの。`value` と違えば、次のターンの前にそちらへ移る。`modelRoute` は natsumi が話せない間 null |
+| `routes` | `modelRoute` だけ。経路の一覧（上記「モデルの経路」の `routes` と同じ形） |
+| `timeZone` | `awakeHours` だけ。時間帯の IANA タイムゾーン（config の値。端末からは変えない） |
+
+```json
+{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true}}
+```
+
+- `settings.set`（payload `{"key":"eventModelCalls","value":12}`）は、値を config と同じ規則で確かめてから上書きを書き、変えた後の一覧を `command.accepted` で返す。
+  一覧が変われば、全端末（変えた端末も）に `settings.changed` が届く。
+  - 知らない key は `unknown-setting`、規則に合わない値は `invalid-value`、key が文字列でない・空・64 文字を超える、または value が無いと `invalid-request`。
+  - `modelRoute` は `model.use` と同じ処理を通る。config に無い経路は `unknown-route`、使える状態にない経路は `route-unavailable`。
+- `settings.reset`（payload `{"key":"eventModelCalls"}`）は上書きを消し、戻した後の一覧を返す。上書きが無くても受け付ける（何も変わらなければ `settings.changed` は届かない）。
+  `modelRoute` を戻すと、既定の経路へ次のターンの前に移る。
+- 2 つの端末から同時に変えても、1 つずつ順に書かれ、どちらも失われない。
+- `settings.changed` は、端末から変えたときのほか、経路が実際に移ったとき、サーバーのコマンドが経路や畳み込みを書き換えたとき（15 秒ごとに見る）にも届く。
+- natsumi が話せない間は、3 つとも `service.unavailable` を返す。
+- `model.list`・`model.use`・`model.routes` はそのまま残る。経路だけを扱う画面はそちらを使ってよい。
+- 画面は、`value` と `config` を並べ、`overridden` のときに「config に戻す」（`settings.reset`）を出すとよい。`inUse` が `value` と違う間は「次のターンから」と示す。
+
 ## 会話の画像
 
 natsumi は返事（kind: reply）に画像を添えることがある（[ADR 0045](adr/0045-showing-the-owner-images-with-a-reply.md)）。
@@ -221,6 +271,7 @@ natsumi は返事（kind: reply）に画像を添えることがある（[ADR 00
 - 画像そのものは、承認の画像と同じ `GET /v1/images/<imageId>` で取る（下記「承認と外部実行」の「画像」）。ログインが要る。
 - 縮小した画像を返す道は無い。取るのは元の画像である。吹き出しや履歴に並べるときは、アプリが表示の大きさに縮める。
   同じ ID の画像は変わらないので、アプリは取った画像（または縮めた画像）を手元に持って使い回してよい。ログアウトしたら捨てる。
+  HTTP のキャッシュに残る分は、これとは別である（下記「承認と外部実行」の「画像」）。
 - `images` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
 - 画像が取れないとき（404、つながらない）は、画像の場所に取れなかったことを示し、本文はそのまま出す。
 - iPhone の通知には画像は載らない。本文の末尾に画像の枚数の印が付く（下記「iPhone への通知」の「e の暗号」）。
@@ -271,7 +322,7 @@ natsumi は返事（kind: reply）に画像を添えることがある（[ADR 00
 
 ### Slack のアイコン
 
-`GET /avatar/<表情>.png`（ログイン不要）は Slack がアイコンとして取るもので、アプリは使わない（ADR 0040）。
+`GET /avatar/<表情>.png`（ログイン不要）は Slack がアイコンとして取るもの（ADR 0040）。アプリの本体は使わないが、iPhone の通知の拡張が通知に添える顔として取る（下記「iPhone への通知」の「e の暗号」）。
 
 ## 考えている 1 行
 
@@ -391,7 +442,12 @@ iPhone は接続のたびに、`session.sync` の後で `push.register` を送�
 
 ### e の暗号
 
-平文は UTF-8 の JSON `{"text": "…", "expression": "…"}` である。`expression` はセリフの気持ちで、記録の無い古いセリフでは欄が無い。
+平文は UTF-8 の JSON `{"text": "…", "expression": "…", "icon": "…"}` である。`expression` はセリフの気持ちで、記録の無い古いセリフでは欄が無い。
+`icon` はその気持ちの顔の URL で、Slack のアイコンと同じ認証なしの `<publicOrigin>/avatar/<表情>.png`（上記「アバター」の「Slack のアイコン」）である。
+気持ちの記録が無いセリフは `neutral` の顔を指す。アプリは `https` の URL だけを受け、Notification Service Extension が取って通知に添える。
+取れない・時間内に取れないときは顔なしで出す（通知そのものは出す）。表情は気持ちなので、URL も暗号の中に入れ、平文の欄には置かない。
+ADR 0029 の「顔はアプリに同梱のアイコンから付ける」は、アバターをサーバーから受け取るようになった（ADR 0057）ため、この URL から取る形に置き換わる。
+`icon` は切らない。4096 バイトに収めるために切るのは `text` である。承認待ちの平文には `icon` は無い。
 `text` は 1000 文字（Unicode のコードポイント）までに切り、切ったときは最後の 1 文字を `…` にする。
 全角の文字が多く payload が 4096 バイトを超えるときは、収まるまでさらに短く切る（そのときも末尾は `…`）。
 
@@ -480,11 +536,16 @@ natsumi が Slack に出したい投稿のうち、ポッポさんの判定で�
 - 画像は、natsumi が依頼した時点でサーバーが写し取ったものである。承認に見せる画像と、送る画像は同じで、後から変わらない。
 - 本文の無い、画像だけの投稿は、承認を通らずに送られる。承認に画像が付くのは、本文があって本人に回されたときだけである。
 - 画像そのものは `GET /v1/images/<imageId>` で取る。`Authorization: Bearer <token>`（WSS と同じセッション）が要る。
+  ブラウザは Bearer の代わりにログインの cookie で取れる（下記「ブラウザ」）。
   - 成功すると 200 で、本文は画像のバイト列、`Content-Type` は一覧の `mimeType`、`Content-Length` は `bytes` と同じ。
   - セッションが無い・失効・期限切れ・本人以外なら 401（`{"error": "unauthorized"}`）。画像があるかどうかは、セッションを確かめてから答える。
   - 知らない imageId、承認にも会話の返事にも載っていない画像（承認を通らずに Slack に送った画像など）、写しが無くなった画像は 404（`{"error": "not-found"}`）。
-  - `Cache-Control: no-store` が付く。承認の画像は、アプリは表示のために手元に持ってよいが、承認が閉じたら捨てる。
-    会話の画像は、ログアウトするまで手元に持ってよい（上記「会話の画像」）。同じ画像が承認と会話の両方に載ることは無い。
+  - 200 には `Cache-Control: private, max-age=31536000, immutable` が付く。同じ imageId の画像は変わらないので、一度取れば取り直さなくてよい。
+    ログインが要る画像なので `private` であり、途中の proxy や CDN には置かせない。401 と 404 には `Cache-Control: no-store` が付く。
+  - アプリが自分で持つ画像は、承認の画像なら承認が閉じたら、会話の画像ならログアウトしたら捨てる（上記「会話の画像」）。
+    同じ画像が承認と会話の両方に載ることは無い。
+  - これとは別に、ブラウザや OS の HTTP のキャッシュ（アプリの URLCache を含む）には、`private` のキャッシュとして
+    その端末に残りうる。承認が閉じてもログアウトしても消さない（`Clear-Site-Data` も付けない）。途中の proxy や CDN には残らない。
   - 取るのはセッションの使用であり、WSS の接続と同じくセッションを延ばす（上記「セッションの延長」）。
 - 画像の ID は承認に限らない。会話の返事の画像も、同じ形の ID で同じ道から取る。
 
@@ -507,6 +568,52 @@ Google API の制約は adapter 実装時に検証する。
 外部実行成功後・ローカル保存前の停止は `unknown` として外部の結果を照合する。
 実行要求を無条件で再送して二重作成しない。
 Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求にすぎず、承認や実行の許可として扱わない。
+
+## ブラウザ
+
+ブラウザは、`/` でなつみと話し、`/settings` で実行中の設定を変える、もう 1 台の端末である（[ADR 0058](adr/0058-settings-and-chat-in-the-browser.md)）。
+開いている間だけの端末で、通知は受けない。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
+
+### ログインと cookie
+
+- ログインは、アプリと同じ GitHub OAuth である。`/`・`/settings`・`/dashboard` を cookie 無しで開くと GitHub のログインへ回され、済むと開こうとしたページに戻る。
+  戻り先はこの 3 つだけで、サーバーのコードに固定されている。
+  GitHub から戻ったときは redirect ではなく同じオリジンのページが返り、そこから `<meta http-equiv="refresh">` で戻り先へ移る（`SameSite=Strict` の cookie は GitHub から戻る redirect では送られないため）。
+- ログインの状態は cookie `natsumi_session` に載る。属性は `Path=/`・`HttpOnly`・`SameSite=Strict`、`publicOrigin` が https なら `Secure`。JS からは読めない。
+  寿命はアプリのセッションと同じで、最後に使ってから 30 日で切れ、使うたびに延びる（ページを開く、WSS をつなぐ、画像を取る）。
+- 以前のダッシュボードの cookie（`natsumi_dashboard`、`Path=/dashboard`）は、`/dashboard` を開いたときに 1 度だけ受け付けられ、`natsumi_session` に移し替えられる。
+- ログアウトは、`/dashboard/logout` に同じオリジンのフォームで POST する（Origin が `publicOrigin` でなければ断る）。303 で `/dashboard/signed-out` に移り、cookie は消える。
+
+### ページと JS の束
+
+- `GET /` と `GET /settings` は同じ HTML を返す。HTML は `<div id="app"></div>` と、JS の束 `/app/app.js`（`<script type="module">`）、あれば `/app/app.css` を読み込むだけである。どちらの画面を出すかは、束が `location.pathname` で決める。
+- 束が無いサーバーでは、HTML は束が無い旨の文だけを出し、script を読み込まない。
+- 束のファイルは `GET /app/<ファイル名>` で配る。名前は英数字で始まり、英数字と `.`・`_`・`-` だけのもの、拡張子は `.js`・`.css`・`.map` だけで、ディレクトリは持てない。ログインは要らない。
+  サーバーは束を checkout の `dist/web/`（image では `/app/dist/web/`）から読む。
+- CSP は `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://<publicOrigin のホスト>; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` である。
+  inline の script と style、`eval`、ほかのオリジンからの読み込みはできない。
+
+### WSS への接続
+
+- `new WebSocket("wss://<publicOrigin のホスト>/v1/ws")` でつなぐ。ブラウザが cookie と Origin を付ける。Authorization は付けない（付けると Bearer だけで判断され、cookie は見られない）。
+- cookie は Origin が `publicOrigin` のときだけ受け付ける。無い・違うと 403、cookie のセッションが無い・切れていれば 401。
+- つないだ後は、上記「端末の登録と stream」と同じである。最初の `session.sync` で deviceId を受け取り、手元（localStorage など）に控えて、次の接続の envelope に付ける。
+- 話す（`conversation.send`）、既読（`conversation.read`）、知らせの確認（`notification.ack`）、承認（`approval.decide`）、経路（`model.*`）、設定（`settings.*`）は、Mac・iPhone と同じに使える。
+  承認は外に作用するので、押し間違いの確認は画面の側で行う。
+- `push.register` は `command.rejected`（`invalid-request`）で断られる。ブラウザがつながっていても、iPhone への通知は止まらない（通知の判定は端末ごとで、ブラウザは登録を持たない）。
+- 返事の画像（`images`）は `GET /v1/images/<imageId>` を cookie 付きで取る（`<img src>` でよい。同じオリジンなので cookie が付く）。
+  URL は imageId だけで決め、クエリを足さない。同じ URL なら、ブラウザは一度取った画像を HTTP のキャッシュから出す（上記「承認と外部実行」の「画像」）。
+  このキャッシュはログアウトしても端末に残る。
+- セリフの横の顔と見出しの名前は、ログイン無しで取れる `/v1/avatar`（上記「アバター」）から使う。
+
+### 偽のサーバー
+
+`npm run fake-server -- [--bundle <dir>]` は、GitHub もモデルも使わずにブラウザの画面を試すための偽のサーバーである（`http://localhost:8787`）。
+
+- `/`・`/settings` を cookie 無しで開くと `/fake-login?to=<戻り先>` に回され、そこで cookie `natsumi_session=fake-session` が付いて戻る。テストはこの cookie を自分で付けてもよい。
+- `/v1/ws` は、cookie があって Origin が `http://localhost:<port>` でなければ 403 を返す。cookie でつないだ接続の `push.register` は断る。
+- `settings.*` は本物と同じ規則で答え、ログアウト（`POST /auth/logout`、または同じオリジンからの `POST /dashboard/logout`）で config の値に戻る。
+- 束は `--bundle` のディレクトリ（省略すると本物と同じ場所）から配る。
 
 ## 通知と定期処理
 

@@ -1,7 +1,7 @@
 /**
  * A stand-in for the natsumi server, for looking at a client without GitHub, a model or real memory.
  *
- *   npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2]
+ *   npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2] [--bundle <dir>]
  *
  * It listens on http://localhost only (clients allow plain http for loopback), skips GitHub by redirecting
  * `/auth/github/start` straight to `natsumi://oauth/callback`, hands out a session to anyone, and speaks enough of
@@ -15,6 +15,14 @@
  * `--switch-delay` seconds after accepting it, the way the server moves between turns. natsumi's avatar is handed out
  * at `/v1/avatar` without a login, with its version in the snapshot (ADR 0057). Logging out puts the
  * approvals and the routes back as they were at the start. Everything it says is fictional and kept in memory only.
+ *
+ * For the browser's app (ADR 0058) it also keeps the runtime settings (`settings.list`, `settings.set`, `settings.reset`
+ * and `settings.changed`, checked by the server's own rules, and put back at a logout), and plays the browser's login:
+ * `/` and `/settings` without the cookie go to `/fake-login`, which sets `natsumi_session=fake-session` (FAKE_SESSION_COOKIE,
+ * which a test may also set itself) and goes back. With it they serve the server's own page, which loads the bundle
+ * (`--bundle <dir>`, by default where the build puts it) from `/app/`. `/v1/ws` refuses the cookie from an Origin other
+ * than its own, and such a connection may not register for pushes; the images take the cookie too. A POST to
+ * `/dashboard/logout` from its own origin clears the cookie.
  */
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -22,6 +30,12 @@ import type { AddressInfo } from 'node:net';
 import { parseArgs } from 'node:util';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { avatarManifest, loadAvatar } from '../server/avatar.ts';
+import { SESSION_COOKIE } from '../server/browser/session-cookie.ts';
+import { readBundleFile, webAppCsp, webAppPage } from '../server/browser/web-app.ts';
+import { checkSetting, isSettingKey, type SettingKey, type SettingValues } from '../shared/protocol/settings.ts';
+
+/** The cookie the fake login sets, as a `Cookie` header's value; a browser test may set it itself. */
+export const FAKE_SESSION_COOKIE = `${SESSION_COOKIE}=fake-session`;
 
 export interface FakeServerOptions {
   /** 0 picks a free port. */
@@ -38,6 +52,8 @@ export interface FakeServerOptions {
   switchDelayMs: number;
   /** Whether to print the requests and commands it receives. */
   log: boolean;
+  /** Where the browser's bundle is read from; by default where the build puts it (ADR 0058). */
+  bundleDirectory?: string;
 }
 
 export interface FakeServer {
@@ -97,6 +113,12 @@ const ROUTES: RouteView[] = [
   { name: 'plus', provider: 'openai-codex', model: 'example-plus-model', ready: true },
   { name: 'spare', provider: 'natsumi-spare', model: 'example-spare-model', ready: false },
 ];
+
+/** The config's values of the runtime settings, made up; the route's is `local`. */
+const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
+  turnFold: 'off', eventModelCalls: 8, eventTimeoutMinutes: 10, reviewModelCalls: 40, reviewTimeoutMinutes: 30,
+  awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
+};
 
 interface ClientEnvelope {
   requestId: string;
@@ -198,6 +220,9 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
   let laterScheduled = false;
   let currentRoute = 'local';
   let chosenRoute = 'local';
+  /** The overrides of the settings other than the route, which is `chosenRoute` (ADR 0058). */
+  let overrides: Partial<SettingValues> = {};
+  let routeChosen = false;
   const timers = new Set<NodeJS.Timeout>();
   const sockets = new Set<WebSocket>();
   const log = (...args: unknown[]) => { if (options.log) console.log(...args); };
@@ -224,12 +249,25 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     return { defaultRoute: 'local', current: currentRoute, chosen: chosenRoute, routes: ROUTES };
   }
 
+  /** The settings as the server lists them: the value in force, the config's, and whether it is overridden. */
+  function settingsView() {
+    const item = <K extends keyof typeof SETTING_DEFAULTS>(key: K) =>
+      ({ value: overrides[key] ?? SETTING_DEFAULTS[key], config: SETTING_DEFAULTS[key], overridden: overrides[key] !== undefined });
+    return {
+      modelRoute: { value: chosenRoute, config: 'local', overridden: routeChosen, inUse: currentRoute, routes: ROUTES },
+      turnFold: { ...item('turnFold'), inUse: overrides.turnFold ?? SETTING_DEFAULTS.turnFold },
+      eventModelCalls: item('eventModelCalls'), eventTimeoutMinutes: item('eventTimeoutMinutes'),
+      reviewModelCalls: item('reviewModelCalls'), reviewTimeoutMinutes: item('reviewTimeoutMinutes'),
+      awakeHours: { ...item('awakeHours'), timeZone: 'Asia/Tokyo' }, pingIntervalMinutes: item('pingIntervalMinutes'),
+    };
+  }
+
   function unreadReplies(): number {
     const read = readThrough === null ? -1 : messages.findIndex((m) => m.messageId === readThrough);
     return messages.slice(read + 1).filter((m) => m.kind === 'reply').length;
   }
 
-  function answer(envelope: ClientEnvelope): void {
+  function answer(envelope: ClientEnvelope, browser: boolean): void {
     const { requestId, payload } = envelope;
     switch (envelope.type) {
       case 'session.sync':
@@ -237,6 +275,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
           deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
           readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
           pendingApprovals: approvals, modelRoutes: routeStatus(), sessionExpiresAt: sessionEnd(), avatarVersion: AVATAR.version,
+          settings: settingsView(),
         }, requestId);
         if (!laterScheduled && options.approvalDelayMs > 0) {
           laterScheduled = true;
@@ -259,6 +298,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         converse(String(payload.text), requestId);
         return;
       case 'push.register':
+        // A browser is never pushed to, so it has nothing to register (ADR 0058).
+        if (browser) { broadcast('command.rejected', { code: 'invalid-request' }, requestId); return; }
         // Nothing is sent from here: the simulator's pushes are not the server's to make.
         broadcast('command.accepted', { environment: payload.environment }, requestId);
         return;
@@ -270,6 +311,13 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         return;
       case 'model.use':
         useRoute(payload.route, requestId);
+        return;
+      case 'settings.list':
+        broadcast('command.accepted', { settings: settingsView() }, requestId);
+        return;
+      case 'settings.set':
+      case 'settings.reset':
+        changeSetting(envelope.type, payload, requestId);
         return;
       default:
         broadcast('command.rejected', { code: 'unsupported' }, requestId);
@@ -310,20 +358,49 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     }));
   }
 
+  /** `settings.set` and `settings.reset` as the contract has them, with the server's own rules for the values. */
+  function changeSetting(type: string, payload: Record<string, unknown>, requestId: string): void {
+    const reject = (code: string) => broadcast('command.rejected', { code }, requestId);
+    const { key, value } = payload;
+    if (typeof key !== 'string' || key === '' || (type === 'settings.set' && value === undefined)) return reject('invalid-request');
+    if (type === 'settings.reset') {
+      if (!isSettingKey(key)) return reject('unknown-setting');
+      if (key === 'modelRoute') { routeChosen = false; useRoute('local', undefined); } else delete overrides[key as Exclude<SettingKey, 'modelRoute'>];
+    } else {
+      const checked = checkSetting(key, value);
+      if (!checked.ok) return reject(checked.code);
+      if (checked.key === 'modelRoute') {
+        const route = ROUTES.find((r) => r.name === checked.value);
+        if (!route) return reject('unknown-route');
+        if (!route.ready) return reject('route-unavailable');
+        routeChosen = true;
+        useRoute(checked.value, undefined);
+      } else {
+        overrides = { ...overrides, [checked.key]: checked.value };
+      }
+    }
+    broadcast('command.accepted', { settings: settingsView() }, requestId);
+    broadcast('settings.changed', { settings: settingsView() });
+  }
+
   /** `model.use` as the contract has it: the choice is taken at once, and the move follows between turns. */
-  function useRoute(name: unknown, requestId: string): void {
+  function useRoute(name: unknown, requestId: string | undefined): void {
     const reject = (code: string) => broadcast('command.rejected', { code }, requestId);
     if (typeof name !== 'string' || name === '') return reject('invalid-request');
     const route = ROUTES.find((r) => r.name === name);
     if (!route) return reject('unknown-route');
     if (!route.ready) return reject('route-unavailable');
     chosenRoute = name;
-    broadcast('command.accepted', { chosen: chosenRoute, current: currentRoute }, requestId);
+    if (requestId !== undefined) {
+      routeChosen = true;
+      broadcast('command.accepted', { chosen: chosenRoute, current: currentRoute }, requestId);
+    }
     if (currentRoute === chosenRoute) return;
     later(options.switchDelayMs, () => {
       if (currentRoute === chosenRoute) return;
       currentRoute = chosenRoute;
       broadcast('model.routes', routeStatus());
+      broadcast('settings.changed', { settings: settingsView() });
     });
   }
 
@@ -352,22 +429,60 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     });
   }
 
+  const origin = () => `http://localhost:${(server.address() as AddressInfo).port}`;
+  const hasCookie = (request: http.IncomingMessage) =>
+    (request.headers.cookie ?? '').split(';').some((part) => part.trim() === FAKE_SESSION_COOKIE);
+  const startOver = () => {
+    approvals = startingApprovals();
+    closed = new Map();
+    laterScheduled = false;
+    currentRoute = 'local';
+    chosenRoute = 'local';
+    routeChosen = false;
+    overrides = {};
+  };
+
   const server = http.createServer((request, response) => {
+    void serve(request, response).catch(() => { if (!response.headersSent) response.writeHead(500).end(); });
+  });
+
+  async function serve(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://localhost');
     log(request.method, url.pathname);
-    if (url.pathname === '/auth/github/start') {
+    if ((url.pathname === '/' || url.pathname === '/settings') && request.method === 'GET') {
+      if (!hasCookie(request)) {
+        response.writeHead(302, { Location: `/fake-login?to=${encodeURIComponent(url.pathname)}` }).end();
+        return;
+      }
+      const page = Buffer.from((await webAppPage('なつみ', options.bundleDirectory)).text);
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': page.length,
+        'Content-Security-Policy': webAppCsp(origin()), 'Cache-Control': 'no-store' }).end(page);
+    } else if (url.pathname === '/fake-login' && request.method === 'GET') {
+      // In place of GitHub: the cookie at once, and back to the page, which is one of the two and nothing else.
+      const to = url.searchParams.get('to') === '/settings' ? '/settings' : '/';
+      response.writeHead(302, { Location: to, 'Set-Cookie': `${FAKE_SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Strict` }).end();
+    } else if (url.pathname.startsWith('/app/') && request.method === 'GET') {
+      const file = await readBundleFile(url.pathname.slice('/app/'.length), options.bundleDirectory);
+      if (file) response.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.data.length }).end(file.data);
+      else response.writeHead(404).end();
+    } else if (url.pathname === '/dashboard/logout' && request.method === 'POST') {
+      if (request.headers.origin !== origin()) { response.writeHead(403).end(); return; }
+      startOver();
+      response.writeHead(303, { Location: '/', 'Set-Cookie': `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict` }).end();
+    } else if (url.pathname === '/auth/github/start') {
       const state = encodeURIComponent(url.searchParams.get('state') ?? '');
       response.writeHead(302, { Location: `natsumi://oauth/callback?code=fake-code&state=${state}` }).end();
     } else if (url.pathname === '/auth/session' && request.method === 'POST') {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ token: 'fake-token', expiresAt: sessionEnd() }));
     } else if (url.pathname.startsWith('/v1/images/') && request.method === 'GET') {
       const image = IMAGES.get(url.pathname.slice('/v1/images/'.length));
-      if (request.headers.authorization !== 'Bearer fake-token') {
-        response.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'unauthorized' }));
+      if (request.headers.authorization !== 'Bearer fake-token' && !hasCookie(request)) {
+        response.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ error: 'unauthorized' }));
       } else if (!image) {
-        response.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not-found' }));
+        response.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ error: 'not-found' }));
       } else {
-        response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': image.length }).end(image);
+        response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=31536000, immutable',
+          'Content-Length': image.length }).end(image);
       }
     } else if (url.pathname === '/v1/avatar' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(avatarManifest(AVATAR)));
@@ -377,24 +492,25 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       else response.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not-found' }));
     } else if (url.pathname === '/auth/logout' && request.method === 'POST') {
       // The next login finds the approvals as they were at the start, so a walkthrough can be run again.
-      approvals = startingApprovals();
-      closed = new Map();
-      laterScheduled = false;
-      currentRoute = 'local';
-      chosenRoute = 'local';
+      startOver();
       response.writeHead(204).end();
     } else {
       response.writeHead(404).end();
     }
-  });
+  }
 
-  new WebSocketServer({ server, path: '/v1/ws' }).on('connection', (socket) => {
+  // A cookie is taken only from the server's own origin, as the server does (ADR 0058); the apps still need nothing.
+  new WebSocketServer({ server, path: '/v1/ws', verifyClient: (info, done) => {
+    if (hasCookie(info.req) && info.req.headers.origin !== origin()) done(false, 403);
+    else done(true);
+  } }).on('connection', (socket, request) => {
+    const browser = hasCookie(request) && request.headers.authorization === undefined;
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('message', (data) => {
       const envelope = JSON.parse(data.toString()) as ClientEnvelope;
       log('<-', envelope.type, JSON.stringify(envelope.payload));
-      answer(envelope);
+      answer(envelope, browser);
     });
   });
 
@@ -417,11 +533,13 @@ if (import.meta.main) {
     short: { type: 'boolean', default: false },
     'approval-delay': { type: 'string', default: '8' },
     'switch-delay': { type: 'string', default: '2' },
+    bundle: { type: 'string' },
   } });
   const server = await startFakeServer({
     port: Number(values.port), replyDelayMs: Number(values['reply-delay']) * 1000, short: values.short,
     approvalDelayMs: Number(values['approval-delay']) * 1000, sendDelayMs: 1000,
     switchDelayMs: Number(values['switch-delay']) * 1000, log: true,
+    ...(values.bundle ? { bundleDirectory: values.bundle } : {}),
   });
   console.log(`fake natsumi server on http://localhost:${server.port}`);
 }

@@ -9,17 +9,24 @@ public struct PushText: Equatable, Sendable {
     public let text: String
     /// The feeling she put into the line (ADR 0026), as the server wrote it. nil on lines from before it was kept.
     public let expression: String?
+    /// Her face for the feeling, to fetch and attach (ADR 0057): https only, and nil when the server sent none.
+    public let icon: URL?
 
-    public init(text: String, expression: String?) {
+    public init(text: String, expression: String?, icon: URL? = nil) {
         self.text = text
         self.expression = expression
+        self.icon = icon
     }
 
-    /// The plaintext: `{"text": …, "expression": …}` in UTF-8.
+    /// The plaintext: `{"text": …, "expression": …, "icon": …}` in UTF-8. An icon that is not an https URL is dropped,
+    /// and the line is still read.
     init(json: Data) throws {
         guard let object = try JSONSerialization.jsonObject(with: json) as? [String: Any], let text = object["text"] as? String
         else { throw PushError.malformed }
-        self.init(text: text, expression: object["expression"] as? String)
+        let icon = (object["icon"] as? String).flatMap(URL.init(string:)).flatMap { url in
+            url.scheme?.lowercased() == "https" && url.host?.isEmpty == false ? url : nil
+        }
+        self.init(text: text, expression: object["expression"] as? String, icon: icon)
     }
 }
 

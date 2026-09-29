@@ -8,11 +8,12 @@ import WebSocket from 'ws';
 import {
   approveAtGitHub, CLIENT_SECRET, login, MINUTE, OWNER, PUBLIC_ORIGIN, startFixture, UPSTREAM_DETAIL, type Fixture,
 } from './support/server-fixture.ts';
-import { dashboardCookie } from '../src/server/dashboard.ts';
+import { sessionCookie } from '../src/server/browser/session-cookie.ts';
 import { TurnStats } from '../src/server/turn-stats.ts';
 import { SessionRecord } from './support/session-record.ts';
 
-const COOKIE = 'natsumi_dashboard';
+// The browser's one cookie for the whole origin (ADR 0058); the dashboard's own of before is moved to it (test/browser.test.ts).
+const COOKIE = 'natsumi_session';
 const DAY = 24 * 60 * MINUTE;
 
 async function withFixture(fn: (f: Fixture) => Promise<void>, options?: Parameters<typeof startFixture>[0]) {
@@ -87,12 +88,12 @@ test('opening /dashboard without a cookie starts the GitHub login with state and
   await startBrowserLogin(f, '/dashboard/anything?next=https://attacker.example.test');
 }));
 
-test('the allowed account gets an HttpOnly, Secure, SameSite=Strict cookie on /dashboard that lasts thirty days', () => withFixture(async f => {
+test('the allowed account gets an HttpOnly, Secure, SameSite=Strict cookie for the whole origin that lasts thirty days', () => withFixture(async f => {
   const res = await f.fetch(await approveAtGitHub(f, await startBrowserLogin(f)));
   assert.equal(res.status, 200);
   const cookie = setCookie(res.headers)!;
   assert.ok(cookie.value.length >= 43);
-  assert.equal(cookie.attributes.get('path'), '/dashboard');
+  assert.equal(cookie.attributes.get('path'), '/');
   assert.ok(cookie.attributes.has('httponly'));
   assert.ok(cookie.attributes.has('secure'), 'the public origin is https, so the cookie is Secure');
   assert.equal(cookie.attributes.get('samesite'), 'Strict');
@@ -143,6 +144,8 @@ test('with the cookie, /dashboard shows the page under a strict CSP and the usua
   }
   assert.match(res.text, /<form method="post" action="\/dashboard\/logout">/);
   assert.match(res.text, /data-refresh="\/dashboard\/status"/);
+  // The way to the chat and the settings, which the dashboard itself leaves to them (ADR 0058).
+  assert.match(res.text, /<nav aria-label="ほかの画面"><ul><li><a href="\/">話す<\/a><\/li><li><a href="\/settings">設定<\/a><\/li><\/ul><\/nav>/);
 }));
 
 test('the state section shows the server, the route, the fold, the context, the turn and the queue', () => withFixture(async f => {
@@ -186,7 +189,7 @@ test('an expired, a revoked, a garbled or an unknown cookie is turned to the log
   for (const value of ['', 'fixture-unknown-token', '%%%not-a-token', 'a'.repeat(5000), 'x;y', '"quoted"']) {
     assertLoginAgain(await f.fetch('/dashboard', withCookie(value)), f);
   }
-  assertLoginAgain(await f.fetch('/dashboard', { headers: { cookie: 'other=1; natsumi_dashboard' } }), f);
+  assertLoginAgain(await f.fetch('/dashboard', { headers: { cookie: 'other=1; natsumi_session' } }), f);
 }));
 
 test('the refreshed section answers 401 without a live session instead of starting a login', () => withFixture(async f => {
@@ -246,7 +249,7 @@ test('logging out revokes that browser’s session only and clears its cookie', 
   const cleared = setCookie(res.headers)!;
   assert.equal(cleared.value, '');
   assert.equal(cleared.attributes.get('max-age'), '0');
-  assert.equal(cleared.attributes.get('path'), '/dashboard');
+  assert.equal(cleared.attributes.get('path'), '/');
 
   assertLoginAgain(await f.fetch('/dashboard', withCookie(first)), f);
   assert.equal((await f.fetch('/dashboard', withCookie(second))).status, 200, 'another browser stays logged in');
@@ -268,12 +271,12 @@ test('a logout without the public origin as its Origin is refused and logs nothi
   assert.equal((await f.fetch('/dashboard/logout', withCookie(cookie))).status, 405, 'a GET does not log out');
 }));
 
-test('the app’s ways in never read the dashboard cookie', () => withFixture(async f => {
+test('of the app’s ways in, the cookie opens the WebSocket with our Origin and the images, and nothing else (ADR 0058)', () => withFixture(async f => {
   const cookie = await browserLogin(f);
-  assert.equal((await f.fetch('/v1/images/fixture-image', withCookie(cookie))).status, 401);
+  assert.equal((await f.fetch('/v1/images/fixture-image', withCookie(cookie))).status, 404, 'past the login, an image nobody was shown');
   assert.equal((await f.fetch('/auth/logout', withCookie(cookie, { method: 'POST' }))).status, 401);
-  assert.equal(await connect(f.wsUrl, { cookie: `${COOKIE}=${cookie}` }), 401);
-  assert.equal(await connect(f.wsUrl, { cookie: `${COOKIE}=${cookie}`, origin: PUBLIC_ORIGIN }), 401);
+  assert.equal(await connect(f.wsUrl, { cookie: `${COOKIE}=${cookie}` }), 403, 'no Origin, no cookie');
+  assert.equal(await connect(f.wsUrl, { cookie: `${COOKIE}=${cookie}`, origin: PUBLIC_ORIGIN }), 101);
   assert.equal((await f.fetch('/dashboard', withCookie(cookie))).status, 200, 'the cookie itself is still good');
 }));
 
@@ -294,11 +297,11 @@ test('the style sheet and the script are served as files, and nothing else under
 
 test('the cookie is Secure unless the public origin is plain http on loopback, where a browser would drop it', () => {
   const now = Date.parse('2026-01-01T00:00:00Z');
-  assert.match(dashboardCookie('token', now + DAY, now, true), /; Secure;/);
-  const loopback = dashboardCookie('token', now + DAY, now, false);
+  assert.match(sessionCookie('token', now + DAY, now, true), /; Secure;/);
+  const loopback = sessionCookie('token', now + DAY, now, false);
   assert.ok(!loopback.includes('Secure'));
   assert.match(loopback, /HttpOnly; SameSite=Strict$/);
-  assert.match(dashboardCookie('', 0, now, true), /^natsumi_dashboard=; Path=\/dashboard; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;/);
+  assert.match(sessionCookie('', 0, now, true), /^natsumi_session=; Path=\/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;/);
 });
 
 /** The app connected over the WebSocket with its session and synced, as a device; resolves with its device ID. */

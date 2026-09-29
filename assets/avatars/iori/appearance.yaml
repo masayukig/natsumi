@@ -1,0 +1,24 @@
+lora: iori_funaki_anima.v4
+body: |
+  <lora:iori_funaki_anima.v4:1>
+  masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest, scenery, (realistic:0.5),
+  1girl, normal, light brown hair, purple eyes,
+  freckles,
+outfit: "white dress,"
+outfitName: 白いワンピース
+keep:
+  - freckles
+  - purple eyes
+  - light brown hair
+examples:
+  - title: 公園での自撮り
+    outfit: white dress,
+    scene: |
+      solo, selfie, upper body, smile, looking at viewer,
+      outdoors, park, sunlight
+  - title: 雨の日の気分
+    outfit: cardigan, long skirt,
+    scene: |
+      solo,
+      A woman is gazing out of a rainy window, feeling calm.
+      indoors, window, rain, dim light
