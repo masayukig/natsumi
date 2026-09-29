@@ -4,8 +4,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
+COPY scripts/build-web.ts ./scripts/
 COPY src ./src
 COPY test ./test
+# The server into dist/src/, and the browser's app bundled into dist/web/ (ADR 0058).
 RUN npm run build
 
 # Holds the network namespace of the fixed-IPv6 layout (compose.ipv6.example.yaml) and sets the interface token.
@@ -80,6 +82,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 # checkout, not here, and nothing under src/server or src/pi imports it.
 COPY --from=build /app/dist/src/server ./dist/src/server
 COPY --from=build /app/dist/src/pi ./dist/src/pi
+# The browser's app, served at /app/ for the chat (/) and the settings (/settings) (ADR 0058).
+COPY --from=build /app/dist/web ./dist/web
 # natsumi, the avatar used when the config names none, and the faceless pictures and default params that fill in what
 # an avatar lacks (ADR 0057). The apps fetch the avatar at /v1/avatar, and Slack its icons at /avatar/ (ADR 0040).
 COPY assets/avatars/ ./assets/avatars/

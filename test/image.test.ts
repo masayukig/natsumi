@@ -32,9 +32,9 @@ const buildCopies = (stage: string[]) => stage
     return { source: source!, destination: destination! };
   });
 
-test('the image takes from the build only the code the server runs, never the probe', async () => {
+test('the image takes from the build only the code the server runs and the browser’s bundle, never the probe', async () => {
   const sources = buildCopies(await shippingStage()).map(copy => copy.source).sort();
-  assert.deepEqual(sources, ['/app/dist/src/pi', '/app/dist/src/server']);
+  assert.deepEqual(sources, ['/app/dist/src/pi', '/app/dist/src/server', '/app/dist/web']);
 });
 
 test('the entrypoint runs a file that the image has copied in', async () => {
