@@ -1,0 +1,27 @@
+# いおりが自分を描くときのプロンプト（ADR 0057）。サーバーが /manual/avatar/images.md の「あなた自身の姿」に差し込む。
+# 作業環境とアプリには配らない。LoRA（iori_funaki_anima.v4）はこのリポジトリに無く、描く側（tank の ComfyUI）に置く。
+lora: iori_funaki_anima.v4
+body: |
+  <lora:iori_funaki_anima.v4:1> ,
+  masterpiece, best quality, newest,
+  iori_funaki, woman, light brown hair, long hair, wavy hair, purple eyes, freckles,
+
+  black glasses,
+outfit: "black business suit, collared white shirt, black neck ribbon,"
+outfitName: スーツ
+keep:
+  - iori_funaki
+  - freckles
+  - black glasses
+examples:
+  - title: 私服の自撮り
+    outfit: white knit sweater, long skirt,
+    scene: |
+      1girl, solo, selfie, upper body, smile, looking at viewer,
+      outdoors, park, sunlight
+  - title: 気分の絵
+    outfit: oversized cardigan,
+    scene: |
+      1girl, solo,
+      A woman with glasses is gazing out of a rainy window, feeling calm.
+      indoors, window, rain, dim light
