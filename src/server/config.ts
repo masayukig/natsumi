@@ -13,7 +13,7 @@ import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
   type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
 // The settings that may change while natsumi runs keep the rules the config gives them, from one place (ADR 0058).
-import { awakeHoursProblem, isFold, isPingInterval, isTurnLimit, MIN_PING_INTERVAL_MINUTES, ROUTE_NAME } from './settings/domain.ts';
+import { awakeHoursProblem, isFold, isPingInterval, isTurnLimit, MIN_PING_INTERVAL_MINUTES, ROUTE_NAME } from '../shared/protocol/settings.ts';
 
 /** A startup-stopping config problem. `path` names the setting (for example `pi.authPath`); values are never echoed. */
 export class ConfigError extends Error {

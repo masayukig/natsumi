@@ -3,8 +3,9 @@
  * rules those keep. The config's parser takes its rules from here too, so a value the settings take is one the config
  * would take, and the other way round.
  *
- * This is the lowest layer of the runtime settings. It imports nothing, not even Node, and keeps no state; the test
- * of the layers holds it to that.
+ * It is part of the contract the server and the browser's app share (src/shared/protocol/): the server's settings
+ * layers are built on it, and the browser checks a value with the same rules before sending it. It imports nothing,
+ * not even Node, and keeps no state; the test of the layers holds it to that.
  */
 
 export const SETTING_KEYS = ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls',
@@ -38,8 +39,7 @@ export interface RouteView { name: string; provider: string; model: string; read
 export interface SettingItem<T> { value: T; config: T; overridden: boolean }
 
 /**
- * The list as every device is shown it (docs/client-contract.md, 実行中の設定). It is here, with the values' shapes,
- * so that the browser's app is written against the same type as the server without taking any of its code.
+ * The list as every device is shown it (docs/client-contract.md, 実行中の設定).
  */
 export interface SettingsView {
   modelRoute: SettingItem<string> & { inUse: string | null; routes: RouteView[] };
@@ -108,4 +108,40 @@ export function checkSetting(key: string, value: unknown): SettingCheck {
     case 'pingIntervalMinutes':
       return isPingInterval(value) ? { ok: true, key, value } : invalid;
   }
+}
+
+const isRouteView = (value: unknown): value is RouteView => typeof value === 'object' && value !== null
+  && typeof (value as RouteView).name === 'string' && typeof (value as RouteView).provider === 'string'
+  && typeof (value as RouteView).model === 'string' && typeof (value as RouteView).ready === 'boolean';
+
+/**
+ * The list as it came over the wire, or undefined when it is not the contract's: every setting there, each value and
+ * config's value keeping the setting's rules (a route's name its shape), and the extra fields of the three that have them.
+ */
+export function readSettingsView(value: unknown): SettingsView | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const list = value as Record<string, unknown>;
+  const view: Record<string, unknown> = {};
+  for (const key of SETTING_KEYS) {
+    const item = list[key];
+    if (typeof item !== 'object' || item === null) return undefined;
+    const { value: current, config, overridden, inUse, routes, timeZone } = item as Record<string, unknown>;
+    const valueCheck = checkSetting(key, current);
+    const configCheck = checkSetting(key, config);
+    if (!valueCheck.ok || !configCheck.ok || typeof overridden !== 'boolean') return undefined;
+    const read: Record<string, unknown> = { value: valueCheck.value, config: configCheck.value, overridden };
+    if (key === 'modelRoute') {
+      if (!(inUse === null || (typeof inUse === 'string' && ROUTE_NAME.test(inUse)))) return undefined;
+      if (!Array.isArray(routes) || !routes.every(isRouteView)) return undefined;
+      Object.assign(read, { inUse, routes: routes.map(({ name, provider, model, ready }) => ({ name, provider, model, ready })) });
+    } else if (key === 'turnFold') {
+      if (!isFold(inUse)) return undefined;
+      read.inUse = inUse;
+    } else if (key === 'awakeHours') {
+      if (typeof timeZone !== 'string') return undefined;
+      read.timeZone = timeZone;
+    }
+    view[key] = read;
+  }
+  return view as unknown as SettingsView;
 }

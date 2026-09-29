@@ -1,7 +1,7 @@
 import {
   checkSetting, isSettingKey, type AwakeHours, type Fold, type RouteView, type SettingItem, type SettingKey, type SettingsView,
   type SettingValues, type TurnLimits,
-} from './domain.ts';
+} from '../../shared/protocol/settings.ts';
 import { clearOverride, readOverrides, writeOverride, type Overrides } from './store.ts';
 
 /**
@@ -15,8 +15,8 @@ import { clearOverride, readOverrides, writeOverride, type Overrides } from './s
  * read by the loop and the scheduler from here, between turns and on every tick, so a change needs nothing more.
  */
 
-/** The list and the routes as the devices are shown them; their shapes are the domain's, shared with the browser's app. */
-export type { RouteView, SettingsView } from './domain.ts';
+/** The list and the routes as the devices are shown them; their shapes are the contract's, shared with the browser's app. */
+export type { RouteView, SettingsView } from '../../shared/protocol/settings.ts';
 
 /** The loop's side of the route and the fold: what the settings need of it, and nothing more. */
 export interface RouteControl {

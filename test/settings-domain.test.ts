@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ConfigError, parseConfig } from '../src/server/config.ts';
-import { checkSetting, ROUTE_NAME, SETTING_KEYS } from '../src/server/settings/domain.ts';
+import { checkSetting, ROUTE_NAME, SETTING_KEYS } from '../src/shared/protocol/settings.ts';
 
 /** The settings the owner may change while natsumi runs (ADR 0058), and the rules their values keep: the config's. */
 

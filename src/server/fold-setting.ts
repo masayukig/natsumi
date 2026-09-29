@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { writeFileAtomically } from './paths.ts';
-import { isFold, type Fold } from './settings/domain.ts';
+import { isFold, type Fold } from '../shared/protocol/settings.ts';
 import { readFoldOverride, writeOverride } from './settings/store.ts';
 import { checkHealth, readStatus } from './status.ts';
 
@@ -15,7 +15,7 @@ import { checkHealth, readStatus } from './status.ts';
  * - `turn-fold-status.json` is what the server says: the fold in use, the config's default, and the choice.
  */
 
-export type { Fold } from './settings/domain.ts';
+export type { Fold } from '../shared/protocol/settings.ts';
 
 export interface FoldStatus {
   /** What the turns are folded with now. */
