@@ -26,6 +26,7 @@ function inputOf(row: SettingRowProps, form: HTMLFormElement): SettingInput {
     case 'turnFold': return { key: 'turnFold', fold: field('value') };
     case 'awakeHours': return { key: 'awakeHours', start: field('start'), end: field('end') };
     case 'pingIntervalMinutes': return { key: 'pingIntervalMinutes', text: field('value'), off: data.get('off') === 'on' };
+    case 'judgeLogprobs': case 'judgeJev': case 'judgeAdopted': return { key: row.key, choice: field('value') };
     default: return { key: row.key, text: field('value') };
   }
 }

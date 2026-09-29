@@ -118,7 +118,10 @@ const ROUTES: RouteView[] = [
 const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
   turnFold: 'off', eventModelCalls: 8, eventTimeoutMinutes: 10, reviewModelCalls: 40, reviewTimeoutMinutes: 30,
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
+  judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs',
 };
+/** Which of the dove's judges the made-up config has an endpoint for: Jev has none, so it cannot be turned on (ADR 0059). */
+const JUDGE_AVAILABLE = { judgeLogprobs: true, judgeJev: false };
 
 interface ClientEnvelope {
   requestId: string;
@@ -259,6 +262,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       eventModelCalls: item('eventModelCalls'), eventTimeoutMinutes: item('eventTimeoutMinutes'),
       reviewModelCalls: item('reviewModelCalls'), reviewTimeoutMinutes: item('reviewTimeoutMinutes'),
       awakeHours: { ...item('awakeHours'), timeZone: 'Asia/Tokyo' }, pingIntervalMinutes: item('pingIntervalMinutes'),
+      judgeLogprobs: { ...item('judgeLogprobs'), available: JUDGE_AVAILABLE.judgeLogprobs },
+      judgeJev: { ...item('judgeJev'), available: JUDGE_AVAILABLE.judgeJev }, judgeAdopted: item('judgeAdopted'),
     };
   }
 
@@ -369,6 +374,9 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     } else {
       const checked = checkSetting(key, value);
       if (!checked.ok) return reject(checked.code);
+      if ((checked.key === 'judgeLogprobs' || checked.key === 'judgeJev') && checked.value === 'on' && !JUDGE_AVAILABLE[checked.key]) {
+        return reject('judge-unavailable');
+      }
       if (checked.key === 'modelRoute') {
         const route = ROUTES.find((r) => r.name === checked.value);
         if (!route) return reject('unknown-route');

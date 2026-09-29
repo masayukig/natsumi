@@ -18,7 +18,7 @@ test('every runtime setting is listed with the config’s value and the one in f
     pingIntervalMinutes: { value: false, config: 180, overridden: true } }));
   const rows = settingsProps(driver.state).rows;
   assert.deepEqual(rows.map(item => item.key), ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes',
-    'reviewModelCalls', 'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes']);
+    'reviewModelCalls', 'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted']);
   assert.deepEqual([row(driver, 'eventModelCalls').valueText, row(driver, 'eventModelCalls').configText], ['12 回', '8 回']);
   assert.equal(row(driver, 'eventModelCalls').overridden, true);
   assert.equal(row(driver, 'eventModelCalls').canReset, true);
@@ -45,6 +45,24 @@ test('a route that is not ready cannot be chosen', () => {
   assert.equal(control.kind, 'select');
   assert.deepEqual(control.kind === 'select' && control.options.map(option => [option.value, option.disabled]),
     [['local', false], ['plus', false], ['spare', true]]);
+});
+
+test('the dove’s judges are on or off, one without an endpoint in the config cannot be turned on, and one is adopted (ADR 0059)', () => {
+  const driver = onSettings();
+  assert.deepEqual([row(driver, 'judgeLogprobs').valueText, row(driver, 'judgeJev').valueText], ['on', 'off']);
+  const jev = row(driver, 'judgeJev').control;
+  assert.deepEqual(jev.kind === 'select' && jev.options.map(option => [option.value, option.disabled]), [['on', true], ['off', false]]);
+  assert.match(row(driver, 'judgeJev').note ?? '', /config に接続先がありません/);
+  const logprobs = row(driver, 'judgeLogprobs').control;
+  assert.deepEqual(logprobs.kind === 'select' && logprobs.options.map(option => [option.value, option.disabled]), [['on', false], ['off', false]]);
+  const adopted = row(driver, 'judgeAdopted').control;
+  assert.deepEqual(adopted.kind === 'select' && adopted.options.map(option => option.value), ['logprobs', 'jev']);
+  assert.deepEqual(parseSettingInput({ key: 'judgeJev', choice: 'off' }), { ok: true, key: 'judgeJev', value: 'off' });
+  assert.deepEqual(parseSettingInput({ key: 'judgeAdopted', choice: 'jev' }), { ok: true, key: 'judgeAdopted', value: 'jev' });
+  assert.equal(parseSettingInput({ key: 'judgeAdopted', choice: 'both' }).ok, false);
+  const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'judgeJev', choice: 'on' } }));
+  driver.dispatch(server('command.rejected', { code: 'judge-unavailable' }, { seq: 2, requestId: set!.requestId }));
+  assert.match(row(driver, 'judgeJev').error ?? '', /接続先/);
 });
 
 test('the input is checked by the contract’s rules before anything is sent', () => {

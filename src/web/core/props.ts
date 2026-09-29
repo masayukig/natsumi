@@ -236,6 +236,9 @@ const LABELS: Record<SettingKey, { label: string; help: string; unit?: string }>
   reviewTimeoutMinutes: { label: '夜の振り返りの時間の上限', help: '振り返りのターンにかけられる時間。次の振り返りから。', unit: '分' },
   awakeHours: { label: '起きている時間帯', help: 'この間だけ合図や見回りをします。日をまたいでも構いません。' },
   pingIntervalMinutes: { label: '合図の間隔', help: '静かな時間がこれだけ続くと、なつみに合図します。5 分以上。' },
+  judgeLogprobs: { label: 'ポッポさんの判定: logprobs', help: 'なつみのモデルの logprobs で下書きを判定します。次の下書きから。' },
+  judgeJev: { label: 'ポッポさんの判定: Jev', help: 'TypeSafe の Jev で下書きを判定します。従量課金です。次の下書きから。' },
+  judgeAdopted: { label: 'ポッポさんの採用する判定', help: 'この判定で決めます。答えが無ければもう一方で、両方だめなら本人に回します。次の下書きから。' },
 };
 
 function valueText(key: SettingKey, value: unknown, view: SettingsView): string {
@@ -255,6 +258,12 @@ function controlOf(key: SettingKey, view: SettingsView): ControlProps {
         value: route.name, label: `${route.name}（${route.model}）${route.ready ? '' : ' — 使えません'}`, disabled: !route.ready })) };
     case 'turnFold':
       return { kind: 'select', selected: view.turnFold.value, options: [{ value: 'on', label: 'on', disabled: false }, { value: 'off', label: 'off', disabled: false }] };
+    case 'judgeLogprobs': case 'judgeJev': {
+      const { value, available } = view[key];
+      return { kind: 'select', selected: value, options: [{ value: 'on', label: 'on', disabled: !available }, { value: 'off', label: 'off', disabled: false }] };
+    }
+    case 'judgeAdopted':
+      return { kind: 'select', selected: view.judgeAdopted.value, options: (['logprobs', 'jev'] as const).map(value => ({ value, label: value, disabled: false })) };
     case 'awakeHours':
       return { kind: 'hours', start: view.awakeHours.value.start, end: view.awakeHours.value.end };
     case 'pingIntervalMinutes': {
@@ -271,6 +280,7 @@ function noteOf(key: SettingKey, view: SettingsView): string | undefined {
     return `次のターンから（いまは ${view.modelRoute.inUse ?? '話せない状態'}）`;
   }
   if (key === 'turnFold' && view.turnFold.inUse !== view.turnFold.value) return `次のターンから（いまは ${view.turnFold.inUse}）`;
+  if ((key === 'judgeLogprobs' || key === 'judgeJev') && !view[key].available) return 'config に接続先がありません。on にはできません。';
   return undefined;
 }
 

@@ -562,9 +562,9 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.reaction` | | `eyes` | メンションと DM を受け取ったときにサーバーが付けるリアクション（コロンなしの絵文字名） |
    | `slack.backfillDays` | | 90 | 初めて見るチャンネルを何日前から埋めるか（1〜365） |
    | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
-   | `slack.judge` | | 既定の経路の互換のモデルの logprobs | ポッポさんの判定の方式と接続先。下の「Slack に投稿する」 |
+   | `slack.judge` | | 既定の経路の互換のモデルの logprobs だけ | ポッポさんの 2 つの判定（logprobs と Jev）の接続先・しきい値と、採用する方。下の「Slack に投稿する」 |
    | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
-   | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネル、超えたらスレッドに置く（0〜20） |
+   | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネルにも出し、超えたらスレッドだけに置く（0〜20） |
    | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
    | `slack.postImages.maxBytes` / `.maxCount` | | 10 MiB / 4 | ポッポさんに頼む投稿の画像 1 枚の上限（1 KiB〜50 MiB）と、1 回の枚数の上限（1〜10） |
 
@@ -635,11 +635,14 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
 
 - 依頼は見出し付きのテキスト（`返信先`・`種類`・`表情`、`---` の後が本文）です。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
   返信先はファイルの発言の参照で、サーバーが記録と突き合わせます。形の崩れ、記録に無い参照、機械的な検査に当たる本文は、その場で断ります。
-- 下書きは判定にかけます。問いは英語で、問題点ごとの点数（スレッドに無い情報、本人に代わる約束・期限、隠しごとの匂わせ、事実と違う説明、同意の捏造、私的な事情）と、
-  スレッドかチャンネルかを聞きます。判定に見せるのは下書きと返信先の周りの発言だけです。
-  - どの点数も `thresholds.owner`（既定 0.5）未満なら、本人の承認なしにそのまま送ります。
-  - `thresholds.return`（既定 0.9）以上の問題があれば、理由を添えて natsumi に突き返します。同じ返信先で 3 回目の突き返しは、前の下書きと一緒に本人に回します。
+- 下書きは判定にかけます（[ADR 0059](docs/adr/0059-two-judges-side-by-side-and-fewer-issues.md)）。問いは英語で、問題点ごとの点数（本人に代わる約束・期限、隠しごとの匂わせ、事実と違う説明、同意の捏造、私的な事情）と、
+  スレッドかチャンネルかを聞きます。判定に見せるのは下書きと返信先の周りの発言（返信先がスレッドの中ならそのスレッド）だけです。
+  - 判定は logprobs と Jev の 2 つあり、有効なものを同時に掛けて、両方の結果を残します。決めるのは採用する方で、答えが無ければもう一方、両方だめなら判定なしです。
+  - 決めた方の判定のどの点数もその判定の `thresholds.owner` 未満なら、本人の承認なしにそのまま送ります。
+  - `thresholds.return` 以上の問題があれば、理由を添えて natsumi に突き返します。同じ返信先で 3 回目の突き返しは、前の下書きと一緒に本人に回します。
   - その間なら、本人に回します。判定できなかったとき（判定なし）も本人に回します。
+- 返信先のある投稿の置き場所は、スレッドか「スレッドに返し、チャンネルにも出す」（`chat.postMessage` の `reply_broadcast`）の 2 つです。承認の `placement` の値は `thread` と `channel` のままです。
+  チャンネルそのものへの投稿は、今までどおりチャンネルに出します。画像付きの投稿は Slack が `reply_broadcast` を受け付けないので、`channel` ならチャンネルに出します。
 - 本人に回した投稿は承認待ちになり、iPhone で承認・修正・却下を選びます（API と通知は [サーバーと Mac の契約](docs/client-contract.md) の「承認と外部実行」）。
   期限（既定 7 日）を過ぎると閉じます。修正した本文は判定に掛け直しません。送る直前には、どの本文にも機械的な検査を掛けます。
 - 投稿のアイコンは、natsumi の表情ごとの顔です。サーバーが認証なしの `/avatar/<表情>.png` で配り、`chat.postMessage` の `icon_url` に渡します
@@ -659,43 +662,54 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
     Slack App に `files:write` が要ります。Slack はアップロードにアイコンを指定させないので、画像付きの投稿は bot の既定のアイコンで出ます。
   - 承認待ちには画像の一覧が載り、アプリは `GET /v1/images/<imageId>`（ログインが要ります）で画像を取ります（[サーバーと Mac の契約](docs/client-contract.md) の「画像」）。
 - 送った本文、判定の点数、置き場所、本人の判断、画像（写しのパス・大きさ・形式・SHA-256）は `.natsumi/state.sqlite`（migration 14・16）に残ります。
+  2 つの判定のそれぞれの結果（判定、点数、置き場所、判定なしならその理由）と、採用していた方、決めた方も残ります（migration 23）。
   画像の写しは `.natsumi/images/` にあります。どちらも個人データとしてバックアップの対象です。
-- ログには判定の方式、ワークスペースの名前、Slack のメソッドとエラーのコード、判定の失敗の種類（例: `dove: judge: no verdict (no-answer-token)`）だけを出し、
+- ログには判定の方式、ワークスペースの名前、Slack のメソッドとエラーのコード、判定の失敗の種類（例: `dove: judge (jev): no verdict (timeout)`）だけを出し、
   下書き、接続先、ID は出しません。
 
 #### 判定の方式（`slack.judge`）
 
-判定の方式は 2 つあり、どちらも同じ問いと同じ材料を使います。
+判定は 2 つあり、どちらも同じ問いと同じ材料を使います（[ADR 0059](docs/adr/0059-two-judges-side-by-side-and-fewer-issues.md)）。
 
-- **`logprobs`（既定）**: OpenAI 互換のモデルに、問いごとに 1 回ずつ、思考なしで 1 トークンだけ答えさせ（`temperature 0`、`max_tokens 1`、`top_logprobs 20`）、
+- **`logprobs`**: OpenAI 互換のモデルに、問いごとに 1 回ずつ、思考なしで 1 トークンだけ答えさせ（`temperature 0`、`max_tokens 1`、`top_logprobs 20`）、
   最初のトークンの候補の確率から点数を出します。問題点は yes と no の確率の比、置き場所は A（thread）・B（channel）の確率を合計 1 にしたものです。
   答えのトークンが候補に無い、logprobs が返らない、思考のタグが出た、というときは判定なしです。
   接続先・API キー・model は、書かなければ既定の経路（`pi.defaultRoute`。`pi.model` だけの設定ならその経路）の `compatible` の `baseUrl`・`apiKeyEnv`/`apiKeyFile` と `model.id` を使い回します。経路を切り替えても変わりません。
-  `pi` が OpenAI 互換のモデルでなく、`slack.judge` も無ければ、判定はせず、投稿はすべて本人の承認に回ります。
+  `pi` が OpenAI 互換のモデルなら、`slack.judge.logprobs` を書かなくても有効です。
 - **`jev`**: TypeSafe AI の Jev の API（`POST /v1/systemone`）、または同じ API を返すサーバーに、1 回の呼び出しで全部の問いを聞きます。
+  `slack.judge.jev` を書いたときだけ有効です。従量課金なので、有効な間は採用していなくても投稿のたびに料金がかかります。
+- 有効な判定が 1 つも無ければ、判定はせず、投稿はすべて本人の承認に回ります。
+- 有効・無効と採用する方は、動いている最中に `/settings`（`judgeLogprobs`・`judgeJev`・`judgeAdopted`）で上書きできます。次の下書きから効きます。
+  config に接続先の無い判定は、画面から有効にできません。
 
-値は架空の例です。1 つ目は pi のモデルを使う既定のもの（書かなくても同じ）、2 つ目は Jev です。
+値は架空の例です。1 つ目は pi のモデルの logprobs だけを使う既定のもの（書かなくても同じ）、2 つ目は 2 つを並べて Jev を採用するものです。
+Jev の鍵があるなら、2 つ目の形で始めることを勧めます。事前の評価（下）では、Jev のほうが止めるべき下書きをよく拾い、置き場所の選択も選択肢の順序に左右されませんでした。
+logprobs は並べて記録を取り、Jev が答えないときの控えになります。しきい値は `/settings` で動かしながら合わせる前提です。
 
 ```json
-"judge": { "thresholds": { "owner": 0.5, "return": 0.9 } }
+"judge": { "logprobs": { "thresholds": { "owner": 0.5, "return": 0.9 } } }
 ```
 
 ```json
-"judge": { "method": "jev", "apiKeyFile": "/run/secrets/natsumi_jev_api_key" }
+"judge": { "adopted": "jev", "jev": { "apiKeyFile": "/run/secrets/natsumi_jev_api_key", "thresholds": { "owner": 0.5, "return": 0.9 } } }
 ```
 
 | 項目 | 既定 | 中身 |
 | --- | --- | --- |
-| `slack.judge.method` | `logprobs` | `logprobs` か `jev` |
-| `slack.judge.baseUrl` | logprobs: 既定の経路の `compatible.baseUrl`、jev: `https://api.typesafe.ai` | 接続先。logprobs は OpenAI 互換の `…/v1`、jev は `/v1/systemone` の手前。http か https。ここで API キーを付けるなら、http で送れるのはループバックの相手だけです |
-| `slack.judge.apiKeyEnv` / `apiKeyFile` | logprobs で接続先を書かなければ既定の経路の `compatible` のもの、ほかはなし | API キー。無ければ `Authorization` を付けません。pi のキーは、pi の接続先にしか送りません |
-| `slack.judge.model` | logprobs: 既定の経路の `model.id`、jev: `jev-latest` | 要求の `model` |
-| `slack.judge.concurrency` | 4 | logprobs で同時に聞く問いの数（1〜16） |
-| `slack.judge.timeoutSeconds` | 30 | 1 つの下書きの判定の全体の待ち時間の上限（5〜300 秒）。過ぎたら判定なし |
-| `slack.judge.thresholds.owner` / `.return` | 0.5 / 0.9 | 本人に回す・突き返すしきい値（0 より大きく 1 以下、owner ≦ return） |
+| `slack.judge.adopted` | `logprobs` | 採用する方（`logprobs` か `jev`）。config に接続先の無い方は指定できません |
+| `slack.judge.<判定>.enabled` | `true` | 起動したときに有効か。`false` でも接続先は読むので、画面から有効にできます |
+| `slack.judge.<判定>.baseUrl` | logprobs: 既定の経路の `compatible.baseUrl`、jev: `https://api.typesafe.ai` | 接続先。logprobs は OpenAI 互換の `…/v1`、jev は `/v1/systemone` の手前。http か https。ここで API キーを付けるなら、http で送れるのはループバックの相手だけです |
+| `slack.judge.<判定>.apiKeyEnv` / `apiKeyFile` | logprobs で接続先を書かなければ既定の経路の `compatible` のもの、ほかはなし | API キー。無ければ `Authorization` を付けません。pi のキーは、pi の接続先にしか送りません |
+| `slack.judge.<判定>.model` | logprobs: 既定の経路の `model.id`、jev: `jev-latest` | 要求の `model` |
+| `slack.judge.logprobs.concurrency` | 4 | logprobs で同時に聞く問いの数（1〜16） |
+| `slack.judge.<判定>.timeoutSeconds` | 30 | 1 つの下書きの判定の待ち時間の上限（5〜300 秒）。過ぎたら判定なし。2 つの判定は同時に掛けるので、全体は遅いほうの上限までです |
+| `slack.judge.<判定>.thresholds.owner` / `.return` | logprobs: 0.5 / 0.9、jev: 0.5 / 0.9 | 本人に回す・突き返すしきい値（0 より大きく 1 以下、owner ≦ return）。判定ごとに点数の付き方が違うので、別々に持ちます。jev の既定は事前の評価で決めた値です。動いている最中は `/settings` で上書きできます |
+
+- 以前の形（`slack.judge.method` で 1 つを選び、接続先の項目を `slack.judge` の直下に書くもの）も読めます。選んだ方だけを有効にして採用したものとして読みます。
+  `method` が `jev` で、pi が OpenAI 互換のモデルなら、logprobs は無効のまま接続先だけ用意されます。新しい形と混ぜて書くと起動しません。
 
 - 接続先には下書きと周りの発言が出ます。natsumi のコンテナから届くように、出口の許可リストにその接続先を加えます（[ADR 0034](docs/adr/0034-an-allow-list-for-the-way-out.md)）。
-- しきい値を決める前に、架空の場面で判定を評価できます。止めるべき下書き（匂わせ・嘘・約束・捏造した同意・私的な事情・スレッドに無い情報）と
+- しきい値を決める前に、架空の場面で判定を評価できます。止めるべき下書き（匂わせ・嘘・約束・捏造した同意・私的な事情）と
   正しい投稿を判定させ、しきい値ごとに止めた数と正しい投稿を止めた数、場面ごとの時間を出します。本物の接続先を呼びます。
 
   ```sh

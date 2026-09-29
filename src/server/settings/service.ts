@@ -1,6 +1,6 @@
 import {
-  checkSetting, isSettingKey, type AwakeHours, type Fold, type RouteView, type SettingItem, type SettingKey, type SettingsView,
-  type SettingValues, type TurnLimits,
+  checkSetting, isSettingKey, JUDGE_SETTINGS, type AwakeHours, type Fold, type JudgeName, type RouteView, type SettingItem, type SettingKey,
+  type SettingsView, type SettingValues, type TurnLimits,
 } from '../../shared/protocol/settings.ts';
 import { clearOverride, readOverrides, writeOverride, type Overrides } from './store.ts';
 
@@ -31,9 +31,15 @@ export interface RouteControl {
   foldInUse(): Fold;
 }
 
-/** The config's values of the settings, and the time zone the awake hours are in. The route's is the loop's default. */
+/**
+ * The config's values of the settings, the time zone the awake hours are in, and which of the dove's judges the config
+ * has an endpoint for (ADR 0059). The route's is the loop's default.
+ */
 type Configured = Omit<SettingValues, 'modelRoute'>;
-export type SettingsDefaults = Configured & { timeZone: string };
+export type SettingsDefaults = Configured & { timeZone: string; judgeAvailable: Record<JudgeName, boolean> };
+
+/** The dove's judges as they are in force: on only when turned on and there is an endpoint to ask (ADR 0059). */
+export interface JudgesInForce { logprobs: boolean; jev: boolean; adopted: JudgeName }
 
 export type SettingsOutcome =
   | { kind: 'accepted'; settings: SettingsView }
@@ -101,6 +107,9 @@ export class RuntimeSettings {
       reviewTimeoutMinutes: item('reviewTimeoutMinutes'),
       awakeHours: { ...item('awakeHours'), timeZone: defaults.timeZone },
       pingIntervalMinutes: item('pingIntervalMinutes'),
+      judgeLogprobs: { ...item('judgeLogprobs'), available: defaults.judgeAvailable.logprobs },
+      judgeJev: { ...item('judgeJev'), available: defaults.judgeAvailable.jev },
+      judgeAdopted: item('judgeAdopted'),
     };
   }
 
@@ -117,6 +126,9 @@ export class RuntimeSettings {
       if (unavailable) return { kind: 'unavailable', code: unavailable };
       const checked = checkSetting(input.key, input.value);
       if (!checked.ok) return { kind: 'rejected', code: checked.code };
+      // A judge with no endpoint in the config has nothing to ask: the settings cannot add one (ADR 0059).
+      const judge = (Object.keys(JUDGE_SETTINGS) as JudgeName[]).find(name => JUDGE_SETTINGS[name] === checked.key);
+      if (judge && checked.value === 'on' && !this.options.defaults.judgeAvailable[judge]) return { kind: 'rejected', code: 'judge-unavailable' };
       if (checked.key === 'modelRoute') {
         const chosen = await this.options.routes.chooseRoute({ route: checked.value, deviceId: input.deviceId });
         if (chosen.kind !== 'accepted') return chosen;
@@ -156,10 +168,19 @@ export class RuntimeSettings {
 
   pingIntervalMinutes(): number | false { return this.inForce().pingIntervalMinutes; }
 
+  /** Which of the dove's judges it asks for the next draft, and which one decides (ADR 0059). */
+  judges(): JudgesInForce {
+    const { judgeLogprobs, judgeJev, judgeAdopted } = this.inForce();
+    const { judgeAvailable } = this.options.defaults;
+    return { logprobs: judgeLogprobs === 'on' && judgeAvailable.logprobs, jev: judgeJev === 'on' && judgeAvailable.jev, adopted: judgeAdopted };
+  }
+
   private inForce(): Omit<Configured, 'turnFold'> {
     const { defaults } = this.options;
     const o = this.overrides;
     return {
+      judgeLogprobs: o.judgeLogprobs ?? defaults.judgeLogprobs, judgeJev: o.judgeJev ?? defaults.judgeJev,
+      judgeAdopted: o.judgeAdopted ?? defaults.judgeAdopted,
       eventModelCalls: o.eventModelCalls ?? defaults.eventModelCalls, eventTimeoutMinutes: o.eventTimeoutMinutes ?? defaults.eventTimeoutMinutes,
       reviewModelCalls: o.reviewModelCalls ?? defaults.reviewModelCalls, reviewTimeoutMinutes: o.reviewTimeoutMinutes ?? defaults.reviewTimeoutMinutes,
       awakeHours: o.awakeHours ?? defaults.awakeHours, pingIntervalMinutes: o.pingIntervalMinutes ?? defaults.pingIntervalMinutes,

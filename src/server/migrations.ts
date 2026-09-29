@@ -728,4 +728,19 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 23,
+    name: 'two judges',
+    sql: `
+      -- The dove's two judges side by side (ADR 0059). judgement_logprobs and judgement_jev are each judge's own answer
+      -- (JSON: its verdict by its own thresholds, the scores and the placement, or {"error": kind} when it had none),
+      -- NULL for a judge that was off. judge_adopted is the judge set to decide then, judge_decided_by the one that did,
+      -- NULL when neither had an answer. verdict, scores and placement_probabilities stay those of the one that decided.
+      -- The posts before this have NULL in all four and read as they did.
+      ALTER TABLE dove_posts ADD COLUMN judge_adopted TEXT CHECK (judge_adopted IS NULL OR judge_adopted IN ('logprobs', 'jev'));
+      ALTER TABLE dove_posts ADD COLUMN judge_decided_by TEXT CHECK (judge_decided_by IS NULL OR judge_decided_by IN ('logprobs', 'jev'));
+      ALTER TABLE dove_posts ADD COLUMN judgement_logprobs TEXT;
+      ALTER TABLE dove_posts ADD COLUMN judgement_jev TEXT;
+    `,
+  },
 ];

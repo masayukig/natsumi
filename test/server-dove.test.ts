@@ -133,7 +133,7 @@ test('a draft handed to the owner is an approval on every device and a push to t
     assert.deepEqual(snapshot.payload.pendingApprovals, []);
 
     await until(() => slack.started === 1);
-    assert.ok(f.logs.includes('slack: drafts are judged by jev'), 'the log names the method, and not where it goes');
+    assert.ok(f.logs.includes('slack: the judges are jev (on); jev is adopted'), 'the log names the judges, and not where they go');
     assert.ok(!f.logs.some(line => line.includes('judge.example.test')));
     slack.emit({ type: 'message', channel: 'C1', user: 'U1', text: '<@UBOT> 明日のレビュー大丈夫？', ts: tsAt('2026-09-25T05:32:05Z') });
     const pending = await mac.until(message => message.type === 'approval.pending');
@@ -257,4 +257,26 @@ test('an approval with an image lists it, and the image is fetched only with a l
     await mac.close();
     await f.fetch('/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${token}` } });
     assert.equal((await f.fetch(path, { headers: { authorization: `Bearer ${token}` } })).status, 401, 'not after logging out');
+  }));
+
+// ADR 0059: the settings turn a judge off for the next draft, and the list shows which judges the config has.
+test('the settings list the judges as the config has them, and a judge turned off is not asked for the next draft', () =>
+  withDove(async (f, slack, _apns, jev) => {
+    const { token } = await login(f);
+    const mac = await Client.open(f, token);
+    const snapshot = await mac.sync();
+    const { judgeLogprobs, judgeJev, judgeAdopted } = snapshot.payload.settings;
+    assert.deepEqual([judgeLogprobs.value, judgeLogprobs.available], ['off', false], 'pi here has no compatible model to lend');
+    assert.deepEqual([judgeJev.value, judgeJev.available], ['on', true]);
+    assert.equal(judgeAdopted.value, 'jev');
+    const refused = await mac.command('settings.set', { key: 'judgeLogprobs', value: 'on' });
+    assert.deepEqual([refused.type, refused.payload.code], ['command.rejected', 'judge-unavailable']);
+    assert.equal((await mac.command('settings.set', { key: 'judgeJev', value: 'off' })).type, 'command.accepted');
+
+    await until(() => slack.started === 1);
+    slack.emit({ type: 'message', channel: 'C1', user: 'U1', text: '<@UBOT> 明日のレビュー大丈夫？', ts: tsAt('2026-09-25T05:32:05Z') });
+    const pending = await mac.until(message => message.type === 'approval.pending');
+    assert.equal(pending.payload.reason.verdict, 'no-verdict');
+    assert.equal(jev.asked, 0);
+    await mac.close();
   }));

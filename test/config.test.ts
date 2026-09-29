@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ConfigError, envReference, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING, loadConfig, parseConfig } from '../src/server/config.ts';
+import { ConfigError, envReference, JUDGE_DEFAULTS, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING, loadConfig, parseConfig } from '../src/server/config.ts';
 
 const pi = () => ({
   agentDirectory: '/srv/natsumi-pi/agent',
@@ -574,53 +574,93 @@ test('the Slack limits are checked', () => {
 const compatiblePi = () => ({ ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' },
   compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' } });
 const JUDGE_THRESHOLDS = { owner: 0.5, return: 0.9 };
+const JEV_THRESHOLDS = JUDGE_DEFAULTS.jev.thresholds;
 
-test('by default the dove judges with the logprobs of pi\'s own compatible model, at 0.5 and 0.9 (ADR 0040)', () => {
+test('by default the dove judges with the logprobs of pi\'s own compatible model alone, at 0.5 and 0.9 (ADR 0040, ADR 0059)', () => {
   assert.deepEqual(parseConfig({ ...base(), pi: compatiblePi(), slack: slack() }).slack?.judge, {
-    method: 'logprobs', baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, model: 'fixture-model',
-    concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS,
+    adopted: 'logprobs',
+    logprobs: { enabled: true, baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, model: 'fixture-model',
+      concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS },
   });
   // Without a compatible model there is nothing to judge with unless one is named: every draft then goes to the owner.
   assert.equal(parseConfig({ ...base(), slack: slack() }).slack?.judge, undefined);
+  assert.equal(parseConfig({ ...base(), slack: { ...slack(), judge: {} } }).slack?.judge, undefined);
 });
 
 test('the logprobs judge may point elsewhere, and pi\'s key never goes to another endpoint', () => {
-  const judge = (value: unknown, piConfig: unknown = compatiblePi()) => ({ ...base(), pi: piConfig, slack: { ...slack(), judge: value } });
+  const judge = (value: unknown, piConfig: unknown = compatiblePi()) => ({ ...base(), pi: piConfig, slack: { ...slack(), judge: { logprobs: value } } });
   assert.deepEqual(parseConfig(judge({ baseUrl: 'https://judge.example.test/v1', model: 'judge-model', concurrency: 2, timeoutSeconds: 60,
-    thresholds: { owner: 0.4, return: 0.8 } })).slack?.judge, {
-    method: 'logprobs', baseUrl: 'https://judge.example.test/v1', model: 'judge-model', concurrency: 2, timeoutSeconds: 60,
+    thresholds: { owner: 0.4, return: 0.8 } })).slack?.judge?.logprobs, {
+    enabled: true, baseUrl: 'https://judge.example.test/v1', model: 'judge-model', concurrency: 2, timeoutSeconds: 60,
     thresholds: { owner: 0.4, return: 0.8 },
   });
-  assert.deepEqual(parseConfig(judge({ baseUrl: 'https://judge.example.test/v1', model: 'm', apiKeyFile: '/run/secrets/judge-key' }, pi())).slack?.judge?.apiKey,
+  assert.deepEqual(parseConfig(judge({ baseUrl: 'https://judge.example.test/v1', model: 'm', apiKeyFile: '/run/secrets/judge-key' }, pi())).slack?.judge?.logprobs?.apiKey,
     { file: '/run/secrets/judge-key' });
-  assert.equal(parseConfig(judge({ model: 'another-model' })).slack?.judge?.baseUrl, 'https://llm.example.test/v1');
-  rejects(judge({}, pi()), 'slack.judge.baseUrl', /compatible/);
-  rejects(judge({ baseUrl: 'https://judge.example.test/v1' }, pi()), 'slack.judge.model', /compatible/);
-  for (const concurrency of [0, 17, 1.5]) rejects(judge({ concurrency }), 'slack.judge.concurrency');
-  for (const timeoutSeconds of [4, 301]) rejects(judge({ timeoutSeconds }), 'slack.judge.timeoutSeconds');
-  rejects(judge({ method: 'guess' }), 'slack.judge.method');
+  assert.equal(parseConfig(judge({ model: 'another-model' })).slack?.judge?.logprobs?.baseUrl, 'https://llm.example.test/v1');
+  rejects(judge({}, pi()), 'slack.judge.logprobs.baseUrl', /compatible/);
+  rejects(judge({ baseUrl: 'https://judge.example.test/v1' }, pi()), 'slack.judge.logprobs.model', /compatible/);
+  for (const concurrency of [0, 17, 1.5]) rejects(judge({ concurrency }), 'slack.judge.logprobs.concurrency');
+  for (const timeoutSeconds of [4, 301]) rejects(judge({ timeoutSeconds }), 'slack.judge.logprobs.timeoutSeconds');
+  rejects(judge({ enabled: 'yes' }), 'slack.judge.logprobs.enabled');
 });
 
-test('the Jev method: TypeSafe or a server that answers the same API, with or without a key', () => {
-  const judge = (value: unknown) => ({ ...base(), slack: { ...slack(), judge: { method: 'jev', ...value as object } } });
+test('the Jev judge is on when the config has it: TypeSafe or a server that answers the same API, with or without a key', () => {
+  const judge = (value: unknown) => ({ ...base(), slack: { ...slack(), judge: { jev: value } } });
   assert.deepEqual(parseConfig(judge({ apiKeyFile: '/run/secrets/jev-api-key' })).slack?.judge, {
-    method: 'jev', baseUrl: 'https://api.typesafe.ai', apiKey: { file: '/run/secrets/jev-api-key' }, model: 'jev-latest',
-    concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS,
+    adopted: 'logprobs',
+    jev: { enabled: true, baseUrl: 'https://api.typesafe.ai', apiKey: { file: '/run/secrets/jev-api-key' }, model: 'jev-latest', timeoutSeconds: 30,
+      thresholds: JEV_THRESHOLDS },
   });
-  assert.deepEqual(parseConfig(judge({ baseUrl: 'http://jev.example.internal:8080', model: 'local-judge' })).slack?.judge,
-    { method: 'jev', baseUrl: 'http://jev.example.internal:8080', model: 'local-judge', concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS });
-  assert.equal(parseConfig(judge({ baseUrl: 'http://127.0.0.1:8080', apiKeyEnv: 'K' })).slack?.judge?.baseUrl, 'http://127.0.0.1:8080');
-  rejects(judge({ baseUrl: 'http://jev.example.internal:8080', apiKeyEnv: 'K' }), 'slack.judge.baseUrl', /https/);
-  rejects(judge({ baseUrl: 'ftp://jev.example.internal' }), 'slack.judge.baseUrl');
-  rejects(judge({ baseUrl: 'https://user:pw@jev.example.internal' }), 'slack.judge.baseUrl');
-  rejects(judge({ baseUrl: 'https://jev.example.internal/?q=1' }), 'slack.judge.baseUrl');
-  rejects(judge({ apiKey: 'fixture-key' }), 'slack.judge.apiKey', /secrets must not be written/);
-  rejects(judge({ thresholds: { owner: 0.8, return: 0.5 } }), 'slack.judge.thresholds', /owner/);
-  rejects(judge({ thresholds: { owner: -0.1 } }), 'slack.judge.thresholds.owner');
-  rejects(judge({ thresholds: { return: 1.5 } }), 'slack.judge.thresholds.return');
-  rejects(judge({ model: '' }), 'slack.judge.model');
-  rejects(judge({ url: 'https://example.test' }), 'slack.judge.url', /unknown/);
+  assert.deepEqual(parseConfig(judge({ baseUrl: 'http://jev.example.internal:8080', model: 'local-judge' })).slack?.judge?.jev,
+    { enabled: true, baseUrl: 'http://jev.example.internal:8080', model: 'local-judge', timeoutSeconds: 30, thresholds: JEV_THRESHOLDS });
+  assert.equal(parseConfig(judge({ baseUrl: 'http://127.0.0.1:8080', apiKeyEnv: 'K' })).slack?.judge?.jev?.baseUrl, 'http://127.0.0.1:8080');
+  rejects(judge({ baseUrl: 'http://jev.example.internal:8080', apiKeyEnv: 'K' }), 'slack.judge.jev.baseUrl', /https/);
+  rejects(judge({ baseUrl: 'ftp://jev.example.internal' }), 'slack.judge.jev.baseUrl');
+  rejects(judge({ baseUrl: 'https://user:pw@jev.example.internal' }), 'slack.judge.jev.baseUrl');
+  rejects(judge({ baseUrl: 'https://jev.example.internal/?q=1' }), 'slack.judge.jev.baseUrl');
+  rejects(judge({ apiKey: 'fixture-key' }), 'slack.judge.jev.apiKey', /secrets must not be written/);
+  rejects(judge({ thresholds: { owner: 0.8, return: 0.5 } }), 'slack.judge.jev.thresholds', /owner/);
+  rejects(judge({ thresholds: { owner: -0.1 } }), 'slack.judge.jev.thresholds.owner');
+  rejects(judge({ thresholds: { return: 1.5 } }), 'slack.judge.jev.thresholds.return');
+  rejects(judge({ model: '' }), 'slack.judge.jev.model');
+  rejects(judge({ concurrency: 2 }), 'slack.judge.jev.concurrency', /unknown/);
+  rejects(judge({ url: 'https://example.test' }), 'slack.judge.jev.url', /unknown/);
   rejects({ ...base(), slack: { ...slack(), jev: {} } }, 'slack.jev', /unknown/);
+});
+
+test('both judges side by side: each with its own endpoint and thresholds, either off by default, and one adopted (ADR 0059)', () => {
+  const both = (value: Record<string, unknown>) => ({ ...base(), pi: compatiblePi(), slack: { ...slack(), judge: value } });
+  const judge = parseConfig(both({ adopted: 'jev', logprobs: { enabled: false }, jev: { apiKeyEnv: 'JEV_KEY', thresholds: { owner: 0.7, return: 0.95 } } })).slack?.judge;
+  assert.equal(judge?.adopted, 'jev');
+  assert.equal(judge?.logprobs?.enabled, false, 'off, yet its endpoint is kept so the settings can turn it on');
+  assert.equal(judge?.logprobs?.baseUrl, 'https://llm.example.test/v1');
+  assert.deepEqual(judge?.jev?.thresholds, { owner: 0.7, return: 0.95 });
+  assert.equal(parseConfig(both({ jev: { enabled: false } })).slack?.judge?.jev?.enabled, false);
+  // With nothing to borrow and nothing written, logprobs has no endpoint, so it cannot be adopted; off, it is simply not there.
+  assert.equal('logprobs' in (parseConfig({ ...base(), slack: { ...slack(), judge: { adopted: 'jev', jev: {}, logprobs: { enabled: false } } } }).slack?.judge ?? {}), false);
+  rejects(both({ adopted: 'jev' }), 'slack.judge.adopted', /no endpoint/);
+  rejects(both({ adopted: 'guess' }), 'slack.judge.adopted', /logprobs or jev/);
+  rejects(both({ jev: {}, method: 'jev' }), 'slack.judge.method', /either/);
+});
+
+test('the form of before, one method named, is read as that judge alone on and adopted (ADR 0059)', () => {
+  const judge = (value: unknown) => ({ ...base(), pi: compatiblePi(), slack: { ...slack(), judge: value } });
+  assert.deepEqual(parseConfig(judge({ method: 'jev', apiKeyFile: '/run/secrets/jev-api-key' })).slack?.judge, {
+    adopted: 'jev',
+    logprobs: { enabled: false, baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, model: 'fixture-model',
+      concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS },
+    jev: { enabled: true, baseUrl: 'https://api.typesafe.ai', apiKey: { file: '/run/secrets/jev-api-key' }, model: 'jev-latest', timeoutSeconds: 30,
+      thresholds: JUDGE_THRESHOLDS },
+  });
+  assert.deepEqual(parseConfig(judge({ method: 'logprobs', thresholds: { owner: 0.4, return: 0.8 } })).slack?.judge, {
+    adopted: 'logprobs',
+    logprobs: { enabled: true, baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, model: 'fixture-model',
+      concurrency: 4, timeoutSeconds: 30, thresholds: { owner: 0.4, return: 0.8 } },
+  });
+  // Without `method` the keys of before are the logprobs judge's, as they always were.
+  assert.equal(parseConfig(judge({ model: 'another-model' })).slack?.judge?.logprobs?.model, 'another-model');
+  rejects(judge({ method: 'guess' }), 'slack.judge.method');
+  rejects(judge({ method: 'jev', concurrency: 0 }), 'slack.judge.concurrency');
 });
 
 test('the approvals and where a reply goes are checked', () => {

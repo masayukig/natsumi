@@ -16,7 +16,8 @@ export type SettingInput =
   | { key: 'turnFold'; fold: string }
   | { key: LimitKey; text: string }
   | { key: 'awakeHours'; start: string; end: string }
-  | { key: 'pingIntervalMinutes'; text: string; off: boolean };
+  | { key: 'pingIntervalMinutes'; text: string; off: boolean }
+  | { key: 'judgeLogprobs' | 'judgeJev' | 'judgeAdopted'; choice: string };
 
 export type ParsedSetting =
   | { [K in SettingKey]: { ok: true; key: K; value: SettingValues[K] } }[SettingKey]
@@ -36,6 +37,10 @@ export function parseSettingInput(input: SettingInput): ParsedSetting {
       return checked(input.route) ?? wrong('経路を選んでください。');
     case 'turnFold':
       return checked(input.fold) ?? wrong('on か off を選んでください。');
+    case 'judgeLogprobs': case 'judgeJev':
+      return checked(input.choice) ?? wrong('on か off を選んでください。');
+    case 'judgeAdopted':
+      return checked(input.choice) ?? wrong('logprobs か jev を選んでください。');
     case 'awakeHours': {
       const value = { start: input.start, end: input.end };
       const problem = awakeHoursProblem(value);

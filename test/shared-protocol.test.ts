@@ -18,6 +18,9 @@ const settings = {
   reviewTimeoutMinutes: { value: 30, config: 30, overridden: false },
   awakeHours: { value: { start: '07:00', end: '23:00' }, config: { start: '07:00', end: '23:00' }, overridden: false, timeZone: 'Asia/Tokyo' },
   pingIntervalMinutes: { value: false, config: 180, overridden: true },
+  judgeLogprobs: { value: 'on', config: 'on', overridden: false, available: true },
+  judgeJev: { value: 'on', config: 'off', overridden: true, available: true },
+  judgeAdopted: { value: 'jev', config: 'logprobs', overridden: true },
 };
 
 test('a message is read with its place in the stream, its request and its fields', () => {
@@ -88,6 +91,9 @@ test('an event it does not know, or one whose payload is not the contract’s, s
   assert.deepEqual(readEnvelope(envelope('model.routes', {})), { position: { epoch: 'epoch-1', streamId: 'stream-1', seq: 3 }, event: { type: 'ignored' } });
   assert.deepEqual(readEnvelope(envelope('conversation.message', { text: 1 }))?.event, { type: 'ignored' });
   assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, turnFold: { value: 'sometimes' } } }))?.event, { type: 'ignored' });
+  const { available: _available, ...withoutAvailable } = settings.judgeJev;
+  assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, judgeJev: withoutAvailable } }))?.event, { type: 'ignored' },
+    'a judge is listed with whether it can be turned on');
 });
 
 test('what is not an envelope at all is not read', () => {
