@@ -127,3 +127,13 @@ test('the verdict: send under the owner threshold, the owner between, returned a
   assert.deepEqual(returned.issues.filter(issue => issue.flagged).map(issue => issue.name), [JUDGE_ISSUES[0]!.name, JUDGE_ISSUES[1]!.name]);
   assert.equal(returned.issues[2]!.flagged, undefined, 'an issue under the threshold carries no flag');
 });
+
+test('the placement\'s options are sent in the order asked: thread first, or the other way round when told', async () => {
+  const order = async (placementOrder?: ('thread' | 'channel')[]) => {
+    const stub = answering(200, fullAnswer());
+    await new HttpJevClient({ model: 'jev-latest', fetch: stub.fetch, ...(placementOrder ? { placementOrder } : {}) }).judge(STATE, { placement: true });
+    return Object.keys(JSON.parse(String(stub.calls[0]!.init.body)).questions.placement.criteria);
+  };
+  assert.deepEqual(await order(), ['thread', 'channel']);
+  assert.deepEqual(await order(['channel', 'thread']), ['channel', 'thread']);
+});

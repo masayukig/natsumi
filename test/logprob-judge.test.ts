@@ -129,3 +129,14 @@ test('a judgement that takes longer than its limit is cut off as a whole and is 
   await assert.rejects(client.judge(STATE, { placement: true }), (error: unknown) => error instanceof JudgeError && error.kind === 'timeout');
   assert.ok(Date.now() - started < 900);
 });
+
+test('told to, the placement is asked with its options the other way round, and the letters are read back to the right place', async () => {
+  const backend = model(typical);
+  const client = new LogprobJudgeClient({ baseUrl: 'https://llm.example.test/v1', model: 'm', fetch: backend.fetch, placementOrder: ['channel', 'thread'] });
+  const judged = await client.judge(STATE, { placement: true });
+  const placement = backend.requests.map(request => request.body.messages[1].content as string).find(user => user.includes('Options:'))!;
+  assert.match(placement, /A\) channel: .*\nB\) thread: /);
+  assert.equal(judged.placement!.choice, 'channel', 'A is the channel now');
+  assert.ok(Math.abs(judged.placement!.probabilities!.channel - 0.75) < 1e-9);
+  assert.ok(Math.abs(judged.placement!.probabilities!.thread - 0.25) < 1e-9);
+});
