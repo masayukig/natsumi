@@ -191,13 +191,15 @@ test('the post to a channel carries two images, each fetched with the token and 
     const fetched = await fetch(path, { headers: { authorization: 'Bearer fake-token' } });
     assert.equal(fetched.status, 200);
     assert.equal(fetched.headers.get('content-type'), image.mimeType);
+    assert.equal(fetched.headers.get('cache-control'), 'private, max-age=31536000, immutable');
     const body = Buffer.from(await fetched.arrayBuffer());
     assert.equal(body.length, image.bytes);
     assert.deepEqual([...body.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
-    assert.equal((await fetch(path)).status, 401);
+    const none = await fetch(path);
+    assert.deepEqual([none.status, none.headers.get('cache-control')], [401, 'no-store']);
   }
   const unknown = await fetch(`http://localhost:${port}/v1/images/image-none`, { headers: { authorization: 'Bearer fake-token' } });
-  assert.equal(unknown.status, 404);
+  assert.deepEqual([unknown.status, unknown.headers.get('cache-control')], [404, 'no-store']);
   client.close();
 }));
 

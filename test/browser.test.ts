@@ -264,7 +264,9 @@ test('an image of the conversation is fetched with the cookie, as with the appâ€
   const cookie = await browserLogin(f);
   const res = await f.fetch('/v1/images/fixture-image', withCookie(`${COOKIE}=${cookie}`));
   assert.equal(res.status, 404, 'past the login: an image nobody was shown is not found');
-  assert.equal((await f.fetch('/v1/images/fixture-image')).status, 401);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  const none = await f.fetch('/v1/images/fixture-image');
+  assert.deepEqual([none.status, none.headers.get('cache-control')], [401, 'no-store']);
   assert.equal((await f.fetch('/v1/images/fixture-image', withCookie(`${COOKIE}=fixture-unknown-token`))).status, 401);
   assert.equal((await f.fetch('/auth/logout', withCookie(`${COOKIE}=${cookie}`, { method: 'POST' }))).status, 401, 'the appâ€™s logout takes the bearer only');
 }));
