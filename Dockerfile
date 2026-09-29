@@ -29,7 +29,7 @@ RUN go test ./... \
 # sdctl, which natsumi draws with (ADR 0044). Its releases carry no binary, so it is built from its source at a fixed
 # version, static like the runner.
 FROM golang:1.27 AS sdctl
-RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.1
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.2
 
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
@@ -45,8 +45,8 @@ RUN groupadd --gid 1000 natsumi \
   && chown natsumi:natsumi /work /home/natsumi
 # Outside PATH, so running it by its path gives nothing bash does not already have.
 COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
-# sdctl and its defaults (ADR 0044): the relay and /work/images, baked in, so changing them is a new image. The params
-# are the avatar's, which the server writes on every start and the workspace sees as /manual/avatar (ADR 0057).
+# sdctl and its defaults (ADR 0044): the relay, /work/images and JPEG, baked in, so changing them is a new image. The
+# params are the avatar's, which the server writes on every start and the workspace sees as /manual/avatar (ADR 0057).
 # They are in a config file and not in ENV, because the runner gives natsumi's commands none of the image's environment
 # (ADR 0019); the sdctl in PATH is a wrapper that always points the real one at that file. With these, `sdctl txt2img
 # --prompt <file>` needs nothing else, and prints only the path it saved to.

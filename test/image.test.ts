@@ -90,7 +90,7 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   const text = await dockerfile();
   const stage = text.slice(text.indexOf(' AS sdctl\n'), text.indexOf('\nFROM ', text.indexOf(' AS sdctl\n')));
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
-  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.1\b/);
+  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.2\b/);
   assert.doesNotMatch(stage, /@latest/);
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });
@@ -125,6 +125,12 @@ test('the workspace image gives sdctl its defaults in a config file that the sdc
   assert.match(config, /^url: http:\/\/127\.0\.0\.1:17860$/m);
   assert.match(config, /^params: \/manual\/avatar\/sdctl-params\.yaml$/m);
   assert.match(config, /^output_dir: \/work\/images$/m);
+});
+
+// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2). The server takes either by its content (ADR 0044, 0045).
+test('sdctl writes JPEG by default in the workspace', async () => {
+  const config = parse(await readFile(`${root}docker/sdctl/config.yaml`, 'utf8')) as Record<string, unknown>;
+  assert.equal(config.format, 'jpeg');
 });
 
 // natsumi reads and shapes JSON in the workspace (ADR 0019): jq, beside python3.
@@ -200,7 +206,13 @@ async function startWorkspace(t: TestContext, name: string) {
 
 // Answers what `sdctl txt2img` asks with default params that name modules, and writes down every request.
 const fakeImageServer = `
-import base64, http.server, json
+import base64, http.server, json, struct, zlib
+# A real 1x1 PNG: sdctl decodes it to write JPEG.
+def png():
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\\x00\\xff\\xff\\xff")) + chunk(b"IEND", b""))
 class Handler(http.server.BaseHTTPRequestHandler):
     def answer(self, body):
         data = json.dumps(body).encode()
@@ -221,7 +233,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.record(body)
         if self.path == "/sdapi/v1/txt2img":
-            return self.answer({"images": [base64.b64encode(b"not really a png").decode()], "info": "{}"})
+            return self.answer({"images": [base64.b64encode(png()).decode()], "info": "{}"})
         self.send_error(404)
     def log_message(self, *args):
         pass
@@ -230,7 +242,7 @@ open("/tmp/fake-sd/ready", "w").close()
 server.serve_forever()
 `;
 
-test('through the runner, as run_shell runs it, sdctl draws through the relay with the default params into /work/images', {
+test('through the runner, as run_shell runs it, sdctl draws JPEG through the relay with the default params into /work/images', {
   skip: hasDocker ? false : 'docker is not available',
   timeout: 30 * 60_000,
 }, async t => {
@@ -249,7 +261,7 @@ test('through the runner, as run_shell runs it, sdctl draws through the relay wi
   const params = (await loadAvatar(undefined)).sdctlParams;
   const negative = /^negative_prompt: "([^"]+)"$/m.exec(params)![1];
   const drawn = async (saved: string) => {
-    assert.match(saved, /^\/work\/images\/output-[^/\s]+\.png\n$/);
+    assert.match(saved, /^\/work\/images\/output-[^/\s]+\.jpg\n$/);
     const requests = (await throughRunner(container, 'cat /tmp/fake-sd/requests.jsonl')).stdout.trim().split('\n')
       .map(line => JSON.parse(line) as { method: string; path: string; body: Record<string, unknown> | null });
     const drawing = requests.findLast(request => request.path === '/sdapi/v1/txt2img');
@@ -258,8 +270,9 @@ test('through the runner, as run_shell runs it, sdctl draws through the relay wi
     assert.equal(drawing.body!.negative_prompt, negative);
     assert.equal(drawing.body!.steps, 30);
     assert.equal((drawing.body!.override_settings as Record<string, unknown>).sd_model_checkpoint, 'anima_mignolia_v10');
-    const listed = await throughRunner(container, `test -s ${saved.trim()} && echo saved`);
-    assert.equal(listed.stdout, 'saved\n');
+    // JPEG begins with FF D8 FF.
+    const head = await throughRunner(container, `head -c 3 ${saved.trim()} | od -An -tx1`);
+    assert.equal(head.stdout.trim(), 'ff d8 ff');
   };
 
   // natsumi's run_shell: the runner's environment only.

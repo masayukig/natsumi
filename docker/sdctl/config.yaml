@@ -9,3 +9,6 @@ url: http://127.0.0.1:17860
 # The avatar's params, or the server's default, written by the server on every start (ADR 0057).
 params: /manual/avatar/sdctl-params.yaml
 output_dir: /work/images
+# JPEG, as PNG is heavy; the server takes either by its content (ADR 0044, ADR 0045). A name given with -o still
+# decides by its extension, and the quality is sdctl's default, 90.
+format: jpeg
