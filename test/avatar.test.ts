@@ -394,7 +394,10 @@ test('myao has her own name, complete assets and Anima drawing settings', async 
   const avatar = await loadAvatar({ id: 'myao' });
   assert.equal(avatar.name, 'ミャオ');
   assert.deepEqual(avatar.filled, []);
-  assert.deepEqual(avatar.defaults, ['personality.md']);
+  assert.deepEqual(avatar.defaults, []);
+  // Her personality to start from, in the owner's words (ADR 0060).
+  assert.equal(avatar.personality, await readFile(join(BUILT_IN_DIRECTORY, 'myao', 'personality.md'), 'utf8'));
+  assert.match(avatar.personality!, /^# 性格・話し方\n[\s\S]*一人称は、ミャー/);
   assert.equal(avatar.appearance?.lora, 'myao_anima.v1');
   assert.deepEqual(avatar.appearance?.keep, ['pale blue-gray hair', 'amber eyes', 'cat ears']);
   for (const word of avatar.appearance!.keep) {
