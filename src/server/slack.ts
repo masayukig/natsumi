@@ -1,9 +1,9 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import type { ArchivedMessage, ArchivedReaction, ChannelRow, Reactor, SlackArchive } from './slack-archive.ts';
 import type { Attention } from './sources.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
+import { postWithImages } from './slack-images.ts';
 import { imageType } from './view.ts';
 
 /** The images the server fetches. Anything else attached is only noted. */
@@ -389,8 +389,7 @@ export function relayToOwner(options: {
   /** The waits before trying image blocks again that Slack refused, perhaps while the files were still processing. */
   retryDelays?: number[];
 }): () => void {
-  const { api, channel, username } = options;
-  const retryDelays = options.retryDelays ?? [1000, 2000];
+  const { api, channel, username, retryDelays } = options;
   let chain: Promise<void> = Promise.resolve();
   return options.loop.subscribe(({ type, payload }) => {
     if (type !== 'conversation.message' || payload.role !== 'natsumi' || typeof payload.text !== 'string') return;
@@ -406,23 +405,8 @@ export function relayToOwner(options: {
           if (read) files.push({ filename: `${image.imageId}.${IMAGE_TYPES[read.mimeType] ?? 'png'}`, data: read.data });
         }
         const iconUrl = `${options.avatarBaseUrl ?? `${options.publicOrigin}/avatar`}/${expression}.png`;
-        if (files.length === 0) return void await api.postMessage(channel, text, { iconUrl, ...(username ? { username } : {}) });
-        const ids = await api.uploadUnshared(files);
-        // A section holds mrkdwn as the plain `text` would show it, up to 3000 characters.
-        const blocks = [
-          ...(text.match(/[\s\S]{1,3000}/g) ?? []).map(part => ({ type: 'section', text: { type: 'mrkdwn', text: part } })),
-          ...ids.map((id, index) => ({ type: 'image', slack_file: { id }, alt_text: files[index]!.filename })),
-        ];
-        for (let attempt = 0; ; attempt += 1) {
-          try { return void await api.postMessage(channel, text, { iconUrl, blocks, ...(username ? { username } : {}) }); } catch (error) {
-            const delay = retryDelays[attempt];
-            if (delay !== undefined && (error as { reason?: unknown }).reason === 'invalid_blocks') { await sleep(delay); continue; }
-            options.log?.(`slack (${options.workspace}): images went up without her icon (${describeFailure(error)})`);
-            break;
-          }
-        }
-        // The upload as it was, under the bot's icon: the owner still gets the picture.
-        await api.uploadFiles(channel, files, { initialComment: text });
+        await postWithImages(api, channel, text, files, { iconUrl, ...(username ? { username } : {}), ...(retryDelays ? { retryDelays } : {}),
+          log: line => options.log?.(`slack (${options.workspace}): ${line}`) });
       } catch (error) {
         options.log?.(`slack (${options.workspace}): posting to the owner's channel failed (${describeFailure(error)})`);
       }
