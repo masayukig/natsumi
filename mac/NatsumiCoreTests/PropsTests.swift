@@ -396,16 +396,16 @@ struct PropsTests {
         let state = conversation(
             [owner("m1", event: "e1"), reply("r2", to: "e1"), notice("n3")],
             readThrough: "m1", unread: 1, notices: ["n3"])
-        let rows = UIProps.history(state, time: .example).rows
+        let rows = UIProps.history(state, time: .example, name: "なつみ").rows
         #expect(rows == [
             HistoryRowProps(
                 messageId: "m1", text: "やあ", time: "1/1 9:00", isOwner: true, isNotice: false, isUnread: false),
             HistoryRowProps(
                 messageId: "r2", text: "こんにちは", time: "1/1 9:00", isOwner: false, isNotice: false,
-                isUnread: true, face: FaceProps(expression: nil, isLarge: false, help: "気持ちの記録なし")),
+                isUnread: true, face: FaceProps(expression: nil, isLarge: false, help: "気持ちの記録なし"), speaker: "なつみ"),
             HistoryRowProps(
                 messageId: "n3", text: "架空のお知らせ", time: "1/1 9:00", isOwner: false, isNotice: true,
-                isUnread: true, face: FaceProps(expression: nil, isLarge: true, help: "気持ちの記録なし")),
+                isUnread: true, face: FaceProps(expression: nil, isLarge: true, help: "気持ちの記録なし"), speaker: "なつみ"),
         ])
     }
 

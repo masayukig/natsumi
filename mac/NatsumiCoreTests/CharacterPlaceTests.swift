@@ -15,8 +15,7 @@ struct CharacterPlaceTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, serverOrigin: nil,
-            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+            characterScale: .default, serverOrigin: nil)))
         _ = mediator.handle(.characterFrameChanged(frame ?? character, visible: visible ?? screen))
         return mediator
     }

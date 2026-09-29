@@ -19,7 +19,6 @@ final class ConversationComponent: Component {
         adopt(field)
         adopt(toggle)
         hosting = FirstMouseHostingView(rootView: AnyView(EmptyView()))
-        panel.title = "natsumi"
         panel.contentView = hosting
         // Opaque, so the conversation reads well over any window in both appearances.
         panel.isOpaque = true
@@ -40,6 +39,7 @@ final class ConversationComponent: Component {
         guard props != applied else { return }
         applied = props
         guard let props else { return }
+        panel.title = props.title
         hosting.rootView = AnyView(ConversationView(props: props, field: field.sink, toggle: toggle.sink, send: sink))
         panel.minSize = NSSize(
             width: ConversationWindow.minWidth,

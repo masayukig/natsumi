@@ -58,6 +58,8 @@ final class PhoneRootComponent: PhoneComponent {
     }
 
     func launch() {
+        // The UI tests start from an iPhone that has never received her avatar.
+        if ProcessInfo.processInfo.arguments.contains("-NatsumiForgetAvatar") { AvatarReceiver.copy.forget() }
         deliver(.launched(serverOrigin: account.serverAddress?.origin.absoluteString))
     }
 
@@ -184,8 +186,17 @@ final class PhoneRootComponent: PhoneComponent {
         case .fetchImage(let id):
             fetchImage(id)
         case .loadAvatar:
-            let bundled = Bundle.main.resourceURL?.appendingPathComponent("Avatars/natsumi", isDirectory: true)
-            deliver(.avatarLoaded(AvatarLoader.resolve(candidates: bundled.map { [$0] } ?? [])))
+            deliver(.avatarLoaded(AvatarReceiver.copy.load()))
+        case .fetchAvatarListing(let origin):
+            Task { [weak self] in
+                let listing = await AvatarReceiver.listing(origin: origin)
+                self?.deliver(.avatarListingFetched(origin: origin, listing))
+            }
+        case .receiveAvatar(let origin, let listing):
+            Task { [weak self] in
+                let received = await AvatarReceiver.receive(listing, origin: origin)
+                self?.deliver(.avatarReceived(received))
+            }
         }
     }
 

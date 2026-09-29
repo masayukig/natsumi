@@ -38,7 +38,7 @@ enum Fixture {
         seq: Int, stream: String = stream, requestId: String? = nil, deviceId: String = "device-example",
         messages: [[String: Any]] = [], pending: [[String: Any]] = [], expression: String = "neutral",
         readThrough: String? = nil, unreadReplyCount: Int = 0, unacknowledged: [String] = [],
-        approvals: [[String: Any]]? = nil, modelRoutes: [String: Any]? = nil
+        approvals: [[String: Any]]? = nil, modelRoutes: [String: Any]? = nil, avatarVersion: String? = nil
     ) -> Data {
         var payload: [String: Any] = [
             "deviceId": deviceId, "messages": messages, "pendingEvents": pending, "avatar": ["expression": expression],
@@ -47,6 +47,7 @@ enum Fixture {
         ]
         if let approvals { payload["pendingApprovals"] = approvals }
         if let modelRoutes { payload["modelRoutes"] = modelRoutes }
+        if let avatarVersion { payload["avatarVersion"] = avatarVersion }
         return envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: payload)
     }
 
@@ -113,6 +114,11 @@ enum Fixture {
     static func thinking(_ line: String, seq: Int, stream: String = stream, epoch: String = epoch) -> Data {
         envelope("conversation.thinking", seq: seq, epoch: epoch, stream: stream, payload: ["line": line])
     }
+
+    /// A copy of the avatar the app has received, without its art: what the tests that are not about the avatar start
+    /// with, since without one the iPhone stays on the login screen.
+    static let receivedAvatar = ReceivedAvatar(
+        art: .placeholder, id: "natsumi", name: "なつみ", version: "0123456789abcdef0123456789abcdef")
 
     static func decoded(_ data: Data) -> ServerEnvelope {
         try! ServerEnvelope.decode(data)

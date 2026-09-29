@@ -72,7 +72,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 - `UIState` から Props を導出する。**Mediator の外で Props を作らない。**
 - `UIEffect` は外の世界への指示である。**実行するのは Root だけ**であり、Mediator は実行しない。
   結果が要るものは、Root がイベントにして返す（`.resumeSession` には `.sessionResumed`、
-  `.loadAvatar` には `.avatarLoaded`、`.startLogin` には `.loginFinished`、`.fetchImage` には `.imageFetched` が返る）。
+  `.loadAvatar` には `.avatarLoaded`、`.fetchAvatarListing` には `.avatarListingFetched`、`.receiveAvatar` には `.avatarReceived`、`.startLogin` には `.loginFinished`、`.fetchImage` には `.imageFetched` が返る）。
 - 会話と承認の画像（ADR 0045）は、どれを取りに行くかを Mediator が決め（吹き出しの返事と、履歴で見えている行と、iPhone の開いている承認）、
   取った画像は `UIState`・`PhoneState` の `ImageShelf` に ID ごとに持つ。縮めた画像は ID で等しさを比べるので、Props に入れても比較は軽い。
   ログアウトで捨て、承認の画像は承認が閉じたら捨てる。
@@ -112,7 +112,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | Mac だけの OS に触る部分（グローバルなショートカットの登録） |
-| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン・画像の取得の `ImageFetcher`）と、本文のリンクの描き方（`LinkedText`）、縮小画像の描き方（`ImageTileView`・`ImageStripView`） |
+| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン・画像の取得の `ImageFetcher`・アバターの受け取りの `AvatarReceiver`）と、本文のリンクの描き方（`LinkedText`）、縮小画像の描き方（`ImageTileView`・`ImageStripView`） |
 | `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps`、承認の画面の Props（`PhoneApprovalProps`）（ADR 0041） |
 | `NatsumiCore/Session/ApprovalBook.swift` | 承認待ちの一覧と、送っている本人の決定（ADR 0041） |
 | `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |

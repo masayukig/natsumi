@@ -80,7 +80,7 @@ public struct PhoneNoticeProps: Equatable, Sendable {
 
 /// Her last reply in the balloon, in full: the balloon's own text scrolls when it is long.
 public struct PhoneReplyProps: Equatable, Sendable {
-    /// "なつみ · 9:15".
+    /// Her name and the time: "なつみ · 9:15".
     public var header: String
     public var text: String
     /// `text` with its URLs as links (ADR 0038).
@@ -105,10 +105,13 @@ public enum PhoneBalloonProps: Equatable, Sendable {
 public struct PhoneCharacterProps: Equatable, Sendable {
     public var avatar: AvatarArt
     public var expression: Expression
+    /// Her name, as the avatar says: what VoiceOver calls her.
+    public var name: String
 
-    public init(avatar: AvatarArt, expression: Expression) {
+    public init(avatar: AvatarArt, expression: Expression, name: String = AvatarBook.fallbackName) {
         self.avatar = avatar
         self.expression = expression
+        self.name = name
     }
 }
 
@@ -186,7 +189,8 @@ public struct PhoneMainProps: Equatable, Sendable {
     }
 }
 
-/// Which screen is up. Without a session there is only the login.
+/// Which screen is up. Without a session, or before her avatar has been received, there is only the login
+/// (ADR 0057).
 public enum PhoneScreen: Equatable, Sendable {
     case login(PhoneLoginProps)
     case main(PhoneMainProps)
@@ -206,13 +210,15 @@ public struct PhoneRootProps: Equatable, Sendable {
 public enum PhoneProps {
     /// `time` is when this is drawn, for the time beside her reply.
     public static func root(_ state: PhoneState, time: MessageTime) -> PhoneRootProps {
-        guard state.hasSession else { return PhoneRootProps(screen: .login(login(state))) }
+        guard state.hasSession, state.avatars.received != nil else { return PhoneRootProps(screen: .login(login(state))) }
         let conversation = state.conversation
         return PhoneRootProps(screen: .main(PhoneMainProps(
             status: status(state.status),
             notices: state.isComposing ? nil : notices(conversation),
-            balloon: balloon(conversation, time: time),
-            character: PhoneCharacterProps(avatar: state.avatar, expression: face(conversation, isComposing: state.isComposing)),
+            balloon: balloon(conversation, time: time, name: state.avatars.name),
+            character: PhoneCharacterProps(
+                avatar: state.avatar, expression: face(conversation, isComposing: state.isComposing),
+                name: state.avatars.name),
             outgoing: outgoing(conversation, isComposing: state.isComposing), isComposing: state.isComposing,
             page: page(state, time: time), approvals: PhoneApprovalProps.entry(state), viewer: viewer(state))))
     }
@@ -220,7 +226,11 @@ public enum PhoneProps {
     /// The picture opened large, while it is here to show.
     static func viewer(_ state: PhoneState) -> ImageViewerProps? {
         guard let id = state.viewedImage, case .loaded(let image) = state.images[id] else { return nil }
-        return ImageViewerProps(image: image, title: "なつみの画像")
+        return ImageViewerProps(image: image, title: viewerTitle(state))
+    }
+
+    static func viewerTitle(_ state: PhoneState) -> String {
+        "\(state.avatars.name)の画像"
     }
 
     /// Standing, she wears the face the server gives her. While the owner writes she is a face beside her reply, so
@@ -251,12 +261,13 @@ public enum PhoneProps {
         case .history:
             .history(PhoneHistoryProps(history: UIProps.history(
                 state.conversation, time: time, avatar: state.avatar, images: state.images, strip: .phoneHistory,
-                openHelp: "タップで拡大")))
+                openHelp: "タップで拡大", name: state.avatars.name)))
         case .settings:
             .settings(PhoneSettingsProps(
                 serverOrigin: state.serverOrigin ?? "", status: status(state.status),
                 device: state.session.deviceId ?? "",
-                modelRoutes: UIProps.modelRoutes(state.session.modelRoutes, isConnected: state.status == .connected)))
+                modelRoutes: UIProps.modelRoutes(
+                    state.session.modelRoutes, isConnected: state.status == .connected, name: state.avatars.name)))
         case .approvals:
             .approvals(PhoneApprovalProps.list(state, time: time))
         case .approval(let id):
@@ -268,10 +279,19 @@ public enum PhoneProps {
 
     static func login(_ state: PhoneState) -> PhoneLoginProps {
         let isLoggingIn = state.status == .loggingIn
+        let greeting = if state.serverOrigin == nil {
+            "はじめまして。どこのサーバーにつなぐか教えてね。"
+        } else if state.hasSession {
+            // Logged in, and only her avatar is still on its way.
+            "アバターを受け取っています。少し待ってね。"
+        } else {
+            "おかえり。もう一度ログインしてね。"
+        }
+        let failed = state.avatars.received == nil && state.avatars.failed
         return PhoneLoginProps(
-            greeting: state.serverOrigin == nil
-                ? "はじめまして。どこのサーバーにつなぐか教えてね。" : "おかえり。もう一度ログインしてね。",
-            serverOrigin: state.serverOrigin ?? "", message: state.loginMessage, isLoggingIn: isLoggingIn,
+            greeting: greeting, serverOrigin: state.serverOrigin ?? "",
+            message: state.loginMessage ?? (failed ? "アバターを受け取れませんでした。サーバーを確かめてね。" : nil),
+            isLoggingIn: isLoggingIn,
             buttonTitle: isLoggingIn ? "ログイン中…" : "GitHub でログイン", face: .happy, avatar: state.avatar)
     }
 
@@ -304,7 +324,9 @@ public enum PhoneProps {
 
     /// Her last reply while it is unread, whole, with what she is thinking under it while she is still at it
     /// (ADR 0022, ADR 0025); otherwise the thought bubble while she is receiving or thinking (ADR 0017).
-    static func balloon(_ conversation: ConversationState, time: MessageTime) -> PhoneBalloonProps? {
+    static func balloon(
+        _ conversation: ConversationState, time: MessageTime, name: String = AvatarBook.fallbackName
+    ) -> PhoneBalloonProps? {
         let thinking = UIProps.indicator(conversation).map { indicator in
             ThinkingProps(label: indicator == .receiving ? "受付中" : "考え中", line: conversation.thinkingLine)
         }
@@ -313,6 +335,6 @@ public enum PhoneProps {
         }
         let at = time.labels([last.date]).first ?? nil
         return .reply(PhoneReplyProps(
-            header: at.map { "なつみ · \($0)" } ?? "なつみ", text: BalloonText.whole(last.text), thinking: thinking))
+            header: at.map { "\(name) · \($0)" } ?? name, text: BalloonText.whole(last.text), thinking: thinking))
     }
 }

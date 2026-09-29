@@ -17,6 +17,7 @@ struct PhoneMediatorTests {
     private func launched(server: String? = server, hasSession: Bool = true) -> PhoneMediator {
         var mediator = mediator()
         _ = mediator.handle(.launched(serverOrigin: server))
+        _ = mediator.handle(.avatarLoaded(Fixture.receivedAvatar))
         _ = mediator.handle(.sessionResumed(hasSession: hasSession, deviceId: nil))
         return mediator
     }
@@ -87,7 +88,7 @@ struct PhoneMediatorTests {
     func loginWithANewServer() throws {
         var mediator = launched(server: nil)
         let address = try ServerAddress(Self.server)
-        #expect(mediator.handle(.loginSubmitted(server: Self.server + "/")) == [.saveServerAddress(address), .startLogin])
+        #expect(mediator.handle(.loginSubmitted(server: Self.server + "/")) == [.saveServerAddress(address), .startLogin, .fetchAvatarListing(origin: Self.server)])
         let props = try #require(login(mediator))
         #expect(props.isLoggingIn)
         #expect(props.buttonTitle == "ログイン中…")
@@ -259,7 +260,7 @@ struct PhoneMediatorTests {
     @Test("キャラクターはサーバーの表情で描く")
     func characterWearsTheServersFace() {
         let mediator = synced(expression: "happy")
-        #expect(main(mediator)?.character == PhoneCharacterProps(avatar: .placeholder, expression: .happy))
+        #expect(main(mediator)?.character == PhoneCharacterProps(avatar: .placeholder, expression: .happy, name: "なつみ"))
     }
 
     @Test("話しかけている間の顔は、横に出ているセリフに込めた気持ちで描く")

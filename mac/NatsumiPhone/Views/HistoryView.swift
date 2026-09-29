@@ -105,7 +105,7 @@ struct HistoryRowView: View {
                                 topTrailingRadius: 14),
                             fill: props.isNotice ? Comic.notice : Comic.paper)
                     }
-                    caption("なつみ" + (props.time.map { " · \($0)" } ?? ""))
+                    caption((props.speaker ?? "") + (props.time.map { " · \($0)" } ?? ""))
                 }
                 Spacer(minLength: 24)
             }

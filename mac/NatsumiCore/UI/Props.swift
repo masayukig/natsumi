@@ -267,10 +267,12 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var face: FaceProps?
     /// The pictures she attached, small, under the text (ADR 0045).
     public var images: [ImageTileProps]
+    /// Her name, as the avatar says, on her lines; nil on the owner's messages.
+    public var speaker: String?
 
     public init(
         messageId: String, text: String, time: String?, isOwner: Bool, isNotice: Bool, isUnread: Bool,
-        face: FaceProps? = nil, images: [ImageTileProps] = []
+        face: FaceProps? = nil, images: [ImageTileProps] = [], speaker: String? = nil
     ) {
         self.messageId = messageId
         self.text = text
@@ -281,6 +283,7 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
         self.isUnread = isUnread
         self.face = face
         self.images = images
+        self.speaker = speaker
     }
 
     public var id: String { messageId }
@@ -322,6 +325,8 @@ public struct HistoryProps: Equatable, Sendable {
 
 /// The conversation window (ADR 0021): the input field, and the history when it is unfolded above it.
 public struct ConversationProps: Equatable, Sendable {
+    /// The window's title: her name, as the avatar says.
+    public var title: String
     /// Where the window is, in screen coordinates. The root puts it there; unfolding and folding are seen happening.
     public var frame: CGRect
     /// The window's height while folded. The input field keeps the height it has then, and the history takes
@@ -337,9 +342,10 @@ public struct ConversationProps: Equatable, Sendable {
     public var toggleHelp: String
 
     public init(
-        frame: CGRect, foldedHeight: CGFloat, status: StatusProps, history: HistoryProps?,
-        failures: [FailureProps], toggleHelp: String
+        title: String = AvatarBook.fallbackName, frame: CGRect, foldedHeight: CGFloat, status: StatusProps,
+        history: HistoryProps?, failures: [FailureProps], toggleHelp: String
     ) {
+        self.title = title
         self.frame = frame
         self.foldedHeight = foldedHeight
         self.status = status
@@ -358,7 +364,7 @@ public struct SettingsProps: Equatable, Sendable {
     public var canLogin: Bool
     public var canLogout: Bool
     public var scale: CharacterScale
-    public var avatarDirectory: String
+    /// Which avatar the server gave, or why there is none.
     public var avatarDescription: String
     /// The global shortcut as the menus write it, or "なし".
     public var hotKey: String
@@ -370,7 +376,7 @@ public struct SettingsProps: Equatable, Sendable {
 
     public init(
         serverOrigin: String, message: String?, statusText: String, lastError: String?, canLogin: Bool,
-        canLogout: Bool, scale: CharacterScale, avatarDirectory: String, avatarDescription: String,
+        canLogout: Bool, scale: CharacterScale, avatarDescription: String,
         hotKey: String = HotKey.default.displayName, isRecordingHotKey: Bool = false, hotKeyMessage: String? = nil,
         canClearHotKey: Bool = true, canResetHotKey: Bool = false,
         modelRoutes: ModelRoutesProps = ModelRoutesProps(summary: "経路はまだ分かりません", menuTitle: "モデル: 不明")
@@ -382,7 +388,6 @@ public struct SettingsProps: Equatable, Sendable {
         self.canLogin = canLogin
         self.canLogout = canLogout
         self.scale = scale
-        self.avatarDirectory = avatarDirectory
         self.avatarDescription = avatarDescription
         self.hotKey = hotKey
         self.isRecordingHotKey = isRecordingHotKey
@@ -394,6 +399,8 @@ public struct SettingsProps: Equatable, Sendable {
 }
 
 public struct MenuProps: Equatable, Sendable {
+    /// The menu bar item's title: her name, as the avatar says.
+    public var title: String
     public var statusText: String
     public var canReadAllReplies: Bool
     public var canAcknowledgeAllNotices: Bool
@@ -402,9 +409,11 @@ public struct MenuProps: Equatable, Sendable {
     public var modelRoutes: ModelRoutesProps
 
     public init(
-        statusText: String, canReadAllReplies: Bool, canAcknowledgeAllNotices: Bool, showsLogin: Bool, canLogout: Bool,
+        title: String = AvatarBook.fallbackName, statusText: String, canReadAllReplies: Bool,
+        canAcknowledgeAllNotices: Bool, showsLogin: Bool, canLogout: Bool,
         modelRoutes: ModelRoutesProps = ModelRoutesProps(summary: "経路はまだ分かりません", menuTitle: "モデル: 不明")
     ) {
+        self.title = title
         self.statusText = statusText
         self.canReadAllReplies = canReadAllReplies
         self.canAcknowledgeAllNotices = canAcknowledgeAllNotices
@@ -416,6 +425,8 @@ public struct MenuProps: Equatable, Sendable {
 
 /// Everything the tree draws, in one value. A panel that is not there is nil.
 public struct RootProps: Equatable, Sendable {
+    /// She is on the screen, with her cards: only once her avatar has been received (ADR 0057).
+    public var showsCharacter: Bool = true
     public var character: CharacterProps
     public var balloon: BalloonProps?
     public var notices: NoticeBundleProps?
@@ -456,6 +467,7 @@ public enum UIProps {
         placement.expandedWidth = OverlayLayout.expandedWidth(placement.width, visible: state.visibleFrame)
         let conversation = state.conversation
         return RootProps(
+            showsCharacter: state.avatars.received != nil,
             character: character(state, stack: noticeStack(conversation)),
             balloon: balloon(
                 conversation, dismissed: state.isIndicatorDismissed, readingHistory: state.isReadingHistory,
@@ -633,12 +645,13 @@ public enum UIProps {
         let window = state.conversationWindow
         let conversation = state.conversation
         return ConversationProps(
+            title: state.avatars.name,
             frame: window.frame ?? CGRect(origin: .zero, size: window.size), foldedHeight: window.foldedHeight,
             status: statusRow(state.status),
             history: window.showsHistory
                 ? history(
                     conversation, time: time, avatar: state.avatar, images: state.images,
-                    strip: .macHistory(windowWidth: window.size.width))
+                    strip: .macHistory(windowWidth: window.size.width), name: state.avatars.name)
                 : nil,
             failures: window.showsHistory ? [] : failures(conversation),
             toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）")
@@ -658,7 +671,7 @@ public enum UIProps {
     public static func history(
         _ conversation: ConversationState, time: MessageTime, avatar: AvatarArt = .placeholder,
         images: ImageShelf = ImageShelf(), strip: ImageStrip = .macHistory(windowWidth: ConversationWindow.default.size.width),
-        openHelp: String = "クリックで拡大"
+        openHelp: String = "クリックで拡大", name: String = AvatarBook.fallbackName
     ) -> HistoryProps {
         let times = time.labels(conversation.messages.map(\.date))
         let unread = conversation.unreadFlags
@@ -671,7 +684,8 @@ public enum UIProps {
                 return HistoryRowProps(
                     messageId: message.messageId, text: message.text, time: times[index],
                     isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index], face: face,
-                    images: message.images.isEmpty ? [] : strip.tiles(message.images, shelf: images, openHelp: openHelp))
+                    images: message.images.isEmpty ? [] : strip.tiles(message.images, shelf: images, openHelp: openHelp),
+                    speaker: message.role == .owner ? nil : name)
             },
             outgoing: conversation.outbox.map { item in
                 let failure: String? = switch item.status {
@@ -686,7 +700,7 @@ public enum UIProps {
     /// The picture opened large, while it is here to show.
     static func viewer(_ state: UIState) -> ImageViewerProps? {
         guard let id = state.viewedImage, case .loaded(let image) = state.images[id] else { return nil }
-        return ImageViewerProps(image: image, title: "なつみの画像")
+        return ImageViewerProps(image: image, title: "\(state.avatars.name)の画像")
     }
 
     /// What the face says when the pointer rests on it.
@@ -709,20 +723,32 @@ public enum UIProps {
         SettingsProps(
             serverOrigin: state.serverOrigin ?? "", message: state.settingsMessage, statusText: state.status.text,
             lastError: state.lastError, canLogin: state.status == .needsLogin, canLogout: state.hasSession,
-            scale: state.characterScale, avatarDirectory: state.avatarDirectory,
-            avatarDescription: state.avatarDescription,
+            scale: state.characterScale, avatarDescription: avatarDescription(state.avatars),
             hotKey: state.hotKey?.displayName ?? "なし", isRecordingHotKey: state.isRecordingHotKey,
             hotKeyMessage: state.hotKeyMessage, canClearHotKey: state.hotKey != nil,
             canResetHotKey: state.hotKey != .default,
-            modelRoutes: modelRoutes(state.session.modelRoutes, isConnected: state.status == .connected))
+            modelRoutes: modelRoutes(
+                state.session.modelRoutes, isConnected: state.status == .connected, name: state.avatars.name))
+    }
+
+    /// Which avatar the server gave, or why there is none yet.
+    static func avatarDescription(_ avatars: AvatarBook) -> String {
+        guard let received = avatars.received else {
+            return avatars.failed
+                ? "アバターを受け取れませんでした。サーバーを確かめてください"
+                : "アバターはまだ受け取っていません。サーバーを設定すると受け取ります"
+        }
+        let line = "\(received.name)のアバターをサーバーから受け取っています（版 \(received.version.prefix(8))）"
+        return avatars.failed ? line + "。新しい版を受け取れませんでした" : line
     }
 
     static func menu(_ state: UIState) -> MenuProps {
         MenuProps(
-            statusText: state.status.text, canReadAllReplies: !state.conversation.unreadReplies.isEmpty,
+            title: state.avatars.name, statusText: state.status.text, canReadAllReplies: !state.conversation.unreadReplies.isEmpty,
             canAcknowledgeAllNotices: !state.conversation.unacknowledgedNotificationIds.isEmpty,
             showsLogin: state.status == .needsLogin, canLogout: state.hasSession,
-            modelRoutes: modelRoutes(state.session.modelRoutes, isConnected: state.status == .connected))
+            modelRoutes: modelRoutes(
+                state.session.modelRoutes, isConnected: state.status == .connected, name: state.avatars.name))
     }
 
     /// The connection and what to do about it. The window says where it stands either way (ADR 0021).

@@ -174,38 +174,10 @@ struct AvatarTests {
         #expect(throws: AvatarLoadError.invalidManifest) { try AvatarLoader.load(directory: sample.directory) }
     }
 
-    @Test("外のディレクトリのアセットを優先し、読めなければ次の候補、どれも読めなければ仮の絵にする")
-    func resolveOrder() throws {
-        let external = try SampleAvatar(avatarJSON: SampleAvatar.defaultJSON.replacingOccurrences(of: #""neutral": "rest""#, with: #""neutral": "wave""#))
-        defer { external.remove() }
-        let bundled = try SampleAvatar()
-        defer { bundled.remove() }
-        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("natsumi-missing-\(UUID().uuidString)")
-
-        guard case .sprite(let first) = AvatarLoader.resolve(candidates: [external.directory, bundled.directory]) else { Issue.record("no sprite"); return }
-        #expect(first.frames(for: .neutral).count == 3)
-        guard case .sprite(let fallback) = AvatarLoader.resolve(candidates: [missing, bundled.directory]) else { Issue.record("no sprite"); return }
-        #expect(fallback.frames(for: .neutral).count == 2)
-        #expect(AvatarLoader.resolve(candidates: [missing]) == .placeholder)
-    }
-
     @Test("仮の絵は 8 つの表情をそれぞれ別の記号で表す")
     func placeholder() {
         let symbols = Expression.allCases.map(PlaceholderArt.symbol(for:))
         #expect(Set(symbols).count == 8)
-    }
-
-    @Test("同梱のアバターを読み込め、8 つの表情すべてにフレームがある")
-    func bundledAvatar() throws {
-        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Avatars/natsumi")
-        let avatar = try AvatarLoader.load(directory: directory)
-        for expression in Expression.allCases {
-            let frames = avatar.frames(for: expression)
-            #expect(frames.isEmpty == false)
-            #expect(frames.allSatisfy { $0.width == 192 && $0.height == 208 })
-        }
-        #expect(avatar.frames(for: .neutral).count == 6)
     }
 
     @Test("avatar.json の icons で、表情ごとの顔のアイコンを読む。無い表情と無いファイルは、アイコンなしになる")

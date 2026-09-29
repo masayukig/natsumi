@@ -394,7 +394,7 @@ struct CharacterView: View {
             Ellipse().fill(Comic.floor).frame(width: 140, height: 12)
         }
         .accessibilityElement()
-        .accessibilityLabel("なつみ")
+        .accessibilityLabel(props.name)
     }
 }
 
