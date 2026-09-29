@@ -247,9 +247,10 @@ export interface SlackConfig {
   postImages: { maxBytes: number; maxCount: number };
   /**
    * Fork: the owner talks with her in one channel of one workspace, and in the DM with the bot, instead of on a Mac
-   * (ADR F01). Absent, the owner is only on the Mac and the iPhone, as upstream.
+   * (ADR F01). Absent, the owner is only on the Mac and the iPhone, as upstream. `username` names the bot's posts
+   * there instead of "natsumi" (ADR F01); absent, Slack shows her bot profile name as upstream.
    */
-  owner?: { workspace: string; userId: string; channel: string };
+  owner?: { workspace: string; userId: string; channel: string; username?: string };
   /**
    * Fork (ADR F01): where Slack fetches her icons, `<avatarBaseUrl>/<expression>.png`, without a trailing slash. Absent,
    * `<publicOrigin>/avatar`, as upstream; set it when publicOrigin is out of Slack's reach.
@@ -832,14 +833,26 @@ function parseAvatarBaseUrl(value: unknown, path: string): string {
 /** Fork (ADR F01): the owner's workspace, their Slack user ID and the channel's ID, as Slack writes them. */
 function parseSlackOwner(value: unknown, path: string, workspaces: SlackConfig['workspaces']): NonNullable<SlackConfig['owner']> {
   const owner = object(value, path);
-  onlyKeys(owner, path, ['workspace', 'userId', 'channel']);
+  onlyKeys(owner, path, ['workspace', 'userId', 'channel', 'username']);
   const workspace = required(owner, 'workspace', path);
   if (typeof workspace !== 'string' || !(workspace in workspaces)) throw new ConfigError(`${path}.workspace`, 'must name one of slack.workspaces');
   const userId = required(owner, 'userId', path);
   if (typeof userId !== 'string' || !/^[UW][A-Z0-9]{2,}$/.test(userId)) throw new ConfigError(`${path}.userId`, 'must be a Slack user ID, such as U0123ABCD');
   const channel = required(owner, 'channel', path);
   if (typeof channel !== 'string' || !/^[CG][A-Z0-9]{2,}$/.test(channel)) throw new ConfigError(`${path}.channel`, 'must be a Slack channel ID, such as C0123ABCD');
-  return { workspace, userId, channel };
+  return { workspace, userId, channel, ...(owner.username === undefined ? {} : { username: ownerUsername(owner.username, `${path}.username`) }) };
+}
+
+/** The longest name Slack shows over a post (ADR F01). */
+const MAX_OWNER_USERNAME_CHARS = 80;
+
+/** Fork (ADR F01): the name shown on the bot's posts in the owner's channel, in place of her bot profile name. */
+function ownerUsername(value: unknown, path: string): string {
+  const text = nonEmptyString(value, path);
+  if ([...text].length > MAX_OWNER_USERNAME_CHARS || /\p{Cc}/u.test(text)) {
+    throw new ConfigError(path, `must be 1 to ${MAX_OWNER_USERNAME_CHARS} characters without control characters`);
+  }
+  return text;
 }
 
 function parseCurator(value: unknown, path: string): CuratorConfig {

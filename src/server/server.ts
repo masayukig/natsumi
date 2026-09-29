@@ -253,7 +253,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         const ownerHere = owner?.workspace === name ? owner : undefined;
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
-            ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), images, log });
+            ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}),
+            ...(ownerHere.username ? { username: ownerHere.username } : {}), images, log });
           // Fork (ADR F02): and approves the dove's drafts in the DM with the bot.
           if (theDove) new SlackApprovals({ db, dove: theDove, api, socket, workspace: name, ownerUserId: ownerHere.userId, log }).sync();
         }

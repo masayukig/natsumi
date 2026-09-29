@@ -584,6 +584,18 @@ test('fork: slack.owner names a configured workspace, the owner\'s user ID and t
   rejects({ ...base(), slack: { ...slack(), owner: { workspace: 'work', userId: 'U0123ABCD' } } }, 'slack.owner.channel', /required/);
 });
 
+test('fork: slack.owner.username names the bot on its posts there, 1 to 80 characters without control characters (ADR F01)', () => {
+  const owner = { workspace: 'work', userId: 'U0123ABCD', channel: 'C0123ABCD' };
+  assert.equal('username' in parseConfig({ ...base(), slack: { ...slack(), owner } }).slack!.owner!, false);
+  assert.equal(parseConfig({ ...base(), slack: { ...slack(), owner: { ...owner, username: 'natsumi (owner)' } } }).slack?.owner?.username,
+    'natsumi (owner)');
+  const with_ = (username: unknown) => ({ ...base(), slack: { ...slack(), owner: { ...owner, username } } });
+  rejects(with_(''), 'slack.owner.username');
+  rejects(with_('a'.repeat(81)), 'slack.owner.username');
+  rejects(with_('bad\nname'), 'slack.owner.username');
+  assert.equal(parseConfig(with_('a'.repeat(80))).slack?.owner?.username, 'a'.repeat(80));
+});
+
 test('fork: slack.avatarBaseUrl is an https URL without its trailing slash, and absent unless written (ADR F01)', () => {
   assert.equal('avatarBaseUrl' in parseConfig({ ...base(), slack: slack() }).slack!, false);
   const with_ = (avatarBaseUrl: unknown) => ({ ...base(), slack: { ...slack(), avatarBaseUrl } });
