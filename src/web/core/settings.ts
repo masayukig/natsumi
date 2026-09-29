@@ -17,7 +17,8 @@ export type SettingInput =
   | { key: LimitKey; text: string }
   | { key: 'awakeHours'; start: string; end: string }
   | { key: 'pingIntervalMinutes'; text: string; off: boolean }
-  | { key: 'judgeLogprobs' | 'judgeJev' | 'judgeAdopted'; choice: string };
+  | { key: 'judgeLogprobs' | 'judgeJev' | 'judgeAdopted'; choice: string }
+  | { key: 'judgeLogprobsThresholds' | 'judgeJevThresholds'; owner: string; return: string };
 
 export type ParsedSetting =
   | { [K in SettingKey]: { ok: true; key: K; value: SettingValues[K] } }[SettingKey]
@@ -25,6 +26,8 @@ export type ParsedSetting =
 
 /** A whole number as typed: digits only, so `1.5`, `1e3` and blanks are not taken for one. */
 const wholeNumber = (text: string): number | undefined => (/^\s*\d+\s*$/.test(text) ? Number(text) : undefined);
+/** A decimal as typed, such as `0.5` or `1`: digits and one point, so blanks and `1e-1` are not taken for one. */
+const decimal = (text: string): number | undefined => (/^\s*\d+(\.\d+)?\s*$/.test(text) ? Number(text) : undefined);
 
 export function parseSettingInput(input: SettingInput): ParsedSetting {
   const wrong = (message: string): ParsedSetting => ({ ok: false, key: input.key, message });
@@ -41,6 +44,9 @@ export function parseSettingInput(input: SettingInput): ParsedSetting {
       return checked(input.choice) ?? wrong('on か off を選んでください。');
     case 'judgeAdopted':
       return checked(input.choice) ?? wrong('logprobs か jev を選んでください。');
+    case 'judgeLogprobsThresholds': case 'judgeJevThresholds':
+      return checked({ owner: decimal(input.owner), return: decimal(input.return) })
+        ?? wrong('どちらも 0 より大きく 1 以下の数で、本人へ回すほうを突き返すほう以下にしてください。');
     case 'awakeHours': {
       const value = { start: input.start, end: input.end };
       const problem = awakeHoursProblem(value);

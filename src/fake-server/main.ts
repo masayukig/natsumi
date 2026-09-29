@@ -119,6 +119,7 @@ const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
   turnFold: 'off', eventModelCalls: 8, eventTimeoutMinutes: 10, reviewModelCalls: 40, reviewTimeoutMinutes: 30,
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
   judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs',
+  judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.5, return: 0.9 },
 };
 /** Which of the dove's judges the made-up config has an endpoint for: Jev has none, so it cannot be turned on (ADR 0059). */
 const JUDGE_AVAILABLE = { judgeLogprobs: true, judgeJev: false };
@@ -264,6 +265,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       awakeHours: { ...item('awakeHours'), timeZone: 'Asia/Tokyo' }, pingIntervalMinutes: item('pingIntervalMinutes'),
       judgeLogprobs: { ...item('judgeLogprobs'), available: JUDGE_AVAILABLE.judgeLogprobs },
       judgeJev: { ...item('judgeJev'), available: JUDGE_AVAILABLE.judgeJev }, judgeAdopted: item('judgeAdopted'),
+      judgeLogprobsThresholds: item('judgeLogprobsThresholds'), judgeJevThresholds: item('judgeJevThresholds'),
     };
   }
 

@@ -679,7 +679,7 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
 - **`jev`**: TypeSafe AI の Jev の API（`POST /v1/systemone`）、または同じ API を返すサーバーに、1 回の呼び出しで全部の問いを聞きます。
   `slack.judge.jev` を書いたときだけ有効です。従量課金なので、有効な間は採用していなくても投稿のたびに料金がかかります。
 - 有効な判定が 1 つも無ければ、判定はせず、投稿はすべて本人の承認に回ります。
-- 有効・無効と採用する方は、動いている最中に `/settings`（`judgeLogprobs`・`judgeJev`・`judgeAdopted`）で上書きできます。次の下書きから効きます。
+- 有効・無効と採用する方、判定ごとのしきい値は、動いている最中に `/settings`（`judgeLogprobs`・`judgeJev`・`judgeAdopted`・`judgeLogprobsThresholds`・`judgeJevThresholds`）で上書きできます。次の下書きから効きます。
   config に接続先の無い判定は、画面から有効にできません。
 
 値は架空の例です。1 つ目は pi のモデルの logprobs だけを使う既定のもの（書かなくても同じ）、2 つ目は 2 つを並べて Jev を採用するものです。

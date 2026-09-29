@@ -112,3 +112,9 @@ test('a judge turned on that the config has no endpoint for is as good as off; w
   assert.deepEqual(none, { adopted: 'logprobs', results: {}, decidedBy: null });
   assert.equal(logprobs.asked.length, 1);
 });
+
+test('the thresholds in force, from the settings, replace the config\'s for the next draft', async () => {
+  const judged = await judgeSideBySide({ jev: { client: new StandIn(scored(0.6)), thresholds: THRESHOLDS } },
+    { logprobs: false, jev: true, adopted: 'jev', thresholds: { jev: { owner: 0.7, return: 0.99 } } }, STATE, { placement: false });
+  assert.equal(judged.decided?.verdict, 'send', '0.6 is under the 0.7 set in the settings, though over the config\'s 0.5');
+});

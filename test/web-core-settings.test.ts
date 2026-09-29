@@ -18,7 +18,8 @@ test('every runtime setting is listed with the config’s value and the one in f
     pingIntervalMinutes: { value: false, config: 180, overridden: true } }));
   const rows = settingsProps(driver.state).rows;
   assert.deepEqual(rows.map(item => item.key), ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes',
-    'reviewModelCalls', 'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted']);
+    'reviewModelCalls', 'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted',
+    'judgeLogprobsThresholds', 'judgeJevThresholds']);
   assert.deepEqual([row(driver, 'eventModelCalls').valueText, row(driver, 'eventModelCalls').configText], ['12 回', '8 回']);
   assert.equal(row(driver, 'eventModelCalls').overridden, true);
   assert.equal(row(driver, 'eventModelCalls').canReset, true);
@@ -127,4 +128,20 @@ test('before the list has come, the settings say they are waiting for it', () =>
   const props = settingsProps(driver.state);
   assert.deepEqual(props.rows, []);
   assert.match(props.status.text, /つない/);
+});
+
+test('each judge\'s thresholds are shown and changed as two numbers, checked by the contract\'s rules (ADR 0059)', () => {
+  const driver = onSettings();
+  assert.deepEqual([row(driver, 'judgeJevThresholds').valueText, row(driver, 'judgeJevThresholds').configText],
+    ['本人へ 0.6・突き返す 0.95', '本人へ 0.5・突き返す 0.9']);
+  const control = row(driver, 'judgeJevThresholds').control;
+  assert.deepEqual(control, { kind: 'thresholds', owner: '0.6', return: '0.95' });
+  assert.deepEqual(parseSettingInput({ key: 'judgeJevThresholds', owner: '0.7', return: '0.99' }),
+    { ok: true, key: 'judgeJevThresholds', value: { owner: 0.7, return: 0.99 } });
+  for (const [owner, returnAt] of [['0.9', '0.5'], ['0', '0.9'], ['0.5', ''], ['x', '0.9']]) {
+    const parsed = parseSettingInput({ key: 'judgeJevThresholds', owner: owner!, return: returnAt! });
+    assert.equal(parsed.ok, false, `${owner} ${returnAt}`);
+  }
+  const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'judgeLogprobsThresholds', owner: '0.4', return: '0.8' } }));
+  assert.deepEqual([set?.type, set?.payload], ['settings.set', { key: 'judgeLogprobsThresholds', value: { owner: 0.4, return: 0.8 } }]);
 });

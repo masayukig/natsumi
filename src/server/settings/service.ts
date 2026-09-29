@@ -1,6 +1,6 @@
 import {
-  checkSetting, isSettingKey, JUDGE_SETTINGS, type AwakeHours, type Fold, type JudgeName, type RouteView, type SettingItem, type SettingKey,
-  type SettingsView, type SettingValues, type TurnLimits,
+  checkSetting, isSettingKey, JUDGE_SETTINGS, type AwakeHours, type Fold, type JudgeName, type JudgeThresholds, type RouteView, type SettingItem,
+  type SettingKey, type SettingsView, type SettingValues, type TurnLimits,
 } from '../../shared/protocol/settings.ts';
 import { clearOverride, readOverrides, writeOverride, type Overrides } from './store.ts';
 
@@ -39,7 +39,7 @@ type Configured = Omit<SettingValues, 'modelRoute'>;
 export type SettingsDefaults = Configured & { timeZone: string; judgeAvailable: Record<JudgeName, boolean> };
 
 /** The dove's judges as they are in force: on only when turned on and there is an endpoint to ask (ADR 0059). */
-export interface JudgesInForce { logprobs: boolean; jev: boolean; adopted: JudgeName }
+export interface JudgesInForce { logprobs: boolean; jev: boolean; adopted: JudgeName; thresholds: Record<JudgeName, JudgeThresholds> }
 
 export type SettingsOutcome =
   | { kind: 'accepted'; settings: SettingsView }
@@ -110,6 +110,8 @@ export class RuntimeSettings {
       judgeLogprobs: { ...item('judgeLogprobs'), available: defaults.judgeAvailable.logprobs },
       judgeJev: { ...item('judgeJev'), available: defaults.judgeAvailable.jev },
       judgeAdopted: item('judgeAdopted'),
+      judgeLogprobsThresholds: item('judgeLogprobsThresholds'),
+      judgeJevThresholds: item('judgeJevThresholds'),
     };
   }
 
@@ -170,9 +172,10 @@ export class RuntimeSettings {
 
   /** Which of the dove's judges it asks for the next draft, and which one decides (ADR 0059). */
   judges(): JudgesInForce {
-    const { judgeLogprobs, judgeJev, judgeAdopted } = this.inForce();
+    const { judgeLogprobs, judgeJev, judgeAdopted, judgeLogprobsThresholds, judgeJevThresholds } = this.inForce();
     const { judgeAvailable } = this.options.defaults;
-    return { logprobs: judgeLogprobs === 'on' && judgeAvailable.logprobs, jev: judgeJev === 'on' && judgeAvailable.jev, adopted: judgeAdopted };
+    return { logprobs: judgeLogprobs === 'on' && judgeAvailable.logprobs, jev: judgeJev === 'on' && judgeAvailable.jev, adopted: judgeAdopted,
+      thresholds: { logprobs: { ...judgeLogprobsThresholds }, jev: { ...judgeJevThresholds } } };
   }
 
   private inForce(): Omit<Configured, 'turnFold'> {
@@ -181,6 +184,8 @@ export class RuntimeSettings {
     return {
       judgeLogprobs: o.judgeLogprobs ?? defaults.judgeLogprobs, judgeJev: o.judgeJev ?? defaults.judgeJev,
       judgeAdopted: o.judgeAdopted ?? defaults.judgeAdopted,
+      judgeLogprobsThresholds: o.judgeLogprobsThresholds ?? defaults.judgeLogprobsThresholds,
+      judgeJevThresholds: o.judgeJevThresholds ?? defaults.judgeJevThresholds,
       eventModelCalls: o.eventModelCalls ?? defaults.eventModelCalls, eventTimeoutMinutes: o.eventTimeoutMinutes ?? defaults.eventTimeoutMinutes,
       reviewModelCalls: o.reviewModelCalls ?? defaults.reviewModelCalls, reviewTimeoutMinutes: o.reviewTimeoutMinutes ?? defaults.reviewTimeoutMinutes,
       awakeHours: o.awakeHours ?? defaults.awakeHours, pingIntervalMinutes: o.pingIntervalMinutes ?? defaults.pingIntervalMinutes,

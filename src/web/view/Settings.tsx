@@ -27,6 +27,7 @@ function inputOf(row: SettingRowProps, form: HTMLFormElement): SettingInput {
     case 'awakeHours': return { key: 'awakeHours', start: field('start'), end: field('end') };
     case 'pingIntervalMinutes': return { key: 'pingIntervalMinutes', text: field('value'), off: data.get('off') === 'on' };
     case 'judgeLogprobs': case 'judgeJev': case 'judgeAdopted': return { key: row.key, choice: field('value') };
+    case 'judgeLogprobsThresholds': case 'judgeJevThresholds': return { key: row.key, owner: field('owner'), return: field('return') };
     default: return { key: row.key, text: field('value') };
   }
 }
@@ -83,6 +84,15 @@ function Control({ row, id }: { row: SettingRowProps; id: string }) {
         <div class="field hours">
           <label for={`${id}-start`}><span class="field-label">始まり</span><input id={`${id}-start`} name="start" type="time" defaultValue={control.start} /></label>
           <label for={`${id}-end`}><span class="field-label">終わり</span><input id={`${id}-end`} name="end" type="time" defaultValue={control.end} /></label>
+        </div>
+      );
+    case 'thresholds':
+      return (
+        <div class="field hours">
+          <label for={`${id}-owner`}><span class="field-label">本人へ回す</span>
+            <input id={`${id}-owner`} name="owner" type="text" inputMode="decimal" defaultValue={control.owner} /></label>
+          <label for={`${id}-return`}><span class="field-label">突き返す</span>
+            <input id={`${id}-return`} name="return" type="text" inputMode="decimal" defaultValue={control.return} /></label>
         </div>
       );
     case 'ping':

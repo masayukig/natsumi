@@ -9,13 +9,15 @@
  */
 
 export const SETTING_KEYS = ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls',
-  'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted'] as const;
+  'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds'] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
 
 export type Fold = 'on' | 'off';
 /** The dove's two judges (ADR 0059). */
 export type JudgeName = 'logprobs' | 'jev';
+/** A judge's thresholds: at or over `owner` the draft goes to the owner, at or over `return` back to natsumi. */
+export interface JudgeThresholds { owner: number; return: number }
 export interface AwakeHours { start: string; end: string }
 
 /** A value of each setting, as it is kept and shown. */
@@ -38,6 +40,9 @@ export interface SettingValues {
   judgeJev: Fold;
   /** The judge whose verdict decides while it has one (ADR 0059). */
   judgeAdopted: JudgeName;
+  /** Each judge's thresholds (ADR 0059). */
+  judgeLogprobsThresholds: JudgeThresholds;
+  judgeJevThresholds: JudgeThresholds;
 }
 
 /** A route as the owner is shown it (ADR 0046): never its endpoint or its key. */
@@ -62,6 +67,8 @@ export interface SettingsView {
   judgeLogprobs: SettingItem<Fold> & { available: boolean };
   judgeJev: SettingItem<Fold> & { available: boolean };
   judgeAdopted: SettingItem<JudgeName>;
+  judgeLogprobsThresholds: SettingItem<JudgeThresholds>;
+  judgeJevThresholds: SettingItem<JudgeThresholds>;
 }
 
 /** The limits of one turn, as the thinking loop reads them before it starts one. */
@@ -82,6 +89,17 @@ export const isFold = (value: unknown): value is Fold => value === 'on' || value
 export const isJudgeName = (value: unknown): value is JudgeName => value === 'logprobs' || value === 'jev';
 /** The setting that turns each judge on or off. */
 export const JUDGE_SETTINGS = { logprobs: 'judgeLogprobs', jev: 'judgeJev' } as const;
+/** A threshold as the config takes it: over 0 and at most 1. */
+export const isThreshold = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1;
+
+/** Two thresholds, owner not over return, and nothing else, as the config takes them. */
+export function thresholdsOf(value: unknown): JudgeThresholds | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const pair = value as Record<string, unknown>;
+  if (Object.keys(pair).some(key => key !== 'owner' && key !== 'return')) return undefined;
+  if (!isThreshold(pair.owner) || !isThreshold(pair.return) || pair.owner > pair.return) return undefined;
+  return { owner: pair.owner, return: pair.return };
+}
 /** A limit of a turn: calls or minutes, a positive integer. */
 export const isTurnLimit = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
 export const isPingInterval = (value: unknown): value is number | false =>
@@ -115,6 +133,10 @@ export function checkSetting(key: string, value: unknown): SettingCheck {
       return isFold(value) ? { ok: true, key, value } : invalid;
     case 'judgeAdopted':
       return isJudgeName(value) ? { ok: true, key, value } : invalid;
+    case 'judgeLogprobsThresholds': case 'judgeJevThresholds': {
+      const thresholds = thresholdsOf(value);
+      return thresholds ? { ok: true, key, value: thresholds } : invalid;
+    }
     case 'eventModelCalls': case 'eventTimeoutMinutes': case 'reviewModelCalls': case 'reviewTimeoutMinutes':
       return isTurnLimit(value) ? { ok: true, key, value } : invalid;
     case 'awakeHours': {

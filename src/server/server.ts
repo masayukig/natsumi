@@ -194,7 +194,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes, timeZone,
       // The dove's judges (ADR 0059): on as the config has them, and only those it has an endpoint for can be turned on.
       judgeLogprobs: judges?.logprobs?.enabled ? 'on' : 'off', judgeJev: judges?.jev?.enabled ? 'on' : 'off',
-      judgeAdopted: judges?.adopted ?? JUDGE_DEFAULTS.adopted, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined } } });
+      judgeAdopted: judges?.adopted ?? JUDGE_DEFAULTS.adopted,
+      judgeLogprobsThresholds: judges?.logprobs?.thresholds ?? JUDGE_DEFAULTS.thresholds,
+      judgeJevThresholds: judges?.jev?.thresholds ?? JUDGE_DEFAULTS.jev.thresholds, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined } } });
     // The page on drawing and the sdctl params, for the workspace to read as /manual/avatar (ADR 0057).
     await writeAvatarManual(join(dataDirectory, AVATAR_MANUAL_DIRECTORY), avatar);
     // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).

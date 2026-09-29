@@ -223,6 +223,8 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `judgeLogprobs` | ポッポさんの logprobs の判定を掛けるか。`"on"` / `"off"`。config に接続先が無ければ `"on"` にできない（[ADR 0059](adr/0059-two-judges-side-by-side-and-fewer-issues.md)） | 次の下書きから |
 | `judgeJev` | ポッポさんの Jev の判定を掛けるか。`"on"` / `"off"`。config に接続先が無ければ `"on"` にできない | 次の下書きから |
 | `judgeAdopted` | 採用する判定。`"logprobs"` / `"jev"`。採用する方が答えなければもう一方で決める | 次の下書きから |
+| `judgeLogprobsThresholds` | logprobs の判定のしきい値 `{"owner":0.5,"return":0.9}`。どちらも 0 より大きく 1 以下、owner ≦ return。owner 以上で本人へ回し、return 以上で突き返す | 次の下書きから |
+| `judgeJevThresholds` | Jev の判定のしきい値。形と規則は `judgeLogprobsThresholds` と同じ | 次の下書きから |
 
 一覧（`settings`: `session.snapshot` の欄、`settings.list`・`settings.set`・`settings.reset` の答え、`settings.changed` の payload）は、key ごとに次の欄を持つオブジェクトである。
 
@@ -237,7 +239,7 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `available` | `judgeLogprobs` と `judgeJev` だけ。config にその判定の接続先があるか。false なら `"on"` にできない |
 
 ```json
-{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false}}
+{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false},"judgeLogprobsThresholds":{"value":{"owner":0.5,"return":0.9},"config":{"owner":0.5,"return":0.9},"overridden":false},"judgeJevThresholds":{"value":{"owner":0.6,"return":0.95},"config":{"owner":0.5,"return":0.9},"overridden":true}}
 ```
 
 - `settings.set`（payload `{"key":"eventModelCalls","value":12}`）は、値を config と同じ規則で確かめてから上書きを書き、変えた後の一覧を `command.accepted` で返す。

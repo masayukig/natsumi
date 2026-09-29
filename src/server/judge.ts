@@ -125,8 +125,11 @@ export const probability = (value: unknown): value is number => typeof value ===
 export type JudgeMethod = 'logprobs' | 'jev';
 export const JUDGE_METHODS: readonly JudgeMethod[] = ['logprobs', 'jev'];
 
-/** Which judges are on, and which one decides, as they are in force now (ADR 0059). */
-export interface JudgeChoice { logprobs: boolean; jev: boolean; adopted: JudgeMethod }
+/**
+ * Which judges are on, which one decides, and the thresholds each is read by when the settings give them, as they are
+ * in force now (ADR 0059). A judge's thresholds not given here are the config's.
+ */
+export interface JudgeChoice { logprobs: boolean; jev: boolean; adopted: JudgeMethod; thresholds?: Partial<Record<JudgeMethod, Thresholds>> }
 
 /** A judge the config has an endpoint for, with the thresholds its scores are read by. */
 export interface JudgeSlot { client: JudgeClient; thresholds: Thresholds }
@@ -154,7 +157,8 @@ export async function judgeSideBySide(judges: Partial<Record<JudgeMethod, JudgeS
   options: { placement: boolean }): Promise<SideBySide> {
   const asked = JUDGE_METHODS.filter(method => choice[method] && judges[method] !== undefined);
   const answers = await Promise.all(asked.map(async (method): Promise<[JudgeMethod, JudgeResult]> => {
-    const { client, thresholds } = judges[method]!;
+    const { client } = judges[method]!;
+    const thresholds = choice.thresholds?.[method] ?? judges[method]!.thresholds;
     try {
       const answer = await client.judge(state, options);
       return [method, { ...decideVerdict(answer, thresholds), ...(answer.placement ? { placement: answer.placement } : {}) }];

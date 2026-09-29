@@ -21,6 +21,8 @@ const settings = {
   judgeLogprobs: { value: 'on', config: 'on', overridden: false, available: true },
   judgeJev: { value: 'on', config: 'off', overridden: true, available: true },
   judgeAdopted: { value: 'jev', config: 'logprobs', overridden: true },
+  judgeLogprobsThresholds: { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false },
+  judgeJevThresholds: { value: { owner: 0.6, return: 0.95 }, config: { owner: 0.5, return: 0.9 }, overridden: true },
 };
 
 test('a message is read with its place in the stream, its request and its fields', () => {

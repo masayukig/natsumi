@@ -325,6 +325,8 @@ test('settings.list answers every setting; settings.set changes one, which every
   assert.deepEqual(snapshot.payload.settings.judgeLogprobs, { value: 'on', config: 'on', overridden: false, available: true });
   assert.deepEqual(snapshot.payload.settings.judgeJev, { value: 'off', config: 'off', overridden: false, available: false });
   assert.deepEqual(snapshot.payload.settings.judgeAdopted, { value: 'logprobs', config: 'logprobs', overridden: false });
+  assert.deepEqual(snapshot.payload.settings.judgeLogprobsThresholds, { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false });
+  assert.deepEqual(snapshot.payload.settings.judgeJevThresholds.config, { owner: 0.5, return: 0.9 });
   const listed = await client.request('settings.list', {});
   assert.equal(listed.type, 'command.accepted');
   assert.deepEqual(listed.payload.settings, snapshot.payload.settings);
@@ -349,6 +351,7 @@ test('settings.set refuses what the server refuses, and moves the route between 
     [{ key: 'compactionThreshold', value: 1 }, 'unknown-setting'], [{ key: 'modelRoute', value: 'spare' }, 'route-unavailable'],
     [{ key: 'modelRoute', value: 'nowhere' }, 'unknown-route'], [{ key: 'eventModelCalls' }, 'invalid-request'],
     [{ key: 'judgeJev', value: 'on' }, 'judge-unavailable'], [{ key: 'judgeAdopted', value: 'both' }, 'invalid-value'],
+    [{ key: 'judgeJevThresholds', value: { owner: 0.9, return: 0.5 } }, 'invalid-value'],
   ] as const) {
     const answer = await client.request('settings.set', payload);
     assert.deepEqual([answer.type, answer.payload.code], ['command.rejected', code], JSON.stringify(payload));
