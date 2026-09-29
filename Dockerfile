@@ -79,9 +79,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 # Only what the server runs. src/probe is a development tool against a live model; it belongs in the
-# checkout, not here, and nothing under src/server or src/pi imports it.
+# checkout, not here, and nothing under src/server or src/pi imports it. src/shared is the protocol the server shares
+# with the browser's app (ADR 0058).
 COPY --from=build /app/dist/src/server ./dist/src/server
 COPY --from=build /app/dist/src/pi ./dist/src/pi
+COPY --from=build /app/dist/src/shared ./dist/src/shared
 # The browser's app, served at /app/ for the chat (/) and the settings (/settings) (ADR 0058).
 COPY --from=build /app/dist/web ./dist/web
 # natsumi, the avatar used when the config names none, and the faceless pictures and default params that fill in what
