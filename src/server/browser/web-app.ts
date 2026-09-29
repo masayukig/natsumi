@@ -48,11 +48,7 @@ export class WebApp {
 
   constructor(options: WebAppOptions) {
     this.options = options;
-    const socket = new URL(options.publicOrigin);
-    socket.protocol = socket.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Nothing inline and nothing from elsewhere; the socket is named too, for the browsers whose 'self' leaves it out.
-    this.csp = ["default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: blob:",
-      `connect-src 'self' ${socket.origin}`, "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"].join('; ');
+    this.csp = webAppCsp(options.publicOrigin);
   }
 
   /** Whether the path is the browser app's to answer. */
@@ -78,25 +74,43 @@ export class WebApp {
       }
       return send(response, outcome.status, message('ログインを始められませんでした'), cleared);
     }
-    const directory = await this.bundleDirectory();
-    const style = directory ? await exists(join(directory, BUNDLE_STYLE)) : false;
-    send(response, 200, directory ? appPage(this.options.name, style) : missingPage(this.options.name), { 'set-cookie': browser.renewed(session) });
+    send(response, 200, await webAppPage(this.options.name, this.options.bundleDirectory), { 'set-cookie': browser.renewed(session) });
   }
 
   private async bundleFile(response: ServerResponse, name: string): Promise<void> {
-    const type = BUNDLE_TYPES[name.slice(name.lastIndexOf('.'))];
-    const directory = BUNDLE_FILE.test(name) && type ? await this.bundleDirectory() : undefined;
-    // Read on every request: a bundle rebuilt while the server runs is served as it is now.
-    const file = directory ? await readFile(join(directory, name)).catch(() => undefined) : undefined;
+    const file = await readBundleFile(name, this.options.bundleDirectory);
     if (!file) return send(response, 404, message('見つかりません'));
-    response.writeHead(200, { 'content-type': type!, 'content-length': file.length }).end(file);
+    response.writeHead(200, { 'content-type': file.contentType, 'content-length': file.data.length }).end(file.data);
   }
+}
 
-  private async bundleDirectory(): Promise<string | undefined> {
-    const candidates = this.options.bundleDirectory ? [this.options.bundleDirectory] : BUNDLE_DIRECTORIES;
-    for (const directory of candidates) if (await exists(join(directory, BUNDLE_SCRIPT))) return directory;
-    return undefined;
+/** The page's CSP: nothing inline and nothing from elsewhere; the socket is named too, for the browsers whose 'self' leaves it out. */
+export function webAppCsp(publicOrigin: string): string {
+  const socket = new URL(publicOrigin);
+  socket.protocol = socket.protocol === 'https:' ? 'wss:' : 'ws:';
+  return ["default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data: blob:",
+    `connect-src 'self' ${socket.origin}`, "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"].join('; ');
+}
+
+/** The one page of `/` and `/settings`: the bundle's, or one saying there is none yet. */
+export async function webAppPage(name: string, bundleDirectory?: string): Promise<Html> {
+  const directory = await findBundle(bundleDirectory);
+  return directory ? appPage(name, await exists(join(directory, BUNDLE_STYLE))) : missingPage(name);
+}
+
+/** A file of the bundle by its name, read now: a bundle rebuilt while the server runs is served as it is. */
+export async function readBundleFile(name: string, bundleDirectory?: string): Promise<{ contentType: string; data: Buffer } | undefined> {
+  const contentType = BUNDLE_TYPES[name.slice(name.lastIndexOf('.'))];
+  const directory = BUNDLE_FILE.test(name) && contentType ? await findBundle(bundleDirectory) : undefined;
+  const data = directory ? await readFile(join(directory, name)).catch(() => undefined) : undefined;
+  return data && contentType ? { contentType, data } : undefined;
+}
+
+async function findBundle(bundleDirectory: string | undefined): Promise<string | undefined> {
+  for (const directory of bundleDirectory ? [bundleDirectory] : BUNDLE_DIRECTORIES) {
+    if (await exists(join(directory, BUNDLE_SCRIPT))) return directory;
   }
+  return undefined;
 }
 
 const exists = (path: string) => readFile(path).then(() => true, () => false);
