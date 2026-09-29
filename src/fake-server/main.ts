@@ -477,11 +477,12 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     } else if (url.pathname.startsWith('/v1/images/') && request.method === 'GET') {
       const image = IMAGES.get(url.pathname.slice('/v1/images/'.length));
       if (request.headers.authorization !== 'Bearer fake-token' && !hasCookie(request)) {
-        response.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'unauthorized' }));
+        response.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ error: 'unauthorized' }));
       } else if (!image) {
-        response.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not-found' }));
+        response.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ error: 'not-found' }));
       } else {
-        response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': image.length }).end(image);
+        response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=31536000, immutable',
+          'Content-Length': image.length }).end(image);
       }
     } else if (url.pathname === '/v1/avatar' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(avatarManifest(AVATAR)));

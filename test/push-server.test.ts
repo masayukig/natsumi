@@ -293,6 +293,7 @@ test('a reply with images lists them, each is fetched only with a live session, 
   assert.equal(image.status, 200);
   assert.equal(image.headers.get('content-type'), 'image/png');
   assert.equal(image.headers.get('content-length'), String(drawn.length));
+  assert.equal(image.headers.get('cache-control'), 'private, max-age=31536000, immutable');
   assert.deepEqual(Buffer.from(await image.arrayBuffer()), drawn);
   assert.equal((await f.fetch(path)).status, 401, 'no session');
   assert.deepEqual((await f.fetch(path, { headers: { authorization: 'Bearer not-a-session' } })).json(), { error: 'unauthorized' });

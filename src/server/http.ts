@@ -133,7 +133,9 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     const id = IMAGE_PATH.exec(url.pathname)?.[1];
     const image = id ? await options.images.read(id) : undefined;
     if (!image) return json(response, 404, { error: 'not-found' });
-    response.writeHead(200, { 'content-type': image.mimeType, 'content-length': image.data.length }).end(image.data);
+    // An ID names one copy for good (ADR 0045), so the owner's browser keeps it; a shared cache never does.
+    response.writeHead(200, { 'content-type': image.mimeType, 'cache-control': 'private, max-age=31536000, immutable',
+      'content-length': image.data.length }).end(image.data);
     return;
   }
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
