@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { writeFileAtomically } from './paths.ts';
+import { isFold, type Fold } from './settings/domain.ts';
+import { readFoldOverride, writeOverride } from './settings/store.ts';
 import { checkHealth, readStatus } from './status.ts';
 
 /**
@@ -9,11 +11,11 @@ import { checkHealth, readStatus } from './status.ts';
  * data directory, so the command line reaches a running server without a listener of its own and a choice outlives
  * a restart. Nothing here loads Pi.
  *
- * - `turn-fold.json` is the choice. The command line writes it; the server reads it before every turn.
+ * - `turn-fold.json` is the choice, kept by the runtime settings' store (ADR 0058). The command line writes it; the server reads it before every turn.
  * - `turn-fold-status.json` is what the server says: the fold in use, the config's default, and the choice.
  */
 
-export type Fold = 'on' | 'off';
+export type { Fold } from './settings/domain.ts';
 
 export interface FoldStatus {
   /** What the turns are folded with now. */
@@ -24,20 +26,18 @@ export interface FoldStatus {
   chosen: Fold | null;
 }
 
-const choicePath = (dataDirectory: string) => join(dataDirectory, STATE_DIRECTORY, 'turn-fold.json');
 const statusPath = (dataDirectory: string) => join(dataDirectory, STATE_DIRECTORY, 'turn-fold-status.json');
-const isFold = (value: unknown): value is Fold => value === 'on' || value === 'off';
 
-/** The choice, or undefined when none was made or the file cannot be read. */
-export async function readFoldChoice(dataDirectory: string): Promise<Fold | undefined> {
-  try {
-    const { fold } = JSON.parse(await readFile(choicePath(dataDirectory), 'utf8')) as { fold?: unknown };
-    return isFold(fold) ? fold : undefined;
-  } catch { return undefined; }
+/**
+ * The choice, or undefined when none was made or the file cannot be read. It is the owner's override of
+ * `loop.turnFold`, kept by the runtime settings' store (ADR 0058).
+ */
+export function readFoldChoice(dataDirectory: string): Promise<Fold | undefined> {
+  return readFoldOverride(dataDirectory);
 }
 
-export async function writeFoldChoice(dataDirectory: string, fold: Fold, now: number): Promise<void> {
-  await writeFileAtomically(choicePath(dataDirectory), `${JSON.stringify({ fold, chosenAt: new Date(now).toISOString() })}\n`, 0o600);
+export function writeFoldChoice(dataDirectory: string, fold: Fold, now: number): Promise<void> {
+  return writeOverride(dataDirectory, 'turnFold', fold, now);
 }
 
 export async function readFoldStatus(dataDirectory: string): Promise<FoldStatus | undefined> {
