@@ -187,7 +187,9 @@ test('a phone that is away gets an alert for the reply and the notice, and a bac
     assert.equal(push.body.aps.sound, 'default');
     assert.equal(typeof push.body.position, 'number');
     const plain = JSON.parse(openPush({ devicePrivateKey: keys.privateKey, messageId: said.messageId, sealed: push.body.e }).toString());
-    assert.deepEqual(plain, { text: said.text, expression: said.expression });
+    // Her face for the line, served for Slack on the public origin (ADR 0057).
+    assert.deepEqual(plain, { text: said.text, expression: said.expression,
+      icon: `https://natsumi.example.test/avatar/${said.expression ?? 'neutral'}.png` });
   }
   // Two replies unread and two notices unchecked by the time the second push was made.
   assert.equal(Math.max(first!.body.aps.badge, second!.body.aps.badge), 4);
@@ -300,7 +302,7 @@ test('a reply with images lists them, each is fetched only with a live session, 
   const [push] = await apns.waitFor(1);
   assert.deepEqual(push!.body.aps.alert, { title: 'なつみ', body: '返事があります' });
   const plain = JSON.parse(openPush({ devicePrivateKey: keys.privateKey, messageId: reply.messageId, sealed: push!.body.e }).toString());
-  assert.deepEqual(plain, { text: '描きました（画像 1 枚）', expression: 'happy' });
+  assert.deepEqual(plain, { text: '描きました（画像 1 枚）', expression: 'happy', icon: 'https://natsumi.example.test/avatar/happy.png' });
 
   await mac.close();
   await f.fetch('/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${macLogin.token}` } });

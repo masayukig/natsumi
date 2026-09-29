@@ -153,7 +153,7 @@ class FakeSender {
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 30));
 
-function setup(options: { connected?: string[]; retryDelaysMs?: number[] } = {}) {
+function setup(options: { connected?: string[]; retryDelaysMs?: number[]; iconOrigin?: string } = {}) {
   const db = database();
   const loop = new FakeLoop();
   const sender = new FakeSender();
@@ -169,6 +169,7 @@ function setup(options: { connected?: string[]; retryDelaysMs?: number[] } = {})
   const notifier = new PushNotifier({
     db, loop, registrations, sender, allowedUserId: OWNER, isConnected: deviceId => connected.has(deviceId),
     log: line => { logs.push(line); }, retryDelaysMs: options.retryDelaysMs ?? [1, 1, 1],
+    ...(options.iconOrigin === undefined ? {} : { iconOrigin: options.iconOrigin }),
   });
   return { db, loop, sender, logs, registrations, keys, connected, notifier };
 }
@@ -368,5 +369,81 @@ test('a reply with images carries a mark of how many at the end of its text, kep
       assert.ok(chars.length <= 1000);
       assert.equal(chars.slice(-9).join(''), '…（画像 1 枚）');
     }
+  } finally { notifier.close(); }
+});
+
+test('with a public origin, a reply or a notice seals the URL of her face for its feeling, neutral when it has none', async () => {
+  const { db, loop, sender, keys, notifier } = setup({ connected: ['device-b'], iconOrigin: 'https://natsumi.example.net' });
+  const opened = async (kind: 'reply' | 'notice', expression: string | null) => {
+    const { position: _, ...line } = message(db, kind, '晴れです', expression);
+    const before = sender.requests.length;
+    loop.emit('conversation.message', line);
+    const [request] = (await sender.waitFor(before + 1)).slice(before);
+    return JSON.parse(openPush({ devicePrivateKey: keys.a.privateKey, messageId: line.messageId, sealed: (request!.payload as any).e })
+      .toString()) as Record<string, unknown>;
+  };
+  try {
+    assert.deepEqual(await opened('reply', 'happy'),
+      { text: '晴れです', expression: 'happy', icon: 'https://natsumi.example.net/avatar/happy.png' });
+    assert.deepEqual(await opened('notice', 'worried'),
+      { text: '晴れです', expression: 'worried', icon: 'https://natsumi.example.net/avatar/worried.png' });
+    // A line with no feeling recorded wears the neutral face, as the app showed it before.
+    assert.deepEqual(await opened('reply', null), { text: '晴れです', icon: 'https://natsumi.example.net/avatar/neutral.png' });
+  } finally { notifier.close(); }
+});
+
+test('without a public origin no face is sealed, and the face travels only inside the ciphertext', async () => {
+  const { db, loop, sender, keys, notifier } = setup({ connected: ['device-b'] });
+  try {
+    const { position: _, ...reply } = message(db, 'reply', '晴れです', 'happy');
+    loop.emit('conversation.message', reply);
+    const [request] = await sender.waitFor(1);
+    const payload = request!.payload as Record<string, any>;
+    assert.deepEqual(JSON.parse(openPush({ devicePrivateKey: keys.a.privateKey, messageId: reply.messageId, sealed: payload.e }).toString()),
+      { text: '晴れです', expression: 'happy' });
+  } finally { notifier.close(); }
+  const withFace = setup({ connected: ['device-b'], iconOrigin: 'https://natsumi.example.net' });
+  try {
+    const { position: _, ...reply } = message(withFace.db, 'reply', '晴れです', 'happy');
+    withFace.loop.emit('conversation.message', reply);
+    const [request] = await withFace.sender.waitFor(1);
+    const { e: _e, ...plain } = request!.payload as Record<string, unknown>;
+    assert.ok(!JSON.stringify(plain).includes('avatar'), 'the face is not in the clear');
+  } finally { withFace.notifier.close(); }
+});
+
+test('the face of the longest reply stays whole within the APNs payload limit; the text is what is cut', async () => {
+  const { db, loop, sender, keys, notifier } = setup({ iconOrigin: 'https://natsumi.example.net' });
+  try {
+    for (const text of ['あ'.repeat(1500), '😀'.repeat(1500), '"\\'.repeat(800)]) {
+      const { position: _, ...reply } = message(db, 'reply', text, 'surprised');
+      const before = sender.requests.length;
+      loop.emit('conversation.message', { ...reply, images: [{ imageId: 'image-1', mimeType: 'image/png', bytes: 10 }] });
+      const requests = (await sender.waitFor(before + 2)).slice(before);
+      for (const request of requests) assert.ok(Buffer.byteLength(JSON.stringify(request.payload)) <= APNS_PAYLOAD_MAX_BYTES);
+      const toA = requests.find(r => r.token === TOKEN_A)!;
+      const sent = JSON.parse(openPush({ devicePrivateKey: keys.a.privateKey, messageId: reply.messageId, sealed: (toA.payload as any).e }).toString());
+      assert.equal(sent.icon, 'https://natsumi.example.net/avatar/surprised.png');
+      assert.ok(sent.text.endsWith('…（画像 1 枚）'));
+    }
+  } finally { notifier.close(); }
+});
+
+test('an approval seals no face, as before', async () => {
+  const db = database();
+  const loop = new FakeLoop();
+  const approvals = new FakeLoop();
+  const sender = new FakeSender();
+  const registrations = new PushRegistrations(db, () => NOW);
+  const key = keyPair();
+  device(db, 'device-a');
+  registrations.save('device-a', parseRegistration({ token: TOKEN_A, publicKey: key.publicKey.toString('base64'), environment: 'sandbox' })!);
+  const notifier = new PushNotifier({ db, loop, approvals, registrations, sender, allowedUserId: OWNER, isConnected: () => false,
+    log: () => {}, iconOrigin: 'https://natsumi.example.net' });
+  try {
+    approvals.emit('approval.pending', { approvalId: 'approval-1', text: '下書き', target: { channel: 'work/#dev' } });
+    const [request] = await sender.waitFor(1);
+    assert.deepEqual(JSON.parse(openPush({ devicePrivateKey: key.privateKey, messageId: 'approval-1', sealed: (request!.payload as any).e })
+      .toString()), { text: '下書き', channel: 'work/#dev' });
   } finally { notifier.close(); }
 });

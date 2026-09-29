@@ -316,7 +316,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         origins: options.apns?.origins });
       notifier = new PushNotifier({
         db, loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), registrations, sender: apns, allowedUserId, isConnected: deviceId => connections.isConnected(deviceId),
-        log, retryDelaysMs: options.apns?.retryDelaysMs, name: avatar.name,
+        log, retryDelaysMs: options.apns?.retryDelaysMs, name: avatar.name, iconOrigin: config.publicOrigin,
       });
     } else {
       log('push: apns is not configured; registrations are kept and nothing is sent');
