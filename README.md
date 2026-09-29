@@ -225,6 +225,7 @@ Kubernetes では `kubectl exec natsumi-0 -c server -- node /app/dist/src/server
   `model use` で別の経路を選び、起動し直してください。
 - Mac・iPhone のアプリからも、`model.list` と `model.use` のコマンドで読んで選べます（[契約](docs/client-contract.md)）。
   画面での選び方は下の「Mac アプリ」の「使い方」と「iPhone アプリ」にあります。
+- ブラウザの設定の画面（`/settings`）からも選べ、「config に戻す」で選んだ記録（`.natsumi/model-route.json`）を消して既定の経路に戻せます（下の「ブラウザで話す・設定を変える」）。
 
 サブスクリプションの経路（例: ChatGPT Plus の `openai-codex`）は、`pi.authPath` の OAuth のログインを使います。
 サーバーはこのファイルを作りません。本人が Pi の CLI で、その Pi 領域にログインします。`authPath` は
@@ -260,6 +261,7 @@ node dist/src/server/main.js fold off --data-dir <data directory>     # 次の�
 ```
 
 - 選んだ値は `.natsumi/turn-fold.json` に残り、再起動しても続きます。サーバーはターンの前に読みます。
+- ブラウザの設定の画面（`/settings`）からも切り替えられ、「config に戻す」でこのファイルを消せます（下の「ブラウザで話す・設定を変える」）。
 - 切り替えた直後のターンは、prefix cache が 1 回外れます。
 
 ターンごとの数と、そのターンが session のファイルのどこにあるか（本文は含みません）が `.natsumi/state.sqlite` の `turn_stats` に残ります。
@@ -277,15 +279,30 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 - `--since` と `--until` は `YYYY-MM-DD`（UTC の 0 時）か、`Z` 付きの時刻です。`--until` の時刻は含みません。
 - `--memos` は `pi.sessionDirectory` を読むために設定ファイルを読みます（既定は `config.local.json`）。
 
+### ブラウザで話す・設定を変える
+
+ブラウザで `<publicOrigin>/`（例: `https://natsumi.example.net/`）を開くと、Mac・iPhone と同じ会話でなつみと話せ、承認もできます。
+`<publicOrigin>/settings` では、動いている最中に変えられる設定を変えます（[ADR 0058](docs/adr/0058-settings-and-chat-in-the-browser.md)）。
+
+- ログインはダッシュボードと同じ GitHub ログインで、開いたページに戻ります。cookie もダッシュボードと共通です。
+- ブラウザは開いている間だけの端末です。通知は受けません。ブラウザを開いていても、iPhone への通知は止まりません。
+- 変えられる設定は、モデルの経路、畳み込み、ターンの上限（出来事ごとと夜の振り返りの、呼び出しの回数と時間）、起きている時間帯、合図の間隔です。
+  サーバーの設定ファイル（config）の値が既定で、画面で変えた値は上書きとして data directory に残ります（経路と畳み込みは上の節のファイル、ほかは `.natsumi/runtime-settings.json`）。
+  再起動やリリースでは戻りません。config を変えても上書きがあれば効かないので、画面の「config の値」と「今の値」を見比べ、「config に戻す」で上書きを消します。
+- 値は config と同じ規則で確かめます。ターンの上限は次のターンから、時間帯と合図の間隔は次の見回り（10 秒ごと）から効きます。
+- 画面は、別にビルドする JS の束（`dist/web/`）です。束が無いサーバーでは、`/` は束が無い旨だけを出します。
+- 端末からの読み書きの約束事は[契約](docs/client-contract.md)の「実行中の設定」と「ブラウザ」にあります。
+
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
 GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
-- ログインの状態は `/dashboard` にだけ送られる cookie に載ります。最後に使ってから 30 日で切れ、開くたびに延びます。
+- ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
+  以前の `/dashboard` だけの cookie を持つブラウザは、`/dashboard` を開いたときに新しい cookie へ移し替えます。
   ページの「ログアウト」は、そのブラウザのセッションだけを終わらせます。
-- 読み取り専用です。経路や畳み込みの切り替え、承認は、これまでどおりアプリとコマンドで行います。
+- 読み取り専用です。経路や畳み込みの切り替え、承認は、アプリとコマンド、ブラウザの `/` と `/settings` で行います。上のリンク（「話す」「設定」）から移れます。
 - いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
   文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
   文脈の大きさは、ターンの終わりに測った値です。実行中のターンからは、その詳細へ移れます。
@@ -1035,10 +1052,13 @@ Slack の投稿の承認待ちも架空のものを 2 件持ち、最初の同�
 会話にも画像を 2 枚添えた返事が 1 件あり、「絵」か「画像」を含むメッセージには画像を 1 枚添えて返事をします。
 モデルの経路は架空の 3 つ（使っている `local`、使える `plus`、使えない `spare`）で、`model.use` を受け付けてから
 `--switch-delay` 秒（既定 2 秒）後に `model.routes` で移ります。ログアウトすると `local` に戻ります。
+実行中の設定（`settings.*`）も本物と同じ規則で答え、ログアウトすると config の値に戻ります。
+ブラウザの画面を試すときは、`http://localhost:8787/` を開くと `/fake-login` で cookie が付いて戻り、`--bundle` のディレクトリ
+（省略すると本物と同じ `dist/web/`）の束を読み込みます（[契約](docs/client-contract.md)の「ブラウザ」の「偽のサーバー」）。
 
 ```sh
 npm ci
-npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2]
+npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2] [--bundle <dir>]
 ```
 
 偽のサーバーそのもののテストは `test/fake-server.test.ts` にあり、`npm test` で走ります。
