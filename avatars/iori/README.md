@@ -1,7 +1,10 @@
 # いおりのアバター
 
-fork（masayukig/natsumi）だけにあるアバターです（ADR 0057）。config の `avatar.id` に `iori` と書くと、これになります。
-作り方と各ファイルの説明は [docs/avatar.md](../../../docs/avatar.md) にあります。
+fork（masayukig/natsumi）だけにあるアバターです（ADR 0057）。組み込み（`assets/avatars/`）には置いていません。
+置くと上流のテストが組み込みの一覧（natsumi・nanashi）を固定で確かめていて落ち、同期のたびに衝突するためです。
+ここは Slack が取りに来るアイコンの公開の置き場と、素材の原本です。サーバーには private の natsumi-deploy が
+`avatar.json`（id と名前だけ）と `appearance.yaml` を ConfigMap で渡し、`avatar.directory` で指します。
+作り方と各ファイルの説明は [docs/avatar.md](../../docs/avatar.md) にあります。
 
 | ファイル | 内容 |
 | --- | --- |
