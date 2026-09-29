@@ -197,6 +197,11 @@ export interface LoopOptions {
    */
   loop: LoopConfig;
   /**
+   * The settings the owner may change while natsumi runs (ADR 0058), read where they are used: the limits of a turn
+   * before it starts, the awake hours when a check is booked. Without it the `loop` section's values are used.
+   */
+  settings?: LoopSettings;
+  /**
    * The memory curator that reorganizes memory after the nightly review (ADR 0055). Without it, or with it disabled, or
    * without a workspace to work in, the night is the review alone.
    */
@@ -222,6 +227,12 @@ export interface LoopOptions {
   replyImageLimits?: ImageLimits;
   now?: () => number;
   log?: (line: string) => void;
+}
+
+/** The runtime settings as the loop reads them (ADR 0058): a port of its own, so the loop imports no settings service. */
+export interface LoopSettings {
+  turnLimits(): Pick<LoopConfig, 'eventModelCalls' | 'eventTimeoutMinutes' | 'reviewModelCalls' | 'reviewTimeoutMinutes'>;
+  awakeHours(): LoopConfig['awakeHours'];
 }
 
 /** The side of the sources the loop reads a `sources_updated` event from (ADR 0050). */
@@ -380,7 +391,7 @@ export class ThinkingLoop {
       now: this.now,
     });
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: loop.timeZone,
-      limits: loop.selfCheck, awakeHours: loop.awakeHours });
+      limits: loop.selfCheck, awakeHours: options.settings ? () => options.settings!.awakeHours() : loop.awakeHours });
     const { a2a } = options;
     this.agents = new AgentRequests({
       db: options.db, now: this.now, config: a2a,
@@ -940,10 +951,11 @@ export class ThinkingLoop {
   /** Runs one turn and records how its events ended. Returns the turn, with the failure if it did not end cleanly. */
   private async runTurn(eventIds: string[], kind: Turn['kind'], rotationId?: string): Promise<EndedTurn> {
     const session = this.session!;
-    // The review reads and rewrites memory file by file, so it has limits of its own (ADR 0018).
-    const { loop } = this.options;
-    const maxCalls = kind === 'review' ? loop.reviewModelCalls : loop.eventModelCalls;
-    const timeoutMs = (kind === 'review' ? loop.reviewTimeoutMinutes : loop.eventTimeoutMinutes) * 60_000;
+    // The review reads and rewrites memory file by file, so it has limits of its own (ADR 0018). The owner may have
+    // changed them while natsumi runs; the turn keeps what they were as it began (ADR 0058).
+    const limits = this.options.settings?.turnLimits() ?? this.options.loop;
+    const maxCalls = kind === 'review' ? limits.reviewModelCalls : limits.eventModelCalls;
+    const timeoutMs = (kind === 'review' ? limits.reviewTimeoutMinutes : limits.eventTimeoutMinutes) * 60_000;
     const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt: this.now(), doveRefusals: 0 };
     this.turn = turn;
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);

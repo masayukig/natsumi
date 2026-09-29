@@ -76,15 +76,19 @@ export class RuntimeSettings {
     this.options = options;
   }
 
-  /** Reads the overrides on file. What breaks the rules is left out, and logged. */
+  /**
+   * Reads the overrides on file. What breaks the rules is left out, and logged. The loop is not asked anything yet, so
+   * the settings may be opened before it, and the loop's first turn already reads the overrides.
+   */
   static async open(options: RuntimeSettingsOptions): Promise<RuntimeSettings> {
     const settings = new RuntimeSettings(options);
     await settings.load();
-    settings.published = JSON.stringify(settings.view());
     return settings;
   }
 
+  /** The first listener takes the list as it is then as the one already told. */
   subscribe(listener: (event: SettingsEvent) => void): () => void {
+    if (this.published === '') this.published = JSON.stringify(this.view());
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }
@@ -188,6 +192,7 @@ export class RuntimeSettings {
   }
 
   private publish() {
+    if (this.listeners.size === 0) return;
     const settings = this.view();
     const text = JSON.stringify(settings);
     if (text === this.published) return;

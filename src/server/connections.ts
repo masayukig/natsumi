@@ -17,10 +17,10 @@ export const CLOSE_TOO_SLOW = 4002;
 
 /** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
-  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use']);
+  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
 /** Commands that act for a device, and so need `session.sync` first and the connection's own device ID. */
 const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide',
-  'model.list', 'model.use']);
+  'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
 const DECISIONS = new Set(['approve', 'edit', 'reject']);
 const PLACEMENTS = new Set(['thread', 'channel']);
 
@@ -84,6 +84,18 @@ export interface HubApprovals {
   subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void;
 }
 
+/**
+ * The runtime settings as the hub uses them (ADR 0058): the list a snapshot carries, the three commands, and the news
+ * of a change for every device. The hub checks the envelope's shape; the rules of the values are the settings' own.
+ */
+export interface HubSettings {
+  view(): object;
+  list(): RelayedOutcome;
+  set(input: { key: string; value: unknown; deviceId: string }): Promise<RelayedOutcome>;
+  reset(input: { key: string; deviceId: string }): Promise<RelayedOutcome>;
+  subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void;
+}
+
 export interface ConnectionHubOptions {
   publicOrigin: string;
   /** The live session presented by an upgrade request, or undefined. Its use is already recorded. */
@@ -95,6 +107,8 @@ export interface ConnectionHubOptions {
   loop: HubLoop;
   push: HubPush;
   approvals?: HubApprovals;
+  /** The settings the owner may change while natsumi runs (ADR 0058). Without them the `settings.*` commands name nothing. */
+  settings?: HubSettings;
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
   /**
@@ -119,6 +133,7 @@ export class ConnectionHub {
   private readonly devices: DeviceStreams;
   private readonly unsubscribe: () => void;
   private readonly unsubscribeApprovals: () => void;
+  private readonly unsubscribeSettings: () => void;
 
   constructor(options: ConnectionHubOptions) {
     this.options = options;
@@ -130,6 +145,7 @@ export class ConnectionHub {
       else this.devices.broadcast(event.type, event.payload);
     });
     this.unsubscribeApprovals = options.approvals?.subscribe(event => this.devices.broadcast(event.type, event.payload)) ?? (() => {});
+    this.unsubscribeSettings = options.settings?.subscribe(event => this.devices.broadcast(event.type, event.payload)) ?? (() => {});
   }
 
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -173,6 +189,7 @@ export class ConnectionHub {
   close(): Promise<void> {
     this.unsubscribe();
     this.unsubscribeApprovals();
+    this.unsubscribeSettings();
     for (const ws of this.connections.keys()) ws.terminate();
     return new Promise(resolve => this.server.close(() => resolve()));
   }
@@ -264,6 +281,19 @@ export class ConnectionHub {
           () => reject('invalid-request'));
         return;
       }
+      case 'settings.list':
+      case 'settings.set':
+      case 'settings.reset': {
+        const { settings } = this.options;
+        const { key, value } = payload;
+        if (!settings) return reject('invalid-request');
+        if (type === 'settings.list') return answer(stream!, settings.list(), id);
+        if (!isSettingName(key) || (type === 'settings.set' && value === undefined)) return reject('invalid-request');
+        const deviceId = connection.deviceId!;
+        const outcome = type === 'settings.set' ? settings.set({ key, value, deviceId }) : settings.reset({ key, deviceId });
+        void outcome.then(result => answer(stream!, result, id), () => reject('invalid-request'));
+        return;
+      }
       case 'push.register':
         // Independent of the loop: a device registers even while natsumi cannot talk.
         return answer(stream!, this.options.push.register(connection.deviceId!, payload), id);
@@ -310,7 +340,7 @@ export class ConnectionHub {
     // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
     // Its own seq is the barrier; events numbered after it apply on top.
     stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), pendingApprovals: this.options.approvals?.pending() ?? [], sessionExpiresAt,
-      ...this.avatarVersion() }, requestId);
+      ...this.avatarVersion(), ...(this.options.settings ? { settings: this.options.settings.view() } : {}) }, requestId);
   }
 
   private avatarVersion() {
@@ -335,6 +365,8 @@ export class ConnectionHub {
   }
 }
 
+/** A setting's name as the envelope carries it; whether it names a setting is the settings' to say. */
+const isSettingName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64;
 const isId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
 
 /** Sends the loop's outcome of a read or an acknowledgement to the device that asked. */

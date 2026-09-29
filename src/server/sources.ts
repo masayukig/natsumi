@@ -4,7 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import { runGit, type GitResult } from './git.ts';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
-import { isAwake, type AwakeHours } from './scheduler.ts';
+import { current, isAwake, type AwakeHours, type Live } from './scheduler.ts';
 import { imageType, SOURCES_PATH } from './view.ts';
 
 /**
@@ -72,7 +72,8 @@ export interface SourcesOptions {
   /** The git directory, outside the work tree. */
   gitDirectory: string;
   timeZone: string;
-  awakeHours: AwakeHours;
+  /** Read on every look, so a change made while running is in force from the next (ADR 0058). */
+  awakeHours: Live<AwakeHours>;
   activity: ActivitySettings;
   historyDays: number;
   now: () => number;
@@ -172,7 +173,7 @@ export class Sources {
       await this.scan();
       await this.takeInNew(false);
       const now = this.options.now();
-      const awake = isAwake(now, this.options.awakeHours, this.options.timeZone);
+      const awake = isAwake(now, current(this.options.awakeHours), this.options.timeZone);
       const today = localDate(now, this.options.timeZone);
       if (!awake && this.prunedOn !== today) {
         this.prunedOn = today;
@@ -220,7 +221,7 @@ export class Sources {
       await this.takeInNew(false, head);
       if (!head) return false;
       const now = this.options.now();
-      const awake = isAwake(now, this.options.awakeHours, this.options.timeZone);
+      const awake = isAwake(now, current(this.options.awakeHours), this.options.timeZone);
       const attentions = this.waiting();
       const chosen = new Set(attentions.map(row => row.dir));
       if (awake && this.due(now).length > 0) {

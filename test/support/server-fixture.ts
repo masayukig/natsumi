@@ -103,6 +103,8 @@ export interface FixtureOptions {
   loop?: Record<string, unknown>;
   /** Writes an avatar under the fixture's root and gives the `avatar` section naming it (ADR 0057). */
   avatar?: (root: string) => Promise<Record<string, unknown>>;
+  /** Fills the data directory before the first start, as one a previous version left behind. */
+  prepare?: (data: string) => Promise<void>;
 }
 
 export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
@@ -117,6 +119,7 @@ export async function startFixture(options: FixtureOptions = {}) {
   const clock = { now: Date.parse('2026-01-01T00:00:00Z'), advance(ms: number) { this.now += ms; } };
   const configFile = join(root, 'config.json');
   const model = new ScriptedModel();
+  await options.prepare?.(data);
 
   let server: RunningServer;
   const launch = async (allowedUserId: number) => {

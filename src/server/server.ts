@@ -35,6 +35,7 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
+import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 import { Scheduler } from './scheduler.ts';
@@ -95,6 +96,8 @@ export interface RunningServer {
   rotateSession(): Promise<RotationOutcome>;
   /** Looks for a route chosen on the command line and follows it between turns (also runs with the heartbeat). */
   refreshRoutes(): Promise<void>;
+  /** Reads the runtime settings on file again and tells the devices of a change (also runs with the heartbeat). */
+  refreshSettings(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -164,6 +167,19 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     db = openStateDatabase(join(dataDirectory, STATE_DIRECTORY, 'state.sqlite'));
     const { version } = migrate(db, MIGRATIONS);
     await preparePiState(config.pi, { dataDirectory, home: options.home });
+    // What the owner may change while natsumi runs, over the config's values (ADR 0058). Opened before the loop, so its
+    // first turn reads the overrides; the loop is reached through this port once it is open.
+    const routeControl: RouteControl = {
+      get unavailable() { return loop ? loop.unavailable : 'pi-unavailable'; },
+      routeStatus: () => loop!.routeStatus(),
+      chooseRoute: input => loop!.chooseRoute(input),
+      refreshRoutes: () => loop!.refreshRoutes(),
+      foldInUse: () => loop?.dashboardState().fold ?? config.loop.turnFold,
+    };
+    const { turnFold, eventModelCalls, eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes,
+      timeZone } = config.loop;
+    const settings = await RuntimeSettings.open({ dataDirectory, routes: routeControl, now, log, defaults: { turnFold, eventModelCalls,
+      eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes, timeZone } });
     // The page on drawing and the sdctl params, for the workspace to read as /manual/avatar (ADR 0057).
     await writeAvatarManual(join(dataDirectory, AVATAR_MANUAL_DIRECTORY), avatar);
     // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).
@@ -185,7 +201,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // The core that tells her what changed in them (ADR 0050), when there is anything to read. A history that cannot be
     // kept leaves her the files and no events; the server still starts.
     let sources: Sources | undefined = archive ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
-      gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: config.loop.awakeHours,
+      gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     sources?.register(SLACK_REGISTRATION);
     try { await sources?.prepare(); } catch {
@@ -227,6 +243,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
+      settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours() },
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
@@ -270,8 +287,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // returning to neutral (ADR 0014). A night missed while stopped is caught up on the first tick.
     if (!thinkingLoop.unavailable) {
       scheduler = new Scheduler({
-        loop: thinkingLoop, now, log, timeZone: config.loop.timeZone, awakeHours: config.loop.awakeHours,
-        nightlyRotationAt: config.loop.nightlyRotationAt, pingIntervalMinutes: config.loop.pingIntervalMinutes,
+        loop: thinkingLoop, now, log, timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
+        nightlyRotationAt: config.loop.nightlyRotationAt, pingIntervalMinutes: () => settings.pingIntervalMinutes(),
         expressionResetMinutes: config.loop.expressionResetMinutes, ...(sources ? { sources } : {}),
       });
       scheduler.start();
@@ -291,6 +308,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize, avatarVersion: avatar.version,
       ...(theDove ? { approvals: { pending: () => theDove.pendingApprovals(), decide: input => theDove.decide(input),
         subscribe: listener => theDove.subscribe(listener) } } : {}),
+      settings: { view: () => settings.view(), list: () => settings.list(), set: input => settings.set(input), reset: input => settings.reset(input),
+        subscribe: listener => settings.subscribe(listener) },
       // Connecting is a use of the session and renews it (ADR 0030).
       authenticate: request => {
         const token = bearerToken(request);
@@ -371,7 +390,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       void writeStatus(dataDirectory, { ...status, updatedAt: isoAt(Date.now()) }).catch(() => {});
       // A choice written by the command line while natsumi is idle is followed without waiting for a turn (ADR 0046).
       void thinkingLoop.refreshRoutes().catch(() => { log('thinking loop: the model routes could not be looked at'); });
+      // A route or a fold written by the command line, told to the devices as a change of the settings (ADR 0058).
+      void settings.refresh().catch(() => { log('settings: the overrides could not be read'); });
     }, HEARTBEAT_MS));
+    // A move to another route changes what the settings show in use.
+    const unsubscribeRoutes = thinkingLoop.subscribe(event => {
+      if (event.type === 'model.routes') void settings.refresh().catch(() => { log('settings: the overrides could not be read'); });
+    });
     timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
 
     let stopping: Promise<void> | undefined;
@@ -384,7 +409,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       checkCertificate: () => manager?.checkCertificate() ?? Promise.resolve(),
       rotateSession: () => thinkingLoop.rotate(),
       refreshRoutes: () => thinkingLoop.refreshRoutes(),
+      refreshSettings: () => settings.refresh(),
       stop() {
+        unsubscribeRoutes();
         stopping ??= (async () => {
           try {
             await closeAll();
