@@ -64,6 +64,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Before anything is pushed, the server image runs its entrypoint, which loads every module the server runs: the
+      # test job runs the checks on the checkout, where a file the image leaves out is still there. The push below reuses
+      # this build's layers.
+      - if: matrix.name == 'natsumi'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: natsumi:smoke
+      - if: matrix.name == 'natsumi'
+        run: docker run --rm --network none --read-only natsumi:smoke avatar check nanashi
       # amd64 only: the nodes that run natsumi are all amd64.
       - uses: docker/build-push-action@v7
         with:
