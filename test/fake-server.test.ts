@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import WebSocket from 'ws';
-import { startFakeServer, type FakeServerOptions } from '../src/fake-server/main.ts';
+import { FAKE_SESSION_COOKIE, startFakeServer, type FakeServerOptions } from '../src/fake-server/main.ts';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 type Envelope = { seq: number; type: string; requestId?: string; payload: Record<string, any> };
 
 /** A connection to the fake server that keeps everything it is sent, to wait on. */
-async function connect(port: number) {
-  const ws = new WebSocket(`ws://localhost:${port}/v1/ws`);
+async function connect(port: number, headers: Record<string, string> = {}) {
+  const ws = new WebSocket(`ws://localhost:${port}/v1/ws`, { headers });
   const received: Envelope[] = [];
   const waiters: (() => void)[] = [];
   ws.on('message', data => {
@@ -22,6 +25,11 @@ async function connect(port: number) {
       const requestId = `r${++requests}`;
       ws.send(JSON.stringify({ v: 1, requestId, type, payload }));
       return requestId;
+    },
+    /** Sends a command and waits for its answer. */
+    async request(type: string, payload: Record<string, unknown>): Promise<Envelope> {
+      const requestId = this.send(type, payload);
+      return this.next(e => e.requestId === requestId);
     },
     /** The first envelope, from `from` on, that matches. */
     async next(match: (e: Envelope) => boolean, from = 0): Promise<Envelope> {
@@ -40,6 +48,14 @@ async function withServer(fn: (port: number) => Promise<void>, options: Partial<
     port: 0, replyDelayMs: 0, short: true, approvalDelayMs: 0, sendDelayMs: 0, switchDelayMs: 0, log: false, ...options,
   });
   try { await fn(server.port); } finally { await server.close(); }
+}
+
+/** A bundle for the page to load, as the browser's app would build it. */
+async function fakeBundle() {
+  const directory = await mkdtemp(join(tmpdir(), 'natsumi-fake-bundle-'));
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, 'app.js'), 'console.log("fake bundle");\n');
+  return directory;
 }
 
 async function synced(port: number) {
@@ -175,13 +191,15 @@ test('the post to a channel carries two images, each fetched with the token and 
     const fetched = await fetch(path, { headers: { authorization: 'Bearer fake-token' } });
     assert.equal(fetched.status, 200);
     assert.equal(fetched.headers.get('content-type'), image.mimeType);
+    assert.equal(fetched.headers.get('cache-control'), 'private, max-age=31536000, immutable');
     const body = Buffer.from(await fetched.arrayBuffer());
     assert.equal(body.length, image.bytes);
     assert.deepEqual([...body.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
-    assert.equal((await fetch(path)).status, 401);
+    const none = await fetch(path);
+    assert.deepEqual([none.status, none.headers.get('cache-control')], [401, 'no-store']);
   }
   const unknown = await fetch(`http://localhost:${port}/v1/images/image-none`, { headers: { authorization: 'Bearer fake-token' } });
-  assert.equal(unknown.status, 404);
+  assert.deepEqual([unknown.status, unknown.headers.get('cache-control')], [404, 'no-store']);
   client.close();
 }));
 
@@ -294,3 +312,95 @@ test('the fake server hands out natsumi\'s avatar and its version, as the server
   }
   assert.equal((await fetch(`http://localhost:${port}/v1/avatar/0123456789abcdef0123456789abcdef/pet.json`)).status, 404);
 }));
+
+// The browser's side (ADR 0058): the runtime settings, the cookie, and the page.
+
+test('settings.list answers every setting; settings.set changes one, which every connection hears, and settings.reset takes it back', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  const other = await synced(port);
+  assert.deepEqual(snapshot.payload.settings.eventModelCalls, { value: 8, config: 8, overridden: false });
+  assert.equal(snapshot.payload.settings.modelRoute.inUse, 'local');
+  assert.deepEqual(snapshot.payload.settings.awakeHours.timeZone, 'Asia/Tokyo');
+  const listed = await client.request('settings.list', {});
+  assert.equal(listed.type, 'command.accepted');
+  assert.deepEqual(listed.payload.settings, snapshot.payload.settings);
+
+  const from = other.client.received.length;
+  const set = await client.request('settings.set', { key: 'pingIntervalMinutes', value: false });
+  assert.equal(set.type, 'command.accepted');
+  assert.deepEqual(set.payload.settings.pingIntervalMinutes, { value: false, config: 180, overridden: true });
+  const told = await other.client.next(e => e.type === 'settings.changed', from);
+  assert.deepEqual(told.payload.settings.pingIntervalMinutes, { value: false, config: 180, overridden: true });
+
+  const reset = await client.request('settings.reset', { key: 'pingIntervalMinutes' });
+  assert.deepEqual(reset.payload.settings.pingIntervalMinutes, { value: 180, config: 180, overridden: false });
+  client.close();
+  other.client.close();
+}));
+
+test('settings.set refuses what the server refuses, and moves the route between turns as model.use does', () => withServer(async port => {
+  const { client } = await synced(port);
+  for (const [payload, code] of [
+    [{ key: 'eventModelCalls', value: 0 }, 'invalid-value'], [{ key: 'awakeHours', value: { start: '9:00', end: '23:00' } }, 'invalid-value'],
+    [{ key: 'compactionThreshold', value: 1 }, 'unknown-setting'], [{ key: 'modelRoute', value: 'spare' }, 'route-unavailable'],
+    [{ key: 'modelRoute', value: 'nowhere' }, 'unknown-route'], [{ key: 'eventModelCalls' }, 'invalid-request'],
+  ] as const) {
+    const answer = await client.request('settings.set', payload);
+    assert.deepEqual([answer.type, answer.payload.code], ['command.rejected', code], JSON.stringify(payload));
+  }
+  const set = await client.request('settings.set', { key: 'modelRoute', value: 'plus' });
+  assert.deepEqual([set.payload.settings.modelRoute.value, set.payload.settings.modelRoute.inUse], ['plus', 'local']);
+  await client.next(e => e.type === 'model.routes' && e.payload.current === 'plus');
+  await client.next(e => e.type === 'settings.changed' && e.payload.settings.modelRoute.inUse === 'plus');
+  client.close();
+}));
+
+test('logging out puts the settings back to the config’s', () => withServer(async port => {
+  const { client } = await synced(port);
+  await client.request('settings.set', { key: 'turnFold', value: 'on' });
+  client.close();
+  await fetch(`http://localhost:${port}/auth/logout`, { method: 'POST' });
+  const again = await synced(port);
+  assert.equal(again.snapshot.payload.settings.turnFold.overridden, false);
+  again.client.close();
+}));
+
+test('the browser logs in at the fake login, gets the page, and connects with its cookie from the server’s own origin', async () => withServer(async port => {
+  const base = `http://localhost:${port}`;
+  const start = await fetch(`${base}/settings`, { redirect: 'manual' });
+  assert.equal(start.status, 302);
+  assert.equal(start.headers.get('location'), '/fake-login?to=%2Fsettings');
+  const loggedIn = await fetch(`${base}${start.headers.get('location')}`, { redirect: 'manual' });
+  assert.equal(loggedIn.status, 302);
+  assert.equal(loggedIn.headers.get('location'), '/settings');
+  const cookie = loggedIn.headers.getSetCookie()[0]!;
+  assert.match(cookie, /^natsumi_session=fake-session; Path=\/; HttpOnly; SameSite=Strict$/);
+  assert.equal(FAKE_SESSION_COOKIE, 'natsumi_session=fake-session');
+
+  const page = await fetch(`${base}/`, { headers: { cookie: FAKE_SESSION_COOKIE } });
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-security-policy') ?? '', new RegExp(`connect-src 'self' ws://localhost:${port}`));
+  assert.match(await page.text(), /<script type="module" src="\/app\/app\.js"><\/script>/);
+  const js = await fetch(`${base}/app/app.js`);
+  assert.equal(await js.text(), 'console.log("fake bundle");\n');
+
+  const refused = await new Promise<number>(resolve => {
+    const ws = new WebSocket(`ws://localhost:${port}/v1/ws`, { headers: { cookie: FAKE_SESSION_COOKIE, origin: 'https://elsewhere.example.test' } });
+    ws.on('error', () => {});
+    ws.once('unexpected-response', (_req, res) => { resolve(res.statusCode ?? 0); res.resume(); ws.terminate(); });
+    ws.once('open', () => { resolve(101); ws.close(); });
+  });
+  assert.equal(refused, 403);
+  const browser = await connect(port, { cookie: FAKE_SESSION_COOKIE, origin: base });
+  const sync = browser.send('session.sync', { resume: null });
+  assert.equal((await browser.next(e => e.requestId === sync)).type, 'session.snapshot');
+  const push = await browser.request('push.register', { token: 'ab', publicKey: 'x', environment: 'sandbox' });
+  assert.deepEqual([push.type, push.payload.code], ['command.rejected', 'invalid-request']);
+  const image = await fetch(`${base}/v1/images/image-fake-happy`, { headers: { cookie: FAKE_SESSION_COOKIE } });
+  assert.equal(image.status, 200);
+  browser.close();
+
+  const out = await fetch(`${base}/dashboard/logout`, { method: 'POST', redirect: 'manual', headers: { cookie: FAKE_SESSION_COOKIE, origin: base } });
+  assert.equal(out.status, 303);
+  assert.match(out.headers.getSetCookie()[0]!, /^natsumi_session=; Path=\/; Max-Age=0/);
+}, { bundleDirectory: await fakeBundle() }));

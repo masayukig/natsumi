@@ -7,7 +7,8 @@ struct NatsumiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        MenuBarExtra("natsumi", systemImage: "face.smiling") {
+        // Her name, as the avatar the server gave says.
+        MenuBarExtra(delegate.menuBar.props.title, systemImage: "face.smiling") {
             MenuBarContent(model: delegate.menuBar)
         }
     }

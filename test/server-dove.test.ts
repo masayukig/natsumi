@@ -241,14 +241,17 @@ test('an approval with an image lists it, and the image is fetched only with a l
     const image = await fetch(`${f.base}${path}`, { headers: { authorization: `Bearer ${token}` } });
     assert.equal(image.status, 200);
     assert.equal(image.headers.get('content-type'), 'image/png');
-    assert.equal(image.headers.get('cache-control'), 'no-store');
+    // The same ID is the same bytes for good (ADR 0045), but only to the owner: never kept by a shared cache.
+    assert.equal(image.headers.get('cache-control'), 'private, max-age=31536000, immutable');
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), PNG);
 
-    assert.equal((await f.fetch(path)).status, 401, 'no session');
+    const none = await f.fetch(path);
+    assert.deepEqual([none.status, none.headers.get('cache-control')], [401, 'no-store'], 'no session');
     assert.deepEqual((await f.fetch(path, { headers: { authorization: 'Bearer not-a-session' } })).json(), { error: 'unauthorized' });
     for (const other of ['/v1/images/image-unknown', '/v1/images/..%2f..%2fstate.sqlite', `/v1/images/${images[0]!.imageId}/x`]) {
       const answer = await f.fetch(other, { headers: { authorization: `Bearer ${token}` } });
       assert.equal(answer.status, 404, other);
+      assert.equal(answer.headers.get('cache-control'), 'no-store', other);
       assert.deepEqual(answer.json(), { error: 'not-found' });
     }
     await mac.close();

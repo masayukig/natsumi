@@ -80,7 +80,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      係のターンの上限 `modelCalls`（既定 60 回）と `timeoutMinutes`（既定 30 分）、一晩に順番で回すファイルの数 `rotateFiles`
      （既定 2、0〜10）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
    - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
-     組み込みのアバターの ID `id`（`natsumi` か `nanashi`。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
+     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
      壊れていれば起動せず、素材が足りないだけなら、名無し（`nanashi`）の、のっぺらぼうの素材で埋めて起動します。
      作り方と検査のコマンド `natsumi avatar check <ディレクトリか ID>` は [アバターの作り方](docs/avatar.md)、決めたことは [ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md) にあります。
@@ -225,6 +225,7 @@ Kubernetes では `kubectl exec natsumi-0 -c server -- node /app/dist/src/server
   `model use` で別の経路を選び、起動し直してください。
 - Mac・iPhone のアプリからも、`model.list` と `model.use` のコマンドで読んで選べます（[契約](docs/client-contract.md)）。
   画面での選び方は下の「Mac アプリ」の「使い方」と「iPhone アプリ」にあります。
+- ブラウザの設定の画面（`/settings`）からも選べ、「config に戻す」で選んだ記録（`.natsumi/model-route.json`）を消して既定の経路に戻せます（下の「ブラウザで話す・設定を変える」）。
 
 サブスクリプションの経路（例: ChatGPT Plus の `openai-codex`）は、`pi.authPath` の OAuth のログインを使います。
 サーバーはこのファイルを作りません。本人が Pi の CLI で、その Pi 領域にログインします。`authPath` は
@@ -260,6 +261,7 @@ node dist/src/server/main.js fold off --data-dir <data directory>     # 次の�
 ```
 
 - 選んだ値は `.natsumi/turn-fold.json` に残り、再起動しても続きます。サーバーはターンの前に読みます。
+- ブラウザの設定の画面（`/settings`）からも切り替えられ、「config に戻す」でこのファイルを消せます（下の「ブラウザで話す・設定を変える」）。
 - 切り替えた直後のターンは、prefix cache が 1 回外れます。
 
 ターンごとの数と、そのターンが session のファイルのどこにあるか（本文は含みません）が `.natsumi/state.sqlite` の `turn_stats` に残ります。
@@ -277,15 +279,31 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 - `--since` と `--until` は `YYYY-MM-DD`（UTC の 0 時）か、`Z` 付きの時刻です。`--until` の時刻は含みません。
 - `--memos` は `pi.sessionDirectory` を読むために設定ファイルを読みます（既定は `config.local.json`）。
 
+### ブラウザで話す・設定を変える
+
+ブラウザで `<publicOrigin>/`（例: `https://natsumi.example.net/`）を開くと、Mac・iPhone と同じ会話でなつみと話せ、承認もできます。
+`<publicOrigin>/settings` では、動いている最中に変えられる設定を変えます（[ADR 0058](docs/adr/0058-settings-and-chat-in-the-browser.md)）。
+
+- ログインはダッシュボードと同じ GitHub ログインで、開いたページに戻ります。cookie もダッシュボードと共通です。
+- ブラウザは開いている間だけの端末です。通知は受けません。ブラウザを開いていても、iPhone への通知は止まりません。
+- 変えられる設定は、モデルの経路、畳み込み、ターンの上限（出来事ごとと夜の振り返りの、呼び出しの回数と時間）、起きている時間帯、合図の間隔です。
+  サーバーの設定ファイル（config）の値が既定で、画面で変えた値は上書きとして data directory に残ります（経路と畳み込みは上の節のファイル、ほかは `.natsumi/runtime-settings.json`）。
+  再起動やリリースでは戻りません。config を変えても上書きがあれば効かないので、画面の「config の値」と「今の値」を見比べ、「config に戻す」で上書きを消します。
+- 値は config と同じ規則で確かめます。ターンの上限は次のターンから、時間帯と合図の間隔は次の見回り（10 秒ごと）から効きます。
+- 画面は、別にビルドする JS の束（`dist/web/`）です。image には入っています。束が無いサーバーでは、`/` は束が無い旨だけを出します。
+  画面でできることと、開発のしかたは下の「ブラウザのアプリ」にあります。
+- 端末からの読み書きの約束事は[契約](docs/client-contract.md)の「実行中の設定」と「ブラウザ」にあります。
+
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
 GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
-- ログインの状態は `/dashboard` にだけ送られる cookie に載ります。最後に使ってから 30 日で切れ、開くたびに延びます。
+- ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
+  以前の `/dashboard` だけの cookie を持つブラウザは、`/dashboard` を開いたときに新しい cookie へ移し替えます。
   ページの「ログアウト」は、そのブラウザのセッションだけを終わらせます。
-- 読み取り専用です。経路や畳み込みの切り替え、承認は、これまでどおりアプリとコマンドで行います。
+- 読み取り専用です。経路や畳み込みの切り替え、承認は、アプリとコマンド、ブラウザの `/` と `/settings` で行います。上のリンク（「話す」「設定」）から移れます。
 - いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
   文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
   文脈の大きさは、ターンの終わりに測った値です。実行中のターンからは、その詳細へ移れます。
@@ -757,13 +775,13 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
   それにダッシュボードの「ファイル」でオーナーが開いたもの（読み取り専用）だけです。
 - 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
-  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.1。image の build でソースから入れます）を使い、
+  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.2。image の build でソースから入れます）を使い、
     Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの `/manual/avatar/images.md` にあります。
     サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさを差し込んで書き出します。
   - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。アバターの `sdctl-params.yaml`、無ければサーバーの既定
     （名無しの [assets/avatars/nanashi/sdctl-params.yaml](assets/avatars/nanashi/sdctl-params.yaml)）を、サーバーが起動のたびに書き出します。
     サーバーの既定は、Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
-  - 接続先・既定の設定・出力の既定の `/work/images` は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
+  - 接続先・既定の設定・出力の既定の `/work/images` と形式の JPEG は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
     PATH の `sdctl` は、本物（`/usr/libexec/sdctl`）にいつもこのファイルを `--config` で渡すラッパーです。
     runner はコマンドにコンテナの環境変数を渡さないので（下の「環境変数」）、image の環境変数では natsumi のコマンドに届きません。
     natsumi は `sdctl txt2img --prompt <ファイル>` だけで作れ、保存したパスが 1 行出ます。
@@ -877,8 +895,10 @@ xcodebuild test -project mac/Natsumi.xcodeproj -scheme Natsumi -destination 'pla
 
 ### 使い方
 
-1. アプリを起動すると、メニューバーにアイコンが、デスクトップにキャラクターが出ます。キャラクターはドラッグで動かせます。
-2. キャラクターを右クリック（または control キーを押しながらクリック）して出るメニューの「設定…」で、サーバーの URL（例: `https://natsumi.example.net`）を入れて保存します。
+1. 初めて起動すると、メニューバーにアイコンが出て、設定が開きます。アプリはキャラクターの絵を持たず、サーバーから受け取るので、
+   受け取るまではデスクトップに誰も出ません（下の「アバター」）。
+2. 設定の「サーバー」に URL（例: `https://natsumi.example.net`）を入れて保存します。アバターはログインしなくても受け取れるので、
+   保存するとすぐにキャラクターが出ます。キャラクターはドラッグで動かせます。設定は、キャラクターを右クリック（または control キーを押しながらクリック）して出るメニューか、メニューバーの「設定…」で開きます。
 3. 「GitHub でログイン」で、ブラウザのシートからログインします。セッションのトークンは Keychain にだけ保存されます。
    サーバーのセッションは最後に使ってから 30 日で切れ、使っている間は延びます（[ADR 0030](docs/adr/0030-a-session-that-lasts-while-it-is-used.md)）。
    アプリは延びた期限を受け取って Keychain の期限も延ばすので、30 日まったく使わなかったときか、セッションが失効したときにだけ、ログインを求められます。
@@ -916,7 +936,7 @@ xcodebuild test -project mac/Natsumi.xcodeproj -scheme Natsumi -destination 'pla
       「切り替える」を押すと、次のターンからその経路に移ります。移るまでは「次のターンから <経路> に切り替わります」と出ます。
       会話の履歴も思考の記録もそのまま続きます。
     - 使える状態にない経路と、選んである経路は押せません。断られたとき（設定に無い、使えない、natsumi が話せない）は理由が出ます。
-    - どの経路も使えず natsumi が話せないときは、「なつみはいま話せません」と赤く出ます。メニューの題も「モデル: 話せません」になります。
+    - どの経路も使えず natsumi が話せないときは、「なつみはいま話せません」のように赤く出ます（名前はアバターの表示名）。メニューの題も「モデル: 話せません」になります。
     - サーバーのコマンドや別の端末で切り替えても、すぐにこちらの表示に反映されます。設定を開くたびに、サーバーに一覧を確かめ直します。
 
 キャラクター・吹き出し・知らせの束・会話のウインドウは、どれもほかのウインドウの上に浮かび、すべての Space と全画面表示のアプリの上にも出ます。
@@ -932,20 +952,18 @@ xcodebuild test -project mac/Natsumi.xcodeproj -scheme Natsumi -destination 'pla
 
 ad-hoc 署名はビルドのたびに変わるため、ビルドし直したアプリが Keychain のトークンを読むときに、確認のダイアログが出ることがあります。
 
-### アバターを差し替える
+### アバター
 
-キャラクターの絵は、既定では同梱の `mac/Avatars/natsumi/` を使います。自分のアセットを試すときは、次の場所に置きます
-（設定の「アバター」で場所を変えられます）。ここに読めるアセットがあれば、同梱のものより優先します。どちらも読めなければ、仮の絵（絵文字）になります。
+キャラクターの姿と名前（メニューバー・会話のウインドウの題・履歴など）は、サーバーの設定で決まり、アプリはサーバーから受け取ります
+（[ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)）。アプリには絵を同梱していません。
 
-```sh
-mkdir -p ~/Library/Application\ Support/natsumi/avatar
-cp <アセットのディレクトリ>/pet.json <アセットのディレクトリ>/spritesheet.webp ~/Library/Application\ Support/natsumi/avatar/
-```
-
-- 形式は Codex のペット（`pet.json` と、その `spritesheetPath` の spritesheet。1 マス 192×208 で 8 列）です。
-- `avatar.json` を置くと、atlas（`atlas`・`animations`）、再生の速さ（`framesPerSecond`）、サーバーの表情から動作への対応表（`expressions`）を変えられます。
-  書き方は同梱の [avatar.json](mac/Avatars/natsumi/avatar.json) を見てください。対応表にない表情は neutral の動作で表示します。
-- 置いた後は、設定の「読み込み直す」で反映します。
+- サーバーを保存したとき、アプリは `GET /v1/avatar` の一覧を取り、手元の控えと版が違えば全ファイルを取って、大きさと SHA-256 を確かめてから控えを丸ごと置き換えます。
+  その後は、接続したときにサーバーが知らせる版が控えと違うときだけ取り直します。取れなかったときは控えのまま動きます。
+- 控えは `~/Library/Application Support/natsumi/avatar-copy/` にあり、次の起動からはこれで始まります。一度も受け取っていないときは、設定から始まります。
+- 設定の「アバター」に、受け取ったアバターの表示名と版が出ます。
+- アバターを替えるのはサーバーの config（`avatar.id` で組み込みのアバター、`avatar.directory` で足すアバター。上の「設定」）です。
+  自分のアバターの作り方は [アバターの作り方](docs/avatar.md) を見てください。
+- 以前の版にあった、Mac の手元でアバターのディレクトリを指す設定はなくなりました。保存してあった値は使いません。
 
 ## iPhone アプリ
 
@@ -974,6 +992,8 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
 
 実機は Mac の `localhost` に届かないので、偽のサーバーではなく本物のサーバー（https）につなぎます。
 - 起動するとログインの画面が出ます。サーバーの URL を入れて「GitHub でログイン」を押します。セッションのトークンは Keychain にだけ保存されます。
+- キャラクターの姿と名前は、Mac と同じくサーバーから受け取ります（上の「アバター」）。ログインしていても、アバターを一度も受け取っていなければ
+  ログインの画面のままで、受け取るとメインの画面になります。受け取れなかったときは、ログインの画面にそう出ます。
 - メインの画面には、キャラクター・最後の未読の返事（全文。長いときは吹き出しの中だけがスクロールします）・知らせ・入力欄が出ます。
   吹き出しの × は、Mac と同じく最後の返事までを既読にします。
 - 入力欄に入ると、キャラクターは気持ちの顔になって入力欄の上に寄り、彼女のセリフがその横に出ます。送ったメッセージは「受付中…」と出ます。
@@ -995,13 +1015,13 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
 - アプリが裏に回ると接続を切り、前に戻ると続きから同期し直します。
 - 裏にいる間の返事と知らせは、通知で届きます（[ADR 0029](docs/adr/0029-push-notifications-on-the-iphone.md)。サーバーの設定は上の「iPhone への通知」）。
   ログインすると通知を許可するか尋ねられます。本文はこの iPhone の鍵で暗号化されて届き、アプリの拡張 `NatsumiNotifications` が開いて、
-  セリフと気持ちの顔を出します。開けなかったときは「返事があります」「知らせがあります」とだけ出ます。
+  セリフと気持ちの顔を出します。顔は、暗号化された本文に入っているサーバーの URL（Slack のアイコンと同じもの）から取り、取れなければ顔なしで出します。開けなかったときは「返事があります」「知らせがあります」とだけ出ます。
   承認待ちの通知はチャンネルと下書きの先頭を出し、タップするとその承認を開きます。
   バッジは未読の返事と未確認の知らせと承認待ちの数で、Mac で読んだ分の通知は消えます（iOS が間引くと、次にアプリを開いたときに消えます）。
   送り先（sandbox か production か）は、アプリの署名の provisioning profile から決まります。
 - シミュレータでも登録までは動きますが、`xcrun simctl push` は拡張を通らないので、本文を開くところは実機で確かめます。
-- ロック画面からも開けます。ロック画面を長押しして「カスタマイズ」を選び、下の隅のボタンを「なつみを開く」に替えるか、
-  時計の下のウィジェットに「なつみ」を足します。同じボタンはコントロールセンターとアクションボタンにも置けます。
+- ロック画面からも開けます。ロック画面を長押しして「カスタマイズ」を選び、下の隅のボタンを「会話を開く」に替えるか、
+  時計の下のウィジェットに「会話を開く」を足します（ウィジェットは受け取ったアバターを読めないので、名前は出しません）。同じボタンはコントロールセンターとアクションボタンにも置けます。
   どちらもアプリを開くだけで、ロック画面に会話は出ません。
 
 ### TestFlight で配る
@@ -1067,10 +1087,13 @@ Slack の投稿の承認待ちも架空のものを 2 件持ち、最初の同�
 会話にも画像を 2 枚添えた返事が 1 件あり、「絵」か「画像」を含むメッセージには画像を 1 枚添えて返事をします。
 モデルの経路は架空の 3 つ（使っている `local`、使える `plus`、使えない `spare`）で、`model.use` を受け付けてから
 `--switch-delay` 秒（既定 2 秒）後に `model.routes` で移ります。ログアウトすると `local` に戻ります。
+実行中の設定（`settings.*`）も本物と同じ規則で答え、ログアウトすると config の値に戻ります。
+ブラウザの画面を試すときは、`http://localhost:8787/` を開くと `/fake-login` で cookie が付いて戻り、`--bundle` のディレクトリ
+（省略すると本物と同じ `dist/web/`）の束を読み込みます（[契約](docs/client-contract.md)の「ブラウザ」の「偽のサーバー」）。
 
 ```sh
 npm ci
-npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2]
+npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8] [--switch-delay 2] [--bundle <dir>]
 ```
 
 偽のサーバーそのもののテストは `test/fake-server.test.ts` にあり、`npm test` で走ります。
@@ -1078,7 +1101,8 @@ npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-del
 シミュレータのアプリでは、サーバーに `http://localhost:8787` を入れてログインします。
 UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にログイン・返事・履歴・設定・ログアウトまでと、
 承認待ちの件数・一覧・1 件の画面から承認・修正・却下までと、履歴と承認の画面の画像を開いて閉じるまでと、
-設定でモデルの経路を `plus` に切り替えて移るまでを辿り、画面を撮ります
+設定でモデルの経路を `plus` に切り替えて移るまでと、アバターを受け取っていない状態からログインしてキャラクターが出るまで
+（起動引数 `-NatsumiForgetAvatar` で手元の控えを消して始めます）を辿り、画面を撮ります
 （偽のサーバーを先に起動してください。別のポートで動かすときは `TEST_RUNNER_NATSUMI_SERVER` に URL を渡します）。撮った画面は結果の bundle に添付され、`TEST_RUNNER_NATSUMI_SCREENSHOTS` に
 ディレクトリを渡すとそこにも書き出されます。
 
@@ -1087,15 +1111,75 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
   xcodebuild test -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath mac/build
 ```
 
+## ブラウザのアプリ
+
+`/`（チャット）と `/settings`（設定）の画面です。サーバーは `dist/web/` の束を配るだけで、画面は束が WebSocket（`/v1/ws`）で
+Mac・iPhone と同じ約束事を話して組みます（[ADR 0058](docs/adr/0058-settings-and-chat-in-the-browser.md)、[契約](docs/client-contract.md)の「ブラウザ」）。
+
+### 使い方
+
+- **チャット（`/`）**: 会話の履歴、送信、なつみの「考え中」と考えている 1 行、セリフの横の表情の顔、返事の画像を出します。
+  ページが見えていて手前にある間に届いた返事は既読になり、知らせは「確認した」で確認します。
+  つながりが切れると、待つ時間を延ばしながらつなぎ直し、同期し直します。切れている間に書いたメッセージは、つながってから送ります。
+  同じブラウザの別のタブで開くと前のタブは止まり、「ここでつなぎ直す」で戻せます。
+- **承認**: 承認待ちは会話の上に並び、上端の「承認待ち N 件」から飛べます。「承認…」「直す」「却下…」は選ぶだけで、
+  何が起きるか（どこに何を送るか）をもう一度聞き、「送る」「直して送る」「却下する」を押したときだけ決定を送ります。
+- **設定（`/settings`）**: 設定ごとに「今の値」（上書き中の印つき）と「config の値」を並べ、「変える」と「config に戻す」ができます。
+  値は送る前に契約と同じ規則で確かめ、合わなければ理由を出します。経路と畳み込みは、実際に移るまで「次のターンから」と出ます。
+  ほかの端末やサーバーのコマンドで変わると、その場で反映します。
+- 上のリンクで `/`・`/settings`・`/dashboard` を行き来し、「ログアウト」でそのブラウザのセッションを終えます。
+- スマホでは 1 列、PC では中央に最大幅で出ます。押すものは 44px 以上で、iOS Safari のキーボードが出ても入力欄は隠れません。ダークモードに従います。
+
+### 開発のしかた
+
+```sh
+npm ci
+npm run build:web          # dist/web/ に app.js・app.js.map・app.css を作る（npm run build でも作る）
+npm run fake-server        # http://localhost:8787/ と /settings で試す（cookie は /fake-login で付く）
+npm test                   # 約束事の読み取り・Mediator・Props の導出・レイヤーの検査（node のテスト）
+npm run test:browser       # 束を作り、ヘッドレス Chromium で偽のサーバーにつなぐ通しのテスト
+```
+
+- 通しのテストは Playwright の Chromium（headless shell）を使います。初めては `npx playwright install --with-deps --only-shell chromium` で入れます。
+  スマホ（390×844）と PC（1280×860）の 2 つの大きさで走り、`NATSUMI_SCREENSHOTS=<dir>` を渡すとチャット・承認の確認・設定・ダークモードの画面を撮ります。
+- 型検査（`npm run typecheck`）は、サーバーと core を Node の設定で、画面のコード全体を `src/web/tsconfig.json`（DOM と Preact の JSX、Node の型なし）で確かめます。
+
+### 作り
+
+Mac アプリと同じ Passive View＋Mediator の形です（[mac/CLAUDE.md](mac/CLAUDE.md)）。図の矢印は「下のものが上のものに頼る」向きで、依存はこの一方向だけ、循環はありません。
+`test/architecture.test.ts` がこの向きと循環の無さを検査します。
+
+```text
+src/shared/protocol/   約束事の型と、受け取った JSON の読み取り（純粋。サーバーも使う）
+        ↑                settings.ts（設定の名前・値の形・規則・一覧の形）、conversation.ts、envelope.ts、avatar.ts
+src/web/core/          状態・出来事・効果・Mediator（(状態, 出来事) → (状態, 効果)）と Props の導出（純粋関数）
+        ↑                stream.ts（seq の追い方）、settings.ts（入力の検査）、words.ts（コードを言葉に）
+        ├──────────────────────────┐
+src/web/adapters/      src/web/view/
+  WebSocket・localStorage・         Preact の関数コンポーネント。Props を描き、
+  /v1/avatar を出来事に変える        操作を出来事として返す（状態を持たない）
+        ↑                          ↑
+        └───────────┬──────────────┘
+src/web/main.ts        組み立て（本物の WebSocket・DOM をつなぐ。ここだけが全部を知る）
+```
+
+- `src/shared/protocol/` と `src/web/core/` は何も import しません（DOM も WebSocket も Node も Preact も知りません。protocol 同士、core から protocol は可）。
+- `adapters` と `view` は `core` と `protocol` だけに頼り、互いを知りません。Preact を使うのは `view` と `main.ts` だけです。
+- 画面はサーバーのコードを import しません。約束事の型はサーバーと `src/shared/protocol/` で共有します
+  （設定の規則と形はサーバーから移し、会話・承認・画像・経路の型はサーバーもここのものを使います）。
+- フレームワークは view の層の Preact だけです。`useState` などの状態の機能は使わず、状態は core の Mediator に一本化しています。
+  `useRef`・`useEffect` は、入力欄を空にする・最新の行へスクロールするといった DOM の操作にだけ使います。
+- 束は esbuild（`scripts/build-web.ts`）で作ります。CSP（inline なし・eval なし・同じオリジンだけ）に合わせ、script と style は束のファイルだけです。
+
 ## ライセンス
 
 - コードは [MIT License](LICENSE) です。
-- なつみのアバターのアセット（`assets/avatars/natsumi/` と `mac/Avatars/`）は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) です。
+- なつみのアバターのアセット（`assets/avatars/natsumi/`）は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) です。
   キャラクターの参照画像は Anima で、spritesheet は OpenAI の画像生成で作りました（[詳細](assets/avatars/natsumi/README.md)）。
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)、[終わったターンを畳んで一行メモを残し、read で読んだものは残す](docs/adr/0047-folding-ended-turns-with-a-memo.md)、[外のエージェントが返事に付けた画像を、サーバーが /work に取り込む](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)、[ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する](docs/adr/0051-evaluating-one-turn-on-the-real-path.md)、[本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す](docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)、[ダッシュボードで、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る](docs/adr/0054-her-files-on-the-dashboard.md)、[記憶の組み直しは、人格を持たない整理係が夜に行う](docs/adr/0055-a-memory-curator-at-night.md)、[アバターと名前を、サーバーの設定で指すアバターのディレクトリから決める](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)、[終わったターンを畳んで一行メモを残し、read で読んだものは残す](docs/adr/0047-folding-ended-turns-with-a-memo.md)、[外のエージェントが返事に付けた画像を、サーバーが /work に取り込む](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)、[ブラウザで見る読み取り専用のダッシュボードを、サーバー自身が配る](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する](docs/adr/0051-evaluating-one-turn-on-the-real-path.md)、[本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す](docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)、[ダッシュボードで、なつみの作業環境・記憶・マニュアルのファイルを読み取り専用で見る](docs/adr/0054-her-files-on-the-dashboard.md)、[記憶の組み直しは、人格を持たない整理係が夜に行う](docs/adr/0055-a-memory-curator-at-night.md)、[アバターと名前を、サーバーの設定で指すアバターのディレクトリから決める](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)、[ブラウザで話し、動いている間に変えられる設定をブラウザから変える](docs/adr/0058-settings-and-chat-in-the-browser.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [アバターの作り方](docs/avatar.md): 自分のアバターのディレクトリを作り、検査して、サーバーで使うまで
 - [権限と秘密の一覧](docs/permissions.md): サーバーが外に対して持つ権限・秘密・外への出口と、受け付ける認証

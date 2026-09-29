@@ -6,7 +6,6 @@ struct SettingsView: View {
     let send: EventSink
     /// Text being typed. It is drawing-local: what counts is what the owner commits with the buttons below.
     @State private var server = ""
-    @State private var avatarPath = ""
 
     var body: some View {
         if let props {
@@ -67,24 +66,18 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("アバター") {
-                    TextField("アセットのディレクトリ", text: $avatarPath)
-                    Text(props.avatarDescription).font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Spacer()
-                        Button("既定に戻す") { send(.avatarDirectoryResetRequested) }
-                        Button("読み込み直す") { send(.avatarDirectorySubmitted(avatarPath)) }
-                    }
+                    Text(props.avatarDescription)
+                    Text("姿と名前はサーバーの設定で決まり、サーバーから受け取ります。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
             .frame(width: 480)
             .onAppear {
                 server = props.serverOrigin
-                avatarPath = props.avatarDirectory
             }
             // What was saved is what the fields show; a rejected URL leaves what was typed alone.
             .onChange(of: props.serverOrigin) { server = props.serverOrigin }
-            .onChange(of: props.avatarDirectory) { avatarPath = props.avatarDirectory }
         }
     }
 }

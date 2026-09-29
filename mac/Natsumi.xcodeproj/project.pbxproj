@@ -10,13 +10,10 @@
 		A10000000000000000000050 /* NatsumiCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; };
 		A10000000000000000000051 /* NatsumiCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000052 /* NatsumiCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; };
-		A10000000000000000000053 /* Avatars in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* Avatars */; };
 		A10000000000000000000054 /* NatsumiCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; };
 		A10000000000000000000055 /* NatsumiCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		A10000000000000000000056 /* Avatars in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* Avatars */; };
 		A10000000000000000000057 /* NatsumiWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* NatsumiWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000058 /* NatsumiNotifications.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* NatsumiNotifications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		A10000000000000000000059 /* icons in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000028 /* icons */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -105,12 +102,10 @@
 		A10000000000000000000020 /* Natsumi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Natsumi.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000021 /* NatsumiCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = NatsumiCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000022 /* NatsumiCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NatsumiCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A10000000000000000000023 /* Avatars */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Avatars; sourceTree = "<group>"; };
 		A10000000000000000000024 /* NatsumiPhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NatsumiPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000025 /* NatsumiPhoneUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NatsumiPhoneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000026 /* NatsumiWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NatsumiWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000027 /* NatsumiNotifications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NatsumiNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		A10000000000000000000028 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = Avatars/natsumi/icons; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -270,8 +265,6 @@
 				A10000000000000000000017 /* NatsumiLaunch */,
 				A10000000000000000000019 /* NatsumiPush */,
 				A1000000000000000000001C /* NatsumiNotifications */,
-				A10000000000000000000023 /* Avatars */,
-				A10000000000000000000028 /* icons */,
 				A10000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -488,7 +481,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000053 /* Avatars in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -510,7 +502,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000056 /* Avatars in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -532,7 +523,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000059 /* icons in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

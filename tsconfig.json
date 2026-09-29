@@ -10,5 +10,6 @@
     "rewriteRelativeImportExtensions": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "eval/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "eval/**/*.ts"],
+  "exclude": ["src/web/adapters", "src/web/view", "src/web/main.ts"]
 }

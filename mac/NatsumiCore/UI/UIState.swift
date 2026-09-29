@@ -86,10 +86,8 @@ public struct UIState {
     /// What the settings say about the shortcut: a key that cannot be one, or one another app has.
     public internal(set) var hotKeyMessage: String?
 
-    public internal(set) var avatar = AvatarArt.placeholder
-    public internal(set) var avatarDescription = ""
-    public internal(set) var avatarDirectory = ""
-    public internal(set) var defaultAvatarDirectory = ""
+    /// The server's avatar as this Mac has it, and when to fetch it again (ADR 0057).
+    public internal(set) var avatars = AvatarBook()
 
     /// The card the owner opened to read in full. It folds by itself when that card is no longer at the front.
     public internal(set) var expanded: ExpandedCard?
@@ -111,6 +109,7 @@ public struct UIState {
     public internal(set) var viewedImage: String?
 
     public var conversation: ConversationState { session.conversation }
+    public var avatar: AvatarArt { avatars.art }
 
     /// The owner is reading the history: the window is out, unfolded and the key one. What they see there is read,
     /// and the balloon keeps out of the way (ADR 0022).

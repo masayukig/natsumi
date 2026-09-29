@@ -7,6 +7,13 @@ import { clockMinutes, instant, isoAt, localDateTime, localParts, minutesOfDay, 
 /** The local hours natsumi is up. Pings and self-checks happen only inside them; `end` may be past midnight. */
 export interface AwakeHours { start: string; end: string }
 
+/**
+ * A setting the owner may change while natsumi runs (ADR 0058): a value that stays, or a function read each time it is
+ * needed, so a change is in force from the next tick or booking.
+ */
+export type Live<T> = T | (() => T);
+export const current = <T>(value: Live<T>): T => typeof value === 'function' ? (value as () => T)() : value;
+
 /** What the server allows for self-checks (ADR 0014). */
 export interface SelfCheckLimits {
   /** The nearest a booking may be. */
@@ -50,9 +57,9 @@ export class SelfChecks {
   private readonly now: () => number;
   private readonly timeZone: string;
   private readonly limits: SelfCheckLimits;
-  private readonly awakeHours: AwakeHours;
+  private readonly awakeHours: Live<AwakeHours>;
 
-  constructor(options: { db: DatabaseSync; now: () => number; timeZone: string; limits: SelfCheckLimits; awakeHours: AwakeHours }) {
+  constructor(options: { db: DatabaseSync; now: () => number; timeZone: string; limits: SelfCheckLimits; awakeHours: Live<AwakeHours> }) {
     this.db = options.db;
     this.now = options.now;
     this.timeZone = options.timeZone;
@@ -107,8 +114,9 @@ export class SelfChecks {
     this.db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, event_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)`).run(checkId, trimmed, key, isoAt(dueAt), iso, iso);
     const local = localDateTime(dueAt, this.timeZone);
-    const night = isAwake(dueAt, this.awakeHours, this.timeZone) ? ''
-      : `起きている時間帯（${this.awakeHours.start}〜${this.awakeHours.end}）の外なので、実際に届くのは ${this.awakeHours.start} 以降です。`;
+    const hours = current(this.awakeHours);
+    const night = isAwake(dueAt, hours, this.timeZone) ? ''
+      : `起きている時間帯（${hours.start}〜${hours.end}）の外なので、実際に届くのは ${hours.start} 以降です。`;
     return { ok: true, text: `${local}（${this.timeZone}）に確認を予約しました（check_id: ${checkId}）。${night}その時刻に self_check のイベントが届きます。` };
   }
 
@@ -207,8 +215,8 @@ export interface SchedulerOptions {
   loop: ScheduledLoop;
   now?: () => number;
   timeZone: string;
-  awakeHours: AwakeHours;
-  pingIntervalMinutes: number | false;
+  awakeHours: Live<AwakeHours>;
+  pingIntervalMinutes: Live<number | false>;
   expressionResetMinutes: number;
   /** The local time of the nightly session switch, or false to leave the session alone (ADR 0009). */
   nightlyRotationAt: string | false;
@@ -260,9 +268,10 @@ export class Scheduler {
     // The switch happens in the night, outside the awake hours, and waits for no quiet: it is looked at before both.
     this.switchSession(now);
     this.lookAtSources();
-    if (!loop.quiet || !isAwake(now, awakeHours, timeZone)) return undefined;
+    if (!loop.quiet || !isAwake(now, current(awakeHours), timeZone)) return undefined;
     if (loop.deliverDueSelfChecks()) return 'self-check';
-    if (pingIntervalMinutes !== false && now - loop.lastActivityAt >= pingIntervalMinutes * MINUTE && loop.ping()) return 'ping';
+    const interval = current(pingIntervalMinutes);
+    if (interval !== false && now - loop.lastActivityAt >= interval * MINUTE && loop.ping()) return 'ping';
     return undefined;
   }
 

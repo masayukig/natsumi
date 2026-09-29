@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ApnsEnvironment, ApnsRequest, ApnsResponse } from './apns.ts';
 import { isoAt } from './nightly.ts';
 import { decodePublicKey, PUSH_TEXT_MAX_CHARS, pushPlaintext, sealPush } from './push-crypto.ts';
+import { EXPRESSIONS } from './loop-tools.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import { ReadState } from './read-state.ts';
 
@@ -110,6 +111,11 @@ export interface PushNotifierOptions {
   retryDelaysMs?: readonly number[];
   /** The avatar's display name, the title of every alert (ADR 0057). natsumi's when left out. */
   name?: string;
+  /**
+   * The public origin the faces are served from, `<origin>/avatar/<feeling>.png` as for Slack (ADR 0040, ADR 0057). A
+   * reply or a notice seals the URL of its face for the extension to attach; without an origin none is sealed.
+   */
+  iconOrigin?: string;
 }
 
 /**
@@ -162,11 +168,14 @@ export class PushNotifier {
       if (position === undefined) return;
       const expression = typeof payload.expression === 'string' ? payload.expression : undefined;
       const imageCount = Array.isArray(payload.images) ? payload.images.length : 0;
+      // A line with no feeling recorded wears the neutral face, as the extension showed it before.
+      const feeling = EXPRESSIONS.find(known => known === expression) ?? 'neutral';
+      const icon = this.options.iconOrigin === undefined ? undefined : `${this.options.iconOrigin}/avatar/${feeling}.png`;
       const badge = this.badge();
       for (const target of this.awayTargets()) {
         const body = alertPayload({ alert, badge, plain: { messageId: payload.messageId, kind: payload.kind as string, position },
           sealedTo: payload.messageId, devicePublicKey: target.publicKey,
-          plaintext: maxChars => pushPlaintext({ text: payload.text as string, expression, imageCount }, maxChars) });
+          plaintext: maxChars => pushPlaintext({ text: payload.text as string, expression, imageCount, icon }, maxChars) });
         this.dispatch(target, { environment: target.environment, token: target.token, pushType: 'alert', payload: body, id: randomUUID() });
       }
       return;

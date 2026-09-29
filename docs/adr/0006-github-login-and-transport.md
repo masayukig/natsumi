@@ -1,7 +1,7 @@
 # 0006. GitHub ログイン・セッション・HTTPS/WSS の待ち受け
 
 - Date: 2026-09-14
-- Status: Accepted（ACME による証明書の取得・更新と tcp 80 の例外を [0007](0007-acme-and-fixed-ipv6.md) で追加、セッションの寿命を「最後に使ってから 30 日」に延ばす形へ [0030](0030-a-session-that-lasts-while-it-is-used.md) で置き換え、平文の待ち受けを明示の設定で loopback 以外にも許す（Ingress の後ろに置くための例外）点は [ADR 0033](0033-running-on-kubernetes.md) で置き換え、ブラウザのダッシュボードに限り、ログインの状態を cookie（`HttpOnly`・`Secure`・`SameSite=Strict`・`Path=/dashboard`）に載せる例外と、ブラウザ向けの固定の戻り先 `/dashboard` を [ADR 0049](0049-a-read-only-dashboard-in-the-browser.md) で追加）
+- Status: Accepted（ACME による証明書の取得・更新と tcp 80 の例外を [0007](0007-acme-and-fixed-ipv6.md) で追加、セッションの寿命を「最後に使ってから 30 日」に延ばす形へ [0030](0030-a-session-that-lasts-while-it-is-used.md) で置き換え、平文の待ち受けを明示の設定で loopback 以外にも許す（Ingress の後ろに置くための例外）点は [ADR 0033](0033-running-on-kubernetes.md) で置き換え、ブラウザのダッシュボードに限り、ログインの状態を cookie（`HttpOnly`・`Secure`・`SameSite=Strict`・`Path=/dashboard`）に載せる例外と、ブラウザ向けの固定の戻り先 `/dashboard` を [ADR 0049](0049-a-read-only-dashboard-in-the-browser.md) で追加、その cookie を `natsumi_session`・`Path=/` にまとめ、`/`・`/settings`・`/v1/images/<id>` と、Origin が `publicOrigin` のときの `/v1/ws` にも使う例外の拡大と、固定の戻り先に `/`・`/settings` を加えることは [ADR 0058](0058-settings-and-chat-in-the-browser.md) で追加）
 
 ## Context
 

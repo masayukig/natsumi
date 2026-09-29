@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { avatarManifest, type Avatar } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
+import type { BrowserSessions } from './browser/session-cookie.ts';
+import { WebApp } from './browser/web-app.ts';
 import { Dashboard } from './dashboard.ts';
 import type { GitHubLogin, Outcome } from './github-login.ts';
 import type { SessionStore } from './sessions.ts';
@@ -26,8 +28,12 @@ export interface ListenerOptions {
   log: (line: string) => void;
   /** The images the server took from /work (ADR 0044), which the devices fetch by ID with the session. */
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
-  /** The read-only dashboard in the browser (ADR 0049). It alone reads its cookie; every other route ignores it. */
+  /** The read-only dashboard in the browser (ADR 0049). */
   dashboard: Dashboard;
+  /** The chat and the settings in the browser, and the bundle they load (ADR 0058). */
+  webApp: WebApp;
+  /** The browser's cookie, which the images of the conversation take as the app's bearer (ADR 0058). */
+  browser: BrowserSessions;
   /** The avatar read at start (ADR 0057): its bundle for the apps and its Slack icons, all served without a login. */
   avatar: Avatar;
 }
@@ -118,17 +124,23 @@ async function route(request: IncomingMessage, response: ServerResponse, options
   }
   if (method === 'GET' && url.pathname.startsWith('/v1/images/')) {
     // The session first, so that nothing about an image is told to whoever has none. A fetch is a use and renews it.
+    // A browser shows its cookie instead: a GET changes nothing, and a Strict cookie is not sent from another site.
     const token = bearerToken(request);
     const session = token ? options.sessions.verify(token, options.allowedUserId) : undefined;
-    if (!session || !options.sessions.renew(session.sessionId)) return json(response, 401, { error: 'unauthorized' });
+    const allowed = token ? session !== undefined && options.sessions.renew(session.sessionId) !== undefined
+      : options.browser.session(request) !== undefined;
+    if (!allowed) return json(response, 401, { error: 'unauthorized' });
     const id = IMAGE_PATH.exec(url.pathname)?.[1];
     const image = id ? await options.images.read(id) : undefined;
     if (!image) return json(response, 404, { error: 'not-found' });
-    response.writeHead(200, { 'content-type': image.mimeType, 'content-length': image.data.length }).end(image.data);
+    // An ID names one copy for good (ADR 0045), so the owner's browser keeps it; a shared cache never does.
+    response.writeHead(200, { 'content-type': image.mimeType, 'cache-control': 'private, max-age=31536000, immutable',
+      'content-length': image.data.length }).end(image.data);
     return;
   }
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
   if (Dashboard.owns(url.pathname)) return options.dashboard.handle(request, response, url);
+  if (WebApp.owns(url.pathname)) return options.webApp.handle(request, response, url);
   if (method === 'GET' && url.pathname === GITHUB_CALLBACK_PATH) {
     const outcome = await options.login.callback(url.searchParams);
     return Dashboard.isBrowser(outcome) ? options.dashboard.finishLogin(response, outcome) : answer(response, outcome);

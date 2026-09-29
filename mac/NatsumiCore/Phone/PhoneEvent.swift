@@ -13,7 +13,12 @@ public enum PhoneEvent: Equatable, Sendable {
     case sessionResumed(hasSession: Bool, deviceId: String?)
     /// The server or the session went missing while connecting.
     case credentialsMissing
-    case avatarLoaded(AvatarArt)
+    /// The answer to `.loadAvatar`: the copy of the server's avatar kept on this iPhone, or nil when there is none.
+    case avatarLoaded(ReceivedAvatar?)
+    /// The answer to `.fetchAvatarListing`: the server's listing, or nil when it could not be had.
+    case avatarListingFetched(origin: String, AvatarListing?)
+    /// The answer to `.receiveAvatar`: the copy that replaced the one before, or nil when the one before is kept.
+    case avatarReceived(ReceivedAvatar?)
     case loginFinished(LoginOutcome)
     case socketOpened
     case socketReceived(Data)
@@ -111,8 +116,12 @@ public enum PhoneEffect: Equatable, Sendable {
     case saveServerAddress(ServerAddress)
     /// Tell the server the session is over and forget it here.
     case logout
-    /// Read the avatar bundled with the app and answer with `.avatarLoaded`.
+    /// Read the copy of the avatar on this iPhone and answer with `.avatarLoaded`.
     case loadAvatar
+    /// `GET /v1/avatar` of this server, answered with `.avatarListingFetched` (ADR 0057).
+    case fetchAvatarListing(origin: String)
+    /// Fetch every file of the listing, check them, put them in place of the copy and answer with `.avatarReceived`.
+    case receiveAvatar(origin: String, AvatarListing)
     /// Open a link in the default browser (ADR 0038).
     case openLink(URL)
     /// Fetch a picture with the session (`GET /v1/images/<imageId>`) and answer with `.imageFetched`.

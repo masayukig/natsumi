@@ -22,8 +22,7 @@ struct StageTests {
     func stageProps() {
         var mediator = UIMediator { "r" }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, serverOrigin: nil,
-            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+            characterScale: .default, serverOrigin: nil)))
         let root = UIProps.root(mediator.state, placement: ColumnPlacement(), time: .example)
         let character = CGRect(x: 1400, y: 150, width: 100, height: 100)
         var layout = OverlayLayout()

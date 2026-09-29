@@ -48,10 +48,8 @@ public struct UIMediator {
             state.conversationWindow = info.conversationWindow
             state.hotKey = info.hotKey
             state.serverOrigin = info.serverOrigin
-            state.avatarDirectory = info.avatarDirectory
-            state.defaultAvatarDirectory = info.defaultAvatarDirectory
-            return [.loadAvatar(directory: info.avatarDirectory)] + (info.hotKey.map { [.registerHotKey($0)] } ?? [])
-                + resume()
+            return [.loadAvatar] + (info.hotKey.map { [.registerHotKey($0)] } ?? []) + resume()
+                + avatar(state.avatars.check(origin: state.serverOrigin))
 
         case .sessionResumed(let hasSession, let deviceId):
             state.hasSession = hasSession
@@ -72,9 +70,18 @@ public struct UIMediator {
             state.status = .needsLogin
             return [.disconnect]
 
-        case .avatarLoaded(let art, let description):
-            state.avatar = art
-            state.avatarDescription = description
+        case .avatarLoaded(let copy):
+            state.avatars.loaded(copy)
+            // She has never been received: there is no one to show, so the app starts in the settings, where the
+            // server and the login are (ADR 0057).
+            guard state.avatars.received == nil else { return [] }
+            return openSettings()
+
+        case .avatarListingFetched(let origin, let listing):
+            return avatar(state.avatars.listed(listing, from: origin, current: state.serverOrigin))
+
+        case .avatarReceived(let received):
+            state.avatars.delivered(received)
             return []
 
         case .loginFinished(.succeeded):
@@ -240,9 +247,7 @@ public struct UIMediator {
             return []
 
         case .settingsOpenRequested:
-            state.isSettingsOpen = true
-            // The routes come with the sync and every change after it; opening the settings looks at them afresh.
-            return [.showSettings] + apply(state.session.listRoutes())
+            return openSettings()
 
         case .modelRouteChosen(let name):
             return apply(state.session.chooseRoute(name))
@@ -347,7 +352,8 @@ public struct UIMediator {
                 state.serverOrigin = address.origin.absoluteString
                 state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
                 forgetImages()
-                return [.saveServerAddress(address)] + resume()
+                // Her avatar needs no login, so it is asked for at once (ADR 0057).
+                return [.saveServerAddress(address)] + resume() + avatar(state.avatars.check(origin: state.serverOrigin))
             } catch ServerAddressError.insecure {
                 state.settingsMessage = "http は localhost などのループバックだけで使えます。https の URL を入れてください"
             } catch {
@@ -355,21 +361,11 @@ public struct UIMediator {
             }
             return []
 
-        // MARK: The size of things and the avatar
+        // MARK: The size of things
         case .characterScaleChanged(let scale):
             guard scale != state.characterScale else { return [] }
             state.characterScale = scale
             return [.saveCharacterScale(scale)]
-
-        case .avatarDirectorySubmitted(let path):
-            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            let saved: String? = trimmed.isEmpty || trimmed == state.defaultAvatarDirectory ? nil : trimmed
-            state.avatarDirectory = saved ?? state.defaultAvatarDirectory
-            return [.saveAvatarDirectory(saved), .loadAvatar(directory: state.avatarDirectory)]
-
-        case .avatarDirectoryResetRequested:
-            state.avatarDirectory = state.defaultAvatarDirectory
-            return [.saveAvatarDirectory(nil), .loadAvatar(directory: state.avatarDirectory)]
         }
     }
 
@@ -399,6 +395,22 @@ public struct UIMediator {
     /// Opens a card to its whole text, or folds it when it is the one already open. Only one is open at a time.
     private mutating func open(_ card: ExpandedCard) {
         state.expanded = state.expanded == card ? nil : card
+    }
+
+    private mutating func openSettings() -> [UIEffect] {
+        state.isSettingsOpen = true
+        // The routes come with the sync and every change after it; opening the settings looks at them afresh.
+        return [.showSettings] + apply(state.session.listRoutes())
+    }
+
+    /// What the avatar book asks for, as the mediator's own effects.
+    private func avatar(_ actions: [AvatarAction]) -> [UIEffect] {
+        actions.map { action in
+            switch action {
+            case .fetchListing(let origin): .fetchAvatarListing(origin: origin)
+            case .receive(let origin, let listing): .receiveAvatar(origin: origin, listing)
+            }
+        }
     }
 
     /// Takes a new shortcut, or none, in place of the one there was.
@@ -495,6 +507,8 @@ public struct UIMediator {
             case .send(let envelope): out.append(.sendToServer(envelope))
             case .saveDeviceId(let id): out.append(.saveDeviceId(id))
             case .extendSession(let expiresAt): out.append(.extendSession(until: expiresAt))
+            case .avatarVersion(let version):
+                out += avatar(state.avatars.seen(version: version, origin: state.serverOrigin))
             case .requireLogin:
                 state.hasSession = false
                 forgetImages()

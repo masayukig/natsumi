@@ -20,6 +20,8 @@ public enum SessionEffect: Equatable, Sendable {
     case scheduleReconnect(after: TimeInterval)
     /// Keep the saved session until this time, if that is later than what is saved (ADR 0030).
     case extendSession(until: Date)
+    /// The sync told the version of the avatar the server hands out (ADR 0057).
+    case avatarVersion(String)
 }
 
 public enum SessionPhase: Equatable, Sendable {
@@ -185,6 +187,7 @@ public struct SessionMachine {
             return []
         }
         var effects: [SessionEffect] = envelope.sessionExpiresAt.map { [.extendSession(until: $0)] } ?? []
+        if let version = envelope.avatarVersion { effects.append(.avatarVersion(version)) }
         switch event {
         case .snapshot(let snapshot):
             syncRequestId = nil

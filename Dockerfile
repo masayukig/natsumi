@@ -4,8 +4,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
+COPY scripts/build-web.ts ./scripts/
 COPY src ./src
 COPY test ./test
+# The server into dist/src/, and the browser's app bundled into dist/web/ (ADR 0058).
 RUN npm run build
 
 # Holds the network namespace of the fixed-IPv6 layout (compose.ipv6.example.yaml) and sets the interface token.
@@ -27,7 +29,7 @@ RUN go test ./... \
 # sdctl, which natsumi draws with (ADR 0044). Its releases carry no binary, so it is built from its source at a fixed
 # version, static like the runner.
 FROM golang:1.27 AS sdctl
-RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.1
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.2
 
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
@@ -43,8 +45,8 @@ RUN groupadd --gid 1000 natsumi \
   && chown natsumi:natsumi /work /home/natsumi
 # Outside PATH, so running it by its path gives nothing bash does not already have.
 COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
-# sdctl and its defaults (ADR 0044): the relay and /work/images, baked in, so changing them is a new image. The params
-# are the avatar's, which the server writes on every start and the workspace sees as /manual/avatar (ADR 0057).
+# sdctl and its defaults (ADR 0044): the relay, /work/images and JPEG, baked in, so changing them is a new image. The
+# params are the avatar's, which the server writes on every start and the workspace sees as /manual/avatar (ADR 0057).
 # They are in a config file and not in ENV, because the runner gives natsumi's commands none of the image's environment
 # (ADR 0019); the sdctl in PATH is a wrapper that always points the real one at that file. With these, `sdctl txt2img
 # --prompt <file>` needs nothing else, and prints only the path it saved to.
@@ -77,9 +79,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 # Only what the server runs. src/probe is a development tool against a live model; it belongs in the
-# checkout, not here, and nothing under src/server or src/pi imports it.
+# checkout, not here, and nothing under src/server or src/pi imports it. src/shared is the protocol the server shares
+# with the browser's app (ADR 0058).
 COPY --from=build /app/dist/src/server ./dist/src/server
 COPY --from=build /app/dist/src/pi ./dist/src/pi
+COPY --from=build /app/dist/src/shared ./dist/src/shared
+# The browser's app, served at /app/ for the chat (/) and the settings (/settings) (ADR 0058).
+COPY --from=build /app/dist/web ./dist/web
 # natsumi, the avatar used when the config names none, and the faceless pictures and default params that fill in what
 # an avatar lacks (ADR 0057). The apps fetch the avatar at /v1/avatar, and Slack its icons at /avatar/ (ADR 0040).
 COPY assets/avatars/ ./assets/avatars/

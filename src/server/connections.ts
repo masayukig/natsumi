@@ -17,15 +17,23 @@ export const CLOSE_TOO_SLOW = 4002;
 
 /** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
-  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use']);
+  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
 /** Commands that act for a device, and so need `session.sync` first and the connection's own device ID. */
 const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide',
-  'model.list', 'model.use']);
+  'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
 const DECISIONS = new Set(['approve', 'edit', 'reject']);
 const PLACEMENTS = new Set(['thread', 'channel']);
 
+/**
+ * How an upgrade was let in: by the app's bearer token, or by the browser's cookie with the public origin as the Origin
+ * (ADR 0058). A cookie shown with another Origin, or none, is refused before this.
+ */
+export type Admission = { session: VerifiedSession; via: 'bearer' | 'cookie' } | { refused: 'origin-not-allowed' };
+
 interface Connection {
   session: VerifiedSession;
+  /** A browser (cookie) is a device that is never pushed to, so it may not register for pushes (ADR 0058). */
+  via: 'bearer' | 'cookie';
   /** The session's end as this connection last heard it; renewals move it (ADR 0030). */
   expiresAt: string;
   /** Answers sent before `session.sync` binds the connection to a device stream. */
@@ -84,10 +92,22 @@ export interface HubApprovals {
   subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void;
 }
 
+/**
+ * The runtime settings as the hub uses them (ADR 0058): the list a snapshot carries, the three commands, and the news
+ * of a change for every device. The hub checks the envelope's shape; the rules of the values are the settings' own.
+ */
+export interface HubSettings {
+  view(): object;
+  list(): RelayedOutcome;
+  set(input: { key: string; value: unknown; deviceId: string }): Promise<RelayedOutcome>;
+  reset(input: { key: string; deviceId: string }): Promise<RelayedOutcome>;
+  subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void;
+}
+
 export interface ConnectionHubOptions {
   publicOrigin: string;
-  /** The live session presented by an upgrade request, or undefined. Its use is already recorded. */
-  authenticate: (request: IncomingMessage) => VerifiedSession | undefined;
+  /** The live session presented by an upgrade request and how, a refusal, or undefined. Its use is already recorded. */
+  authenticate: (request: IncomingMessage) => Admission | undefined;
   /** Records a use of a live session and returns its end, or undefined once it is revoked or expired. */
   renew: (sessionId: string) => string | undefined;
   now: () => number;
@@ -95,6 +115,8 @@ export interface ConnectionHubOptions {
   loop: HubLoop;
   push: HubPush;
   approvals?: HubApprovals;
+  /** The settings the owner may change while natsumi runs (ADR 0058). Without them the `settings.*` commands name nothing. */
+  settings?: HubSettings;
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
   /**
@@ -119,6 +141,7 @@ export class ConnectionHub {
   private readonly devices: DeviceStreams;
   private readonly unsubscribe: () => void;
   private readonly unsubscribeApprovals: () => void;
+  private readonly unsubscribeSettings: () => void;
 
   constructor(options: ConnectionHubOptions) {
     this.options = options;
@@ -130,6 +153,7 @@ export class ConnectionHub {
       else this.devices.broadcast(event.type, event.payload);
     });
     this.unsubscribeApprovals = options.approvals?.subscribe(event => this.devices.broadcast(event.type, event.payload)) ?? (() => {});
+    this.unsubscribeSettings = options.settings?.subscribe(event => this.devices.broadcast(event.type, event.payload)) ?? (() => {});
   }
 
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -139,9 +163,10 @@ export class ConnectionHub {
     // Browsers always send Origin; native clients may omit it. A present Origin must be ours.
     const origin = request.headers.origin;
     if (origin !== undefined && origin !== this.options.publicOrigin) return refuse(socket, 403, 'origin-not-allowed');
-    const session = this.options.authenticate(request);
-    if (!session) return refuse(socket, 401, 'unauthorized');
-    this.server.handleUpgrade(request, socket, head, ws => this.accept(ws, session));
+    const admitted = this.options.authenticate(request);
+    if (!admitted) return refuse(socket, 401, 'unauthorized');
+    if ('refused' in admitted) return refuse(socket, 403, admitted.refused);
+    this.server.handleUpgrade(request, socket, head, ws => this.accept(ws, admitted.session, admitted.via));
   }
 
   /** Whether the device has a synced connection now. A device that has one gets events, not pushes. */
@@ -173,11 +198,12 @@ export class ConnectionHub {
   close(): Promise<void> {
     this.unsubscribe();
     this.unsubscribeApprovals();
+    this.unsubscribeSettings();
     for (const ws of this.connections.keys()) ws.terminate();
     return new Promise(resolve => this.server.close(() => resolve()));
   }
 
-  private accept(ws: WebSocket, session: VerifiedSession) {
+  private accept(ws: WebSocket, session: VerifiedSession, via: 'bearer' | 'cookie') {
     const deliver = (text: string) => {
       if (ws.readyState !== ws.OPEN) return;
       if (ws.bufferedAmount > MAX_BUFFERED_BYTES) { ws.close(CLOSE_TOO_SLOW, 'too far behind; sync again'); return; }
@@ -185,7 +211,7 @@ export class ConnectionHub {
     };
     const local = new EventStream(this.epoch, 0);
     local.sink = deliver;
-    const connection: Connection = { session, expiresAt: session.expiresAt, local, deliver };
+    const connection: Connection = { session, via, expiresAt: session.expiresAt, local, deliver };
     this.connections.set(ws, connection);
     ws.on('close', () => {
       this.connections.delete(ws);
@@ -264,7 +290,22 @@ export class ConnectionHub {
           () => reject('invalid-request'));
         return;
       }
+      case 'settings.list':
+      case 'settings.set':
+      case 'settings.reset': {
+        const { settings } = this.options;
+        const { key, value } = payload;
+        if (!settings) return reject('invalid-request');
+        if (type === 'settings.list') return answer(stream!, settings.list(), id);
+        if (!isSettingName(key) || (type === 'settings.set' && value === undefined)) return reject('invalid-request');
+        const deviceId = connection.deviceId!;
+        const outcome = type === 'settings.set' ? settings.set({ key, value, deviceId }) : settings.reset({ key, deviceId });
+        void outcome.then(result => answer(stream!, result, id), () => reject('invalid-request'));
+        return;
+      }
       case 'push.register':
+        // A browser is never pushed to (ADR 0058), so it has nothing to register.
+        if (connection.via === 'cookie') return reject('invalid-request');
         // Independent of the loop: a device registers even while natsumi cannot talk.
         return answer(stream!, this.options.push.register(connection.deviceId!, payload), id);
       default:
@@ -310,7 +351,7 @@ export class ConnectionHub {
     // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
     // Its own seq is the barrier; events numbered after it apply on top.
     stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), pendingApprovals: this.options.approvals?.pending() ?? [], sessionExpiresAt,
-      ...this.avatarVersion() }, requestId);
+      ...this.avatarVersion(), ...(this.options.settings ? { settings: this.options.settings.view() } : {}) }, requestId);
   }
 
   private avatarVersion() {
@@ -335,6 +376,8 @@ export class ConnectionHub {
   }
 }
 
+/** A setting's name as the envelope carries it; whether it names a setting is the settings' to say. */
+const isSettingName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64;
 const isId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
 
 /** Sends the loop's outcome of a read or an acknowledgement to the device that asked. */
