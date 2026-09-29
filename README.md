@@ -290,7 +290,8 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
   サーバーの設定ファイル（config）の値が既定で、画面で変えた値は上書きとして data directory に残ります（経路と畳み込みは上の節のファイル、ほかは `.natsumi/runtime-settings.json`）。
   再起動やリリースでは戻りません。config を変えても上書きがあれば効かないので、画面の「config の値」と「今の値」を見比べ、「config に戻す」で上書きを消します。
 - 値は config と同じ規則で確かめます。ターンの上限は次のターンから、時間帯と合図の間隔は次の見回り（10 秒ごと）から効きます。
-- 画面は、別にビルドする JS の束（`dist/web/`）です。束が無いサーバーでは、`/` は束が無い旨だけを出します。
+- 画面は、別にビルドする JS の束（`dist/web/`）です。image には入っています。束が無いサーバーでは、`/` は束が無い旨だけを出します。
+  画面でできることと、開発のしかたは下の「ブラウザのアプリ」にあります。
 - 端末からの読み書きの約束事は[契約](docs/client-contract.md)の「実行中の設定」と「ブラウザ」にあります。
 
 ### ブラウザでダッシュボードを見る
@@ -1075,6 +1076,66 @@ UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にロ
 TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
   xcodebuild test -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath mac/build
 ```
+
+## ブラウザのアプリ
+
+`/`（チャット）と `/settings`（設定）の画面です。サーバーは `dist/web/` の束を配るだけで、画面は束が WebSocket（`/v1/ws`）で
+Mac・iPhone と同じ約束事を話して組みます（[ADR 0058](docs/adr/0058-settings-and-chat-in-the-browser.md)、[契約](docs/client-contract.md)の「ブラウザ」）。
+
+### 使い方
+
+- **チャット（`/`）**: 会話の履歴、送信、なつみの「考え中」と考えている 1 行、セリフの横の表情の顔、返事の画像を出します。
+  ページが見えていて手前にある間に届いた返事は既読になり、知らせは「確認した」で確認します。
+  つながりが切れると、待つ時間を延ばしながらつなぎ直し、同期し直します。切れている間に書いたメッセージは、つながってから送ります。
+  同じブラウザの別のタブで開くと前のタブは止まり、「ここでつなぎ直す」で戻せます。
+- **承認**: 承認待ちは会話の上に並び、上端の「承認待ち N 件」から飛べます。「承認…」「直す」「却下…」は選ぶだけで、
+  何が起きるか（どこに何を送るか）をもう一度聞き、「送る」「直して送る」「却下する」を押したときだけ決定を送ります。
+- **設定（`/settings`）**: 設定ごとに「今の値」（上書き中の印つき）と「config の値」を並べ、「変える」と「config に戻す」ができます。
+  値は送る前に契約と同じ規則で確かめ、合わなければ理由を出します。経路と畳み込みは、実際に移るまで「次のターンから」と出ます。
+  ほかの端末やサーバーのコマンドで変わると、その場で反映します。
+- 上のリンクで `/`・`/settings`・`/dashboard` を行き来し、「ログアウト」でそのブラウザのセッションを終えます。
+- スマホでは 1 列、PC では中央に最大幅で出ます。押すものは 44px 以上で、iOS Safari のキーボードが出ても入力欄は隠れません。ダークモードに従います。
+
+### 開発のしかた
+
+```sh
+npm ci
+npm run build:web          # dist/web/ に app.js・app.js.map・app.css を作る（npm run build でも作る）
+npm run fake-server        # http://localhost:8787/ と /settings で試す（cookie は /fake-login で付く）
+npm test                   # 約束事の読み取り・Mediator・Props の導出・レイヤーの検査（node のテスト）
+npm run test:browser       # 束を作り、ヘッドレス Chromium で偽のサーバーにつなぐ通しのテスト
+```
+
+- 通しのテストは Playwright の Chromium（headless shell）を使います。初めては `npx playwright install --with-deps --only-shell chromium` で入れます。
+  スマホ（390×844）と PC（1280×860）の 2 つの大きさで走り、`NATSUMI_SCREENSHOTS=<dir>` を渡すとチャット・承認の確認・設定・ダークモードの画面を撮ります。
+- 型検査（`npm run typecheck`）は、サーバーと core を Node の設定で、画面のコード全体を `src/web/tsconfig.json`（DOM と Preact の JSX、Node の型なし）で確かめます。
+
+### 作り
+
+Mac アプリと同じ Passive View＋Mediator の形です（[mac/CLAUDE.md](mac/CLAUDE.md)）。図の矢印は「下のものが上のものに頼る」向きで、依存はこの一方向だけ、循環はありません。
+`test/architecture.test.ts` がこの向きと循環の無さを検査します。
+
+```text
+src/shared/protocol/   約束事の型と、受け取った JSON の読み取り（純粋。サーバーも使う）
+        ↑                settings.ts（設定の名前・値の形・規則・一覧の形）、conversation.ts、envelope.ts、avatar.ts
+src/web/core/          状態・出来事・効果・Mediator（(状態, 出来事) → (状態, 効果)）と Props の導出（純粋関数）
+        ↑                stream.ts（seq の追い方）、settings.ts（入力の検査）、words.ts（コードを言葉に）
+        ├──────────────────────────┐
+src/web/adapters/      src/web/view/
+  WebSocket・localStorage・         Preact の関数コンポーネント。Props を描き、
+  /v1/avatar を出来事に変える        操作を出来事として返す（状態を持たない）
+        ↑                          ↑
+        └───────────┬──────────────┘
+src/web/main.ts        組み立て（本物の WebSocket・DOM をつなぐ。ここだけが全部を知る）
+```
+
+- `src/shared/protocol/` と `src/web/core/` は何も import しません（DOM も WebSocket も Node も Preact も知りません。protocol 同士、core から protocol は可）。
+- `adapters` と `view` は `core` と `protocol` だけに頼り、互いを知りません。Preact を使うのは `view` と `main.ts` だけです。
+- 画面はサーバーのコードを import しません。約束事の型はサーバーと `src/shared/protocol/` で共有します
+  （設定の規則と形はサーバーから移し、会話・承認・画像・経路の型はサーバーもここのものを使います）。
+- フレームワークは view の層の Preact だけです。`useState` などの状態の機能は使わず、状態は core の Mediator に一本化しています。
+  `useRef`・`useEffect` は、入力欄を空にする・最新の行へスクロールするといった DOM の操作にだけ使います。
+- 束は esbuild（`scripts/build-web.ts`）で作ります。CSP（inline なし・eval なし・同じオリジンだけ）に合わせ、script と style は束のファイルだけです。
 
 ## ライセンス
 
