@@ -11,6 +11,8 @@ import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { catalogContextWindow } from '../pi/auth.ts';
 import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgeConfig,
   type ServerConfig } from './config.ts';
+import { BrowserSessions } from './browser/session-cookie.ts';
+import { WebApp } from './browser/web-app.ts';
 import { ConnectionHub } from './connections.ts';
 import { Dashboard } from './dashboard.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
@@ -74,6 +76,8 @@ export interface StartOptions {
   slack?: { connector?: SlackConnector };
   /** Replaces the judge built from `slack.judge`. Tests hand in a stand-in; nothing reaches a model or TypeSafe from them. */
   judge?: { client?: JudgeClient };
+  /** Where the browser's bundle is read from (ADR 0058). Tests point it at a directory of their own. */
+  web?: { bundleDirectory?: string };
 }
 
 type Address = { host: string; port: number };
@@ -304,18 +308,26 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
     const registrations = new PushRegistrations(db, now);
+    // The browser's cookie (ADR 0058): the dashboard, the chat and the settings, the images, and /v1/ws with our Origin.
+    const browser = new BrowserSessions({ sessions, allowedUserId, publicOrigin: config.publicOrigin, now });
     const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize, avatarVersion: avatar.version,
       ...(theDove ? { approvals: { pending: () => theDove.pendingApprovals(), decide: input => theDove.decide(input),
         subscribe: listener => theDove.subscribe(listener) } } : {}),
       settings: { view: () => settings.view(), list: () => settings.list(), set: input => settings.set(input), reset: input => settings.reset(input),
         subscribe: listener => settings.subscribe(listener) },
-      // Connecting is a use of the session and renews it (ADR 0030).
+      // Connecting is a use of the session and renews it (ADR 0030). A bearer decides alone; without one, the browser's
+      // cookie is taken with the public origin as the Origin only (ADR 0058).
       authenticate: request => {
         const token = bearerToken(request);
-        const session = token ? sessions.verify(token, allowedUserId) : undefined;
-        const expiresAt = session && sessions.renew(session.sessionId);
-        return expiresAt ? { ...session!, expiresAt } : undefined;
+        if (token) {
+          const session = sessions.verify(token, allowedUserId);
+          const expiresAt = session && sessions.renew(session.sessionId);
+          return expiresAt ? { session: { ...session!, expiresAt }, via: 'bearer' } : undefined;
+        }
+        const cookie = browser.upgrade(request);
+        if (cookie.kind === 'origin-not-allowed') return { refused: 'origin-not-allowed' };
+        return cookie.kind === 'session' ? { session: cookie.session, via: 'cookie' } : undefined;
       },
       renew: sessionId => sessions.renew(sessionId),
       push: {
@@ -341,13 +353,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
-    const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, login, loop: thinkingLoop, dataDirectory,
+    const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, browser, login, loop: thinkingLoop, dataDirectory,
       name: avatar.name,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
       isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
-      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar,
+      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
+        webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory }),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

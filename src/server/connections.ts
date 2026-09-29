@@ -24,8 +24,16 @@ const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'noti
 const DECISIONS = new Set(['approve', 'edit', 'reject']);
 const PLACEMENTS = new Set(['thread', 'channel']);
 
+/**
+ * How an upgrade was let in: by the app's bearer token, or by the browser's cookie with the public origin as the Origin
+ * (ADR 0058). A cookie shown with another Origin, or none, is refused before this.
+ */
+export type Admission = { session: VerifiedSession; via: 'bearer' | 'cookie' } | { refused: 'origin-not-allowed' };
+
 interface Connection {
   session: VerifiedSession;
+  /** A browser (cookie) is a device that is never pushed to, so it may not register for pushes (ADR 0058). */
+  via: 'bearer' | 'cookie';
   /** The session's end as this connection last heard it; renewals move it (ADR 0030). */
   expiresAt: string;
   /** Answers sent before `session.sync` binds the connection to a device stream. */
@@ -98,8 +106,8 @@ export interface HubSettings {
 
 export interface ConnectionHubOptions {
   publicOrigin: string;
-  /** The live session presented by an upgrade request, or undefined. Its use is already recorded. */
-  authenticate: (request: IncomingMessage) => VerifiedSession | undefined;
+  /** The live session presented by an upgrade request and how, a refusal, or undefined. Its use is already recorded. */
+  authenticate: (request: IncomingMessage) => Admission | undefined;
   /** Records a use of a live session and returns its end, or undefined once it is revoked or expired. */
   renew: (sessionId: string) => string | undefined;
   now: () => number;
@@ -155,9 +163,10 @@ export class ConnectionHub {
     // Browsers always send Origin; native clients may omit it. A present Origin must be ours.
     const origin = request.headers.origin;
     if (origin !== undefined && origin !== this.options.publicOrigin) return refuse(socket, 403, 'origin-not-allowed');
-    const session = this.options.authenticate(request);
-    if (!session) return refuse(socket, 401, 'unauthorized');
-    this.server.handleUpgrade(request, socket, head, ws => this.accept(ws, session));
+    const admitted = this.options.authenticate(request);
+    if (!admitted) return refuse(socket, 401, 'unauthorized');
+    if ('refused' in admitted) return refuse(socket, 403, admitted.refused);
+    this.server.handleUpgrade(request, socket, head, ws => this.accept(ws, admitted.session, admitted.via));
   }
 
   /** Whether the device has a synced connection now. A device that has one gets events, not pushes. */
@@ -194,7 +203,7 @@ export class ConnectionHub {
     return new Promise(resolve => this.server.close(() => resolve()));
   }
 
-  private accept(ws: WebSocket, session: VerifiedSession) {
+  private accept(ws: WebSocket, session: VerifiedSession, via: 'bearer' | 'cookie') {
     const deliver = (text: string) => {
       if (ws.readyState !== ws.OPEN) return;
       if (ws.bufferedAmount > MAX_BUFFERED_BYTES) { ws.close(CLOSE_TOO_SLOW, 'too far behind; sync again'); return; }
@@ -202,7 +211,7 @@ export class ConnectionHub {
     };
     const local = new EventStream(this.epoch, 0);
     local.sink = deliver;
-    const connection: Connection = { session, expiresAt: session.expiresAt, local, deliver };
+    const connection: Connection = { session, via, expiresAt: session.expiresAt, local, deliver };
     this.connections.set(ws, connection);
     ws.on('close', () => {
       this.connections.delete(ws);
@@ -295,6 +304,8 @@ export class ConnectionHub {
         return;
       }
       case 'push.register':
+        // A browser is never pushed to (ADR 0058), so it has nothing to register.
+        if (connection.via === 'cookie') return reject('invalid-request');
         // Independent of the loop: a device registers even while natsumi cannot talk.
         return answer(stream!, this.options.push.register(connection.deviceId!, payload), id);
       default:
