@@ -18,6 +18,7 @@ test('an approval shows where it goes, what it answers, the draft and why it was
   assert.deepEqual(card?.flagged, ['本人に代わる約束・期限']);
   assert.equal(card?.mode, 'idle');
   assert.deepEqual(card?.placement?.selected, 'thread');
+  assert.deepEqual(card?.placement?.options.map(option => option.value), ['thread', 'channel', 'broadcast']);
 });
 
 test('approving asks first; only the confirmation sends it, with the placement chosen', () => {
@@ -26,12 +27,26 @@ test('approving asks first; only the confirmation sends it, with the placement c
   const card = chatProps(driver.state).approvals[0]!;
   assert.equal(card.mode, 'confirming');
   assert.match(card.confirm!.question, /work\/#dev/);
-  assert.match(card.confirm!.question, /チャンネル/);
+  assert.match(card.confirm!.question, /チャンネルに出します/);
+  assert.doesNotMatch(card.confirm!.question, /スレッド/, 'the channel itself, with no thread');
   assert.equal(card.confirm!.text, '明日は 10 時からなら大丈夫です。');
   assert.equal(card.confirm!.confirmLabel, '送る');
   const [decide] = Driver.sent(driver.dispatch({ type: 'approval-confirm', approvalId: 'a1' }));
   assert.deepEqual([decide?.type, decide?.payload], ['approval.decide', { approvalId: 'a1', revision: 1, decision: 'approve', placement: 'channel' }]);
   assert.equal(chatProps(driver.state).approvals[0]?.mode, 'sending');
+});
+
+test('the broadcast says it goes to the thread and to the channel too, and with images to the thread alone (ADR 0062)', () => {
+  const driver = new Driver().synced({ pendingApprovals: [approval('a1'),
+    approval('a4', { images: [{ imageId: 'image-1', mimeType: 'image/png', bytes: 3 }] })] });
+  driver.dispatch({ type: 'approval-choose', approvalId: 'a1', decision: 'approve', placement: 'broadcast' });
+  assert.match(chatProps(driver.state).approvals[0]!.confirm!.question, /スレッドに返し、チャンネルにも出します/);
+  driver.dispatch({ type: 'approval-choose', approvalId: 'a4', decision: 'approve', placement: 'broadcast' });
+  const images = chatProps(driver.state).approvals[1]!.confirm!.question;
+  assert.match(images, /スレッドに返します/);
+  assert.doesNotMatch(images, /チャンネルにも/);
+  const [decide] = Driver.sent(driver.dispatch({ type: 'approval-confirm', approvalId: 'a1' }));
+  assert.deepEqual(decide?.payload, { approvalId: 'a1', revision: 1, decision: 'approve', placement: 'broadcast' });
 });
 
 test('taking the confirmation back sends nothing and leaves the approval as it was', () => {

@@ -1,4 +1,5 @@
 import { useRef } from 'preact/hooks';
+import { PLACEMENTS, type Placement } from '../../shared/protocol/conversation.ts';
 import type { ApprovalProps } from '../core/props.ts';
 import { Images, type Dispatch } from './parts.tsx';
 
@@ -10,7 +11,7 @@ export function ApprovalCard({ props, dispatch }: { props: ApprovalProps; dispat
   const draft = useRef<HTMLTextAreaElement>(null);
   const placement = useRef<HTMLSelectElement>(null);
   const approvalId = props.id;
-  const chosen = () => (placement.current?.value === 'channel' ? 'channel' : placement.current?.value === 'thread' ? 'thread' : undefined);
+  const chosen = () => PLACEMENTS.find((value: Placement) => value === placement.current?.value);
   const choose = (decision: 'approve' | 'edit' | 'reject') => dispatch({
     type: 'approval-choose', approvalId, decision,
     ...(decision === 'edit' ? { text: draft.current?.value ?? '' } : {}),

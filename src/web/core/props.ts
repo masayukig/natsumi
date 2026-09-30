@@ -1,5 +1,5 @@
 import type { AvatarManifest } from '../../shared/protocol/avatar.ts';
-import type { Approval, Expression, ShownImage, ShownMessage } from '../../shared/protocol/conversation.ts';
+import { PLACEMENTS, type Approval, type Expression, type Placement, type ShownImage, type ShownMessage } from '../../shared/protocol/conversation.ts';
 import { SETTING_KEYS, type SettingKey, type SettingsView } from '../../shared/protocol/settings.ts';
 import { readIndex } from './mediator.ts';
 import { isLimitKey } from './settings.ts';
@@ -57,7 +57,7 @@ export interface ApprovalProps {
   history: string[];
   expires: string;
   /** The choice of where a reply goes, when there is one to make. */
-  placement?: { selected: 'thread' | 'channel'; options: { value: 'thread' | 'channel'; label: string }[] };
+  placement?: { selected: Placement; options: { value: Placement; label: string }[] };
   mode: 'idle' | 'editing' | 'confirming' | 'sending';
   confirm?: ConfirmProps;
   error?: string;
@@ -190,14 +190,14 @@ function rowOf(message: ShownMessage, afterRead: boolean, notices: Set<string>, 
 
 // The approvals.
 
-const PLACEMENTS = { thread: 'スレッドに返す', channel: 'チャンネルにも出す' } as const;
+const PLACEMENT_LABELS = { thread: 'スレッドに返す', channel: 'チャンネルに出す', broadcast: 'スレッドに返し、チャンネルにも出す' } as const;
 const VERDICTS = { owner: '判定が本人に回しました', 'no-verdict': '判定できませんでした', 'rewrite-limit': '3 回目も突き返されました' } as const;
 
 function approvalProps(approval: Approval, flow: ApprovalFlow): ApprovalProps {
   const { target } = approval;
   const placement = target.replyTo
     ? { selected: flow.step === 'confirming' && flow.placement ? flow.placement : target.placement,
-      options: (['thread', 'channel'] as const).map(value => ({ value, label: PLACEMENTS[value] })) }
+      options: PLACEMENTS.map(value => ({ value, label: PLACEMENT_LABELS[value] })) }
     : undefined;
   return {
     id: approval.approvalId, channel: target.channel, ...(target.replyTo ? { replyTo: target.replyTo } : {}),
@@ -213,8 +213,12 @@ function approvalProps(approval: Approval, flow: ApprovalFlow): ApprovalProps {
 
 function confirmOf(approval: Approval, flow: Extract<ApprovalFlow, { step: 'confirming' }>): ConfirmProps {
   const { channel, replyTo } = approval.target;
-  const where = replyTo ? `${channel} の${flow.placement === 'channel' || (!flow.placement && approval.target.placement === 'channel')
-    ? 'スレッドに返し、チャンネルにも出します' : 'スレッドに返します'}` : `${channel} に投稿します`;
+  const placement = flow.placement ?? approval.target.placement;
+  // Images cannot be shown in the channel from a thread: a broadcast of them stays in the thread (ADR 0062).
+  const where = !replyTo ? `${channel} に投稿します`
+    : placement === 'channel' ? `${channel} のチャンネルに出します`
+      : placement === 'broadcast' && !approval.images?.length ? `${channel} のスレッドに返し、チャンネルにも出します`
+        : `${channel} のスレッドに返します`;
   const images = approval.images?.length ? `画像 ${approval.images.length} 枚も一緒に送ります。` : '';
   switch (flow.decision) {
     case 'approve':

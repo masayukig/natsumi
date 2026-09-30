@@ -244,7 +244,7 @@ test('a post judged by both judges shows each one\'s verdict, scores and placeme
       judge_adopted: 'jev', judge_decided_by: 'logprobs',
       judgement_jev: JSON.stringify({ error: 'timeout' }),
       judgement_logprobs: JSON.stringify({ verdict: 'owner', issues: [{ name: 'private-matter', label: '私的な事情', score: 0.6, flagged: true }],
-        placement: { choice: 'thread', probabilities: { thread: 0.7, channel: 0.3 } } }),
+        placement: { choice: 'broadcast', probabilities: { thread: 0.2, channel: 0.1, broadcast: 0.7, elsewhere: 0.5 } } }),
     });
     post(f, 'post-before', {}, -MINUTE);
     f.run(`INSERT INTO approvals (approval_id, revision, kind, post_id, payload, state, created_at, expires_at)
@@ -252,7 +252,8 @@ test('a post judged by both judges shows each one\'s verdict, scores and placeme
     const [both, before] = listDovePosts(f.db, 1).rows;
     assert.deepEqual(both!.judges, {
       adopted: 'jev', decidedBy: 'logprobs',
-      logprobs: { verdict: 'owner', scores: [{ label: '私的な事情', score: 0.6, flagged: true }], placement: 'thread', probabilities: { thread: 0.7, channel: 0.3 } },
+      logprobs: { verdict: 'owner', scores: [{ label: '私的な事情', score: 0.6, flagged: true }], placement: 'broadcast',
+        probabilities: { thread: 0.2, channel: 0.1, broadcast: 0.7 } },
       jev: { error: 'timeout' },
     });
     assert.equal(both!.ownerDecision, 'edited');

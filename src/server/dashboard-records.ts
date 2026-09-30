@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { PLACEMENT_ORDER, type Placement } from './judge.ts';
 import { isoAt, nextOccurrence } from './nightly.ts';
 import { SESSION_TTL_MS } from './sessions.ts';
 import { turnKind, type TurnKind } from './turn-stats.ts';
@@ -100,7 +101,7 @@ function optional<K extends string>(key: K, value: string | undefined): Partial<
 export interface DoveScore { label: string; score: number; flagged: boolean }
 /** What one judge made of a draft (ADR 0059): its verdict by its own thresholds, its scores and placement, or why it had none. */
 export type DoveJudgement =
-  | { verdict: string; scores: DoveScore[]; placement: string | null; probabilities?: { thread: number; channel: number } }
+  | { verdict: string; scores: DoveScore[]; placement: string | null; probabilities?: Partial<Record<Placement, number>> }
   | { error: string };
 export interface DoveJudges {
   adopted: 'logprobs' | 'jev';
@@ -151,13 +152,15 @@ function judgesOf(row: Record<string, string | null>): DoveJudges | null {
 
 function judgement(value: string | null): DoveJudgement | null {
   if (!value) return null;
-  let kept: { verdict?: unknown; issues?: unknown; placement?: { choice?: unknown; probabilities?: { thread?: unknown; channel?: unknown } }; error?: unknown };
+  let kept: { verdict?: unknown; issues?: unknown; placement?: { choice?: unknown; probabilities?: Record<string, unknown> }; error?: unknown };
   try { kept = JSON.parse(value) as typeof kept; } catch { return { error: 'unreadable' }; }
   if (typeof kept?.error === 'string') return { error: kept.error };
   if (typeof kept?.verdict !== 'string') return { error: 'unreadable' };
-  const { thread, channel } = kept.placement?.probabilities ?? {};
+  // The odds of each place asked about (ADR 0062): the three, or two from before, and nothing that is no place.
+  const given = kept.placement?.probabilities ?? {};
+  const probabilities = Object.fromEntries(PLACEMENT_ORDER.flatMap(name => typeof given[name] === 'number' ? [[name, given[name]]] : []));
   return { verdict: kept.verdict, scores: scoresOf(kept.issues), placement: typeof kept.placement?.choice === 'string' ? kept.placement.choice : null,
-    ...(typeof thread === 'number' && typeof channel === 'number' ? { probabilities: { thread, channel } } : {}) };
+    ...(Object.keys(probabilities).length > 0 ? { probabilities } : {}) };
 }
 
 /** The judge's score per issue (ADR 0039); none when there were none or they cannot be read. */

@@ -83,7 +83,8 @@ interface Issue {
   flagged?: true;
 }
 
-type Placement = 'thread' | 'channel';
+/** Where a reply goes (ADR 0062): its thread, the channel itself, or its thread shown in the channel too. */
+type Placement = 'thread' | 'channel' | 'broadcast';
 
 interface Approval {
   approvalId: string;
@@ -98,7 +99,7 @@ interface Approval {
   reason: {
     verdict: 'owner' | 'no-verdict' | 'rewrite-limit';
     issues: Issue[];
-    placement?: { probabilities: { thread: number; channel: number } };
+    placement?: { probabilities: Partial<Record<Placement, number>> };
   };
   history: { text: string; issues: Issue[] }[];
 }
@@ -167,7 +168,7 @@ function startingApprovals(): Approval[] {
       reason: {
         verdict: 'rewrite-limit',
         issues: [promise, { name: 'not-in-thread', label: 'スレッドに無い情報', score: 0.12 }, { name: 'false-claim', label: '事実と違う説明', score: 0.05 }],
-        placement: { probabilities: { thread: 0.8, channel: 0.2 } },
+        placement: { probabilities: { thread: 0.8, channel: 0.15, broadcast: 0.05 } },
       },
       history: [
         { text: '明日なら何時でも大丈夫です！', issues: [{ ...promise, score: 0.91 }] },
@@ -189,14 +190,15 @@ function laterApproval(): Approval {
   return {
     approvalId: 'approval-dm', revision: 1, kind: 'slack-post', createdAt: new Date().toISOString(), expiresAt: fromNow(7),
     target: {
-      channel: 'work/@佐藤', placement: 'thread',
+      channel: 'work/@佐藤', placement: 'broadcast',
       replyTo: { speaker: '佐藤', at: '2026-09-26 09:05:12', text: '来週の件、先方に日程を伝えてもいいですか？' },
     },
     text: 'はい、来週の水曜で先方に伝えてください。', expression: 'neutral',
     reason: {
       verdict: 'owner',
       issues: [{ ...promise, score: 0.64 }, { name: 'not-in-thread', label: 'スレッドに無い情報', score: 0.58, flagged: true }],
-      placement: { probabilities: { thread: 0.55, channel: 0.45 } },
+      // Odds as a judge from before the three places gave them: two places, not three.
+      placement: { probabilities: { thread: 0.45, broadcast: 0.55 } },
     },
     history: [],
   };
@@ -338,7 +340,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     if (typeof approvalId !== 'string' || typeof revision !== 'number' || !Number.isInteger(revision)) return reject('invalid-request');
     if (decision !== 'approve' && decision !== 'edit' && decision !== 'reject') return reject('invalid-request');
     if (decision === 'edit' && (typeof text !== 'string' || text.trim() === '')) return reject('invalid-request');
-    if (placement !== undefined && placement !== 'thread' && placement !== 'channel') return reject('invalid-request');
+    if (placement !== undefined && placement !== 'thread' && placement !== 'channel' && placement !== 'broadcast') return reject('invalid-request');
 
     const already = closed.get(approvalId);
     if (already) {
