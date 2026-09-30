@@ -119,7 +119,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `NatsumiPhone/Views/` | iPhone の SwiftUI の Passive View と `Comic` の見た目 |
 | `NatsumiWidgets/` | iPhone のウィジェットの拡張。ロック画面からアプリを開くボタンと丸いウィジェット（ADR 0028） |
 | `NatsumiLaunch/` | iPhone のアプリと `NatsumiWidgets` の両方に入る、アプリを開く App Intent（`OpenNatsumiIntent`） |
-| `NatsumiCore/Push/` | 通知の登録（`PushRegistration`・`PushEnvironment`）と、届いている通知の片づけの規則（`PushTidy`）（ADR 0029） |
+| `NatsumiCore/Push/` | 通知の登録（`PushRegistration`・`PushEnvironment`）と、届いている通知の片づけの規則（`PushTidy`）（ADR 0029）、通知の delegate が受け取った UIKit の completion を main で呼ぶ `MainThreadCompletion` |
 | `NatsumiPush/` | `NatsumiCore` と `NatsumiNotifications` の両方に入る、通知の payload の読み方・本文の復号（`PushCrypto`）・鍵の保存（`PushKeyStore`） |
 | `NatsumiNotifications/` | iPhone の Notification Service Extension。届いた通知の本文を開き、気持ちの顔を添える（ADR 0029）。承認待ちの通知はチャンネルと下書きの先頭を出す（ADR 0041） |
 | `NatsumiPhoneUITests/` | 偽のサーバー（`npm run fake-server`）を相手に画面を辿って撮る UI テスト。関門ではない |

@@ -34,11 +34,13 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     }
 
     /// The owner tapped a notification: an approval's opens that approval; the others just bring the app up.
+    /// Not `async`: UIKit's handler must be called on the main thread (`MainThreadCompletion`).
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
-    ) async {
-        guard let id = ApprovalAlertPush(userInfo: response.notification.request.content.userInfo)?.approvalId else { return }
-        await MainActor.run { root.approvalNotificationOpened(id) }
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
+        let id = ApprovalAlertPush(userInfo: response.notification.request.content.userInfo)?.approvalId
+        MainThreadCompletion.run({ if let id { self.root.approvalNotificationOpened(id) } }, then: completionHandler)
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -49,10 +51,13 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         // Without a token there is nothing to register; the app works as before, and the next launch asks again.
     }
 
+    /// Not `async`, for the same reason as the tap: even for a main actor method, the bridged `async` version calls
+    /// UIKit's handler off the main thread.
     func application(
-        _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]
-    ) async -> UIBackgroundFetchResult {
-        await root.remoteNotificationReceived(userInfo) ? .newData : .noData
+        _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping @Sendable (UIBackgroundFetchResult) -> Void
+    ) {
+        MainThreadCompletion.run({ await self.root.remoteNotificationReceived(userInfo) ? .newData : .noData }, then: completionHandler)
     }
 }
 
