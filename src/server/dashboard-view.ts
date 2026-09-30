@@ -17,6 +17,8 @@ export const TURNS_PATH = '/dashboard/turns';
 export const WAITS_PATH = '/dashboard/waits';
 /** The failures and waits alone, for the script to put in place; like STATUS_PATH it answers 401, never a login. */
 export const WAITS_LIVE_PATH = '/dashboard/waits/live';
+/** The self-checks, and below it a booking's page that asks before its cancel is posted (ADR 0064). */
+export const CHECKS_PATH = '/dashboard/checks';
 export const MEMOS_PATH = '/dashboard/memos';
 export const DOVE_PATH = '/dashboard/dove';
 export const DEVICES_PATH = '/dashboard/devices';
@@ -27,12 +29,15 @@ export const REFRESHED_PATHS: ReadonlySet<string> = new Set([STATUS_PATH, WAITS_
 
 /** A turn's page, recorded or in progress (ADR 0049). */
 export const turnPath = (turnId: string) => `${TURNS_PATH}/${encodeURIComponent(turnId)}`;
+/** A self-check's page, which asks before it is cancelled; the cancel is a POST to the same path and `/cancel`. */
+export const checkPath = (checkId: string) => `${CHECKS_PATH}/${encodeURIComponent(checkId)}`;
 
 /** The sections of the dashboard. Those not built yet are listed as coming, so the frame does not move when they are. */
 const SECTIONS: { label: string; href?: string }[] = [
   { label: 'いまの状態', href: '/dashboard' },
   { label: 'ターン', href: TURNS_PATH },
   { label: '失敗と待ち', href: WAITS_PATH },
+  { label: '予約', href: CHECKS_PATH },
   { label: '一行メモ', href: MEMOS_PATH },
   { label: 'ポッポさん', href: DOVE_PATH },
   { label: '承認の履歴', href: APPROVALS_PATH },

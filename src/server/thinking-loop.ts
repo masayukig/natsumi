@@ -554,6 +554,14 @@ export class ThinkingLoop {
     };
   }
 
+  /**
+   * The owner's cancel of a self-check from the dashboard (ADR 0064): the same `SelfChecks.cancel` her own
+   * cancel_self_check calls, so there is one way a booking ends early.
+   */
+  cancelSelfCheck(checkId: string): ToolOutcome {
+    return this.selfChecks.cancel(checkId);
+  }
+
   /** The unit of work in progress, as a copy; undefined when idle (ADR 0049). */
   turnInProgress(): TurnInProgress | undefined {
     const working = this.working;
