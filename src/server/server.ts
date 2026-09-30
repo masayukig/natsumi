@@ -368,7 +368,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, browser, login, loop: thinkingLoop, dataDirectory,
-      name: avatar.name,
+      name: avatar.name, avatarId: avatar.id,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
       isConnected: deviceId => connections.isConnected(deviceId), now });

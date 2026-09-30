@@ -31,8 +31,8 @@ function table(head: Html, rows: Html[], empty: string): Html {
     : html`<div class="table"><table class="list"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-export function waitsPage(waits: Waits, timeZone: string): Html {
-  return page('失敗と待ち', renderWaits(waits, timeZone), { signedIn: true, current: '失敗と待ち' });
+export function waitsPage(waits: Waits, timeZone: string, avatarId?: string): Html {
+  return page('失敗と待ち', renderWaits(waits, timeZone), { signedIn: true, current: '失敗と待ち', avatarId });
 }
 
 /** The failures and what waits, as one section the script refreshes in place. */
@@ -95,7 +95,7 @@ const MEMO_MISSING: Record<Exclude<MemoReading, { found: true }>['reason'], stri
   'no-memo': 'このターンに一行メモはありません。',
 };
 
-export function memosPage(list: { page: number; more: boolean; memos: { row: TurnRow; memo: MemoReading }[] }, timeZone: string): Html {
+export function memosPage(list: { page: number; more: boolean; memos: { row: TurnRow; memo: MemoReading }[] }, timeZone: string, avatarId?: string): Html {
   const main = html`<section id="memos">
 <h2>一行メモ</h2>
 <p><small>ターンの終わりに書いた一行メモを、新しい順に 20 件ずつ出します。時刻を押すとそのターンの詳細です。</small></p>
@@ -106,10 +106,10 @@ ${memo.found ? html`<div class="prose">${memo.text}</div>` : html`<p><small>${ME
 </article>`)}</div>`}
 ${pages(MEMOS_PATH, list.page, list.more, '新しいメモ', '古いメモ')}
 </section>`;
-  return page('一行メモ', main, { signedIn: true, current: '一行メモ' });
+  return page('一行メモ', main, { signedIn: true, current: '一行メモ', avatarId });
 }
 
-export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[] }, timeZone: string, name = DEFAULT_SELF.name): Html {
+export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[] }, timeZone: string, name = DEFAULT_SELF.name, avatarId?: string): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const main = html`<section id="dove">
 <h2>ポッポさん</h2>
@@ -131,7 +131,7 @@ ${post.sentText && post.sentText !== post.text && html`<p><small>送った文</s
 </article>`)}</div>`}
 ${pages(DOVE_PATH, list.page, list.more, '新しい依頼', '古い依頼')}
 </section>`;
-  return page('ポッポさん', main, { signedIn: true, current: 'ポッポさん' });
+  return page('ポッポさん', main, { signedIn: true, current: 'ポッポさん', avatarId });
 }
 
 function scoreList(scores: DoveScore[]): Html {
@@ -168,7 +168,7 @@ const DECISIONS: Record<string, string> = { approve: 'そのまま承認', edit:
 const DEVICE_ID_SHOWN = 'device-'.length + 8;
 
 /** The approvals, all or one outcome's (ADR 0040, ADR 0041), each with its post in the dove's list. */
-export function approvalsPage(list: { page: number; more: boolean; rows: ApprovalRow[]; state?: ApprovalState }, timeZone: string): Html {
+export function approvalsPage(list: { page: number; more: boolean; rows: ApprovalRow[]; state?: ApprovalState }, timeZone: string, avatarId?: string): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const query: Record<string, string> = list.state ? { state: list.state } : {};
   const filters = [{ label: 'すべて', href: APPROVALS_PATH, current: list.state === undefined },
@@ -181,7 +181,7 @@ ${list.rows.length === 0 ? html`<p>${list.state ? `${APPROVAL_LABELS[list.state]
     : html`<div class="cards">${list.rows.map(item => approvalCard(item, at))}</div>`}
 ${pages(APPROVALS_PATH, list.page, list.more, '新しい承認', '古い承認', query)}
 </section>`;
-  return page('承認の履歴', main, { signedIn: true, current: '承認の履歴' });
+  return page('承認の履歴', main, { signedIn: true, current: '承認の履歴', avatarId });
 }
 
 function approvalCard(item: ApprovalRow, at: (iso: string) => string): Html {
@@ -220,7 +220,7 @@ function approvalState(state: string, label: string): Html {
 const SESSION_STATES: Record<SessionState | 'gone', string> = { live: '有効', revoked: '失効', expired: '期限切れ', gone: 'もう無い' };
 
 /** The devices and the login sessions; `currentSessionId` is this browser's own. */
-export function devicesPage(view: DevicesView, currentSessionId: string, timeZone: string): Html {
+export function devicesPage(view: DevicesView, currentSessionId: string, timeZone: string, avatarId?: string): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const { counts, rows } = view.sessions;
   const main = html`<section id="devices">
@@ -242,7 +242,7 @@ ${table(html`<th>セッション</th><th>状態</th><th>最後の利用</th><th>
 <td>${at(session.lastUsedAt)}</td><td>${at(session.expiresAt)}</td><td>${at(session.createdAt)}</td>
 <td>${session.devices}</td></tr>`), 'セッションはありません。')}
 </section>`;
-  return page('端末', main, { signedIn: true, current: '端末' });
+  return page('端末', main, { signedIn: true, current: '端末', avatarId });
 }
 
 /** The first page of a list, a later one, or 0 for a page asked for that is not a page. */

@@ -1,5 +1,6 @@
 import { FILES_PATH } from './dashboard-files.ts';
 import { html, type Html } from './html.ts';
+import { DEFAULT_SELF } from './prompts.ts';
 import type { LoopDashboardState } from './thinking-loop.ts';
 
 /**
@@ -47,8 +48,12 @@ export interface DashboardStatus {
   timeZone: string;
 }
 
-/** A whole page: the header, the navigation, the logout and `main`. Pages before login have no navigation. */
-export function page(title: string, main: Html, options: { signedIn: boolean; current?: string } = { signedIn: true }): Html {
+/**
+ * A whole page: the header, the navigation, the logout and `main`. Pages before login have no navigation. The header and
+ * the title carry the ID of the avatar the server started with (ADR 0057); natsumi's when left out.
+ */
+export function page(title: string, main: Html, options: { signedIn: boolean; current?: string; avatarId?: string } = { signedIn: true }): Html {
+  const avatarId = options.avatarId ?? DEFAULT_SELF.id;
   return html`<!doctype html>
 <html lang="ja">
 <head>
@@ -56,13 +61,13 @@ export function page(title: string, main: Html, options: { signedIn: boolean; cu
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
-<title>${title} — natsumi</title>
+<title>${title} — ${avatarId}</title>
 <link rel="stylesheet" href="${STATIC_FILES.css}">
 <script src="${STATIC_FILES.js}" defer></script>
 </head>
 <body>
 <header class="top">
-<h1>natsumi</h1>
+<h1>${avatarId}</h1>
 ${options.signedIn && html`<nav aria-label="ダッシュボード"><ul>${SECTIONS.map(section => html`<li>${section.href
     ? html`<a href="${section.href}"${section.label === options.current ? html` aria-current="page"` : ''}>${section.label}</a>`
     : html`<span class="soon">${section.label}<small>準備中</small></span>`}</li>`)}</ul></nav>
@@ -78,8 +83,8 @@ ${main}
 }
 
 /** The dashboard's first page: the current state, refreshed in place by the script. */
-export function statusPage(status: DashboardStatus): Html {
-  return page('いまの状態', renderStatus(status), { signedIn: true, current: 'いまの状態' });
+export function statusPage(status: DashboardStatus, avatarId?: string): Html {
+  return page('いまの状態', renderStatus(status), { signedIn: true, current: 'いまの状態', avatarId });
 }
 
 /** The current-state section, also served alone for the script to put in place. */
@@ -122,14 +127,14 @@ const PHASES: Record<NonNullable<LoopDashboardState['turn']>['phase'], string> =
 };
 
 /** The callback's own answer: a same-origin page that moves on, so the Strict cookie is sent to /dashboard (ADR 0049). */
-export function signedInPage(returnTo: '/' | '/settings' | '/dashboard' = '/dashboard'): Html {
+export function signedInPage(returnTo: '/' | '/settings' | '/dashboard' = '/dashboard', avatarId = DEFAULT_SELF.id): Html {
   return html`<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="0; url=${returnTo}">
-<title>ログインしました — natsumi</title>
+<title>ログインしました — ${avatarId}</title>
 <link rel="stylesheet" href="${STATIC_FILES.css}">
 </head>
 <body>
@@ -139,19 +144,19 @@ export function signedInPage(returnTo: '/' | '/settings' | '/dashboard' = '/dash
 `;
 }
 
-export function signedOutPage(): Html {
-  return page('ログアウトしました', html`<p>ログアウトしました。</p><p><a href="/dashboard">もう一度ログインする</a></p>`, { signedIn: false });
+export function signedOutPage(avatarId?: string): Html {
+  return page('ログアウトしました', html`<p>ログアウトしました。</p><p><a href="/dashboard">もう一度ログインする</a></p>`, { signedIn: false, avatarId });
 }
 
 /** A login that did not end in a session; only the fixed code is shown. */
-export function refusedPage(code: string): Html {
+export function refusedPage(code: string, avatarId?: string): Html {
   return page('ログインできませんでした', html`<h2>ログインできませんでした</h2><p><code>${code}</code></p>
-<p><a href="/dashboard">もう一度ログインする</a></p>`, { signedIn: false });
+<p><a href="/dashboard">もう一度ログインする</a></p>`, { signedIn: false, avatarId });
 }
 
 /** A short answer with no content of its own: not found, a method not taken, a request refused. */
-export function messagePage(heading: string, signedIn = false): Html {
-  return page(heading, html`<h2>${heading}</h2><p><a href="/dashboard">いまの状態へ</a></p>`, { signedIn });
+export function messagePage(heading: string, signedIn = false, avatarId?: string): Html {
+  return page(heading, html`<h2>${heading}</h2><p><a href="/dashboard">いまの状態へ</a></p>`, { signedIn, avatarId });
 }
 
 const numberFormat = new Intl.NumberFormat('en-US');
