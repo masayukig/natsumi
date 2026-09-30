@@ -150,6 +150,25 @@ test('an owner message is shown at once with the thinking expression and gets on
   } finally { await f.cleanup(); }
 });
 
+test('reply_to_mac says where the line went: the Slack channel when the owner is on Slack (fork ADR F01)', async () => {
+  const f = await setup();
+  try {
+    const { loop } = await f.open({ ownerOnSlack: true });
+    f.send(loop, 'こんにちは');
+    const first = await f.model.next();
+    first.call('reply_to_mac', { text: 'はい', expression: 'neutral' });
+    first.finish();
+    const second = await f.model.next();
+    const [result] = toolResults(second.context);
+    assert.match(result!.text, /^本人の Slack のチャンネルにセリフを送りました/);
+    assert.doesNotMatch(result!.text, /Mac/);
+    second.finish();
+    await loop.idle();
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test('reply_to_mac can be called again in the same turn: the first answers the message, the rest answer none', async () => {
   const f = await setup();
   try {
