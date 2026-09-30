@@ -1,7 +1,7 @@
 # 0063. 自分で予約する確認を cron 式で繰り返せるようにし、上限をなくす
 
 - Date: 2026-09-30
-- Status: Accepted
+- Status: Accepted（本人がダッシュボードで予約を見て 1 件ずつ取り消すことは [ADR 0064](0064-cancelling-a-self-check-from-the-dashboard.md) で追加）
 
 ## Context
 
