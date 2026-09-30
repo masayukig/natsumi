@@ -56,11 +56,12 @@ export interface SlackApi {
   /** The names of the workspace's custom emoji, aliases included (`emoji.list`, which needs `emoji:read`). */
   customEmoji(): Promise<string[]>;
   /**
-   * Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts.
+   * Posts as the bot, in a thread when `threadTs` is given and shown in the channel too when `replyBroadcast` is (ADR 0059),
+   * under the icon at `iconUrl`. Returns the new message's ts.
    * Fork (ADR F01): with `blocks`, Slack shows them and `text` is only the notification. With `username`, Slack shows
    * it over the post instead of the bot's profile name (needs `chat:write.customize`, the same scope as `iconUrl`).
    */
-  postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string; blocks?: unknown[]; username?: string }): Promise<string>;
+  postMessage(channel: string, text: string, options: { threadTs?: string; replyBroadcast?: boolean; iconUrl: string; blocks?: unknown[]; username?: string }): Promise<string>;
   /**
    * Posts images as the bot, as one message with the comment when given, in a thread when `threadTs` is given: the three
    * calls of `files.uploadV2` (ADR 0044). Slack takes no icon here, so the bot's own is shown.
@@ -266,11 +267,13 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
       const answer = await calling('emoji.list', () => web.emoji.list());
       return Object.keys(answer.emoji ?? {});
     },
-    async postMessage(channel, text, { threadTs, iconUrl, blocks, username }) {
-      // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged.
-      const answer = await calling('chat.postMessage', () => web.chat.postMessage({ channel, text, icon_url: iconUrl,
-        unfurl_links: false, unfurl_media: false, ...(threadTs ? { thread_ts: threadTs } : {}), ...(blocks ? { blocks: blocks as never } : {}),
-        ...(username ? { username } : {}) }));
+    async postMessage(channel, text, { threadTs, replyBroadcast, iconUrl, blocks, username }) {
+      // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged. A reply in a
+      // thread shown in the channel too (reply_broadcast, ADR 0059) needs nothing more than chat:write.
+      const message = { channel, text, icon_url: iconUrl, unfurl_links: false, unfurl_media: false,
+        ...(blocks ? { blocks: blocks as never } : {}), ...(username ? { username } : {}) };
+      const answer = await calling('chat.postMessage', () => web.chat.postMessage(!threadTs ? message
+        : replyBroadcast ? { ...message, thread_ts: threadTs, reply_broadcast: true } : { ...message, thread_ts: threadTs }));
       return String(answer.ts ?? '');
     },
     async uploadFiles(channel, files, { threadTs, initialComment }) {

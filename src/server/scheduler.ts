@@ -85,7 +85,7 @@ export class SelfChecks {
     } else {
       const resolved = this.resolveLocal(when.at!, now);
       if (resolved === undefined) {
-        return refuse(`at は本人のタイムゾーン（${this.timeZone}）の "HH:MM" か "YYYY-MM-DD HH:MM" で書いてください。今は ${localDateTime(now, this.timeZone)} です。`);
+        return refuse(`at はマスターのタイムゾーン（${this.timeZone}）の "HH:MM" か "YYYY-MM-DD HH:MM" で書いてください。今は ${localDateTime(now, this.timeZone)} です。`);
       }
       dueAt = resolved;
       if (dueAt <= now) return refuse(`${localDateTime(dueAt, this.timeZone)} は過去の時刻です。今は ${localDateTime(now, this.timeZone)}（${this.timeZone}）です。`);

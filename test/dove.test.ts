@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { ConversationStore } from '../src/server/conversation-store.ts';
 import { SlackDove, type DoveConfig } from '../src/server/dove.ts';
-import { JUDGE_ISSUES, JudgeError, type JudgeClient, type Judgement } from '../src/server/judge.ts';
+import { JUDGE_ISSUES, JudgeError, type JudgeChoice, type JudgeClient, type Judgement, type Placement } from '../src/server/judge.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
@@ -21,9 +21,9 @@ import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
 const ORIGIN = 'https://natsumi.example.test';
 const DAY = 86_400_000;
 const CONFIG: DoveConfig = {
-  thresholds: { owner: 0.3, return: 0.7 }, approvalDays: 7, placementFollowing: 2,
-  judgeContext: { messages: 5, chars: 500 }, images: { maxBytes: 1024, maxCount: 2 },
+  approvalDays: 7, placementFollowing: 2, judgeContext: { messages: 5, chars: 500 }, images: { maxBytes: 1024, maxCount: 2 },
 };
+const THRESHOLDS = { owner: 0.3, return: 0.7 };
 
 /** A Jev that answers what the test queued, and records what it was asked. */
 class FakeJev implements JudgeClient {
@@ -37,10 +37,13 @@ class FakeJev implements JudgeClient {
   }
 }
 
-function scores(values: number[], choice: 'thread' | 'channel' = 'thread'): Judgement {
+const ODDS = { thread: { thread: 0.8, channel: 0.15, broadcast: 0.05 }, channel: { thread: 0.1, channel: 0.85, broadcast: 0.05 },
+  broadcast: { thread: 0.1, channel: 0.1, broadcast: 0.8 } } as const;
+
+function scores(values: number[], choice: Placement = 'thread'): Judgement {
   return {
     issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: values[index] ?? 0.01 })),
-    placement: { choice, probabilities: choice === 'thread' ? { thread: 0.8, channel: 0.2 } : { thread: 0.1, channel: 0.9 } },
+    placement: { choice, probabilities: { ...ODDS[choice] } },
   };
 }
 const SEND = () => scores([]);
@@ -49,6 +52,10 @@ const RETURN = () => scores([0.9]);
 
 const PARENT = tsAt('2026-09-25T05:32:05Z'); // 14:32:05 in Tokyo
 
+/**
+ * The dove with Jev alone on and adopted, unless told otherwise; `logprobs` is the other judge's stand-in, off until the
+ * test turns it on through `choice`, as the settings would.
+ */
 async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUrl?: string } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-dove-')));
   const db = openStateDatabase(join(root, 'state.sqlite'));
@@ -64,13 +71,17 @@ async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUr
   const images = new ImageStore(db, join(root, 'images'));
   const slack = new FakeSlack();
   const jev = new FakeJev();
+  const logprobs = new FakeJev();
+  const choice: JudgeChoice = { logprobs: false, jev: true, adopted: 'jev' };
   const store = new ConversationStore(db, () => clock.now);
   const events: string[] = [];
   const clientEvents: { type: string; payload: Record<string, any> }[] = [];
   const logs: string[] = [];
   const open = () => {
     const dove = new SlackDove({
-      db, archive, workspaces: { work: slack }, ...(options.jev === false ? {} : { judge: jev }), config: CONFIG, publicOrigin: ORIGIN,
+      db, archive, workspaces: { work: slack }, config: CONFIG, publicOrigin: ORIGIN,
+      judges: options.jev === false ? {} : { jev: { client: jev, thresholds: THRESHOLDS }, logprobs: { client: logprobs, thresholds: { owner: 0.5, return: 0.9 } } },
+      judgeChoice: () => ({ ...choice }),
       workDirectory: work, images, ...(options.avatarBaseUrl ? { avatarBaseUrl: options.avatarBaseUrl } : {}),
       now: () => clock.now, log: line => { logs.push(line); },
       raise: record => {
@@ -91,7 +102,7 @@ async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUr
     await rm(root, { recursive: true, force: true });
   });
   const lines = () => events.map(id => dove.takeEventLine(id, '2026-09-25T06:00:00.000Z'));
-  return { root, work, images, db, clock, archive, slack, jev, dove, events, clientEvents, logs, lines, open };
+  return { root, work, images, db, clock, archive, slack, jev, logprobs, choice, dove, events, clientEvents, logs, lines, open };
 }
 
 const post = (body: string, { to = 'work/#dev 2026-09-25 14:32:05 山田', expression }: { to?: string; expression?: string } = {}) =>
@@ -148,17 +159,58 @@ test('Jev sees the draft and the message it answers, and nothing natsumi said ab
   assert.equal(placement, true);
   assert.equal(state.draft, '大丈夫です。');
   assert.equal(state.channel, 'work/#dev');
-  assert.deepEqual(state.reply_to, { from: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？' });
-  assert.deepEqual(state.conversation, [{ from: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？' }]);
-  assert.deepEqual(Object.keys(state).sort(), ['channel', 'conversation', 'draft', 'reply_to']);
+  assert.deepEqual(state.reply_to, { from: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？', in_thread: false });
+  assert.equal(state.now, '2026-09-25 15:00:00', 'the time now, in the owner\'s time zone');
+  const parent = { from: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？' };
+  assert.deepEqual(state.conversation, {
+    channel: { last_at: '2026-09-25 14:32:05', messages: [parent] },
+    thread: { last_at: '2026-09-25 14:32:05', messages: [parent] },
+  });
+  assert.deepEqual(Object.keys(state).sort(), ['channel', 'conversation', 'draft', 'now', 'reply_to']);
 });
 
-test('without a feeling the icon is neutral, and Jev choosing the channel posts outside the thread', async t => {
+test('the judge is shown both flows up to now (ADR 0062): the channel\'s latest and the thread\'s latest, after the target too', async t => {
+  const f = await setup(t);
+  const say = (at: string, speaker: string, text: string, threadTs?: string) => f.archive.record('work', 'C1',
+    { ts: tsAt(at), ...(threadTs ? { threadTs } : {}), speaker, own: false, text, files: [], edited: false });
+  await say('2026-09-25T05:40:00Z', '佐藤', 'スレッドで答えます', PARENT);
+  const other = tsAt('2026-09-25T05:41:00Z');
+  await say('2026-09-25T05:41:00Z', '鈴木', '別の話です');
+  await say('2026-09-25T05:42:00Z', '鈴木', '別のスレッドの中', other);
+  for (const minute of ['43', '44', '45', '46', '47']) await say(`2026-09-25T05:${minute}:00Z`, '田中', `直下の ${minute} 分`);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  const { state } = f.jev.asked[0]! as { state: Record<string, any> };
+  const texts = (messages: { text: string }[]) => messages.map(message => message.text);
+  assert.deepEqual(texts(state.conversation.channel.messages), ['別の話です', '直下の 43 分', '直下の 44 分', '直下の 45 分', '直下の 46 分', '直下の 47 分']
+    .slice(-5), 'the latest five in the channel itself, the target\'s thread and other threads left out');
+  assert.equal(state.conversation.channel.last_at, '2026-09-25 14:47:00');
+  assert.deepEqual(texts(state.conversation.thread.messages), ['明日のレビュー、大丈夫そう？', 'スレッドで答えます']);
+  assert.equal(state.conversation.thread.last_at, '2026-09-25 14:40:00');
+});
+
+test('without a feeling the icon is neutral, and Jev choosing the channel posts in the channel itself, with no thread', async t => {
   const f = await setup(t);
   f.jev.answers.push(scores([], 'channel'));
   await f.dove.ask(post('大丈夫です。'));
   await f.dove.idle();
   assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '大丈夫です。', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+  assert.match(String(f.lines()[0]!.text), /work\/#devに届けた/);
+  assert.doesNotMatch(String(f.lines()[0]!.text), /スレッド/);
+  assert.equal((f.db.prepare('SELECT placement, sent_placement FROM dove_posts').get() as { placement: string }).placement, 'channel', 'the record keeps the choice');
+});
+
+test('Jev choosing the broadcast replies in the thread shown in the channel too', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(scores([], 'broadcast'));
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '大丈夫です。', threadTs: PARENT, replyBroadcast: true, iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+  assert.match(String(f.lines()[0]!.text), /スレッドに返し、チャンネルにも出した/);
+  const row = f.db.prepare('SELECT placement, sent_placement, placement_probabilities FROM dove_posts').get() as Record<string, string>;
+  assert.deepEqual([row.placement, row.sent_placement], ['broadcast', 'broadcast']);
+  assert.deepEqual(JSON.parse(row.placement_probabilities!), ODDS.broadcast);
 });
 
 test('a post to the channel itself goes to the channel, and Jev is not asked where', async t => {
@@ -207,7 +259,7 @@ test('a draft Jev hands to the owner waits for her approval, and the approval ca
   assert.equal(payload.reason.issues.length, JUDGE_ISSUES.length);
   assert.deepEqual(payload.reason.issues[1], { name: JUDGE_ISSUES[1]!.name, label: JUDGE_ISSUES[1]!.label, score: 0.5, flagged: true });
   assert.equal(payload.reason.issues[0].flagged, undefined);
-  assert.deepEqual(payload.reason.placement, { probabilities: { thread: 0.8, channel: 0.2 } });
+  assert.deepEqual(payload.reason.placement, { probabilities: { thread: 0.8, channel: 0.15, broadcast: 0.05 } });
   assert.deepEqual(payload.history, []);
   assert.deepEqual(f.dove.pendingApprovals(), [payload]);
 });
@@ -328,7 +380,7 @@ test('approving sends exactly the approved text, once, and tells the devices and
     delivery: 'sent', sentText: '承認を待つ下書き' });
   const last = f.lines().at(-1)!;
   assert.equal(last.result, 'sent');
-  assert.match(String(last.text), /本人/);
+  assert.match(String(last.text), /マスター/);
   // The same answer again, from another device: the first decision stands and nothing is sent twice.
   assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'reject', deviceId: 'd2' }),
     { kind: 'accepted', approvalId, revision: 1, state: 'approved' });
@@ -358,16 +410,16 @@ test('an edit sends the owner\'s text where she chose, without asking Jev again'
   await f.dove.ask(post('元の下書き'));
   await f.dove.idle();
   const { approvalId } = f.clientEvents[0]!.payload;
-  assert.equal(f.dove.decide({ approvalId, revision: 1, decision: 'edit', text: '本人が直した本文', placement: 'channel', deviceId: 'd1' }).kind, 'accepted');
+  assert.equal(f.dove.decide({ approvalId, revision: 1, decision: 'edit', text: '本人が直した本文', placement: 'broadcast', deviceId: 'd1' }).kind, 'accepted');
   await f.dove.idle();
-  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '本人が直した本文', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '本人が直した本文', threadTs: PARENT, replyBroadcast: true, iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
   const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
   assert.equal(resolved.state, 'edited');
   assert.equal(resolved.sentText, '本人が直した本文');
   assert.equal(f.jev.asked.length, 1);
   assert.match(String(f.lines().at(-1)!.text), /本人が直した本文/);
   const row = f.db.prepare('SELECT decision, decided_text, decided_placement FROM approvals').get() as Record<string, string>;
-  assert.deepEqual({ ...row }, { decision: 'edit', decided_text: '本人が直した本文', decided_placement: 'channel' });
+  assert.deepEqual({ ...row }, { decision: 'edit', decided_text: '本人が直した本文', decided_placement: 'broadcast' });
 });
 
 test('an edited text that fails the mechanical check is not sent', async t => {
@@ -708,4 +760,150 @@ test('only the images of an approval are shown to the devices', async t => {
   assert.equal(f.dove.showsImage(approved), true);
   assert.equal(f.dove.showsImage(alone), false);
   assert.equal(f.dove.showsImage('image-unknown'), false);
+});
+
+// ADR 0059: the two judges side by side.
+const judgedRow = (f: Awaited<ReturnType<typeof setup>>) => f.db.prepare(`SELECT verdict, scores, placement, judge_adopted, judge_decided_by,
+  judgement_logprobs, judgement_jev FROM dove_posts`).get() as Record<string, string | null>;
+
+test('with both judges on, both are asked the same, both answers are kept, and the adopted one decides', async t => {
+  const f = await setup(t);
+  f.choice.logprobs = true;
+  f.jev.answers.push(scores([0.2], 'thread'));
+  f.logprobs.answers.push(scores([0.6], 'channel'));
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  assert.deepEqual(f.logprobs.asked, f.jev.asked);
+  const row = judgedRow(f);
+  assert.equal(row.judge_adopted, 'jev');
+  assert.equal(row.judge_decided_by, 'jev');
+  assert.equal(row.verdict, 'send', '0.2 is under the Jev judge\'s 0.3');
+  assert.equal(row.placement, 'thread');
+  const byLogprobs = JSON.parse(row.judgement_logprobs!);
+  assert.equal(byLogprobs.verdict, 'owner', 'the other judge\'s own verdict, by its own thresholds, is kept beside');
+  assert.equal(byLogprobs.issues[0].score, 0.6);
+  assert.equal(byLogprobs.placement.choice, 'channel');
+  assert.equal(JSON.parse(row.judgement_jev!).verdict, 'send');
+  assert.deepEqual(f.slack.posts.map(one => one.threadTs), [PARENT]);
+});
+
+test('when the adopted judge has no answer, the other decides, and why the first had none is kept and logged', async t => {
+  const f = await setup(t);
+  f.choice.logprobs = true;
+  f.jev.answers.push(new JudgeError('timeout'));
+  f.logprobs.answers.push(scores([0.6]));
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  const row = judgedRow(f);
+  assert.equal(row.judge_decided_by, 'logprobs');
+  assert.deepEqual(JSON.parse(row.judgement_jev!), { error: 'timeout' });
+  assert.equal(row.verdict, 'owner');
+  assert.equal(f.clientEvents[0]!.payload.reason.verdict, 'owner', 'the approval carries the deciding judge\'s reasons alone');
+  assert.equal(f.clientEvents[0]!.payload.reason.issues[0].score, 0.6);
+  assert.ok(f.logs.some(line => line === 'dove: judge (jev): no verdict (timeout)'), f.logs.join('\n'));
+});
+
+test('when neither judge has an answer, the owner decides, and both reasons are kept', async t => {
+  const f = await setup(t);
+  f.choice.logprobs = true;
+  f.jev.answers.push(new JudgeError('http-429'));
+  f.logprobs.answers.push(new JudgeError('no-answer-token'));
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  const row = judgedRow(f);
+  assert.equal(row.verdict, 'no-verdict');
+  assert.equal(row.judge_decided_by, null);
+  assert.equal(row.scores, null);
+  assert.deepEqual([JSON.parse(row.judgement_jev!), JSON.parse(row.judgement_logprobs!)], [{ error: 'http-429' }, { error: 'no-answer-token' }]);
+  assert.equal(f.clientEvents[0]!.payload.reason.verdict, 'no-verdict');
+});
+
+test('with both judges off nothing is asked, and every draft goes to the owner as before', async t => {
+  const f = await setup(t);
+  f.choice.jev = false;
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  assert.equal(f.jev.asked.length + f.logprobs.asked.length, 0);
+  const row = judgedRow(f);
+  assert.equal(row.verdict, 'no-verdict');
+  assert.deepEqual([row.judge_adopted, row.judge_decided_by, row.judgement_jev, row.judgement_logprobs], ['jev', null, null, null]);
+});
+
+test('a switch of the judges in the settings is taken from the next draft', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('一つ目です。'));
+  await f.dove.idle();
+  f.choice.logprobs = true;
+  f.choice.adopted = 'logprobs';
+  f.logprobs.answers.push(SEND());
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('二つ目です。'));
+  await f.dove.idle();
+  const rows = f.db.prepare('SELECT judge_adopted, judge_decided_by FROM dove_posts ORDER BY rowid').all() as Record<string, string>[];
+  assert.deepEqual(rows.map(row => [row.judge_adopted, row.judge_decided_by]), [['jev', 'jev'], ['logprobs', 'logprobs']]);
+});
+
+test('the judge is told when the message replied to is itself in a thread, and is shown that thread', async t => {
+  const f = await setup(t);
+  const reply = tsAt('2026-09-25T05:40:00Z'); // 14:40:00 in Tokyo
+  await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: 'スレッドの中の質問です', files: [], edited: false });
+  f.jev.answers.push(scores([], 'channel'));
+  await f.dove.ask(post('お答えします。', { to: 'work/#dev 2026-09-25 14:40:00 佐藤' }));
+  await f.dove.idle();
+  const { state } = f.jev.asked[0]! as { state: Record<string, any> };
+  assert.equal(state.reply_to.in_thread, true);
+  assert.deepEqual(state.conversation.thread.messages.map((message: { text: string }) => message.text), ['明日のレビュー、大丈夫そう？', 'スレッドの中の質問です']);
+  assert.deepEqual(state.conversation.channel.messages.map((message: { text: string }) => message.text), ['明日のレビュー、大丈夫そう？']);
+  // Fork (8e4b1b1): a reply in a thread stays in the thread; the judge is shown the thread but not asked where.
+  assert.equal(f.jev.asked[0]!.placement, false);
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: 'お答えします。', threadTs: PARENT, iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+});
+
+test('with no verdict the server\'s rule placing a reply in the channel posts it in the channel itself (ADR 0062)', async t => {
+  const f = await setup(t, { jev: false });
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  const approval = f.clientEvents[0]!.payload;
+  assert.equal(approval.target.placement, 'channel');
+  f.dove.decide({ approvalId: approval.approvalId, revision: 1, decision: 'approve', deviceId: 'device-1' });
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '大丈夫です。', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+});
+
+test('with no verdict the server\'s rule never broadcasts: a reply in a thread stays in it', async t => {
+  const f = await setup(t, { jev: false });
+  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:40:00Z'), threadTs: PARENT, speaker: '佐藤', own: false, text: '質問です', files: [], edited: false });
+  await f.dove.ask(post('大丈夫です。', { to: 'work/#dev 2026-09-25 14:40:00 佐藤' }));
+  await f.dove.idle();
+  assert.equal(f.clientEvents[0]!.payload.target.placement, 'thread');
+});
+
+test('images with a body placed as a broadcast go to the thread alone; placed in the channel, to the channel itself', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(scores([], 'broadcast'), scores([], 'channel'));
+  await f.dove.ask(withImages('描いてみました。', ['/work/images/cat.png']));
+  await f.dove.idle();
+  await f.dove.ask(withImages('もう一枚です。', ['/work/images/cat.png']));
+  await f.dove.idle();
+  // Fork (ADR F03): shown by image blocks under her icon, not uploaded into the channel.
+  const second = catPost('もう一枚です。');
+  (second.blocks.at(-1) as { slack_file: { id: string } }).slack_file.id = 'F2';
+  assert.deepEqual(f.slack.posts, [catPost('描いてみました。', PARENT), second]);
+  const [broadcast, channel] = f.lines();
+  assert.match(String(broadcast!.text), /work\/#dev のスレッドに画像 1 枚と一緒に届けた/);
+  assert.match(String(channel!.text), /work\/#devに画像 1 枚と一緒に届けた/);
+});
+
+test('a post to the channel itself is never a broadcast, and a reply the owner puts in the thread is not either', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND(), scores([0.01, 0.5], 'broadcast'));
+  await f.dove.ask(post('おはようございます。', { to: 'work/#dev' }));
+  await f.dove.idle();
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  const approval = f.clientEvents[0]!.payload;
+  f.dove.decide({ approvalId: approval.approvalId, revision: 1, decision: 'approve', placement: 'thread', deviceId: 'device-1' });
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts.map(one => [one.threadTs, one.replyBroadcast]), [[undefined, undefined], [PARENT, undefined]]);
 });

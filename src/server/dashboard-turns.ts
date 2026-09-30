@@ -2,7 +2,7 @@ import { posix } from 'node:path';
 import { filesUrl } from './dashboard-files.ts';
 import { localTime, page, TURNS_PATH, turnPath } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
-import { REFLECTION_REQUEST } from './prompts.ts';
+import { isReflectionRequest } from './prompts.ts';
 import type { TurnInProgress } from './thinking-loop.ts';
 import { contentText, imagesIn, isEvents, type RecordEntry, type TurnReading, type TurnRow } from './turn-log.ts';
 
@@ -28,7 +28,7 @@ function outcome(value: string): Html {
   return value === 'ok' ? html`<span class="ok">ok</span>` : html`<span class="bad">${value}</span>`;
 }
 
-export function turnsPage(list: { rows: TurnRow[]; more: boolean; page: number }, timeZone: string): Html {
+export function turnsPage(list: { rows: TurnRow[]; more: boolean; page: number }, timeZone: string, avatarId?: string): Html {
   const { rows, more } = list;
   const previous = list.page === 2 ? TURNS_PATH : `${TURNS_PATH}?page=${list.page - 1}`;
   const main = html`<section id="turns">
@@ -56,7 +56,7 @@ ${rows.map(row => html`<tr${row.outcome === 'ok' ? '' : html` class="failed"`}>
 <nav class="pages" aria-label="ページ">${list.page > 1 && html`<a href="${previous}">← 新しいターン</a>`}
 ${more && html`<a href="${TURNS_PATH}?page=${list.page + 1}">古いターン →</a>`}</nav>
 </section>`;
-  return page('ターン', main, { signedIn: true, current: CURRENT });
+  return page('ターン', main, { signedIn: true, current: CURRENT, avatarId });
 }
 
 export interface TurnDetail {
@@ -65,7 +65,7 @@ export interface TurnDetail {
   reading: TurnReading;
 }
 
-export function turnPage(detail: TurnDetail, timeZone: string): Html {
+export function turnPage(detail: TurnDetail, timeZone: string, avatarId?: string): Html {
   const { row, inProgress, reading } = detail;
   const turnId = row?.turnId ?? inProgress!.turnId;
   const startedAt = row?.startedAt ?? inProgress!.startedAt;
@@ -79,7 +79,7 @@ ${reading.found ? html`<p><small>記録 <code>${reading.sessionFile}</code></sma
 </section>
 ${reading.found ? steps(turnId, reading.entries, timeZone)
     : html`<section><p class="bad">${reading.reason === 'no-file' ? '記録のファイルが見つかりません。' : 'このターンは記録の中に見つかりません。'}</p></section>`}`;
-  return page('ターン', main, { signedIn: true, current: CURRENT });
+  return page('ターン', main, { signedIn: true, current: CURRENT, avatarId });
 }
 
 function facts(row: TurnRow): Html {
@@ -124,7 +124,7 @@ function steps(turnId: string, entries: RecordEntry[], timeZone: string): Html {
       }
       if (message.role === 'user') {
         const text = contentText(message.content);
-        if (text === REFLECTION_REQUEST) {
+        if (isReflectionRequest(text)) {
           memo = true;
           return html`<details class="step memo-request"><summary>一行メモの依頼 ${at}</summary><pre>${text}</pre></details>`;
         }

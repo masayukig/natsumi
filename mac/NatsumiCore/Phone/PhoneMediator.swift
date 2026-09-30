@@ -290,7 +290,8 @@ public struct PhoneMediator {
         state.isComposing = false
     }
 
-    /// The place the owner chose, when it differs from where the post would go. A post to the channel itself has no
+    /// The place the owner chose, when it differs from where the post would go (or where it would go is a place this
+    /// app does not know). A post to the channel itself has no
     /// line to put a thread under, so it has no choice (the server ignores one).
     private func chosenPlacement(_ id: String) -> ApprovalPlacement? {
         guard state.page == .approval(id), let chosen = state.approvalPlacement,

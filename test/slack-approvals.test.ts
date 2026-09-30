@@ -33,7 +33,8 @@ async function setup(t: test.TestContext) {
   const dove = new SlackDove({
     db, archive, workspaces: { work: slack }, publicOrigin: 'https://natsumi.example.test', workDirectory: join(root, 'work'),
     images: new ImageStore(db, join(root, 'images')), now: () => clock.now, log: line => { logs.push(line); }, raise: () => {},
-    config: { thresholds: { owner: 0.3, return: 0.7 }, approvalDays: 7, placementFollowing: 2, judgeContext: { messages: 5, chars: 500 },
+    judges: {}, judgeChoice: () => ({ logprobs: false, jev: false, adopted: 'jev' }),
+    config: { approvalDays: 7, placementFollowing: 2, judgeContext: { messages: 5, chars: 500 },
       images: { maxBytes: 1024, maxCount: 2 } },
   });
   const approvals = new SlackApprovals({ db, dove, api: slack, socket: slack, workspace: 'work', ownerUserId: 'U1', log: line => { logs.push(line); } });

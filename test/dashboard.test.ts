@@ -701,3 +701,35 @@ test('nothing outside the five places can be reached: not by .., encoded separat
   assert.match(work.text, /→ [^<]*\.natsumi/, 'a symlink is listed with where it points, and no more');
   assertNoLeaks(f, [secret]);
 }));
+
+test('every page of the dashboard is headed by the ID of the avatar the server started with, not by natsumi', () => withFixture(async f => {
+  const login = await f.fetch(await approveAtGitHub(f, await startBrowserLogin(f)));
+  assert.match(login.text, /<title>ログインしました — hana<\/title>/);
+  const cookie = setCookie(login.headers)!.value;
+  await writeFile(join(f.data, 'work', 'note.txt'), '架空のメモ');
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    new TurnStats(db).record({ turnId: 'turn-fixture', startedAt: Date.parse('2026-01-01T00:00:00Z'), endedAt: Date.parse('2026-01-01T00:00:03Z'),
+      receivedAt: Date.parse('2026-01-01T00:00:00Z'), fold: 'off', route: 'default', eventKinds: 'slack_mention', outcome: 'ok', modelCalls: 1,
+      usage: { input: 1, cacheRead: 1, output: 1 }, contextTokens: 1, compacted: false,
+      confusion: { repeatedCalls: 0, toolErrors: 0, doveRefusals: 0, unansweredMessages: 0 },
+      place: { sessionFile: 'nowhere.jsonl', firstEntryId: 'a', lastEntryId: 'b', startOffset: 0, endOffset: 0 } });
+  } finally { db.close(); }
+  for (const path of ['/dashboard', '/dashboard/turns', '/dashboard/turns/turn-fixture', '/dashboard/waits', '/dashboard/memos',
+    '/dashboard/dove', '/dashboard/approvals', '/dashboard/devices', '/dashboard/stats', '/dashboard/files', '/dashboard/files/work',
+    '/dashboard/files/work/note.txt', '/dashboard/files/work/missing.txt', '/dashboard/nowhere']) {
+    const res = await f.fetch(path, withCookie(cookie));
+    assert.match(res.text, /<h1>hana<\/h1>/, path);
+    assert.match(res.text, /<title>[^<]* — hana<\/title>/, path);
+    assert.doesNotMatch(res.text, /<h1>natsumi<\/h1>|— natsumi<\/title>/, path);
+  }
+  for (const [path, init] of [['/dashboard/signed-out', {}], ['/dashboard/logout', {}], ['/dashboard/static/nothing.css', {}]] as const) {
+    const res = await f.fetch(path, init);
+    assert.match(res.text, /<h1>hana<\/h1>/, path);
+  }
+}, { avatar: async root => {
+  const dir = join(root, 'avatars', 'hana');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'avatar.json'), JSON.stringify({ id: 'hana', name: 'はな' }));
+  return { directory: dir };
+} }));

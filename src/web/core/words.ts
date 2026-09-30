@@ -12,6 +12,7 @@ const CODES: Record<string, string> = {
   'invalid-value': '値が決まりに合わないため受け付けられませんでした。',
   'unknown-route': 'その経路はサーバーの設定にありません。',
   'route-unavailable': 'その経路はいま使える状態にありません。',
+  'judge-unavailable': 'その判定は config に接続先が無いため、on にできません。',
   'pi-unavailable': 'なつみがいま話せない状態です。',
   'conversation-restore-failed': '会話を読み込めず、なつみがいま話せない状態です。',
   stopping: 'サーバーが止まるところで、なつみがいま話せない状態です。',

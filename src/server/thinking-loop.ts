@@ -190,6 +190,8 @@ export interface LoopOptions {
    * curator's, and the memory commits. natsumi when left out.
    */
   self?: Self;
+  /** The avatar's `personality.md`, where the memory's personality starts when it has none (ADR 0060). */
+  personality?: string;
   /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
@@ -371,6 +373,7 @@ export class ThinkingLoop {
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
       alwaysMaxChars: loop.alwaysMemoryMaxChars, identity: gitIdentity(this.self),
+      ...(options.personality !== undefined ? { personality: options.personality } : {}),
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);
@@ -1588,7 +1591,7 @@ export class ThinkingLoop {
    */
   private async reply(text: string, expression: Expression, paths: string[] = []): Promise<ToolOutcome> {
     if (this.turn?.kind === 'review') {
-      return { ok: false, text: '送信していません。夜の振り返りの間は、本人に話しかけません。明日に伝えたいことは write_handoff_note に書いてください。' };
+      return { ok: false, text: '送信していません。夜の振り返りの間は、マスターに話しかけません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
@@ -1619,30 +1622,30 @@ export class ThinkingLoop {
     if (this.turn) this.turn.firstOutAt ??= this.now();
     this.emit('conversation.message', shown(row, taken.length > 0 ? taken.map(image => shownImage(image)) : undefined));
     // Fork (ADR F01): with the owner on Slack, the line goes to their channel, not to a Mac.
-    const where = this.options.ownerOnSlack === true ? '本人の Slack のチャンネル' : '本人の Mac';
+    const where = this.options.ownerOnSlack === true ? 'マスターの Slack のチャンネル' : 'マスターの Mac';
     return { ok: true, text: `${where}にセリフ${taken.length > 0 ? `と画像 ${taken.length} 枚` : ''}を送りました。このセリフは確定しました。`
-      + (target ? 'ここまでに届いた本人のメッセージには返事を済ませました。' : '')
+      + (target ? 'ここまでに届いたマスターのメッセージには返事を済ませました。' : '')
       + '続けて話してもかまいませんが、同じことを繰り返さないでください。ほかにやることがなければ、ツールを呼ばずに終えてください。' };
   }
 
   private notify(text: string, expression: Expression): ToolOutcome {
     const turn = this.turn;
     if (turn?.kind === 'review') {
-      return { ok: false, text: '送信していません。夜の振り返りの間は、本人に知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
+      return { ok: false, text: '送信していません。夜の振り返りの間は、マスターに知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     const limits = this.options.notifyLimits ?? DEFAULT_NOTIFY_LIMITS;
     if (turn && turn.notices >= limits.perTurn) {
-      return { ok: false, text: `送信していません。1 回の処理で本人に送れる知らせの上限（${limits.perTurn} 件）に達しました。` };
+      return { ok: false, text: `送信していません。1 回の処理でマスターに送れる知らせの上限（${limits.perTurn} 件）に達しました。` };
     }
     if (this.store.noticesInLastHour() >= limits.perHour) {
-      return { ok: false, text: `送信していません。1 時間に本人に送れる知らせの上限（${limits.perHour} 件）に達しました。急ぎでなければ後でまとめて伝えてください。` };
+      return { ok: false, text: `送信していません。1 時間にマスターに送れる知らせの上限（${limits.perHour} 件）に達しました。急ぎでなければ後でまとめて伝えてください。` };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
     const row = this.store.insertMessage({ role: 'natsumi', kind: 'notice', text, expression });
     if (turn) turn.notices += 1;
     this.emit('conversation.message', shown(row));
-    return { ok: true, text: '本人に知らせを送りました。返事を待つ必要はありません。同じ内容を繰り返し送らないでください。' };
+    return { ok: true, text: 'マスターに知らせを送りました。返事を待つ必要はありません。同じ内容を繰り返し送らないでください。' };
   }
 
   /**

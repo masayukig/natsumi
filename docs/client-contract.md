@@ -95,14 +95,14 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / `service.unavailable` |
 | `conversation.read` | throughMessageId（会話の messageId） | `command.accepted`（readThroughMessageId、unreadReplyCount。手前の位置なら今の位置）、または invalid-request / `service.unavailable`。下記「既読と知らせの確認」 |
 | `conversation.interrupt` | — | 受け付けない（`not-implemented`）。進行中の思考は外から止めない |
-| `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
+| `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel / broadcast） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
 | `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
 | `model.list` | — | `command.accepted`（`modelRoutes` と同じ形: defaultRoute、current、chosen、routes）、または `service.unavailable`。下記「モデルの経路」 |
 | `model.use` | route（経路の名前） | `command.accepted`（chosen、current）、または unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「モデルの経路」 |
 | `settings.list` | — | `command.accepted`（settings: 設定の一覧）、または `service.unavailable`。下記「実行中の設定」 |
-| `settings.set` | key（設定の名前）、value（値） | `command.accepted`（settings: 変えた後の一覧）、または unknown-setting / invalid-value / unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「実行中の設定」 |
+| `settings.set` | key（設定の名前）、value（値） | `command.accepted`（settings: 変えた後の一覧）、または unknown-setting / invalid-value / unknown-route / route-unavailable / judge-unavailable / invalid-request / `service.unavailable`。下記「実行中の設定」 |
 | `settings.reset` | key（設定の名前） | `command.accepted`（settings: 戻した後の一覧）、または unknown-setting / invalid-request / `service.unavailable`。下記「実行中の設定」 |
 
 | サーバー event | 内容 |
@@ -220,6 +220,11 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `reviewTimeoutMinutes` | 夜の振り返りのターンの時間の上限（分）。1 以上の整数 | 次の振り返りから |
 | `awakeHours` | `{"start":"HH:MM","end":"HH:MM"}`（24 時間制、同じ時刻は不可。日をまたいでよい）。時間帯は `timeZone` | 次の見回りから（10 秒ごと） |
 | `pingIntervalMinutes` | 静かな時間が続いたときの合図の間隔（分）。5 以上の整数、または `false`（合図しない） | 次の見回りから |
+| `judgeLogprobs` | ポッポさんの logprobs の判定を掛けるか。`"on"` / `"off"`。config に接続先が無ければ `"on"` にできない（[ADR 0059](adr/0059-two-judges-side-by-side-and-fewer-issues.md)） | 次の下書きから |
+| `judgeJev` | ポッポさんの Jev の判定を掛けるか。`"on"` / `"off"`。config に接続先が無ければ `"on"` にできない | 次の下書きから |
+| `judgeAdopted` | 採用する判定。`"logprobs"` / `"jev"`。採用する方が答えなければもう一方で決める | 次の下書きから |
+| `judgeLogprobsThresholds` | logprobs の判定のしきい値 `{"owner":0.5,"return":0.9}`。どちらも 0 より大きく 1 以下、owner ≦ return。owner 以上で本人へ回し、return 以上で突き返す | 次の下書きから |
+| `judgeJevThresholds` | Jev の判定のしきい値。形と規則は `judgeLogprobsThresholds` と同じ | 次の下書きから |
 
 一覧（`settings`: `session.snapshot` の欄、`settings.list`・`settings.set`・`settings.reset` の答え、`settings.changed` の payload）は、key ごとに次の欄を持つオブジェクトである。
 
@@ -231,15 +236,17 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `inUse` | `modelRoute` と `turnFold` だけ。いま実際に使っているもの。`value` と違えば、次のターンの前にそちらへ移る。`modelRoute` は natsumi が話せない間 null |
 | `routes` | `modelRoute` だけ。経路の一覧（上記「モデルの経路」の `routes` と同じ形） |
 | `timeZone` | `awakeHours` だけ。時間帯の IANA タイムゾーン（config の値。端末からは変えない） |
+| `available` | `judgeLogprobs` と `judgeJev` だけ。config にその判定の接続先があるか。false なら `"on"` にできない |
 
 ```json
-{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true}}
+{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false},"judgeLogprobsThresholds":{"value":{"owner":0.5,"return":0.9},"config":{"owner":0.5,"return":0.9},"overridden":false},"judgeJevThresholds":{"value":{"owner":0.6,"return":0.95},"config":{"owner":0.5,"return":0.9},"overridden":true}}
 ```
 
 - `settings.set`（payload `{"key":"eventModelCalls","value":12}`）は、値を config と同じ規則で確かめてから上書きを書き、変えた後の一覧を `command.accepted` で返す。
   一覧が変われば、全端末（変えた端末も）に `settings.changed` が届く。
   - 知らない key は `unknown-setting`、規則に合わない値は `invalid-value`、key が文字列でない・空・64 文字を超える、または value が無いと `invalid-request`。
   - `modelRoute` は `model.use` と同じ処理を通る。config に無い経路は `unknown-route`、使える状態にない経路は `route-unavailable`。
+  - `judgeLogprobs`・`judgeJev` を `"on"` にするとき、config にその判定の接続先が無ければ `judge-unavailable`。`"off"` はいつでも受け付ける。
 - `settings.reset`（payload `{"key":"eventModelCalls"}`）は上書きを消し、戻した後の一覧を返す。上書きが無くても受け付ける（何も変わらなければ `settings.changed` は届かない）。
   `modelRoute` を戻すと、既定の経路へ次のターンの前に移る。
 - 2 つの端末から同時に変えても、1 つずつ順に書かれ、どちらも失われない。
@@ -504,17 +511,17 @@ natsumi が Slack に出したい投稿のうち、ポッポさんの判定で�
 | `createdAt` / `expiresAt` | 作った時刻と期限（既定 7 日、設定 `slack.approvalExpiryDays`） |
 | `target.channel` | `work/#dev`（ワークスペース/チャンネル。DM は `work/@名前`） |
 | `target.replyTo` | 返す相手の発言の `speaker`・`at`（本人のタイムゾーンの `2026-09-25 14:32:05`）・`text`（100 文字まで。超えたら末尾に `…`）。チャンネルそのものへの投稿では欄が無い |
-| `target.placement` | `thread` か `channel`。判定の選択、判定なしならサーバーの決まりの値。チャンネルそのものへの投稿は `channel` |
+| `target.placement` | `thread`・`channel`・`broadcast` のどれか（[ADR 0062](adr/0062-three-placements-for-a-reply.md)）。判定の選択、判定なしならサーバーの決まりの値（`broadcast` にはならない）。`thread` は返す相手の発言のスレッドに返す。`channel` はスレッドを作らずにチャンネルに直接出す。チャンネルそのものへの投稿は `channel`。`broadcast` はスレッドに返し、チャンネルにも出す（Slack の `reply_broadcast`）。画像付きの投稿の `broadcast` はスレッドにだけ置く。クライアントは知らない値でも承認を表示し、決定できるようにする |
 | `text` | natsumi の下書き（全文） |
 | `expression` | アイコンの表情。無ければ欄が無い |
 | `images` | 投稿に付く画像の一覧。natsumi が書いた順。各要素は `imageId`（画像の ID）・`mimeType`（`image/png`・`image/jpeg`・`image/webp`）・`bytes`（大きさ、バイト）。画像が無ければ欄が無い（下記「画像」） |
 | `reason.verdict` | `owner`・`no-verdict`・`rewrite-limit` |
-| `reason.issues` | 問題点ごとの `name`（英語の識別子）・`label`（日本語の表示名）・`score`（0〜1）。しきい値以上のものに `flagged: true`（それ以外は欄が無い）。判定なしなら空 |
-| `reason.placement` | 判定の置き場所の `probabilities`（`thread`・`channel`）。判定なし、または判定が確率を返さなかったときは欄が無い |
+| `reason.issues` | 問題点ごとの `name`（英語の識別子）・`label`（日本語の表示名）・`score`（0〜1）。しきい値以上のものに `flagged: true`（それ以外は欄が無い）。判定なしなら空。2 つの判定を掛けたときも、決めた方の判定のものだけ |
+| `reason.placement` | 判定の置き場所の `probabilities`。置き場所の値をキーにした 0〜1 の数。キーが 3 つ揃っているとは限らない（判定の種類や、3 つになる前の記録）ので、クライアントは知らないキーを無視し、欠けたキーは無いものとして扱う。判定なし、または判定が確率を返さなかったときは欄が無い |
 | `history` | 同じ返信先で突き返された前の下書きの `text` と、そのときの flagged の `issues`。古い順。無ければ空 |
 
 ```json
-{"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"明日のレビュー大丈夫？"}},"text":"大丈夫です。","expression":"happy","reason":{"verdict":"owner","issues":[{"name":"promise-for-owner","label":"本人に代わる約束・期限","score":0.5,"flagged":true},{"name":"not-in-thread","label":"スレッドに無い情報","score":0.02}],"placement":{"probabilities":{"thread":0.8,"channel":0.2}}},"history":[]}
+{"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"明日のレビュー大丈夫？"}},"text":"大丈夫です。","expression":"happy","reason":{"verdict":"owner","issues":[{"name":"promise-for-owner","label":"本人に代わる約束・期限","score":0.5,"flagged":true},{"name":"private-matter","label":"私的な事情","score":0.02}],"placement":{"probabilities":{"thread":0.8,"channel":0.15,"broadcast":0.05}}},"history":[]}
 ```
 
 - 本人は `approval.decide` で承認（approve）・修正（edit）・却下（reject）を選ぶ。承認と修正では placement を変えられる。

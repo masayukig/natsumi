@@ -728,4 +728,91 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 23,
+    name: 'two judges',
+    sql: `
+      -- The dove's two judges side by side (ADR 0059). judgement_logprobs and judgement_jev are each judge's own answer
+      -- (JSON: its verdict by its own thresholds, the scores and the placement, or {"error": kind} when it had none),
+      -- NULL for a judge that was off. judge_adopted is the judge set to decide then, judge_decided_by the one that did,
+      -- NULL when neither had an answer. verdict, scores and placement_probabilities stay those of the one that decided.
+      -- The posts before this have NULL in all four and read as they did.
+      ALTER TABLE dove_posts ADD COLUMN judge_adopted TEXT CHECK (judge_adopted IS NULL OR judge_adopted IN ('logprobs', 'jev'));
+      ALTER TABLE dove_posts ADD COLUMN judge_decided_by TEXT CHECK (judge_decided_by IS NULL OR judge_decided_by IN ('logprobs', 'jev'));
+      ALTER TABLE dove_posts ADD COLUMN judgement_logprobs TEXT;
+      ALTER TABLE dove_posts ADD COLUMN judgement_jev TEXT;
+    `,
+  },
+  {
+    version: 24,
+    name: 'three placements',
+    foreignKeysOff: true,
+    sql: `
+      -- Three placements for a reply (ADR 0062): thread, channel (the channel itself, with no thread) and broadcast (the
+      -- thread, shown in the channel too). The channel of before was a broadcast for a reply, so it is renamed to what
+      -- it meant. placement's CHECK changes only by rebuilding the table, so dove_posts is made again as it was, with
+      -- 'broadcast' allowed, and every row carried over as it stands; approvals and the rest point at it by post_id.
+      CREATE TABLE dove_posts_new (
+        post_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('post', 'reaction')),
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        target_ts TEXT,
+        target_thread_ts TEXT,
+        reference TEXT NOT NULL,
+        text TEXT NOT NULL,
+        expression TEXT,
+        verdict TEXT CHECK (verdict IS NULL OR verdict IN ('send', 'owner', 'return', 'no-verdict', 'rewrite-limit')),
+        scores TEXT,
+        placement_probabilities TEXT,
+        placement TEXT CHECK (placement IS NULL OR placement IN ('thread', 'channel', 'broadcast')),
+        state TEXT NOT NULL CHECK (state IN ('judging', 'sending', 'sent', 'returned', 'pending', 'rejected', 'expired', 'failed')),
+        sent_text TEXT,
+        sent_placement TEXT,
+        failure TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        judge_adopted TEXT CHECK (judge_adopted IS NULL OR judge_adopted IN ('logprobs', 'jev')),
+        judge_decided_by TEXT CHECK (judge_decided_by IS NULL OR judge_decided_by IN ('logprobs', 'jev')),
+        judgement_logprobs TEXT,
+        judgement_jev TEXT
+      ) STRICT;
+      INSERT INTO dove_posts_new SELECT post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text, expression,
+        verdict, scores, placement_probabilities, placement, state, sent_text, sent_placement, failure, created_at, updated_at,
+        judge_adopted, judge_decided_by, judgement_logprobs, judgement_jev FROM dove_posts;
+      DROP TABLE dove_posts;
+      ALTER TABLE dove_posts_new RENAME TO dove_posts;
+      CREATE INDEX dove_posts_by_target ON dove_posts (workspace, channel_id, target_ts, created_at);
+      CREATE INDEX dove_posts_by_state ON dove_posts (state);
+
+      -- A reply placed in the channel went to its thread and was shown in the channel too, but for images, which went to
+      -- the channel itself: where those were sent stays the channel. A post to the channel itself stays as it is.
+      UPDATE dove_posts SET placement = 'broadcast' WHERE target_ts IS NOT NULL AND placement = 'channel';
+      UPDATE dove_posts SET sent_placement = 'broadcast' WHERE target_ts IS NOT NULL AND sent_placement = 'channel'
+        AND NOT EXISTS (SELECT 1 FROM dove_post_images i WHERE i.post_id = dove_posts.post_id);
+      -- The probabilities of the placement, and each judge's own answer, name the broadcast as it was asked then.
+      UPDATE dove_posts SET placement_probabilities = json_set(json_remove(placement_probabilities, '$.channel'), '$.broadcast',
+        json_extract(placement_probabilities, '$.channel')) WHERE json_type(placement_probabilities, '$.channel') IS NOT NULL;
+      UPDATE dove_posts SET judgement_logprobs = json_set(judgement_logprobs, '$.placement.choice', 'broadcast')
+        WHERE json_extract(judgement_logprobs, '$.placement.choice') = 'channel';
+      UPDATE dove_posts SET judgement_logprobs = json_set(json_remove(judgement_logprobs, '$.placement.probabilities.channel'),
+        '$.placement.probabilities.broadcast', json_extract(judgement_logprobs, '$.placement.probabilities.channel'))
+        WHERE json_type(judgement_logprobs, '$.placement.probabilities.channel') IS NOT NULL;
+      UPDATE dove_posts SET judgement_jev = json_set(judgement_jev, '$.placement.choice', 'broadcast')
+        WHERE json_extract(judgement_jev, '$.placement.choice') = 'channel';
+      UPDATE dove_posts SET judgement_jev = json_set(json_remove(judgement_jev, '$.placement.probabilities.channel'),
+        '$.placement.probabilities.broadcast', json_extract(judgement_jev, '$.placement.probabilities.channel'))
+        WHERE json_type(judgement_jev, '$.placement.probabilities.channel') IS NOT NULL;
+
+      -- The approvals as the owner was shown them, and what she decided, in the same names: a reply's channel was a
+      -- broadcast, and a post to the channel itself has no reply_to and stays as it is.
+      UPDATE approvals SET payload = json_set(payload, '$.target.placement', 'broadcast')
+        WHERE json_extract(payload, '$.target.placement') = 'channel' AND json_type(payload, '$.target.replyTo') IS NOT NULL;
+      UPDATE approvals SET payload = json_set(json_remove(payload, '$.reason.placement.probabilities.channel'),
+        '$.reason.placement.probabilities.broadcast', json_extract(payload, '$.reason.placement.probabilities.channel'))
+        WHERE json_type(payload, '$.reason.placement.probabilities.channel') IS NOT NULL;
+      UPDATE approvals SET decided_placement = 'broadcast' WHERE decided_placement = 'channel'
+        AND (SELECT target_ts FROM dove_posts p WHERE p.post_id = approvals.post_id) IS NOT NULL;
+    `,
+  },
 ];

@@ -1,8 +1,9 @@
 import Foundation
 
-/// Where a Slack post goes: in the thread of the line it answers, or in the channel itself.
-public enum ApprovalPlacement: String, Equatable, Sendable {
-    case thread, channel
+/// Where a Slack post goes: only in the thread of the line it answers, in the channel itself without a thread, or in
+/// the thread and shown in the channel too (Slack's `reply_broadcast`).
+public enum ApprovalPlacement: String, CaseIterable, Equatable, Sendable {
+    case thread, channel, broadcast
 }
 
 /// Why the post was handed to the owner (client-contract「Slack の投稿の承認」).
@@ -60,14 +61,24 @@ public struct ApprovalTarget: Equatable, Sendable {
     }
 }
 
-/// How likely the judge found each place.
+/// How likely the judge found each place. A place the judge did not weigh is nil: not every judge weighs all three.
 public struct ApprovalPlacementOdds: Equatable, Sendable {
-    public let thread: Double
-    public let channel: Double
+    public let thread: Double?
+    public let channel: Double?
+    public let broadcast: Double?
 
-    public init(thread: Double, channel: Double) {
+    public init(thread: Double?, channel: Double?, broadcast: Double? = nil) {
         self.thread = thread
         self.channel = channel
+        self.broadcast = broadcast
+    }
+
+    public subscript(placement: ApprovalPlacement) -> Double? {
+        switch placement {
+        case .thread: thread
+        case .channel: channel
+        case .broadcast: broadcast
+        }
     }
 }
 
@@ -157,10 +168,31 @@ extension Approval: Decodable {
         }
 
         struct Reason: Decodable {
-            struct Placement: Decodable { let probabilities: Odds? }
+            struct Placement: Decodable {
+                let probabilities: ApprovalPlacementOdds?
+
+                private enum CodingKeys: String, CodingKey { case probabilities }
+
+                // Odds that cannot be read are no odds; the approval itself still reads.
+                init(from decoder: Decoder) throws {
+                    let values = try decoder.container(keyedBy: CodingKeys.self)
+                    probabilities = try? values.decodeIfPresent(Odds.self, forKey: .probabilities)?.odds
+                }
+            }
+
+            /// Keyed by the place's name. A key this app does not know is passed over, and so is one whose value is not
+            /// a number.
             struct Odds: Decodable {
-                let thread: Double
-                let channel: Double
+                private enum CodingKeys: String, CodingKey { case thread, channel, broadcast }
+
+                let odds: ApprovalPlacementOdds?
+
+                init(from decoder: Decoder) throws {
+                    let values = try decoder.container(keyedBy: CodingKeys.self)
+                    func odds(_ key: CodingKeys) -> Double? { try? values.decodeIfPresent(Double.self, forKey: key) }
+                    let read = ApprovalPlacementOdds(thread: odds(.thread), channel: odds(.channel), broadcast: odds(.broadcast))
+                    self.odds = ApprovalPlacement.allCases.contains { read[$0] != nil } ? read : nil
+                }
             }
 
             let verdict: String?
@@ -192,7 +224,6 @@ extension Approval: Decodable {
         guard wire.kind == "slack-post" else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "not a slack-post"))
         }
-        let odds = wire.reason?.placement?.probabilities
         self.init(
             approvalId: wire.approvalId, revision: wire.revision, createdAt: wire.createdAt.flatMap(parseTimestamp),
             expiresAt: wire.expiresAt.flatMap(parseTimestamp),
@@ -204,7 +235,7 @@ extension Approval: Decodable {
             reason: ApprovalReason(
                 verdict: wire.reason?.verdict.flatMap(ApprovalVerdict.init(rawValue:)),
                 issues: (wire.reason?.issues ?? []).map(\.issue),
-                placementOdds: odds.map { ApprovalPlacementOdds(thread: $0.thread, channel: $0.channel) }),
+                placementOdds: wire.reason?.placement?.probabilities),
             history: (wire.history ?? []).map { ApprovalPastDraft(text: $0.text, issues: ($0.issues ?? []).map(\.issue)) },
             images: wire.images?.elements ?? [])
     }

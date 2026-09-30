@@ -26,7 +26,7 @@ const PLACE_NOTES = (name: string): Record<string, string> => ({
 });
 
 /** The places, with her named by the avatar's display name (ADR 0057). */
-export function filesIndexPage(name = DEFAULT_SELF.name): Html {
+export function filesIndexPage(name = DEFAULT_SELF.name, avatarId?: string): Html {
   const notes = PLACE_NOTES(name);
   const places = [...PLACES].sort((a, b) => a.place.localeCompare(b.place));
   const main = html`<section id="files">
@@ -34,7 +34,7 @@ export function filesIndexPage(name = DEFAULT_SELF.name): Html {
 <p><small>${name}の作業環境・記憶・マニュアルの今の中身です。読み取り専用で、symlink はたどりません。</small></p>
 <ul class="places">${places.map(({ place }) => html`<li><a href="${FILES_PATH}${place}"><code>${place}</code></a> <small>${notes[place]}</small></li>`)}</ul>
 </section>`;
-  return page('ファイル', main, { signedIn: true, current: CURRENT });
+  return page('ファイル', main, { signedIn: true, current: CURRENT, avatarId });
 }
 
 /** ファイル / /work / notes / a.md, each but the last a link. */
@@ -64,7 +64,7 @@ export interface DirectoryView {
   omitted?: number;
 }
 
-export function directoryPage(directory: DirectoryView, timeZone: string): Html {
+export function directoryPage(directory: DirectoryView, timeZone: string, avatarId?: string): Html {
   const { location, view, entries, hiddenCount } = directory;
   const here = locationUrl(location);
   const heading = ({ key, label }: typeof HEADINGS[number]) => {
@@ -95,7 +95,7 @@ ${entries.length === 0 ? html`<p>空のディレクトリです。</p>` : html`<
 </table></div>`}
 ${(directory.omitted ?? 0) > 0 && html`<p><small>ほか ${directory.omitted} 件は省略しました。</small></p>`}
 </section>`;
-  return page('ファイル', main, { signedIn: true, current: CURRENT });
+  return page('ファイル', main, { signedIn: true, current: CURRENT, avatarId });
 }
 
 export interface FileView {
@@ -109,7 +109,7 @@ export interface FileView {
 
 const MARKDOWN = /\.(md|markdown)$/i;
 
-export function filePage(file: FileView, timeZone: string): Html {
+export function filePage(file: FileView, timeZone: string, avatarId?: string): Html {
   const { location, size, mtimeMs, content, raw } = file;
   const here = locationUrl(location);
   const name = location.segments.at(-1) ?? location.place;
@@ -128,7 +128,7 @@ ${breadcrumb(location)}
 ${markdown && (raw ? html`<a href="${here}">整形して表示</a>` : html`<a href="${here}?raw=1">生のテキスト</a>`)}</p>
 ${body}
 </section>`;
-  return page('ファイル', main, { signedIn: true, current: CURRENT });
+  return page('ファイル', main, { signedIn: true, current: CURRENT, avatarId });
 }
 
 const REFUSALS: Record<RefusalReason, string> = {
@@ -138,7 +138,7 @@ const REFUSALS: Record<RefusalReason, string> = {
   unreadable: '読めません',
 };
 
-export function refusedFilePage(refused: { location: Location; reason: RefusalReason; target?: string }, name = DEFAULT_SELF.name): Html {
+export function refusedFilePage(refused: { location: Location; reason: RefusalReason; target?: string }, name = DEFAULT_SELF.name, avatarId?: string): Html {
   const { location, reason, target } = refused;
   const main = html`<section id="file">
 ${breadcrumb(location)}
@@ -146,7 +146,7 @@ ${breadcrumb(location)}
 <p><code>${workspacePath(location)}</code>${target !== undefined && html` <small>→ ${target}</small>`}</p>
 ${reason === 'symlink' && html`<p><small>このパスには symlink が含まれています。指す先が${name}の場所の中なら、そのパスを開いてください。</small></p>`}
 </section>`;
-  return page(REFUSALS[reason], main, { signedIn: true, current: CURRENT });
+  return page(REFUSALS[reason], main, { signedIn: true, current: CURRENT, avatarId });
 }
 
 const markdown = markdownIt({ html: false, linkify: false, typographer: false });

@@ -172,7 +172,11 @@ function summary(shown: Shown): string {
 }
 
 function where(shown: Shown): string {
-  return shown.target.placement === 'thread' && shown.target.replyTo ? `${shown.target.channel} のスレッド` : shown.target.channel;
+  // The three placements of ADR 0062; one this fork does not know is shown as the channel alone.
+  if (!shown.target.replyTo) return shown.target.channel;
+  if (shown.target.placement === 'thread') return `${shown.target.channel} のスレッド`;
+  if (shown.target.placement === 'broadcast') return `${shown.target.channel} のスレッド（チャンネルにも表示）`;
+  return shown.target.channel;
 }
 
 /** The approval as the iPhone shows it, in the few words a DM has room for. Everything from Slack or natsumi is plain text. */

@@ -78,6 +78,7 @@ test('the snapshot carries the approvals waiting at the start', () => withServer
   assert.equal(review.reason.issues[0].flagged, true);
   assert.equal('flagged' in review.reason.issues[1], false);
   assert.equal(review.history.length, 2);
+  assert.deepEqual(Object.keys(review.reason.placement.probabilities), ['thread', 'channel', 'broadcast'], 'the odds of the three places (ADR 0062)');
   // A post to the channel itself has no line to answer, no verdict and no odds.
   assert.equal(lunch.target.replyTo, undefined);
   assert.equal(lunch.target.placement, 'channel');
@@ -88,7 +89,7 @@ test('the snapshot carries the approvals waiting at the start', () => withServer
 
 test('approving is accepted, and approval.resolved says it was sent with the draft', () => withServer(async port => {
   const { client } = await synced(port);
-  const request = client.send('approval.decide', { approvalId: 'approval-review', revision: 1, decision: 'approve', placement: 'channel' });
+  const request = client.send('approval.decide', { approvalId: 'approval-review', revision: 1, decision: 'approve', placement: 'broadcast' });
   const accepted = await client.next(e => e.requestId === request);
   assert.equal(accepted.type, 'command.accepted');
   assert.deepEqual(accepted.payload, { approvalId: 'approval-review', revision: 1, state: 'approved' });
@@ -149,6 +150,7 @@ test('a decision for another revision is stale, and malformed ones are invalid',
   assert.equal(await code({ approvalId: 'approval-unknown', revision: 1, decision: 'approve' }), 'invalid-request');
   assert.equal(await code({ approvalId: 'approval-review', revision: 1, decision: 'maybe' }), 'invalid-request');
   assert.equal(await code({ approvalId: 'approval-review', revision: 1, decision: 'edit', text: '  ' }), 'invalid-request');
+  assert.equal(await code({ approvalId: 'approval-review', revision: 1, decision: 'approve', placement: 'dm' }), 'invalid-request');
   // Still waiting after all of that.
   const sync = client.send('session.sync', { resume: null });
   const snapshot = await client.next(e => e.requestId === sync);
@@ -161,6 +163,9 @@ test('one more approval arrives after the first sync', () => withServer(async po
   const pending = await client.next(e => e.type === 'approval.pending');
   assert.equal(pending.payload.approvalId, 'approval-dm');
   assert.equal(pending.payload.target.channel, 'work/@佐藤');
+  // A broadcast, with the odds of before: two places, not three (ADR 0062).
+  assert.equal(pending.payload.target.placement, 'broadcast');
+  assert.deepEqual(pending.payload.reason.placement, { probabilities: { thread: 0.45, broadcast: 0.55 } });
   const sync = client.send('session.sync', { resume: null });
   const snapshot = await client.next(e => e.requestId === sync);
   assert.deepEqual(snapshot.payload.pendingApprovals.map((a: any) => a.approvalId), ['approval-review', 'approval-lunch', 'approval-dm']);
@@ -321,6 +326,12 @@ test('settings.list answers every setting; settings.set changes one, which every
   assert.deepEqual(snapshot.payload.settings.eventModelCalls, { value: 8, config: 8, overridden: false });
   assert.equal(snapshot.payload.settings.modelRoute.inUse, 'local');
   assert.deepEqual(snapshot.payload.settings.awakeHours.timeZone, 'Asia/Tokyo');
+  // The dove's judges (ADR 0059): logprobs on, Jev with no endpoint in the made-up config.
+  assert.deepEqual(snapshot.payload.settings.judgeLogprobs, { value: 'on', config: 'on', overridden: false, available: true });
+  assert.deepEqual(snapshot.payload.settings.judgeJev, { value: 'off', config: 'off', overridden: false, available: false });
+  assert.deepEqual(snapshot.payload.settings.judgeAdopted, { value: 'logprobs', config: 'logprobs', overridden: false });
+  assert.deepEqual(snapshot.payload.settings.judgeLogprobsThresholds, { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false });
+  assert.deepEqual(snapshot.payload.settings.judgeJevThresholds.config, { owner: 0.5, return: 0.9 });
   const listed = await client.request('settings.list', {});
   assert.equal(listed.type, 'command.accepted');
   assert.deepEqual(listed.payload.settings, snapshot.payload.settings);
@@ -344,6 +355,8 @@ test('settings.set refuses what the server refuses, and moves the route between 
     [{ key: 'eventModelCalls', value: 0 }, 'invalid-value'], [{ key: 'awakeHours', value: { start: '9:00', end: '23:00' } }, 'invalid-value'],
     [{ key: 'compactionThreshold', value: 1 }, 'unknown-setting'], [{ key: 'modelRoute', value: 'spare' }, 'route-unavailable'],
     [{ key: 'modelRoute', value: 'nowhere' }, 'unknown-route'], [{ key: 'eventModelCalls' }, 'invalid-request'],
+    [{ key: 'judgeJev', value: 'on' }, 'judge-unavailable'], [{ key: 'judgeAdopted', value: 'both' }, 'invalid-value'],
+    [{ key: 'judgeJevThresholds', value: { owner: 0.9, return: 0.5 } }, 'invalid-value'],
   ] as const) {
     const answer = await client.request('settings.set', payload);
     assert.deepEqual([answer.type, answer.payload.code], ['command.rejected', code], JSON.stringify(payload));

@@ -143,7 +143,7 @@ export async function startFixture(options: FixtureOptions = {}) {
       streamBufferSize: options.streamBufferSize,
       web: { bundleDirectory: options.webBundle ? options.webBundle(root) : join(root, 'no-bundle') },
       ...(apns ? { apns: { origins: { sandbox: apns.origin, production: apns.origin }, retryDelaysMs: apns.retryDelaysMs } } : {}),
-      ...(slack ? { slack: { connector: () => ({ api: slack.api, socket: slack.api }) }, ...(slack.judge ? { judge: { client: slack.judge } } : {}) } : {}),
+      ...(slack ? { slack: { connector: () => ({ api: slack.api, socket: slack.api }) }, ...(slack.judge ? { judge: { clients: { logprobs: slack.judge, jev: slack.judge } } } : {}) } : {}),
     });
   };
   try { await launch(options.allowedUserId ?? OWNER.id); } catch (error) {

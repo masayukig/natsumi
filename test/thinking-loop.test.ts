@@ -160,7 +160,7 @@ test('reply_to_mac says where the line went: the Slack channel when the owner is
     first.finish();
     const second = await f.model.next();
     const [result] = toolResults(second.context);
-    assert.match(result!.text, /^本人の Slack のチャンネルにセリフを送りました/);
+    assert.match(result!.text, /^マスターの Slack のチャンネルにセリフを送りました/);
     assert.doesNotMatch(result!.text, /Mac/);
     second.finish();
     await loop.idle();

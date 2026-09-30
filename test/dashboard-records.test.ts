@@ -96,13 +96,16 @@ function post(f: Awaited<ReturnType<typeof setup>>, postId: string, overrides: R
     kind: 'post', workspace: 'fixture-space', channel_id: 'C0FIXTURE', target_ts: '1.0', target_thread_ts: null, reference: '#架空 の発言',
     text: '架空の下書き', expression: null, verdict: 'owner', scores: JSON.stringify([{ name: 'tone', label: '口調', score: 0.7, flagged: true },
       { name: 'facts', label: '事実', score: 0.1, flagged: false }]), placement_probabilities: null, placement: 'thread', state: 'pending',
-    sent_text: null, sent_placement: null, failure: null, ...overrides,
+    sent_text: null, sent_placement: null, failure: null, judge_adopted: null, judge_decided_by: null, judgement_logprobs: null,
+    judgement_jev: null, ...overrides,
   };
   f.run(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text, expression, verdict,
-    scores, placement_probabilities, placement, state, sent_text, sent_placement, failure, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, postId, row.kind, row.workspace, row.channel_id, row.target_ts,
+    scores, placement_probabilities, placement, state, sent_text, sent_placement, failure, judge_adopted, judge_decided_by, judgement_logprobs,
+    judgement_jev, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, postId, row.kind, row.workspace, row.channel_id, row.target_ts,
   row.target_thread_ts, row.reference, row.text, row.expression, row.verdict, row.scores, row.placement_probabilities, row.placement, row.state,
-  row.sent_text, row.sent_placement, row.failure, iso(at), iso(at + 1_000));
+  row.sent_text, row.sent_placement, row.failure, row.judge_adopted, row.judge_decided_by, row.judgement_logprobs, row.judgement_jev,
+  iso(at), iso(at + 1_000));
 }
 
 function approval(f: Awaited<ReturnType<typeof setup>>, approvalId: string, postId: string, state: string, expiresIn: number, payload?: string) {
@@ -230,6 +233,41 @@ test('the dove’s posts are listed newest first with the judgement, the scores,
     assert.equal(sent!.sentPlacement, 'channel');
     assert.equal(sent!.reference, '#架空 の発言');
     assert.equal(sent!.createdAt, iso(-MINUTE));
+  } finally { await f.cleanup(); }
+});
+
+// ADR 0059: the two judges side by side, the one that decided, and what the owner made of it.
+test('a post judged by both judges shows each one\'s verdict, scores and placement or why it had none, the one that decided and the owner\'s decision', async () => {
+  const f = await setup();
+  try {
+    post(f, 'post-both', {
+      judge_adopted: 'jev', judge_decided_by: 'logprobs',
+      judgement_jev: JSON.stringify({ error: 'timeout' }),
+      judgement_logprobs: JSON.stringify({ verdict: 'owner', issues: [{ name: 'private-matter', label: '私的な事情', score: 0.6, flagged: true }],
+        placement: { choice: 'broadcast', probabilities: { thread: 0.2, channel: 0.1, broadcast: 0.7, elsewhere: 0.5 } } }),
+    });
+    post(f, 'post-before', {}, -MINUTE);
+    f.run(`INSERT INTO approvals (approval_id, revision, kind, post_id, payload, state, created_at, expires_at)
+      VALUES ('approval-both', 1, 'slack-post', 'post-both', '{}', 'edited', ?, ?)`, iso(), iso(DAY));
+    const [both, before] = listDovePosts(f.db, 1).rows;
+    assert.deepEqual(both!.judges, {
+      adopted: 'jev', decidedBy: 'logprobs',
+      logprobs: { verdict: 'owner', scores: [{ label: '私的な事情', score: 0.6, flagged: true }], placement: 'broadcast',
+        probabilities: { thread: 0.2, channel: 0.1, broadcast: 0.7 } },
+      jev: { error: 'timeout' },
+    });
+    assert.equal(both!.ownerDecision, 'edited');
+    assert.equal(before!.judges, null, 'a post from before the two judges shows its one judgement as it did');
+    assert.equal(before!.ownerDecision, null);
+  } finally { await f.cleanup(); }
+});
+
+test('a judge that was off leaves nothing, and neither answering is told as such', async () => {
+  const f = await setup();
+  try {
+    post(f, 'post-none', { verdict: 'no-verdict', scores: null, judge_adopted: 'logprobs', judgement_logprobs: JSON.stringify({ error: 'http-429' }) });
+    const [row] = listDovePosts(f.db, 1).rows;
+    assert.deepEqual(row!.judges, { adopted: 'logprobs', decidedBy: null, logprobs: { error: 'http-429' }, jev: null });
   } finally { await f.cleanup(); }
 });
 
