@@ -565,8 +565,8 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
    | `slack.judge` | | 既定の経路の互換のモデルの logprobs だけ | ポッポさんの 2 つの判定（logprobs と Jev）の接続先・しきい値と、採用する方。下の「Slack に投稿する」 |
    | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
-   | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネルにも出し、超えたらスレッドだけに置く（0〜20） |
-   | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
+   | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後のチャンネル直下の発言がこの件数以内ならチャンネルに直接出し、超えたらスレッドに置く（0〜20）。スレッドの中の発言への返事はスレッドに置く |
+   | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる発言の件数（1〜20）と、1 件あたりの文字数。チャンネル直下の最新と、返信先のスレッドの最新を、それぞれこの件数まで見せる |
    | `slack.postImages.maxBytes` / `.maxCount` | | 10 MiB / 4 | ポッポさんに頼む投稿の画像 1 枚の上限（1 KiB〜50 MiB）と、1 回の枚数の上限（1〜10） |
 
    `slack.mentionContext` と `slack.updates` は使わなくなりました（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
@@ -637,13 +637,14 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
 - 依頼は見出し付きのテキスト（`返信先`・`種類`・`表情`、`---` の後が本文）です。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
   返信先はファイルの発言の参照で、サーバーが記録と突き合わせます。形の崩れ、記録に無い参照、機械的な検査に当たる本文は、その場で断ります。
 - 下書きは判定にかけます（[ADR 0059](docs/adr/0059-two-judges-side-by-side-and-fewer-issues.md)）。問いは英語で、問題点ごとの点数（本人に代わる約束・期限、隠しごとの匂わせ、事実と違う説明、同意の捏造、私的な事情）と、
-  スレッドかチャンネルかを聞きます。判定に見せるのは下書きと返信先の周りの発言（返信先がスレッドの中ならそのスレッド）だけです。
+  置き場所を聞きます。判定に見せるのは下書き・今の時刻・返信先と、チャンネル直下と返信先のスレッドのそれぞれ最新の発言（今の時点まで）だけです。
   - 判定は logprobs と Jev の 2 つあり、有効なものを同時に掛けて、両方の結果を残します。決めるのは採用する方で、答えが無ければもう一方、両方だめなら判定なしです。
   - 決めた方の判定のどの点数もその判定の `thresholds.owner` 未満なら、本人の承認なしにそのまま送ります。
   - `thresholds.return` 以上の問題があれば、理由を添えて natsumi に突き返します。同じ返信先で 3 回目の突き返しは、前の下書きと一緒に本人に回します。
   - その間なら、本人に回します。判定できなかったとき（判定なし）も本人に回します。
-- 返信先のある投稿の置き場所は、スレッドか「スレッドに返し、チャンネルにも出す」（`chat.postMessage` の `reply_broadcast`）の 2 つです。承認の `placement` の値は `thread` と `channel` のままです。
-  チャンネルそのものへの投稿は、今までどおりチャンネルに出します。画像付きの投稿は Slack が `reply_broadcast` を受け付けないので、`channel` ならチャンネルに出します。
+- 返信先のある投稿の置き場所は 3 つです（[ADR 0062](docs/adr/0062-three-placements-for-a-reply.md)）。スレッドに返す（`thread`）、チャンネルに直接出す（`channel`）、
+  スレッドに返し、チャンネルにも出す（`broadcast`、`chat.postMessage` の `reply_broadcast`）です。判定なしのときは `slack.placementFollowing` の決まりで `thread` か `channel` にします。
+  チャンネルそのものへの投稿は、今までどおりチャンネルに出します（`channel`）。画像付きの投稿は Slack が `reply_broadcast` を受け付けないので、`broadcast` ならスレッドにだけ置きます。
 - 本人に回した投稿は承認待ちになり、iPhone で承認・修正・却下を選びます（API と通知は [サーバーと Mac の契約](docs/client-contract.md) の「承認と外部実行」）。
   期限（既定 7 日）を過ぎると閉じます。修正した本文は判定に掛け直しません。送る直前には、どの本文にも機械的な検査を掛けます。
 - 投稿のアイコンは、natsumi の表情ごとの顔です。サーバーが認証なしの `/avatar/<表情>.png` で配り、`chat.postMessage` の `icon_url` に渡します

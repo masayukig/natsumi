@@ -74,7 +74,7 @@ class OwnerJev implements JudgeClient {
   async judge(): Promise<Judgement> {
     this.asked += 1;
     return { issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: index === 1 ? 0.5 : 0.01 })),
-      placement: { choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 } } };
+      placement: { choice: 'thread', probabilities: { thread: 0.8, channel: 0.15, broadcast: 0.05 } } };
   }
 }
 
@@ -167,13 +167,13 @@ test('a draft handed to the owner is an approval on every device and a push to t
       assert.deepEqual([invalid.type, invalid.payload.code], ['command.rejected', 'invalid-request'], JSON.stringify(payload));
     }
 
-    const accepted = await mac.command('approval.decide', { approvalId: approval.approvalId, revision: 1, decision: 'approve' });
+    const accepted = await mac.command('approval.decide', { approvalId: approval.approvalId, revision: 1, decision: 'approve', placement: 'broadcast' });
     assert.equal(accepted.type, 'command.accepted');
     assert.deepEqual(accepted.payload, { approvalId: approval.approvalId, revision: 1, state: 'approved' });
     const resolved = await mac.until(message => message.type === 'approval.resolved');
     assert.equal(resolved.payload.delivery, 'sent');
     assert.equal(resolved.payload.sentText, '架空の返事です。');
-    assert.deepEqual(slack.posts, [{ channel: 'C1', text: '架空の返事です。', threadTs: tsAt('2026-09-25T05:32:05Z'),
+    assert.deepEqual(slack.posts, [{ channel: 'C1', text: '架空の返事です。', threadTs: tsAt('2026-09-25T05:32:05Z'), replyBroadcast: true,
       iconUrl: `${PUBLIC_ORIGIN}/avatar/happy.png` }]);
 
     const pushes = await apns.waitFor(2);

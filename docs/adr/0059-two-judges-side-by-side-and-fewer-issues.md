@@ -1,7 +1,7 @@
 # 0059. ポッポさんは 2 つの判定を並べて使い、判定の項目を見直す
 
 - Date: 2026-09-29
-- Status: Accepted
+- Status: Accepted（置き場所の 2 択・その基準・「チャンネル」の意味は [ADR 0062](0062-three-placements-for-a-reply.md) で置き換え（スレッド・チャンネル直下・チャンネルにも出すの 3 択））
 
 ## Context
 

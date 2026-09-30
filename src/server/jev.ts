@@ -1,4 +1,4 @@
-import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, probability, type JudgeClient, type JudgeState,
+import { DEFAULT_JUDGE_TIMEOUT_MS, isPlacement, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, probability, type JudgeClient, type JudgeState,
   type Judgement, type Placement } from './judge.ts';
 
 /**
@@ -68,10 +68,10 @@ function parseAnswer(text: string, placement: boolean): Judgement {
   });
   if (!placement) return { issues };
   const answer = answers.placement;
-  if (answer?.choice !== 'thread' && answer?.choice !== 'channel') throw new JudgeError('malformed');
-  const thread = answer.probabilities?.thread;
-  const channel = answer.probabilities?.channel;
-  // The probabilities are shown to the owner when there are any; a compatible server may not give them.
-  const probabilities = probability(thread) && probability(channel) ? { probabilities: { thread, channel } } : {};
+  if (!isPlacement(answer?.choice)) throw new JudgeError('malformed');
+  const given = answer.probabilities ?? {};
+  // The probabilities are shown to the owner when there are all of them; a compatible server may not give them.
+  const probabilities = PLACEMENT_ORDER.every(name => probability(given[name]))
+    ? { probabilities: Object.fromEntries(PLACEMENT_ORDER.map(name => [name, given[name] as number])) } : {};
   return { issues, placement: { choice: answer.choice, ...probabilities } };
 }

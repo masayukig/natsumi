@@ -18,7 +18,7 @@ import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PL
 
 export const DEFAULT_JUDGE_CONCURRENCY = 4;
 const TOP_LOGPROBS = 20;
-const LETTERS = ['A', 'B'] as const;
+const LETTERS = ['A', 'B', 'C'] as const;
 
 const SYSTEM_PROMPT = 'You are a careful, impartial judge. You are given a state (text or JSON) and one question about it. '
   + 'Read the state closely and answer the question about the state only. '
@@ -61,14 +61,15 @@ export class LogprobJudgeClient implements JudgeClient {
       const order = this.options.placementOrder ?? PLACEMENT_ORDER;
       const placement = options.placement
         ? ask(`Question: ${JUDGE_PLACEMENT.instructions}\n\nOptions:\n${order.map((name, index) => `${LETTERS[index]}) ${name}: ${JUDGE_PLACEMENT.criteria[name]}`).join('\n')}`
-          + `\n\nAnswer with exactly one letter: ${LETTERS.join(' or ')}.`).then(candidates => {
+          + `\n\nAnswer with exactly one letter: ${LETTERS.slice(0, -1).join(', ')} or ${LETTERS.at(-1)}.`).then(candidates => {
           const letters = mass(candidates, LETTERS.map(letter => letter.toLowerCase()));
-          const total = LETTERS.reduce((sum, letter) => sum + letters[letter.toLowerCase()]!, 0);
+          const of = (name: Placement) => letters[LETTERS[order.indexOf(name)]!.toLowerCase()]!;
+          const total = order.reduce((sum, name) => sum + of(name), 0);
           if (!(total > 0)) throw new JudgeError('no-answer-token');
-          const of = (name: Placement) => letters[LETTERS[order.indexOf(name)]!.toLowerCase()]! / total;
-          const thread = of('thread');
-          const channel = of('channel');
-          return { choice: thread >= channel ? 'thread' as const : 'channel' as const, probabilities: { thread, channel } };
+          const probabilities = Object.fromEntries(PLACEMENT_ORDER.map(name => [name, of(name) / total])) as Record<Placement, number>;
+          // The most likely; a tie goes to the one asked first.
+          const choice = order.reduce((best, name) => probabilities[name] > probabilities[best] ? name : best);
+          return { choice, probabilities };
         })
         : undefined;
       // Every question is under way before the first answer is looked at; the first failure is the one reported.
@@ -117,7 +118,7 @@ export class LogprobJudgeClient implements JudgeClient {
   }
 }
 
-const ANSWERS = new Set(['yes', 'no', 'a', 'b']);
+const ANSWERS = new Set(['yes', 'no', 'a', 'b', 'c']);
 
 /** The candidates for the first generated token, as OpenAI returns them (`choices[0].logprobs.content[0].top_logprobs`). */
 function firstCandidates(body: unknown): Candidate[] {

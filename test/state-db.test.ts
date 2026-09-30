@@ -482,3 +482,67 @@ test('schema 22 lets a turn be the memory curator\'s, keeps every turn before, a
   db.prepare("INSERT INTO memory_curator (owner, base_commit, running_since) VALUES (1, 'abc', NULL)").run();
   assert.throws(() => db.prepare("INSERT INTO memory_curator (owner) VALUES (2)").run(), /constraint/i);
 }));
+
+test('schema 24 lets a post be placed as a broadcast, and renames the channel of before to what it meant (ADR 0062)', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 23));
+  const post = db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    state, placement, sent_placement, placement_probabilities, judgement_logprobs, judgement_jev, created_at, updated_at)
+    VALUES (?, 'post', 'work', 'C1', ?, NULL, 'work/#dev', '下書き', 'sent', ?, ?, ?, ?, ?, 'x', 'x')`);
+  const odds = (thread: number, channel: number) => JSON.stringify({ thread, channel });
+  const judgement = (choice: string) => JSON.stringify({ verdict: 'send', issues: [], placement: { choice, probabilities: { thread: 0.1, channel: 0.9 } } });
+  post.run('post-reply', '1.1', 'channel', 'channel', odds(0.1, 0.9), judgement('channel'), JSON.stringify({ error: 'timeout' }));
+  post.run('post-images', '1.2', 'channel', 'channel', null, null, null);
+  post.run('post-thread', '1.3', 'thread', 'thread', odds(0.8, 0.2), judgement('thread'), null);
+  post.run('post-channel', null, 'channel', 'channel', null, null, null);
+  assert.throws(() => post.run('post-broadcast', '1.4', 'broadcast', null, null, null, null), /constraint/i, 'two places before');
+  db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
+    VALUES ('image-1', '/work/a.png', 'a.png', 'image/png', 1, 'x', 'x')`).run();
+  db.prepare(`INSERT INTO dove_post_images (post_id, position, image_id) VALUES ('post-images', 0, 'image-1')`).run();
+  const payload = (placement: string, replyTo: boolean, probabilities?: object) => JSON.stringify({ approvalId: 'a', revision: 1,
+    target: { channel: 'work/#dev', placement, ...(replyTo ? { replyTo: { speaker: '山田', at: 'x', text: 'y' } } : {}) },
+    text: '下書き', reason: { verdict: 'owner', issues: [], ...(probabilities ? { placement: { probabilities } } : {}) } });
+  const approval = db.prepare(`INSERT INTO approvals (approval_id, revision, kind, post_id, payload, state, created_at, expires_at, decided_placement)
+    VALUES (?, 1, 'slack-post', ?, ?, 'approved', 'x', 'x', ?)`);
+  approval.run('approval-reply', 'post-reply', payload('channel', true, { thread: 0.1, channel: 0.9 }), 'channel');
+  approval.run('approval-thread', 'post-thread', payload('thread', true, { thread: 0.8, channel: 0.2 }), 'thread');
+  approval.run('approval-channel', 'post-channel', payload('channel', false), null);
+
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 24)).applied, [24]);
+  const posts = Object.fromEntries((db.prepare(`SELECT post_id, placement, sent_placement, placement_probabilities, judgement_logprobs,
+    judgement_jev FROM dove_posts`).all() as Record<string, string | null>[]).map(row => [row.post_id, row]));
+  const parsed = (text: string | null | undefined) => text ? JSON.parse(text) : text;
+  // A reply placed in the channel went to its thread and was shown in the channel too: a broadcast.
+  assert.deepEqual([posts['post-reply']!.placement, posts['post-reply']!.sent_placement], ['broadcast', 'broadcast']);
+  assert.deepEqual(parsed(posts['post-reply']!.placement_probabilities), { thread: 0.1, broadcast: 0.9 });
+  assert.deepEqual(parsed(posts['post-reply']!.judgement_logprobs).placement, { choice: 'broadcast', probabilities: { thread: 0.1, broadcast: 0.9 } });
+  assert.deepEqual(parsed(posts['post-reply']!.judgement_jev), { error: 'timeout' });
+  // Images placed in the channel went to the channel itself, where they were sent stays so.
+  assert.deepEqual([posts['post-images']!.placement, posts['post-images']!.sent_placement], ['broadcast', 'channel']);
+  assert.deepEqual([posts['post-thread']!.placement, posts['post-thread']!.sent_placement], ['thread', 'thread']);
+  assert.deepEqual(parsed(posts['post-thread']!.placement_probabilities), { thread: 0.8, broadcast: 0.2 });
+  assert.deepEqual(parsed(posts['post-thread']!.judgement_logprobs).placement, { choice: 'thread', probabilities: { thread: 0.1, broadcast: 0.9 } });
+  // A post to the channel itself was always in the channel itself.
+  assert.deepEqual([posts['post-channel']!.placement, posts['post-channel']!.sent_placement], ['channel', 'channel']);
+
+  const approvals = Object.fromEntries((db.prepare('SELECT approval_id, payload, decided_placement FROM approvals').all() as
+    { approval_id: string; payload: string; decided_placement: string | null }[]).map(row => [row.approval_id, row]));
+  const reply = JSON.parse(approvals['approval-reply']!.payload);
+  assert.equal(reply.target.placement, 'broadcast');
+  assert.deepEqual(reply.reason.placement, { probabilities: { thread: 0.1, broadcast: 0.9 } });
+  assert.equal(reply.text, '下書き', 'the rest of what was shown stays');
+  assert.equal(approvals['approval-reply']!.decided_placement, 'broadcast');
+  assert.equal(JSON.parse(approvals['approval-thread']!.payload).target.placement, 'thread');
+  assert.deepEqual(JSON.parse(approvals['approval-thread']!.payload).reason.placement, { probabilities: { thread: 0.8, broadcast: 0.2 } });
+  assert.equal(approvals['approval-thread']!.decided_placement, 'thread');
+  assert.equal(JSON.parse(approvals['approval-channel']!.payload).target.placement, 'channel');
+
+  post.run('post-broadcast', '1.4', 'broadcast', 'broadcast', null, null, null);
+  assert.throws(() => post.run('post-elsewhere', '1.5', 'elsewhere', null, null, null, null), /constraint/i, 'the three places alone');
+  assert.throws(() => db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, reference, text, state, created_at, updated_at)
+    VALUES ('post-bad', 'post', 'work', 'C1', 'work/#dev', 'x', 'thinking', 'x', 'x')`).run(), /constraint/i, 'the other checks stay');
+  for (const index of ['dove_posts_by_target', 'dove_posts_by_state']) {
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(index), index);
+  }
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+  assert.throws(() => approval.run('approval-missing', 'post-missing', '{}', null), /constraint/i, 'the approvals still point at the posts');
+}));

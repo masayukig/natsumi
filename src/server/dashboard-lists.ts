@@ -1,6 +1,7 @@
 import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
+import type { Placement } from './judge.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import type { MemoReading, TurnRow } from './turn-log.ts';
 
@@ -56,7 +57,7 @@ ${table(html`<th>時刻</th><th>種類</th><th>出来事</th><th>outcome</th>`, 
 <h3>承認待ち</h3>
 <p><small><a href="${pageHref(APPROVALS_PATH, 1, { state: 'pending' })}">承認待ちの一覧</a> ・ <a href="${APPROVALS_PATH}">これまでの承認</a></small></p>
 ${waits.approvals.length === 0 ? html`<p><small>承認待ちはありません。</small></p>` : html`<div class="cards">${waits.approvals.map(item => html`<article class="card">
-<p><code>${item.kind}</code>${item.channel && html` ${item.channel}`}${item.placement && html` <small>${item.placement}</small>`}
+<p><code>${item.kind}</code>${item.channel && html` ${item.channel}`}${item.placement && html` <small>${placeWord(item.placement)}</small>`}
 ${item.verdict && html` <small>判定 ${item.verdict}</small>`}${item.flagged.length > 0 && html` <small class="bad">${item.flagged.join('、')}</small>`}</p>
 ${item.text !== undefined && html`<div class="prose">${item.text}</div>`}
 <p><small>${at(item.createdAt)} から</small> ${item.expired ? html`<span class="bad">期限切れ</span> <small>${at(item.expiresAt)}</small>`
@@ -122,7 +123,7 @@ ${list.rows.length === 0 ? html`<p>まだ依頼はありません。</p>` : html
 <div><dt>状態</dt><dd>${doveState(post.state)}${post.failure && html` <code>${post.failure}</code>`} <small>${at(post.updatedAt)} に更新</small></dd></div>
 <div><dt>判定</dt><dd>${post.verdict ?? '—'}${post.scores.length > 0 && html` ${scoreList(post.scores)}`}</dd></div>
 ${post.judges && judgeRows(post.judges)}
-<div><dt>投稿先</dt><dd>${post.placement ?? '—'}${post.sentPlacement && post.sentPlacement !== post.placement && html` <small>送った先 ${post.sentPlacement}</small>`}</dd></div>
+<div><dt>投稿先</dt><dd>${post.placement ? placeWord(post.placement) : '—'}${post.sentPlacement && post.sentPlacement !== post.placement && html` <small>送った先 ${placeWord(post.sentPlacement)}</small>`}</dd></div>
 ${post.ownerDecision && html`<div><dt>本人の判断</dt><dd>${APPROVAL_LABELS[post.ownerDecision as ApprovalState] ?? post.ownerDecision}</dd></div>`}
 ${post.expression && html`<div><dt>表情</dt><dd>${post.expression}</dd></div>`}
 </dl>
@@ -140,13 +141,17 @@ function scoreList(scores: DoveScore[]): Html {
 
 const JUDGE_LABELS = { logprobs: 'logprobs', jev: 'Jev' } as const;
 
+const PLACE_WORDS: Record<Placement, string> = { thread: 'スレッド', channel: 'チャンネル', broadcast: 'チャンネルにも' };
+/** Where a post was to go or went, in words (ADR 0062); a value it does not know, as it is. */
+const placeWord = (placement: string): string => Object.hasOwn(PLACE_WORDS, placement) ? PLACE_WORDS[placement as Placement] : placement;
+
 /** The two judges side by side (ADR 0059): each one's verdict, scores and placement, or why it had none, or that it was off. */
 function judgeRows(judges: DoveJudges): Html {
   const row = (method: 'logprobs' | 'jev') => {
     const judged = judges[method];
     const body = !judged ? html`無効` : 'error' in judged ? html`判定なし <code>${judged.error}</code>`
-      : html`${judged.verdict} ${scoreList(judged.scores)}${judged.placement && html`<small>${judged.placement === 'channel' ? 'チャンネルにも' : 'スレッド'}${
-        judged.probabilities && ` ${judged.probabilities[judged.placement === 'channel' ? 'channel' : 'thread'].toFixed(2)}`}</small>`}`;
+      : html`${judged.verdict} ${scoreList(judged.scores)}${judged.placement && html`<small>${placeWord(judged.placement)}${
+        typeof judged.probabilities?.[judged.placement as Placement] === 'number' && ` ${judged.probabilities[judged.placement as Placement]!.toFixed(2)}`}</small>`}`;
     return html`<div><dt>${JUDGE_LABELS[method]} の判定${judges.adopted === method ? '（採用）' : ''}</dt><dd>${body}</dd></div>`;
   };
   const decided = judges.decidedBy === null ? 'どちらも答えなかった（本人へ）'
@@ -190,11 +195,11 @@ function approvalCard(item: ApprovalRow, at: (iso: string) => string): Html {
   const device = item.deviceId && (item.deviceId.length > DEVICE_ID_SHOWN
     ? html`<code title="${item.deviceId}">${item.deviceId.slice(0, DEVICE_ID_SHOWN)}…</code>` : html`<code>${item.deviceId}</code>`);
   return html`<article class="card" id="${item.approvalId}">
-<p><strong>${approvalState(item.state, label)}</strong> <code>${item.kind}</code>${shown.channel && html` ${shown.channel}`}${shown.placement && html` <small>${shown.placement}</small>`}
+<p><strong>${approvalState(item.state, label)}</strong> <code>${item.kind}</code>${shown.channel && html` ${shown.channel}`}${shown.placement && html` <small>${placeWord(shown.placement)}</small>`}
 <small>${at(item.createdAt)}</small></p>
 <dl class="facts">
 <div><dt>期限</dt><dd>${at(item.expiresAt)}${item.expired && html` <span class="bad">期限切れ</span> <small>まだ閉じていません</small>`}</dd></div>
-<div><dt>決めたこと</dt><dd>${item.decision ? DECISIONS[item.decision] ?? item.decision : '—'}${item.decidedPlacement && html` <small>置き場所 ${item.decidedPlacement}</small>`}
+<div><dt>決めたこと</dt><dd>${item.decision ? DECISIONS[item.decision] ?? item.decision : '—'}${item.decidedPlacement && html` <small>置き場所 ${placeWord(item.decidedPlacement)}</small>`}
 ${device && html` <small>端末</small> ${device}`}</dd></div>
 <div><dt>閉じた時刻</dt><dd>${item.resolvedAt ? at(item.resolvedAt) : '—'}</dd></div>
 <div><dt>送った結果</dt><dd>${item.delivery === 'sent' ? html`<span class="ok">送れた</span>` : item.delivery === 'failed'

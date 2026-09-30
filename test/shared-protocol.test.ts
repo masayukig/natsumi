@@ -68,6 +68,25 @@ test('an approval keeps what the owner is shown of it', () => {
   assert.deepEqual(readEnvelope(envelope('approval.pending', approval))?.event, { type: 'approval.pending', approval });
 });
 
+test('an approval is placed in one of three places, and its odds keep the places named and drop what is not one (ADR 0062)', () => {
+  const approval = (placement: string, probabilities?: Record<string, unknown>) => ({
+    approvalId: 'a1', revision: 1, kind: 'slack-post', createdAt: 't0', expiresAt: 't1',
+    target: { channel: 'work/#dev', placement, replyTo: { speaker: '山田', at: '2026-09-25 14:32:05', text: '明日？' } },
+    text: '大丈夫です。', reason: { verdict: 'owner', issues: [], ...(probabilities ? { placement: { probabilities } } : {}) }, history: [],
+  });
+  const read = (value: unknown) => {
+    const event = readEnvelope(envelope('approval.pending', value))?.event;
+    return event?.type === 'approval.pending' ? event.approval : undefined;
+  };
+  for (const placement of ['thread', 'channel', 'broadcast']) assert.equal(read(approval(placement))?.target.placement, placement);
+  assert.equal(read(approval('elsewhere')), undefined);
+  assert.deepEqual(read(approval('broadcast', { thread: 0.1, channel: 0.2, broadcast: 0.7 }))?.reason.placement,
+    { probabilities: { thread: 0.1, channel: 0.2, broadcast: 0.7 } });
+  assert.deepEqual(read(approval('thread', { thread: 0.8, broadcast: 0.2, elsewhere: 0.5, channel: 'x' }))?.reason.placement,
+    { probabilities: { thread: 0.8, broadcast: 0.2 } }, 'not every place need be there');
+  assert.equal(read(approval('thread', { elsewhere: 1 }))?.reason.placement, undefined);
+});
+
 test('the answers to commands and the other events are read too', () => {
   const event = (type: string, payload: unknown) => readEnvelope(envelope(type, payload))?.event;
   assert.deepEqual(event('command.accepted', { messageId: 'm1', eventId: 'e1', state: 'queued' }),

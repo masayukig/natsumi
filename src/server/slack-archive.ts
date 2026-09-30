@@ -68,6 +68,8 @@ export interface ResolvedTarget {
 
 /** One message as the dove's judge and the owner see it: who, when (local, to the second), what. */
 export interface SeenMessage { from: string; at: string; text: string }
+/** One flow of the talk as the dove's judge sees it: its latest messages, and when the last of them was said. */
+export interface Flow { last_at: string | null; messages: SeenMessage[] }
 
 export interface ChannelRow { workspace: string; channel_id: string; directory: string; label: string; is_im: number }
 
@@ -279,22 +281,26 @@ export class SlackArchive {
   }
 
   /**
-   * What surrounds a target, oldest first, up to it: the thread's latest messages for a reply in a thread, and the
-   * channel's latest top-level messages otherwise. Each is cut to `chars`.
+   * What the dove's judge is shown of the talk (ADR 0062): the time now, and the channel's latest top-level messages and
+   * the latest in the target's thread, each up to now with the time of its last message, oldest first and cut to
+   * `chars`. The thread is the one the reply would go to: the target's own, or the one it is in. Without a message
+   * named there is no thread.
    */
-  around(target: ResolvedTarget, messages: number, chars: number): SeenMessage[] {
-    const message = target.message;
-    const rows = message?.threadTs
-      ? this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0 AND (ts = ? OR thread_ts = ?)
-          AND CAST(ts AS REAL) <= CAST(? AS REAL) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`)
-        .all(target.workspace, target.channelId, message.threadTs, message.threadTs, message.ts, messages)
-      : this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0 AND thread_ts IS NULL
-          AND CAST(ts AS REAL) <= CAST(? AS REAL) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`)
-        .all(target.workspace, target.channelId, message?.ts ?? '99999999999', messages);
-    return (rows as unknown as MessageRow[]).reverse().map(row => {
-      const { date, time } = this.local(row.ts);
-      return { from: row.speaker, at: `${date} ${time}`, text: cut(row.text, chars) };
-    });
+  flows(target: ResolvedTarget, messages: number, chars: number): { now: string; channel: Flow; thread: Flow | null } {
+    const seen = (rows: unknown[]): Flow => {
+      const shown = (rows as MessageRow[]).reverse().map(row => {
+        const { date, time } = this.local(row.ts);
+        return { from: row.speaker, at: `${date} ${time}`, text: cut(row.text, chars) };
+      });
+      return { last_at: shown.at(-1)?.at ?? null, messages: shown };
+    };
+    const channel = seen(this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0
+      AND thread_ts IS NULL ORDER BY CAST(ts AS REAL) DESC LIMIT ?`).all(target.workspace, target.channelId, messages));
+    const root = target.message ? target.message.threadTs ?? target.message.ts : undefined;
+    const thread = root === undefined ? null : seen(this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ?
+      AND deleted = 0 AND (ts = ? OR thread_ts = ?) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`).all(target.workspace, target.channelId, root, root, messages));
+    const { date, time } = this.localMs(this.options.now());
+    return { now: `${date} ${time}`, channel, thread };
   }
 
   /** How many top-level messages came in the channel after this one. */

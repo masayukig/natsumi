@@ -95,7 +95,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / `service.unavailable` |
 | `conversation.read` | throughMessageId（会話の messageId） | `command.accepted`（readThroughMessageId、unreadReplyCount。手前の位置なら今の位置）、または invalid-request / `service.unavailable`。下記「既読と知らせの確認」 |
 | `conversation.interrupt` | — | 受け付けない（`not-implemented`）。進行中の思考は外から止めない |
-| `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
+| `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel / broadcast） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
 | `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
@@ -511,17 +511,17 @@ natsumi が Slack に出したい投稿のうち、ポッポさんの判定で�
 | `createdAt` / `expiresAt` | 作った時刻と期限（既定 7 日、設定 `slack.approvalExpiryDays`） |
 | `target.channel` | `work/#dev`（ワークスペース/チャンネル。DM は `work/@名前`） |
 | `target.replyTo` | 返す相手の発言の `speaker`・`at`（本人のタイムゾーンの `2026-09-25 14:32:05`）・`text`（100 文字まで。超えたら末尾に `…`）。チャンネルそのものへの投稿では欄が無い |
-| `target.placement` | `thread` か `channel`。判定の選択、判定なしならサーバーの決まりの値。チャンネルそのものへの投稿は `channel`。返信先のある投稿の `channel` は、スレッドに返し、チャンネルにも出す（Slack の `reply_broadcast`。[ADR 0059](adr/0059-two-judges-side-by-side-and-fewer-issues.md)）。画像付きの投稿の `channel` は、チャンネルに出す |
+| `target.placement` | `thread`・`channel`・`broadcast` のどれか（[ADR 0062](adr/0062-three-placements-for-a-reply.md)）。判定の選択、判定なしならサーバーの決まりの値（`broadcast` にはならない）。`thread` は返す相手の発言のスレッドに返す。`channel` はスレッドを作らずにチャンネルに直接出す。チャンネルそのものへの投稿は `channel`。`broadcast` はスレッドに返し、チャンネルにも出す（Slack の `reply_broadcast`）。画像付きの投稿の `broadcast` はスレッドにだけ置く。クライアントは知らない値でも承認を表示し、決定できるようにする |
 | `text` | natsumi の下書き（全文） |
 | `expression` | アイコンの表情。無ければ欄が無い |
 | `images` | 投稿に付く画像の一覧。natsumi が書いた順。各要素は `imageId`（画像の ID）・`mimeType`（`image/png`・`image/jpeg`・`image/webp`）・`bytes`（大きさ、バイト）。画像が無ければ欄が無い（下記「画像」） |
 | `reason.verdict` | `owner`・`no-verdict`・`rewrite-limit` |
 | `reason.issues` | 問題点ごとの `name`（英語の識別子）・`label`（日本語の表示名）・`score`（0〜1）。しきい値以上のものに `flagged: true`（それ以外は欄が無い）。判定なしなら空。2 つの判定を掛けたときも、決めた方の判定のものだけ |
-| `reason.placement` | 判定の置き場所の `probabilities`（`thread`・`channel`）。判定なし、または判定が確率を返さなかったときは欄が無い |
+| `reason.placement` | 判定の置き場所の `probabilities`。置き場所の値をキーにした 0〜1 の数。キーが 3 つ揃っているとは限らない（判定の種類や、3 つになる前の記録）ので、クライアントは知らないキーを無視し、欠けたキーは無いものとして扱う。判定なし、または判定が確率を返さなかったときは欄が無い |
 | `history` | 同じ返信先で突き返された前の下書きの `text` と、そのときの flagged の `issues`。古い順。無ければ空 |
 
 ```json
-{"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"明日のレビュー大丈夫？"}},"text":"大丈夫です。","expression":"happy","reason":{"verdict":"owner","issues":[{"name":"promise-for-owner","label":"本人に代わる約束・期限","score":0.5,"flagged":true},{"name":"private-matter","label":"私的な事情","score":0.02}],"placement":{"probabilities":{"thread":0.8,"channel":0.2}}},"history":[]}
+{"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"明日のレビュー大丈夫？"}},"text":"大丈夫です。","expression":"happy","reason":{"verdict":"owner","issues":[{"name":"promise-for-owner","label":"本人に代わる約束・期限","score":0.5,"flagged":true},{"name":"private-matter","label":"私的な事情","score":0.02}],"placement":{"probabilities":{"thread":0.8,"channel":0.15,"broadcast":0.05}}},"history":[]}
 ```
 
 - 本人は `approval.decide` で承認（approve）・修正（edit）・却下（reject）を選ぶ。承認と修正では placement を変えられる。
