@@ -57,7 +57,7 @@ public struct PhoneReplyTargetProps: Equatable, Sendable {
     }
 }
 
-/// One side of the choice between the thread and the channel.
+/// One of the places the post can go: the thread, the channel, or both.
 public struct PhonePlacementOptionProps: Equatable, Identifiable, Sendable {
     public var title: String
     public var placement: ApprovalPlacement
@@ -150,7 +150,7 @@ public struct PhoneApprovalDetailProps: Equatable, Sendable {
     public var replyTo: PhoneReplyTargetProps?
     /// Where the post goes, as the owner has it now.
     public var placement: String
-    /// The choice between the thread and the channel; empty when there is none to make.
+    /// The choice of the thread, the channel or both; empty when there is none to make.
     public var placementOptions: [PhonePlacementOptionProps]
     /// How likely the judge found each place, when it said.
     public var placementOdds: String?
@@ -242,9 +242,10 @@ enum PhoneApprovalProps {
         let isPending = book.pending.contains { $0.approvalId == id }
         let decision = book.decisions[id]
         let canMove = isPending && approval.target.replyTo != nil
-        // What the owner chose here stays after it closes: that is where it was sent.
+        // What the owner chose here stays after it closes: that is where it was sent. A place this app does not know
+        // stays unknown until the owner chooses one.
         let placement = (approval.target.replyTo != nil ? state.approvalPlacement : nil) ?? approval.target.placement
-            ?? (approval.target.replyTo == nil ? .channel : .thread)
+            ?? (approval.target.replyTo == nil ? .channel : nil)
         let dates = time.labels([approval.createdAt, approval.expiresAt])
 
         let controls: PhoneApprovalControls = if !isPending {
@@ -265,14 +266,16 @@ enum PhoneApprovalProps {
         return .detail(PhoneApprovalDetailProps(
             approvalId: id, channel: approval.target.channel,
             replyTo: approval.target.replyTo.map { PhoneReplyTargetProps(speaker: $0.speaker, at: $0.at, text: $0.text) },
-            placement: placement == .thread ? "スレッドに返す" : "チャンネルに投稿",
+            placement: placement.map(description) ?? "置き場所は不明",
             placementOptions: canMove
-                ? [ApprovalPlacement.thread, .channel].map {
-                    PhonePlacementOptionProps(title: $0 == .thread ? "スレッド" : "チャンネル", placement: $0, isSelected: $0 == placement)
+                ? ApprovalPlacement.allCases.map {
+                    PhonePlacementOptionProps(title: title($0), placement: $0, isSelected: $0 == placement)
                 }
                 : [],
-            placementOdds: approval.reason.placementOdds.map {
-                "判定の見立て: スレッド \(percent($0.thread))・チャンネル \(percent($0.channel))"
+            placementOdds: approval.reason.placementOdds.map { odds in
+                "判定の見立て: " + ApprovalPlacement.allCases.compactMap { place in
+                    odds[place].map { "\(title(place)) \(percent($0))" }
+                }.joined(separator: "・")
             },
             text: approval.text, face: approval.expression, avatar: state.avatar, reason: reason(approval.reason.verdict),
             issues: approval.reason.issues.map {
@@ -289,6 +292,24 @@ enum PhoneApprovalProps {
             images: isPending ? ImageStrip.phoneApproval.tiles(approval.images, shelf: state.images, openHelp: "タップで拡大") : [],
             imagesNote: isPending || approval.images.isEmpty
                 ? nil : "画像 \(approval.images.count) 枚（承認が閉じたので表示しません）"))
+    }
+
+    /// Where the post goes, in a few words.
+    static func description(_ placement: ApprovalPlacement) -> String {
+        switch placement {
+        case .thread: "スレッドに返す"
+        case .channel: "チャンネルに投稿"
+        case .broadcast: "スレッドに返し、チャンネルにも表示"
+        }
+    }
+
+    /// The place's name on its button and in the judge's odds.
+    static func title(_ placement: ApprovalPlacement) -> String {
+        switch placement {
+        case .thread: "スレッド"
+        case .channel: "チャンネル"
+        case .broadcast: "チャンネルにも"
+        }
     }
 
     static func reason(_ verdict: ApprovalVerdict?) -> String {

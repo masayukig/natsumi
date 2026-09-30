@@ -98,6 +98,7 @@ struct PhoneApprovalTests {
         #expect(props.placementOptions == [
             PhonePlacementOptionProps(title: "スレッド", placement: .thread, isSelected: true),
             PhonePlacementOptionProps(title: "チャンネル", placement: .channel, isSelected: false),
+            PhonePlacementOptionProps(title: "チャンネルにも", placement: .broadcast, isSelected: false),
         ])
         #expect(props.placementOdds == "判定の見立て: スレッド 70%・チャンネル 30%")
         #expect(props.text == "明日の 10 時で大丈夫です。")
@@ -128,6 +129,44 @@ struct PhoneApprovalTests {
         #expect(props.placementOdds == nil)
         #expect(props.reason == "判定がありませんでした")
         #expect(props.issues == [])
+    }
+
+    @Test("スレッドに返してチャンネルにも出す投稿は、そう書き、3 つの見立てを出す")
+    func broadcastPost() {
+        var mediator = synced([Fixture.approval(
+            "a1", placement: "broadcast", probabilities: ["thread": 0.2, "channel": 0.3, "broadcast": 0.5])])
+        _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
+        let props = try! #require(detail(mediator))
+        #expect(props.placement == "スレッドに返し、チャンネルにも表示")
+        #expect(props.placementOptions.map(\.isSelected) == [false, false, true])
+        #expect(props.placementOdds == "判定の見立て: スレッド 20%・チャンネル 30%・チャンネルにも 50%")
+    }
+
+    @Test("見立ては、読めた置き場所だけを決まった順に出す")
+    func partialOdds() {
+        var mediator = synced([Fixture.approval("a1", probabilities: ["broadcast": 0.4, "thread": 0.6, "somewhere": 0.1])])
+        _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
+        #expect(detail(mediator)?.placementOdds == "判定の見立て: スレッド 60%・チャンネルにも 40%")
+    }
+
+    @Test("知らない置き場所でも、承認は出して選べる。置き場所は不明と出し、3 つから選び直せる")
+    func unknownPlacement() {
+        var mediator = synced([Fixture.approval("a1", placement: "somewhere")])
+        _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
+        let props = try! #require(detail(mediator))
+        #expect(props.placement == "置き場所は不明")
+        #expect(props.placementOptions.map(\.placement) == [.thread, .channel, .broadcast])
+        #expect(props.placementOptions.map(\.isSelected) == [false, false, false])
+        #expect(props.controls == .choose)
+        #expect(sent(mediator.handle(.approvalApproved(approvalId: "a1")))
+            == [.approvalDecide(approvalId: "a1", revision: 1, decision: .approve(placement: nil))])
+
+        var chosen = synced([Fixture.approval("a1", placement: "somewhere")])
+        _ = chosen.handle(.approvalOpenRequested(approvalId: "a1"))
+        _ = chosen.handle(.approvalPlacementChosen(.thread))
+        #expect(detail(chosen)?.placement == "スレッドに返す")
+        #expect(sent(chosen.handle(.approvalApproved(approvalId: "a1")))
+            == [.approvalDecide(approvalId: "a1", revision: 1, decision: .approve(placement: .thread))])
     }
 
     @Test("3 回目の突き返しは、そう書く")
@@ -167,9 +206,27 @@ struct PhoneApprovalTests {
         _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
         _ = mediator.handle(.approvalPlacementChosen(.channel))
         #expect(detail(mediator)?.placement == "チャンネルに投稿")
-        #expect(detail(mediator)?.placementOptions.map(\.isSelected) == [false, true])
+        #expect(detail(mediator)?.placementOptions.map(\.isSelected) == [false, true, false])
         #expect(sent(mediator.handle(.approvalApproved(approvalId: "a1")))
             == [.approvalDecide(approvalId: "a1", revision: 1, decision: .approve(placement: .channel))])
+    }
+
+    @Test("スレッドに返してチャンネルにも出すに変えて承認できる。元の置き場所に戻したら placement を付けない")
+    func approveWithBroadcast() {
+        var mediator = synced()
+        _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
+        _ = mediator.handle(.approvalPlacementChosen(.broadcast))
+        #expect(detail(mediator)?.placement == "スレッドに返し、チャンネルにも表示")
+        #expect(detail(mediator)?.placementOptions.map(\.isSelected) == [false, false, true])
+        #expect(sent(mediator.handle(.approvalApproved(approvalId: "a1")))
+            == [.approvalDecide(approvalId: "a1", revision: 1, decision: .approve(placement: .broadcast))])
+
+        var back = synced()
+        _ = back.handle(.approvalOpenRequested(approvalId: "a1"))
+        _ = back.handle(.approvalPlacementChosen(.broadcast))
+        _ = back.handle(.approvalPlacementChosen(.thread))
+        #expect(sent(back.handle(.approvalApproved(approvalId: "a1")))
+            == [.approvalDecide(approvalId: "a1", revision: 1, decision: .approve(placement: nil))])
     }
 
     @Test("修正は本文を編集して送る。空白だけの本文は送らない。やめると元に戻る")
