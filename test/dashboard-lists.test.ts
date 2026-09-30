@@ -115,6 +115,9 @@ test('the dove’s posts show the judgement, the scores, the state, where they w
   assert.match(text, /口調[^<]*0\.72/);
   assert.match(text, /#架空のチャンネル/);
   assert.match(text, /投稿先<\/dt><dd>スレッド <small>送った先 チャンネル<\/small>/, 'the places in words (ADR 0062)');
+  // The three places, told as ADR 0062 has them: no longer that channel is the thread shown in the channel too.
+  assert.doesNotMatch(text, /返信先があればスレッドに返してチャンネルにも出したもの/);
+  assert.match(text, /スレッドは返す相手のスレッドにだけ、チャンネルはチャンネル直下に、チャンネルにもはスレッドに返してチャンネルにも出したもの/);
   assert.match(text, /架空の下書き &lt;img/);
   assert.match(text, /本人が直した文/);
   assert.match(text, /2026-01-01 09:00:00/);
