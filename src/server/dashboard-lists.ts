@@ -115,7 +115,7 @@ export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[
   const main = html`<section id="dove">
 <h2>ポッポさん</h2>
 <p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。
-2 つの判定を掛けた投稿は、それぞれの判定と、決めた方を並べます。投稿先の channel は、返信先があればスレッドに返してチャンネルにも出したものです。</small></p>
+2 つの判定を掛けた投稿は、それぞれの判定と、決めた方を並べます。投稿先のスレッドは返す相手のスレッドにだけ、チャンネルはチャンネル直下に、チャンネルにもはスレッドに返してチャンネルにも出したものです。</small></p>
 ${list.rows.length === 0 ? html`<p>まだ依頼はありません。</p>` : html`<div class="cards">${list.rows.map(post => html`<article class="card" id="${post.postId}">
 <p><strong>${post.kind === 'reaction' ? 'リアクション' : '投稿'}</strong> ${post.channel} <small>${post.reference}</small>
 <small>${at(post.createdAt)}</small></p>
