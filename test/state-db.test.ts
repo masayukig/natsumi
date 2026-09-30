@@ -546,3 +546,43 @@ test('schema 24 lets a post be placed as a broadcast, and renames the channel of
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
   assert.throws(() => approval.run('approval-missing', 'post-missing', '{}', null), /constraint/i, 'the approvals still point at the posts');
 }));
+
+/**
+ * Schema 25 lets a self-check repeat and drops the folding of the same reason (ADR 0063). The bookings waiting stay as
+ * one-offs, and each delivered one keeps the event that carried it, now kept beside the booking so a repeating one can
+ * be carried by many.
+ */
+test('schema 25 keeps every self-check as a one-off, keeps which event carried each, and allows the same reason twice', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 24));
+  db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at)
+    VALUES ('event-check', 'self-check', 'no-reply', '2026-09-17T01:00:00.000Z', '2026-09-17T01:00:00.000Z')`).run();
+  const check = db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, event_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')`);
+  check.run('check-waiting', '会議の準備を聞く', '会議の準備を聞く', '2026-09-17T06:00:00.000Z', 'pending', null);
+  check.run('check-done', '洗濯物を聞く', '洗濯物を聞く', '2026-09-17T01:00:00.000Z', 'delivered', 'event-check');
+  check.run('check-gone', '取り消した', '取り消した', '2026-09-17T02:00:00.000Z', 'cancelled', null);
+
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 25)).applied, [25]);
+  assert.deepEqual(db.prepare('SELECT check_id, reason, cron, due_at, state FROM self_checks ORDER BY check_id').all()
+    .map(row => ({ ...row })), [
+    { check_id: 'check-done', reason: '洗濯物を聞く', cron: null, due_at: '2026-09-17T01:00:00.000Z', state: 'delivered' },
+    { check_id: 'check-gone', reason: '取り消した', cron: null, due_at: '2026-09-17T02:00:00.000Z', state: 'cancelled' },
+    { check_id: 'check-waiting', reason: '会議の準備を聞く', cron: null, due_at: '2026-09-17T06:00:00.000Z', state: 'pending' },
+  ]);
+  assert.deepEqual(db.prepare('SELECT event_id, check_id, due_at FROM self_check_deliveries').all().map(row => ({ ...row })),
+    [{ event_id: 'event-check', check_id: 'check-done', due_at: '2026-09-17T01:00:00.000Z' }]);
+  const columns = (db.prepare('PRAGMA table_info(self_checks)').all() as { name: string }[]).map(column => column.name);
+  assert.equal(columns.includes('reason_key'), false);
+  assert.equal(columns.includes('event_id'), false);
+
+  const insert = db.prepare(`INSERT INTO self_checks (check_id, reason, cron, due_at, state, created_at, updated_at)
+    VALUES (?, ?, ?, '2026-09-17T07:00:00.000Z', ?, 'x', 'x')`);
+  insert.run('check-again', '会議の準備を聞く', null, 'pending');
+  insert.run('check-repeating', '会議の準備を聞く', '0 16 * * *', 'pending');
+  assert.throws(() => insert.run('check-repeating-done', '繰り返し', '0 16 * * *', 'delivered'), /constraint/i,
+    'a repeating booking is never done by being delivered');
+  assert.throws(() => insert.run('check-odd', '変な状態', null, 'waiting'), /constraint/i);
+  assert.throws(() => db.prepare(`INSERT INTO self_check_deliveries (event_id, check_id, due_at) VALUES ('event-missing', 'check-again', 'x')`).run(),
+    /constraint/i, 'a delivery names an event');
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+}));
