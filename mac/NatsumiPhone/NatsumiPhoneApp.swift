@@ -51,10 +51,13 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         // Without a token there is nothing to register; the app works as before, and the next launch asks again.
     }
 
+    /// Not `async`, for the same reason as the tap: even for a main actor method, the bridged `async` version calls
+    /// UIKit's handler off the main thread.
     func application(
-        _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]
-    ) async -> UIBackgroundFetchResult {
-        await root.remoteNotificationReceived(userInfo) ? .newData : .noData
+        _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping @Sendable (UIBackgroundFetchResult) -> Void
+    ) {
+        MainThreadCompletion.run({ await self.root.remoteNotificationReceived(userInfo) ? .newData : .noData }, then: completionHandler)
     }
 }
 
