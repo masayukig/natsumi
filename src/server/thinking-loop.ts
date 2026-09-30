@@ -394,7 +394,7 @@ export class ThinkingLoop {
       now: this.now,
     });
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: loop.timeZone,
-      limits: loop.selfCheck, awakeHours: options.settings ? () => options.settings!.awakeHours() : loop.awakeHours });
+      awakeHours: options.settings ? () => options.settings!.awakeHours() : loop.awakeHours });
     const { a2a } = options;
     this.agents = new AgentRequests({
       db: options.db, now: this.now, config: a2a,
@@ -623,8 +623,9 @@ export class ThinkingLoop {
   get lastActivityAt(): number { return this.activityAt; }
 
   /**
-   * Hands every due self-check to the loop as one event, however many there are and however late (ADR 0014).
-   * The checks are marked delivered together with the event, so none is handed over twice.
+   * Hands every due self-check to the loop as one event, however many there are and however late (ADR 0014); a
+   * repeating one comes once for its latest run (ADR 0063). The checks are marked delivered together with the event,
+   * so none is handed over twice.
    */
   deliverDueSelfChecks(): boolean {
     if (!this.quiet) return false;
@@ -632,7 +633,7 @@ export class ThinkingLoop {
     if (due.length === 0) return false;
     const eventId = this.store.transaction(transaction => {
       const id = this.store.insertEvent('self-check');
-      this.selfChecks.deliver(due.map(check => check.checkId), id, transaction);
+      this.selfChecks.deliver(due, id, transaction);
       return id;
     });
     this.queue.push(eventId);

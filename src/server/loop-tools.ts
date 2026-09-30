@@ -34,7 +34,7 @@ export interface LoopToolHost {
   setExpression(expression: Expression): Outcome;
   writeHandoff(text: string): Outcome;
   writeChangeNote(text: string): Outcome;
-  scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string }): Outcome;
+  scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string; cron?: string }): Outcome;
   listSelfChecks(): Outcome;
   cancelSelfCheck(checkId: string): Outcome;
   /** Always present, whether or not any agent is configured, so the tool list never moves with the config (ADR 0036). */
@@ -116,9 +116,11 @@ export function createLoopTools(host: LoopToolHost) {
     defineTool({
       name: 'schedule_self_check', label: 'Book a self-check',
       description: SCHEDULE_SELF_CHECK_DESCRIPTION,
-      parameters: Type.Object({ reason: Type.String(), in_minutes: Type.Optional(Type.Number()), at: Type.Optional(Type.String()) }),
+      parameters: Type.Object({ reason: Type.String(), in_minutes: Type.Optional(Type.Number()), at: Type.Optional(Type.String()),
+        cron: Type.Optional(Type.String()) }),
       execute: async (_id, params) => result(host.scheduleSelfCheck(params.reason, {
         ...(params.in_minutes === undefined ? {} : { inMinutes: params.in_minutes }), ...(params.at === undefined ? {} : { at: params.at }),
+        ...(params.cron === undefined ? {} : { cron: params.cron }),
       })),
     }),
     defineTool({
