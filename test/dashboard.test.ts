@@ -433,8 +433,8 @@ test('the failures and waits show what the state database holds, and refresh as 
   try {
     db.prepare(`INSERT INTO loop_events (event_id, kind, state, reason, created_at, updated_at)
       VALUES ('event-failed', 'mac_message', 'failed', 'model-error', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z')`).run();
-    db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, created_at, updated_at)
-      VALUES ('check-1', ?, 'k', '2026-01-01T03:00:00.000Z', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(`架空の確認 ${HOSTILE}`);
+    db.prepare(`INSERT INTO self_checks (check_id, reason, due_at, state, created_at, updated_at)
+      VALUES ('check-1', ?, '2026-01-01T03:00:00.000Z', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(`架空の確認 ${HOSTILE}`);
   } finally { db.close(); }
   const page = await f.fetch('/dashboard/waits', withCookie(cookie));
   assert.equal(page.status, 200, page.text);

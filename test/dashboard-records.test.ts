@@ -151,14 +151,13 @@ test('an approval past its end but not yet settled is listed as run out', async 
 test('the self-checks she booked are listed by when they are due, with the next nightly switch', async () => {
   const f = await setup();
   try {
-    const check = (id: string, state: string, due: number, eventId: string | null = null) => f.run(`INSERT INTO self_checks
-      (check_id, reason, reason_key, due_at, state, event_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    id, `架空の理由 ${id}`, id, iso(due), state, eventId, iso(-DAY), iso(-DAY));
-    f.event('event-check', 'no-reply', { kind: 'self_check' });
+    const check = (id: string, state: string, due: number) => f.run(`INSERT INTO self_checks
+      (check_id, reason, due_at, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    id, `架空の理由 ${id}`, iso(due), state, iso(-DAY), iso(-DAY));
     check('check-later', 'pending', 2 * 60 * MINUTE);
     check('check-sooner', 'pending', 30 * MINUTE);
     check('check-gone', 'cancelled', 10 * MINUTE);
-    check('check-done', 'delivered', -10 * MINUTE, 'event-check');
+    check('check-done', 'delivered', -10 * MINUTE);
     const waits = readWaits(f.db, options);
     assert.deepEqual(waits.checks.map(item => [item.checkId, item.reason, item.dueAt]),
       [['check-sooner', '架空の理由 check-sooner', iso(30 * MINUTE)], ['check-later', '架空の理由 check-later', iso(2 * 60 * MINUTE)]]);

@@ -210,6 +210,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // What she reads of Slack, written under sources/slack (ADR 0039, ADR 0050).
     const slackConfig = config.slack;
     for (const key of slackConfig?.ignored ?? []) log(`config: ${key} is no longer read (ADR 0050); it can be deleted`);
+    for (const key of config.loop.ignored ?? []) log(`config: ${key} is no longer read (ADR 0063); it can be deleted`);
     // The images she hands the server from /work (ADR 0044), fetched by the devices by their IDs.
     const images = new ImageStore(db, join(dataDirectory, STATE_DIRECTORY, IMAGE_DIRECTORY));
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),

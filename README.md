@@ -59,9 +59,9 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      （1 ターンの伸び 32768、1 回の返事の上限 16384、Pi が窓の手前に空ける 4096）を足した量が `contextWindow` を超えると
      起動を拒みます。上限を上げるときは窓も上げてください（例: 上限 128000 には窓 181248 以上）。
      起きている時間帯 `awakeHours`（既定 `{ "start": "08:00", "end": "23:00" }`）、合図までの静かな時間 `pingIntervalMinutes`
-     （既定 30 分、`false` で合図を出さない）、自分で予約する確認の上限 `selfCheck`（最短の先 `minDelayMinutes` 既定 5 分、
-     最も遠い先 `maxDelayDays` 既定 7 日、同時に待たせる件数 `maxPending` 既定 5 件、1 日の件数 `maxPerDay` 既定 20 件）、
-     表情が neutral に戻るまでの時間 `expressionResetMinutes`（既定 3 分）。
+     （既定 30 分、`false` で合図を出さない）、表情が neutral に戻るまでの時間 `expressionResetMinutes`（既定 3 分）。
+     自分で予約する確認の上限 `selfCheck` はなくなりました（[ADR 0063](docs/adr/0063-repeating-self-checks-without-limits.md)）。
+     書いたままでも起動はしますが、読まれないので消してください。
      夜の振り返りのターンの上限 `reviewModelCalls`（モデル呼び出しの回数。既定 40 回）と `reviewTimeoutMinutes`
      （時間。既定 30 分）。昼のふつうのターンの上限 `eventModelCalls`（既定 8 回）と `eventTimeoutMinutes`（既定 10 分）。
      回数を上げるときは、1 回の呼び出しにかかる時間を掛けても時間の上限に収まるかを確かめてください。
@@ -167,8 +167,10 @@ author と committer はサーバーが固定し、リポジトリに置かれ�
 
 natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-self-checks-and-pings.md)）。
 `loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが「何かしたいことは？」の合図を送ります。
-また natsumi は「30 分後」「15:00」のように、後で自分から確かめる予約を入れられます。予約は `.natsumi/state.sqlite` に残り、
-サーバーの停止や夜で時刻を過ぎたものは、起動後（夜なら朝）にまとめて 1 回で届きます。予約の件数と間隔は `loop.selfCheck` でサーバーが制限します。
+また natsumi は「30 分後」「15:00」のような一回きりの予約と、「毎日 16:00」（cron 式 `0 16 * * *`）のような繰り返しの予約で、
+後で自分から確かめられます（[ADR 0063](docs/adr/0063-repeating-self-checks-without-limits.md)）。予約は `.natsumi/state.sqlite` に残ります。
+一回きりの予約でサーバーの停止や夜で時刻を過ぎたものは、起動後（夜なら朝）にまとめて 1 回で届きます。
+繰り返しの予約は、起きている時間帯の外の回を飛ばし、止まっていた間に過ぎた回は最後の 1 回だけ届きます。予約の件数と間隔に上限はありません。
 どちらもモデルを使うので、静かな時間にもモデルの利用が発生します。
 
 稼働状態は `node dist/src/server/main.js health --data-dir <data directory>` で確認できます（稼働中なら終了コード 0）。
