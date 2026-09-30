@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Transaction } from './conversation-store.ts';
 import { parseDoveRequest } from './dove-request.ts';
 import { discardImages, type ImageLimits, type ImageStore, type TakenImage } from './images.ts';
-import { judgeSideBySide, JUDGE_METHODS, type JudgeChoice, type JudgeMethod, type JudgeSlot, type ScoredIssue } from './judge.ts';
+import { judgeSideBySide, JUDGE_METHODS, type JudgeChoice, type JudgeMethod, type JudgeSlot, type Placement, type ScoredIssue } from './judge.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -32,8 +32,9 @@ import { SlackEmoji } from './slack-emoji.ts';
  * What the owner decides is final and is taken once: a second answer gets the first one back (ADR 0002). Only what she
  * approved, or her own text, is sent, and the mechanical check comes right before every send, hers included.
  *
- * A reply placed in the channel goes to the thread and is shown in the channel too (Slack's `reply_broadcast`, ADR 0059),
- * but for images, which Slack uploads with no such choice: they go to the channel itself, as before.
+ * A reply goes to one of three places (ADR 0062): its thread (`thread`), the channel itself with no thread (`channel`),
+ * or its thread shown in the channel too (`broadcast`, Slack's `reply_broadcast`). Slack uploads images with no such
+ * choice, so images placed as a broadcast go to the thread alone.
  *
  * The log names the workspace, the Slack method and Slack's code, or a judge's kind of failure; never a draft nor an ID.
  */
@@ -49,9 +50,9 @@ const DRAFT_HEAD_CHARS = 60;
 export interface DoveConfig {
   /** How long an approval waits for the owner. */
   approvalDays: number;
-  /** Without a verdict, a reply to a top-level message goes to the channel while at most this many came after it. */
+  /** Without a verdict, a reply to a top-level message goes to the channel itself while at most this many came after it. */
   placementFollowing: number;
-  /** What the judges are shown around the target: how many messages, and the characters each keeps. */
+  /** What the judges are shown of the channel and of the thread, each: how many messages, and the characters each keeps. */
   judgeContext: { messages: number; chars: number };
   /** How large and how many the images of one request may be. */
   images: ImageLimits;
@@ -80,7 +81,6 @@ export interface SlackDoveOptions {
   log?: (line: string) => void;
 }
 
-type Placement = 'thread' | 'channel';
 type Result = 'sent' | 'reacted' | 'to_owner' | 'returned' | 'rejected' | 'expired' | 'not_sent';
 type Failure = 'mechanical-check' | 'slack-error' | 'target-gone' | 'interrupted';
 
@@ -317,10 +317,11 @@ export class SlackDove {
     const { judgeContext } = this.options.config;
     const replyTo = target.message;
     const choice = this.options.judgeChoice();
+    const { now, ...conversation } = this.options.archive.flows(target, judgeContext.messages, judgeContext.chars);
     const both = await judgeSideBySide(this.options.judges, choice, {
-      channel: target.label,
+      channel: target.label, now,
       reply_to: replyTo ? { from: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, judgeContext.chars), in_thread: replyTo.threadTs !== undefined } : null,
-      conversation: this.options.archive.around(target, judgeContext.messages, judgeContext.chars),
+      conversation,
       draft: post.text,
     }, { placement: replyTo !== undefined });
     for (const method of JUDGE_METHODS) {
@@ -457,16 +458,18 @@ export class SlackDove {
     const expression = post.expression ?? 'neutral';
     try {
       if (images.length > 0) {
-        const threadTs = placement === 'thread' ? replyThread : undefined;
+        // A broadcast of images stays in the thread: Slack's upload cannot show it in the channel too.
+        const threadTs = placement === 'channel' ? undefined : replyThread;
         // The copies taken when she asked, never /work again. Slack takes no icon with an upload.
         const files = await Promise.all(images.map(async image => ({ filename: basename(image.source),
           data: await readFile(this.options.images.path(image.file)) })));
         await api.uploadFiles(post.channel_id, files, { ...(threadTs ? { threadTs } : {}), ...(text !== '' ? { initialComment: text } : {}) });
         return true;
       }
-      // A reply goes to its thread either way; placed in the channel, it is shown there too.
-      await api.postMessage(post.channel_id, text, { ...(replyThread ? { threadTs: replyThread } : {}),
-        ...(replyThread && placement === 'channel' ? { replyBroadcast: true } : {}), iconUrl: `${this.options.publicOrigin}/avatar/${expression}.png` });
+      // The channel itself takes no thread; a broadcast goes to the thread and is shown in the channel too.
+      const threadTs = placement === 'channel' ? undefined : replyThread;
+      await api.postMessage(post.channel_id, text, { ...(threadTs ? { threadTs } : {}),
+        ...(threadTs && placement === 'broadcast' ? { replyBroadcast: true } : {}), iconUrl: `${this.options.publicOrigin}/avatar/${expression}.png` });
       return true;
     } catch (error) {
       this.log(`slack (${post.workspace}): posting failed (${describeFailure(error)})`);
@@ -509,7 +512,10 @@ export class SlackDove {
     return streak;
   }
 
-  /** Without a judge's choice: a reply to a top-level message the channel has not moved on from goes to the channel. */
+  /**
+   * Without a judge's choice (ADR 0039, ADR 0062): a reply to a top-level message the channel has not moved on from goes
+   * to the channel itself, and any other to the thread. Never a broadcast.
+   */
   private defaultPlacement(target: ResolvedTarget): Placement {
     const message = target.message!;
     if (message.threadTs) return 'thread';
@@ -555,10 +561,10 @@ export class SlackDove {
 
   /**
    * Where it went, for the line that says it was sent, up to its verb: into the thread shown in the channel too for a
-   * reply placed in the channel, or else where it was put, with its images.
+   * broadcast, or else where it was put, with its images.
    */
   private sentTo(post: PostRow, label: string, placement: Placement): string {
-    if (post.target_ts && placement === 'channel' && this.images(post.post_id).length === 0) return `${label} のスレッドに返し、チャンネルにも出した`;
+    if (post.target_ts && placement === 'broadcast' && this.images(post.post_id).length === 0) return `${label} のスレッドに返し、チャンネルにも出した`;
     return `${where(label, placement)}に${this.withImages(post.post_id)}届けた`;
   }
 
@@ -596,8 +602,9 @@ export class SlackDove {
   private log(line: string): void { this.options.log?.(line); }
 }
 
+/** Where a post was put: the channel itself, or the thread, which is where a broadcast of images stays. */
 function where(label: string, placement: Placement): string {
-  return placement === 'thread' ? `${label} のスレッド` : label;
+  return placement === 'channel' ? label : `${label} のスレッド`;
 }
 
 function cut(text: string, max: number): string {

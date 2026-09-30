@@ -20,7 +20,8 @@ export type JudgeState = Record<string, unknown>;
 export interface JudgeIssue { name: string; label: string; instructions: string }
 
 const PREAMBLE = 'The state holds a draft reply that an AI secretary wants to post in a Slack workspace on behalf of its owner, '
-  + 'the message it replies to (reply_to, or null for a post to the channel itself), and the recent conversation around it. '
+  + 'the message it replies to (reply_to, or null for a post to the channel itself), and the recent conversation up to now: '
+  + 'the latest messages in the channel itself, and the latest in the thread of the message it replies to. '
   + 'The secretary knows private things about its owner that must not reach Slack. Judge the draft only against what the conversation shows. ';
 
 /**
@@ -61,29 +62,33 @@ export const JUDGE_ISSUES: readonly JudgeIssue[] = [
 ];
 
 /**
- * Where a reply goes, asked only when natsumi answers a message (ADR 0059): its thread by default. `channel` is a reply
- * in the thread that is shown in the channel too (Slack's `reply_broadcast`). The options keep this order in every
- * method unless a client is told otherwise, which only the evaluation does.
+ * Where a reply goes, asked only when natsumi answers a message (ADR 0062): `thread` is its thread alone, `channel` the
+ * channel itself with no thread, and `broadcast` its thread shown in the channel too (Slack's `reply_broadcast`). The
+ * options keep this order in every method unless a client is told otherwise, which only the evaluation does.
  */
 export const JUDGE_PLACEMENT = {
-  instructions: `${PREAMBLE}reply_to.in_thread is true when that message is itself a reply in a thread, and the conversation is then `
-    + 'that thread. Where should the reply go?',
+  instructions: `${PREAMBLE}now is the time now. conversation.channel holds the latest messages in the channel itself and `
+    + 'conversation.thread the latest in the thread of reply_to, each with the time of its last message. reply_to.in_thread is true when '
+    + 'that message is itself a reply in a thread. Where should the reply go? Any of the options may fit, even when reply_to is in a thread.',
   criteria: {
-    thread: 'In the thread of the message it replies to. This is the default, even when that message was posted in the channel itself: '
-      + 'an answer, a thanks or a follow-up goes to the thread.',
-    channel: 'In the thread, and also shown in the channel: only when the reply is news for everyone in the channel, or when it goes on '
-      + 'with a short exchange happening in the channel right now, right after the message.',
+    thread: 'In the thread of the message it replies to, only: for a reply meant for that message alone, such as an answer to its question '
+      + 'or a report of what it asked for.',
+    channel: 'In the channel itself, as a new message with no thread. This is the default while the conversation goes on in the channel '
+      + 'itself, even for a message in a thread when the talk has moved on to the channel.',
+    broadcast: 'In the thread, and also shown in the channel: only for a reply to an old thread, going by the times, that is worth '
+      + 'showing to everyone in the channel.',
   },
 } as const;
 
 export type Placement = keyof typeof JUDGE_PLACEMENT.criteria;
 /** The order the options are asked in: this one, but for the evaluation of how the order sways the answer. */
-export const PLACEMENT_ORDER: readonly Placement[] = ['thread', 'channel'];
+export const PLACEMENT_ORDER: readonly Placement[] = ['thread', 'channel', 'broadcast'];
+export const isPlacement = (value: unknown): value is Placement => typeof value === 'string' && (PLACEMENT_ORDER as readonly string[]).includes(value);
 
 export interface Judgement {
   issues: { name: string; label: string; score: number }[];
-  /** The probabilities may be left out by a Jev-compatible server; the choice is what is needed. */
-  placement?: { choice: Placement; probabilities?: { thread: number; channel: number } };
+  /** The probabilities, of every option asked, may be left out by a Jev-compatible server; the choice is what is needed. */
+  placement?: { choice: Placement; probabilities?: Partial<Record<Placement, number>> };
 }
 
 export interface JudgeClient {
