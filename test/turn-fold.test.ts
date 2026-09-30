@@ -120,6 +120,45 @@ test('a file read again with the same content becomes a note; one that changed i
   assert.deepEqual(results, ['古い', ALREADY_READ('/memory/people.md'), '新しい', ALREADY_READ('/memory/people.md')]);
 });
 
+test('a read is compared only with the content last kept for its path, so one that changed back is kept whole', () => {
+  const readTurn = (n: number, path: string, text: string): AgentMessage[] => [
+    events(`${n}`),
+    assistant(call(`read-${n}`, 'read', { path })),
+    result(`read-${n}`, 'read', text),
+    ...reflection(`メモ${n}`),
+  ];
+  const folded = foldTurns([
+    ...readTurn(1, '/memory/people.md', 'A'),
+    ...readTurn(2, '/memory/people.md', 'B'),
+    ...readTurn(3, '/memory/people.md', 'A'),
+    // Another path in between does not move what people.md is compared with.
+    ...readTurn(4, '/memory/places.md', 'B'),
+    ...readTurn(5, '/memory/people.md', 'A'),
+    events('次'),
+  ])!;
+  const results = folded.filter(message => message.role === 'toolResult').map(texts);
+  assert.deepEqual(results, ['A', 'B', 'A', 'B', ALREADY_READ('/memory/people.md')]);
+});
+
+test('parts of a file read by offset and limit are compared as what came back, like any other read', () => {
+  const path = '/manual/INDEX.md';
+  const readTurn = (n: number, args: Record<string, unknown>, text: string): AgentMessage[] => [
+    events(`${n}`),
+    assistant(call(`read-${n}`, 'read', { path, ...args })),
+    result(`read-${n}`, 'read', text),
+    ...reflection(`メモ${n}`),
+  ];
+  const folded = foldTurns([
+    ...readTurn(1, { offset: 1, limit: 2 }, '一行目\n二行目'),
+    ...readTurn(2, { offset: 1, limit: 2 }, '一行目\n二行目'),
+    ...readTurn(3, { offset: 3, limit: 2 }, '三行目\n四行目'),
+    ...readTurn(4, { offset: 1, limit: 2 }, '一行目\n二行目'),
+    events('次'),
+  ])!;
+  const results = folded.filter(message => message.role === 'toolResult').map(texts);
+  assert.deepEqual(results, ['一行目\n二行目', ALREADY_READ(path), '三行目\n四行目', '一行目\n二行目']);
+});
+
 test('steered events stay where they arrived, and a turn without a memo waits for the next memo to fold', () => {
   const messages = [
     events('一つ目'),

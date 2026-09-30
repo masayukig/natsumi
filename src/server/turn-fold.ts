@@ -32,8 +32,11 @@ export const MEMO_MAX_CHARS = 200;
 export const MEMO_CUT = '…（以下略）';
 /** What a memo with nothing to say is: it leaves no line, as an empty one does not. */
 const NOTHING = /^[「『"]?(特に)?なし[」』"]?[。.]?$/;
-/** A read of a file whose content was already kept, in an earlier folded turn, word for word. */
-export const ALREADY_READ = (path: string) => `既に読みました（${path}）。前に読んだときと同じ内容です。`;
+/**
+ * A read whose content is, word for word, what was last kept for its path. Only the last one is compared: a file that
+ * changed and changed back is kept whole again, since what she last saw of it is the content in between.
+ */
+export const ALREADY_READ = (path: string) => `既に読みました（${path}）。直前に読んだときと同じ内容です。`;
 const SENT_TOOLS = new Set(['reply_to_mac', 'notify_owner']);
 
 /**
@@ -52,7 +55,7 @@ export function foldTurns(messages: readonly AgentMessage[]): AgentMessage[] | u
   }
   if (end < 0) return undefined;
   const folded: AgentMessage[] = [];
-  const kept = new Set<string>();
+  const kept = new Map<string, string>();
   let start = 0;
   for (const request of requests) {
     if (request >= end) break;
@@ -67,8 +70,8 @@ function isRequest(message: AgentMessage): boolean {
   return message.role === 'user' && isReflectionRequest(textOf(message.content));
 }
 
-/** One ended turn: its steps, then the answer to its memo request. `kept` holds every read already kept. */
-function foldTurn(steps: AgentMessage[], answer: AgentMessage[], kept: Set<string>): AgentMessage[] {
+/** One ended turn: its steps, then the answer to its memo request. `kept` holds, by path, the content last kept. */
+function foldTurn(steps: AgentMessage[], answer: AgentMessage[], kept: Map<string, string>): AgentMessage[] {
   const results = new Map<string, ToolResult>();
   for (const message of steps) if (message.role === 'toolResult') results.set(message.toolCallId, message);
   const out: AgentMessage[] = [];
@@ -88,13 +91,13 @@ function foldTurn(steps: AgentMessage[], answer: AgentMessage[], kept: Set<strin
   return out;
 }
 
-function foldResult(result: ToolResult, args: Record<string, unknown>, kept: Set<string>): ToolResult {
+function foldResult(result: ToolResult, args: Record<string, unknown>, kept: Map<string, string>): ToolResult {
   const base = { ...result, toolCallId: callId(result.toolCallId) };
   if (SENT_TOOLS.has(result.toolName)) return { ...base, content: [{ type: 'text', text: SENT }] };
   if (result.toolName !== 'read') return base;
   const path = typeof args.path === 'string' ? args.path : '';
-  const key = `${path}\n${JSON.stringify(result.content)}`;
-  if (!kept.has(key)) { kept.add(key); return base; }
+  const content = JSON.stringify(result.content);
+  if (kept.get(path) !== content) { kept.set(path, content); return base; }
   return { ...base, content: [{ type: 'text', text: ALREADY_READ(path) }] };
 }
 
