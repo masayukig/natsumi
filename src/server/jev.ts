@@ -1,5 +1,5 @@
-import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, probability, type JudgeClient, type JudgeState,
-  type Judgement } from './judge.ts';
+import { DEFAULT_JUDGE_TIMEOUT_MS, isPlacement, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, probability, type JudgeClient, type JudgeState,
+  type Judgement, type Placement } from './judge.ts';
 
 /**
  * The dove's judge through TypeSafe AI's Jev API (ADR 0039, ADR 0040), or a server of the owner's own that answers the
@@ -19,6 +19,8 @@ export interface HttpJevClientOptions {
   apiKey?: string;
   model: string;
   timeoutMs?: number;
+  /** The order the placement's options are sent in; only the evaluation changes it. */
+  placementOrder?: readonly Placement[];
   /** Replaced by the tests; nothing here ever reaches the network in them. */
   fetch?: typeof fetch;
 }
@@ -29,7 +31,10 @@ export class HttpJevClient implements JudgeClient {
 
   async judge(state: JudgeState, options: { placement: boolean }): Promise<Judgement> {
     const questions: Record<string, unknown> = Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { type: 'noul', instructions: issue.instructions }]));
-    if (options.placement) questions.placement = { type: 'choice', ...JUDGE_PLACEMENT };
+    if (options.placement) {
+      const criteria = Object.fromEntries((this.options.placementOrder ?? PLACEMENT_ORDER).map(name => [name, JUDGE_PLACEMENT.criteria[name]]));
+      questions.placement = { type: 'choice', instructions: JUDGE_PLACEMENT.instructions, criteria };
+    }
     const fetching = this.options.fetch ?? fetch;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS);
@@ -63,10 +68,10 @@ function parseAnswer(text: string, placement: boolean): Judgement {
   });
   if (!placement) return { issues };
   const answer = answers.placement;
-  if (answer?.choice !== 'thread' && answer?.choice !== 'channel') throw new JudgeError('malformed');
-  const thread = answer.probabilities?.thread;
-  const channel = answer.probabilities?.channel;
-  // The probabilities are shown to the owner when there are any; a compatible server may not give them.
-  const probabilities = probability(thread) && probability(channel) ? { probabilities: { thread, channel } } : {};
+  if (!isPlacement(answer?.choice)) throw new JudgeError('malformed');
+  const given = answer.probabilities ?? {};
+  // The probabilities are shown to the owner when there are all of them; a compatible server may not give them.
+  const probabilities = PLACEMENT_ORDER.every(name => probability(given[name]))
+    ? { probabilities: Object.fromEntries(PLACEMENT_ORDER.map(name => [name, given[name] as number])) } : {};
   return { issues, placement: { choice: answer.choice, ...probabilities } };
 }

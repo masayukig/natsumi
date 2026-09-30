@@ -17,7 +17,7 @@ import { DOVE_NAME } from '../server/dove.ts';
 import { readManualIndex } from '../server/manual.ts';
 import { MIGRATIONS } from '../server/migrations.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from '../server/paths.ts';
-import { REFLECTION_REQUEST } from '../server/prompts.ts';
+import { isReflectionRequest, REFLECTION_REQUEST } from '../server/prompts.ts';
 import { migrate, openStateDatabase } from '../server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions } from '../server/thinking-loop.ts';
 import { Stage, type ActorModel } from './actors.ts';
@@ -343,7 +343,7 @@ function readTurns(messages: AgentSession['messages'], record: RunRecord, callTi
   for (const message of messages) {
     if (message.role === 'user') {
       const text = textOf(message.content);
-      inMemo = text === REFLECTION_REQUEST;
+      inMemo = isReflectionRequest(text);
       if (inMemo) continue;
       prompt ??= text;
       const block = /<events>\n([\s\S]*?)\n<\/events>/.exec(text)?.[1] ?? '';

@@ -114,7 +114,7 @@ ${chosen.length > 0 && html`<a href="${statsHref(period, [])}">既定の 2 つ�
 </form>`;
 }
 
-export function statsPage(view: StatsView, timeZone: string, chosen: readonly TokenName[] = []): Html {
+export function statsPage(view: StatsView, timeZone: string, chosen: readonly TokenName[] = [], avatarId?: string): Html {
   const { whole } = view;
   const main = html`<section id="stats">
 <h2>統計</h2>
@@ -132,7 +132,7 @@ ${tokenPicker(view.period, chosen)}
 ${tokenCharts(chosen).map(chart => renderChart(chart, view, timeZone))}
 ${renderChart(CUT_CHART, view, timeZone)}
 </section>`;
-  return page('統計', main, { signedIn: true, current: '統計' });
+  return page('統計', main, { signedIn: true, current: '統計', avatarId });
 }
 
 function renderChart(chart: Chart, view: StatsView, timeZone: string): Html {

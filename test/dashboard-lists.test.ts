@@ -17,7 +17,7 @@ function waits(overrides: Partial<Waits> = {}): Waits {
       { eventId: 'event-2', kind: 'slack_mention', reason: HOSTILE, createdAt: AT, updatedAt: AT, turnId: null }],
     cutTurns: [{ turnId: 'turn-9', kind: 'events', startedAt: AT, eventKinds: 'mac_message', outcome: 'model-call-limit' }],
     approvals: [{ approvalId: 'approval-1', kind: 'slack-post', createdAt: AT, expiresAt: '2026-01-02T00:00:00.000Z', expired: false,
-      channel: '#架空のチャンネル', placement: 'thread', text: `架空の下書き ${HOSTILE}`, verdict: 'owner', flagged: ['口調'] }],
+      channel: '#架空のチャンネル', placement: 'broadcast', text: `架空の下書き ${HOSTILE}`, verdict: 'owner', flagged: ['口調'] }],
     checks: [{ checkId: 'check-1', reason: `架空の理由 ${HOSTILE}`, dueAt: '2026-01-01T01:00:00.000Z', createdAt: AT }],
     nextRotationAt: '2026-01-01T19:00:00.000Z',
     agentTasks: [{ agent: 'wiki', taskId: 'task-1', state: 'input-required', sentAt: AT, createdAt: AT, updatedAt: AT },
@@ -37,7 +37,7 @@ test('the failures and waits page has every section, links a failure to its turn
   assert.match(text, /href="\/dashboard\/turns\/turn-9"/);
   assert.match(text, /timeout/);
   assert.match(text, /model-call-limit/);
-  assert.match(text, /#架空のチャンネル/);
+  assert.match(text, /#架空のチャンネル <small>チャンネルにも<\/small>/);
   assert.match(text, /口調/);
   assert.match(text, /2026-01-02 09:00:00/, 'the end of the approval, in the time zone');
   assert.match(text, /次の夜の切り替え[\s\S]*2026-01-02 04:00:00/);
@@ -103,7 +103,8 @@ function dovePost(overrides: Partial<DovePostRow> = {}): DovePostRow {
   return {
     postId: 'post-1', kind: 'post', channel: '#架空のチャンネル', reference: '#架空 の発言', text: `架空の下書き ${HOSTILE}`, expression: 'smile',
     verdict: 'owner', scores: [{ label: '口調', score: 0.72, flagged: true }, { label: '事実', score: 0.1, flagged: false }], placement: 'thread',
-    state: 'sent', sentText: '本人が直した文', sentPlacement: 'channel', failure: null, createdAt: AT, updatedAt: AT, ...overrides,
+    state: 'sent', sentText: '本人が直した文', sentPlacement: 'channel', failure: null, createdAt: AT, updatedAt: AT, judges: null,
+    ownerDecision: null, ...overrides,
   };
 }
 
@@ -113,7 +114,7 @@ test('the dove’s posts show the judgement, the scores, the state, where they w
   assert.match(text, /owner/);
   assert.match(text, /口調[^<]*0\.72/);
   assert.match(text, /#架空のチャンネル/);
-  assert.match(text, /thread/);
+  assert.match(text, /投稿先<\/dt><dd>スレッド <small>送った先 チャンネル<\/small>/, 'the places in words (ADR 0062)');
   assert.match(text, /架空の下書き &lt;img/);
   assert.match(text, /本人が直した文/);
   assert.match(text, /2026-01-01 09:00:00/);
@@ -122,6 +123,35 @@ test('the dove’s posts show the judgement, the scores, the state, where they w
   assert.ok(!text.includes('<img src=x'));
   assert.match(text, /href="\/dashboard\/dove"/, 'back to the first page');
   assert.match(text, /aria-current="page">ポッポさん/);
+});
+
+// ADR 0059: the two judges side by side.
+test('a post judged by both judges shows them side by side, the one adopted, the one that decided, and the owner\'s decision', () => {
+  const text = dovePage({ page: 1, more: false, rows: [dovePost({
+    judges: { adopted: 'jev', decidedBy: 'logprobs', jev: { error: `timeout ${HOSTILE}` },
+      logprobs: { verdict: 'owner', scores: [{ label: '私的な事情', score: 0.61, flagged: true }], placement: 'broadcast', probabilities: { thread: 0.2, broadcast: 0.8 } } },
+    ownerDecision: 'edited' })] }, ZONE).text;
+  assert.match(text, /logprobs の判定<\/dt><dd>owner/);
+  assert.match(text, /私的な事情[^<]*0\.61/);
+  assert.match(text, /チャンネルにも 0\.80/);
+  const channel = dovePage({ page: 1, more: false, rows: [dovePost({ judges: { adopted: 'jev', decidedBy: 'jev', logprobs: null,
+    jev: { verdict: 'send', scores: [], placement: 'channel', probabilities: { thread: 0.1, channel: 0.85, broadcast: 0.05 } } } })] }, ZONE).text;
+  assert.match(channel, /<small>チャンネル 0\.85<\/small>/);
+  const unknown = dovePage({ page: 1, more: false, rows: [dovePost({ placement: 'elsewhere', sentPlacement: null })] }, ZONE).text;
+  assert.match(unknown, /投稿先<\/dt><dd>elsewhere/, 'a value it does not know is shown as it is');
+  assert.match(text, /Jev の判定（採用）<\/dt><dd>判定なし <code>timeout &lt;img/);
+  assert.match(text, /決めた方<\/dt><dd>logprobs（採用した方が答えなかった）/);
+  assert.match(text, /本人の判断<\/dt><dd>修正/);
+  assert.ok(!text.includes('<img src=x'));
+});
+
+test('a judge that was off says so, neither answering says the owner decided, and a post from before shows no judges', () => {
+  const text = dovePage({ page: 1, more: false, rows: [dovePost({ verdict: 'no-verdict', scores: [],
+    judges: { adopted: 'logprobs', decidedBy: null, logprobs: { error: 'http-429' }, jev: null } })] }, ZONE).text;
+  assert.match(text, /Jev の判定<\/dt><dd>無効/);
+  assert.match(text, /決めた方<\/dt><dd>どちらも答えなかった（本人へ）/);
+  const before = dovePage({ page: 1, more: false, rows: [dovePost()] }, ZONE).text;
+  assert.doesNotMatch(before, /<dt>決めた方/);
 });
 
 test('the devices page shows each device, whether it is connected, its push, and the sessions by count and last use, and no token', () => {
@@ -190,7 +220,8 @@ test('the approvals show what was asked, what the owner decided, where, when and
   assert.match(text, /架空の人/);
   assert.match(text, /架空の発言 &lt;img/);
   assert.match(text, /本人が直した文 &lt;img/);
-  assert.match(text, /channel/);
+  assert.match(text, /<small>スレッド<\/small>/, 'where it was to go, in words');
+  assert.match(text, /置き場所 チャンネル/);
   assert.match(text, /口調[^<]*0\.72/);
   assert.match(text, /owner/);
   assert.match(text, /2026-01-01 09:00:00/, 'made, in the time zone');

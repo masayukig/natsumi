@@ -37,7 +37,9 @@ export interface ShownMessage {
 export type EventState = 'queued' | 'processing' | 'replied' | 'no-reply' | 'failed';
 export interface PendingEvent { eventId: string; messageId: string; state: EventState }
 
-export type Placement = 'thread' | 'channel';
+/** Where a reply goes (ADR 0062): its thread, the channel itself, or its thread shown in the channel too. */
+export type Placement = 'thread' | 'channel' | 'broadcast';
+export const PLACEMENTS: readonly Placement[] = ['thread', 'channel', 'broadcast'];
 export interface Issue { name: string; label: string; score: number; flagged?: true }
 
 /** A Slack post waiting for the owner (承認と外部実行). */
@@ -51,7 +53,7 @@ export interface Approval {
   text: string;
   expression?: Expression;
   images?: ShownImage[];
-  reason: { verdict: 'owner' | 'no-verdict' | 'rewrite-limit'; issues: Issue[]; placement?: { probabilities: { thread: number; channel: number } } };
+  reason: { verdict: 'owner' | 'no-verdict' | 'rewrite-limit'; issues: Issue[]; placement?: { probabilities: Partial<Record<Placement, number>> } };
   history: { text: string; issues: Issue[] }[];
 }
 
@@ -121,7 +123,7 @@ export function readApproval(value: unknown): Approval | undefined {
   if (!isObject(value) || !isString(value.approvalId) || !isCount(value.revision) || value.kind !== 'slack-post') return undefined;
   if (!isString(value.createdAt) || !isString(value.expiresAt) || !isString(value.text)) return undefined;
   const { target, reason } = value;
-  if (!isObject(target) || !isString(target.channel) || !isOneOf(['thread', 'channel'] as const, target.placement)) return undefined;
+  if (!isObject(target) || !isString(target.channel) || !isOneOf(PLACEMENTS, target.placement)) return undefined;
   const replyTo = target.replyTo;
   if (replyTo !== undefined && !(isObject(replyTo) && isString(replyTo.speaker) && isString(replyTo.at) && isString(replyTo.text))) return undefined;
   if (!isObject(reason) || !isOneOf(['owner', 'no-verdict', 'rewrite-limit'] as const, reason.verdict)) return undefined;
@@ -133,7 +135,9 @@ export function readApproval(value: unknown): Approval | undefined {
   });
   const images = value.images === undefined ? undefined : readList(value.images, readImage);
   if (!issues || !history || (value.images !== undefined && !images)) return undefined;
-  const probabilities = isObject(reason.placement) && isObject(reason.placement.probabilities) ? reason.placement.probabilities : undefined;
+  // The odds of each place the judge was asked about; not every place need be there, and what is no place is dropped.
+  const given = isObject(reason.placement) && isObject(reason.placement.probabilities) ? reason.placement.probabilities : {};
+  const probabilities = Object.fromEntries(PLACEMENTS.flatMap(name => typeof given[name] === 'number' ? [[name, given[name]]] : []));
   return {
     approvalId: value.approvalId, revision: value.revision, kind: 'slack-post', createdAt: value.createdAt, expiresAt: value.expiresAt,
     target: {
@@ -145,8 +149,7 @@ export function readApproval(value: unknown): Approval | undefined {
     ...(images ? { images } : {}),
     reason: {
       verdict: reason.verdict, issues,
-      ...(probabilities && typeof probabilities.thread === 'number' && typeof probabilities.channel === 'number'
-        ? { placement: { probabilities: { thread: probabilities.thread, channel: probabilities.channel } } } : {}),
+      ...(Object.keys(probabilities).length > 0 ? { placement: { probabilities } } : {}),
     },
     history,
   };

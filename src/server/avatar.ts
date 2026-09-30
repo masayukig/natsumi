@@ -10,7 +10,7 @@ import { isWithin } from './paths.ts';
 /**
  * The avatar the server is pointed at (ADR 0057): a directory of `avatar.json` (its ID and display name, and how its
  * sheet is laid out), the sheet, the face of each feeling, the Slack icons, the look she draws herself with and the
- * sdctl params. It is read once, at start, and what it lacks is filled in from the faceless pictures the server
+ * sdctl params, and where her personality starts (ADR 0060). It is read once, at start, and what it lacks is filled in from the faceless pictures the server
  * carries, never from natsumi's. What is written but broken stops the start; what is missing does not.
  *
  * The apps are handed one bundle under fixed names (`pet.json`, `avatar.json`, `spritesheet.<ext>`,
@@ -69,9 +69,14 @@ export interface Avatar {
   appearance?: Appearance;
   /** The sdctl params, as YAML text. */
   sdctlParams: string;
+  /**
+   * `personality.md` as it is: what the memory's personality starts from when it has none (ADR 0060). The server alone
+   * reads it, so it is no part of the bundle.
+   */
+  personality?: string;
   /** What was filled in from the faceless pictures: `spritesheet`, `icons/<feeling>`, `slack/<feeling>`. */
   filled: string[];
-  /** What the server's default stands in for: `pet.json`, `appearance.yaml`, `sdctl-params.yaml`. */
+  /** What the server's default stands in for: `pet.json`, `appearance.yaml`, `sdctl-params.yaml`, `personality.md`. */
   defaults: string[];
   /** The Slack icon of a feeling, or undefined for anything that is not one. */
   slack(expression: string): Buffer | undefined;
@@ -310,6 +315,14 @@ export async function inspectAvatar(directory: string): Promise<AvatarInspection
     if (!isObject(parsed)) errors.push('sdctl-params.yaml: must be a mapping');
   } else defaults.push('sdctl-params.yaml');
 
+  let personality: string | undefined;
+  const character = await readInside(root, 'personality.md');
+  if (character.kind === 'outside') errors.push('personality.md leads outside the directory');
+  if (character.kind === 'ok') {
+    personality = character.data.toString('utf8');
+    if (personality.trim() === '') errors.push('personality.md: must be text');
+  } else defaults.push('personality.md');
+
   if (errors.length > 0) return failed();
   const own = { id: id as string, name: name as string };
   put('avatar.json', jsonFile({ ...own, ...served }), 'application/json');
@@ -319,7 +332,8 @@ export async function inspectAvatar(directory: string): Promise<AvatarInspection
     .update([...files.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, file]) => `${path}\0${file.sha256}\n`).join(''))
     .digest('hex').slice(0, 32);
   const avatar: Avatar = {
-    ...own, directory: root, files, version, ...(appearance ? { appearance } : {}), sdctlParams, filled, defaults,
+    ...own, directory: root, files, version, ...(appearance ? { appearance } : {}), sdctlParams,
+    ...(personality !== undefined ? { personality } : {}), filled, defaults,
     slack: expression => (EXPRESSIONS as readonly string[]).includes(expression) ? slack.get(expression) : undefined,
   };
   return { avatar, errors, filled, defaults };

@@ -95,7 +95,7 @@ test('the threshold of every route is checked against its window when the config
 });
 
 test('the dove\'s judge borrows the default route\'s compatible model, whichever route is in use', () => {
-  const judge = (pi: Record<string, unknown>) => parseConfig(base(pi, { slack: slack() })).slack?.judge;
+  const judge = (pi: Record<string, unknown>) => parseConfig(base(pi, { slack: slack() })).slack?.judge?.logprobs;
   const other = local({ model: { provider: 'natsumi-compatible-b', id: 'fixture-other' },
     compatible: endpoint({ baseUrl: 'https://other.example.test/v1', apiKeyEnv: 'OTHER_KEY' }) });
   const borrowed = judge({ routes: { other, local: local(), plus: plus() }, defaultRoute: 'local' });

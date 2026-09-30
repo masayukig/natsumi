@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderStatus, type DashboardStatus } from '../src/server/dashboard-view.ts';
+import {
+  messagePage, page, refusedPage, renderStatus, signedInPage, signedOutPage, statusPage, type DashboardStatus,
+} from '../src/server/dashboard-view.ts';
+import { html } from '../src/server/html.ts';
 
 const HOSTILE = '<img src=x onerror=alert(1)>';
 
@@ -72,4 +75,21 @@ test('names that came from settings are escaped like everything else', () => {
 test('the running turn links to its detail', () => {
   const text = renderStatus(status()).text;
   assert.match(text, /<a href="\/dashboard\/turns\/turn-running-1">/);
+});
+
+test('the frame of every page is headed by the avatar’s ID, in the header and the title', () => {
+  const text = page('ターン', html`<p>本文</p>`, { signedIn: true, current: 'ターン', avatarId: 'hana' }).text;
+  assert.match(text, /<h1>hana<\/h1>/);
+  assert.match(text, /<title>ターン — hana<\/title>/);
+  assert.doesNotMatch(text, /natsumi<\/(h1|title)>/);
+  assert.match(signedInPage('/dashboard', 'hana').text, /<title>ログインしました — hana<\/title>/);
+  assert.match(signedOutPage('hana').text, /<h1>hana<\/h1>/);
+  assert.match(refusedPage('access_denied', 'hana').text, /<h1>hana<\/h1>/);
+  assert.match(messagePage('見つかりません', true, 'hana').text, /<title>見つかりません — hana<\/title>/);
+  assert.match(statusPage(status(), 'hana').text, /<h1>hana<\/h1>/);
+});
+
+test('without an avatar the frame is headed by the default avatar’s ID', () => {
+  assert.match(page('ターン', html``).text, /<h1>natsumi<\/h1>/);
+  assert.match(signedInPage().text, /<title>ログインしました — natsumi<\/title>/);
 });

@@ -44,7 +44,7 @@ function model(answer: (user: string) => unknown, options: { status?: number; de
 
 /** Yes for the second issue (promise), no for the rest, and the thread for the placement. */
 const typical = (user: string) => {
-  if (user.includes('Options:')) return completion(tops({ A: 0.6, B: 0.2, ' C': 0.01 }));
+  if (user.includes('Options:')) return completion(tops({ A: 0.48, B: 0.16, ' C': 0.12, ' c': 0.04, ' D': 0.2 }));
   if (user.includes(JUDGE_ISSUES[1]!.instructions)) return completion(tops({ ' Yes': 0.72, yes: 0.08, No: 0.2 }));
   return completion(tops({ no: 0.9, 'Yes.': 0.1 }));
 };
@@ -71,10 +71,11 @@ test('each question is one request for one token, without thinking, asking for t
   const users = backend.requests.map(request => request.body.messages[1].content as string);
   for (const issue of JUDGE_ISSUES) assert.ok(users.some(user => user.includes(issue.instructions)), issue.name);
   const placement = users.find(user => user.includes(JUDGE_PLACEMENT.instructions))!;
-  assert.match(placement, /A\) thread: .*\nB\) channel: /);
+  assert.match(placement, /A\) thread: .*\nB\) channel: .*\nC\) broadcast: /);
+  assert.match(placement, /exactly one letter: A, B or C\./);
 });
 
-test('a noul is yes over yes and no, and a choice is its labels made to sum to one', async () => {
+test('a noul is yes over yes and no, and a choice is its three labels made to sum to one, the most likely chosen', async () => {
   const client = new LogprobJudgeClient({ baseUrl: 'https://llm.example.test/v1', model: 'm', fetch: model(typical).fetch });
   const judged = await client.judge(STATE, { placement: true });
   assert.equal(judged.issues.length, JUDGE_ISSUES.length);
@@ -83,8 +84,18 @@ test('a noul is yes over yes and no, and a choice is its labels made to sum to o
   assert.ok(Math.abs(judged.issues[0]!.score - 0.1) < 1e-9);
   assert.equal(judged.issues[0]!.label, JUDGE_ISSUES[0]!.label);
   assert.equal(judged.placement!.choice, 'thread');
-  assert.ok(Math.abs(judged.placement!.probabilities!.thread - 0.75) < 1e-9);
-  assert.ok(Math.abs(judged.placement!.probabilities!.channel - 0.25) < 1e-9);
+  // A letter that is no option (D) counts for none of them.
+  assert.ok(Math.abs(judged.placement!.probabilities!.thread! - 0.6) < 1e-9);
+  assert.ok(Math.abs(judged.placement!.probabilities!.channel! - 0.2) < 1e-9);
+  assert.ok(Math.abs(judged.placement!.probabilities!.broadcast! - 0.2) < 1e-9);
+});
+
+test('the channel itself or the broadcast is chosen when its letter is the most likely', async () => {
+  for (const [answer, choice] of [[{ A: 0.2, B: 0.5, C: 0.3 }, 'channel'], [{ A: 0.2, B: 0.3, C: 0.5 }, 'broadcast']] as const) {
+    const client = new LogprobJudgeClient({ baseUrl: 'https://llm.example.test/v1', model: 'm',
+      fetch: model(user => user.includes('Options:') ? completion(tops(answer)) : typical(user)).fetch });
+    assert.equal((await client.judge(STATE, { placement: true })).placement!.choice, choice);
+  }
 });
 
 test('without a key no Authorization header is sent, and without a message replied to the placement is not asked', async () => {
@@ -128,4 +139,16 @@ test('a judgement that takes longer than its limit is cut off as a whole and is 
   const started = Date.now();
   await assert.rejects(client.judge(STATE, { placement: true }), (error: unknown) => error instanceof JudgeError && error.kind === 'timeout');
   assert.ok(Date.now() - started < 900);
+});
+
+test('told to, the placement is asked with its options the other way round, and the letters are read back to the right place', async () => {
+  const backend = model(typical);
+  const client = new LogprobJudgeClient({ baseUrl: 'https://llm.example.test/v1', model: 'm', fetch: backend.fetch, placementOrder: ['broadcast', 'channel', 'thread'] });
+  const judged = await client.judge(STATE, { placement: true });
+  const placement = backend.requests.map(request => request.body.messages[1].content as string).find(user => user.includes('Options:'))!;
+  assert.match(placement, /A\) broadcast: .*\nB\) channel: .*\nC\) thread: /);
+  assert.equal(judged.placement!.choice, 'broadcast', 'A is the broadcast now');
+  assert.ok(Math.abs(judged.placement!.probabilities!.broadcast! - 0.6) < 1e-9);
+  assert.ok(Math.abs(judged.placement!.probabilities!.channel! - 0.2) < 1e-9);
+  assert.ok(Math.abs(judged.placement!.probabilities!.thread! - 0.2) < 1e-9);
 });

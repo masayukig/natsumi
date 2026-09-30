@@ -9,11 +9,15 @@
  */
 
 export const SETTING_KEYS = ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls',
-  'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes'] as const;
+  'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds'] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
 
 export type Fold = 'on' | 'off';
+/** The dove's two judges (ADR 0059). */
+export type JudgeName = 'logprobs' | 'jev';
+/** A judge's thresholds: at or over `owner` the draft goes to the owner, at or over `return` back to natsumi. */
+export interface JudgeThresholds { owner: number; return: number }
 export interface AwakeHours { start: string; end: string }
 
 /** A value of each setting, as it is kept and shown. */
@@ -30,6 +34,15 @@ export interface SettingValues {
   awakeHours: AwakeHours;
   /** Quiet minutes before a ping, or false for none. */
   pingIntervalMinutes: number | false;
+  /** Whether the dove's logprobs judge is asked (ADR 0059). */
+  judgeLogprobs: Fold;
+  /** Whether the dove's Jev judge is asked (ADR 0059). */
+  judgeJev: Fold;
+  /** The judge whose verdict decides while it has one (ADR 0059). */
+  judgeAdopted: JudgeName;
+  /** Each judge's thresholds (ADR 0059). */
+  judgeLogprobsThresholds: JudgeThresholds;
+  judgeJevThresholds: JudgeThresholds;
 }
 
 /** A route as the owner is shown it (ADR 0046): never its endpoint or its key. */
@@ -50,6 +63,12 @@ export interface SettingsView {
   reviewTimeoutMinutes: SettingItem<number>;
   awakeHours: SettingItem<AwakeHours> & { timeZone: string };
   pingIntervalMinutes: SettingItem<number | false>;
+  /** `available`: whether the config has an endpoint for the judge; without one it cannot be turned on. */
+  judgeLogprobs: SettingItem<Fold> & { available: boolean };
+  judgeJev: SettingItem<Fold> & { available: boolean };
+  judgeAdopted: SettingItem<JudgeName>;
+  judgeLogprobsThresholds: SettingItem<JudgeThresholds>;
+  judgeJevThresholds: SettingItem<JudgeThresholds>;
 }
 
 /** The limits of one turn, as the thinking loop reads them before it starts one. */
@@ -67,6 +86,20 @@ const CLOCK_TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 export const isSettingKey = (key: unknown): key is SettingKey => (SETTING_KEYS as readonly unknown[]).includes(key);
 export const isFold = (value: unknown): value is Fold => value === 'on' || value === 'off';
+export const isJudgeName = (value: unknown): value is JudgeName => value === 'logprobs' || value === 'jev';
+/** The setting that turns each judge on or off. */
+export const JUDGE_SETTINGS = { logprobs: 'judgeLogprobs', jev: 'judgeJev' } as const;
+/** A threshold as the config takes it: over 0 and at most 1. */
+export const isThreshold = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1;
+
+/** Two thresholds, owner not over return, and nothing else, as the config takes them. */
+export function thresholdsOf(value: unknown): JudgeThresholds | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const pair = value as Record<string, unknown>;
+  if (Object.keys(pair).some(key => key !== 'owner' && key !== 'return')) return undefined;
+  if (!isThreshold(pair.owner) || !isThreshold(pair.return) || pair.owner > pair.return) return undefined;
+  return { owner: pair.owner, return: pair.return };
+}
 /** A limit of a turn: calls or minutes, a positive integer. */
 export const isTurnLimit = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
 export const isPingInterval = (value: unknown): value is number | false =>
@@ -96,8 +129,14 @@ export function checkSetting(key: string, value: unknown): SettingCheck {
   switch (key) {
     case 'modelRoute':
       return typeof value === 'string' && ROUTE_NAME.test(value) ? { ok: true, key, value } : invalid;
-    case 'turnFold':
+    case 'turnFold': case 'judgeLogprobs': case 'judgeJev':
       return isFold(value) ? { ok: true, key, value } : invalid;
+    case 'judgeAdopted':
+      return isJudgeName(value) ? { ok: true, key, value } : invalid;
+    case 'judgeLogprobsThresholds': case 'judgeJevThresholds': {
+      const thresholds = thresholdsOf(value);
+      return thresholds ? { ok: true, key, value: thresholds } : invalid;
+    }
     case 'eventModelCalls': case 'eventTimeoutMinutes': case 'reviewModelCalls': case 'reviewTimeoutMinutes':
       return isTurnLimit(value) ? { ok: true, key, value } : invalid;
     case 'awakeHours': {
@@ -116,7 +155,7 @@ const isRouteView = (value: unknown): value is RouteView => typeof value === 'ob
 
 /**
  * The list as it came over the wire, or undefined when it is not the contract's: every setting there, each value and
- * config's value keeping the setting's rules (a route's name its shape), and the extra fields of the three that have them.
+ * config's value keeping the setting's rules (a route's name its shape), and the extra fields of the five that have them.
  */
 export function readSettingsView(value: unknown): SettingsView | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
@@ -125,7 +164,7 @@ export function readSettingsView(value: unknown): SettingsView | undefined {
   for (const key of SETTING_KEYS) {
     const item = list[key];
     if (typeof item !== 'object' || item === null) return undefined;
-    const { value: current, config, overridden, inUse, routes, timeZone } = item as Record<string, unknown>;
+    const { value: current, config, overridden, inUse, routes, timeZone, available } = item as Record<string, unknown>;
     const valueCheck = checkSetting(key, current);
     const configCheck = checkSetting(key, config);
     if (!valueCheck.ok || !configCheck.ok || typeof overridden !== 'boolean') return undefined;
@@ -140,6 +179,9 @@ export function readSettingsView(value: unknown): SettingsView | undefined {
     } else if (key === 'awakeHours') {
       if (typeof timeZone !== 'string') return undefined;
       read.timeZone = timeZone;
+    } else if (key === 'judgeLogprobs' || key === 'judgeJev') {
+      if (typeof available !== 'boolean') return undefined;
+      read.available = available;
     }
     view[key] = read;
   }

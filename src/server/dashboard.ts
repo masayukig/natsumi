@@ -68,6 +68,8 @@ export interface DashboardOptions {
   manualDirectory?: string;
   /** The avatar's display name, in the dashboard's words (ADR 0057). natsumi's when left out. */
   name?: string;
+  /** The avatar's ID, heading every page (ADR 0057). natsumi's when left out. */
+  avatarId?: string;
   /** The state database, read for the turns' rows and the session files the conversation used (ADR 0049). */
   db: DatabaseSync;
   /** Where the Pi session records are; nothing outside it is opened. */
@@ -119,16 +121,16 @@ export class Dashboard {
     const type = STATIC_TYPES[path];
     if (path.startsWith('/dashboard/static/')) {
       const file = type && method === 'GET' ? await staticFile(path) : undefined;
-      if (!file) return send(response, 404, messagePage('見つかりません'));
+      if (!file) return send(response, 404, this.message('見つかりません'));
       response.writeHead(200, { 'content-type': type, 'content-length': file.length }).end(file);
       return;
     }
-    if (path === SIGNED_OUT_PATH && method === 'GET') return send(response, 200, signedOutPage());
+    if (path === SIGNED_OUT_PATH && method === 'GET') return send(response, 200, signedOutPage(this.options.avatarId));
     if (path === LOGOUT_PATH) {
-      if (method !== 'POST') return send(response, 405, messagePage('この方法では受け付けていません'), { allow: 'POST' });
+      if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
       return this.logout(request, response);
     }
-    if (method !== 'GET') return send(response, 405, messagePage('この方法では受け付けていません'), { allow: 'GET' });
+    if (method !== 'GET') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'GET' });
 
     // The one place the old cookie is still sent, and read, to be replaced by the new one.
     const { browser } = this.options;
@@ -136,40 +138,40 @@ export class Dashboard {
     if (!session) {
       const cleared: Headers = browser.presented(request) ? { 'set-cookie': browser.cleared() } : {};
       // A refreshed section is fetched by the script, which cannot follow a login; it reloads the page instead.
-      if (REFRESHED_PATHS.has(path)) return send(response, 401, messagePage('ログインが切れました'), cleared);
+      if (REFRESHED_PATHS.has(path)) return send(response, 401, this.message('ログインが切れました'), cleared);
       const outcome = this.options.login.startBrowser();
       if ('location' in outcome) {
         response.writeHead(302, { location: outcome.location, ...cleared }).end();
         return;
       }
-      return send(response, outcome.status, refusedPage(String(outcome.body.error)), cleared);
+      return send(response, outcome.status, refusedPage(String(outcome.body.error), this.options.avatarId), cleared);
     }
     const renewed: Headers = { 'set-cookie': browser.renewed(session) };
-    if (path === DASHBOARD_PATH) return send(response, 200, statusPage(await this.status()), renewed);
+    if (path === DASHBOARD_PATH) return send(response, 200, statusPage(await this.status(), this.options.avatarId), renewed);
     if (path === STATUS_PATH) return send(response, 200, renderStatus(await this.status()), renewed);
     if (path === TURNS_PATH) return this.turns(response, url, renewed);
-    if (path === WAITS_PATH) return send(response, 200, waitsPage(this.waits(), this.options.timeZone), renewed);
+    if (path === WAITS_PATH) return send(response, 200, waitsPage(this.waits(), this.options.timeZone, this.options.avatarId), renewed);
     if (path === WAITS_LIVE_PATH) return send(response, 200, renderWaits(this.waits(), this.options.timeZone), renewed);
     if (path === MEMOS_PATH) return this.memos(response, url, renewed);
     if (path === DOVE_PATH) return this.dove(response, url, renewed);
     if (path === APPROVALS_PATH) return this.approvals(response, url, renewed);
     if (path === DEVICES_PATH) {
       const view = readDevices(this.options.db, { now: this.options.now(), isConnected: this.options.isConnected });
-      return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone), renewed);
+      return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone, this.options.avatarId), renewed);
     }
     if (path === STATS_PATH) return this.stats(response, url, renewed);
-    if (path === FILES_PATH) return send(response, 200, filesIndexPage(this.options.name), renewed);
+    if (path === FILES_PATH) return send(response, 200, filesIndexPage(this.options.name, this.options.avatarId), renewed);
     if (path.startsWith(`${FILES_PATH}/`)) return this.files(response, url, renewed);
     const turn = TURN_ROUTE.exec(path);
     if (turn) return this.turn(response, turn[1]!, turn[2] === undefined ? undefined : Number(turn[2]), renewed);
-    send(response, 404, messagePage('見つかりません', true), renewed);
+    send(response, 404, this.message('見つかりません', true), renewed);
   }
 
   /** The list of turns, from SQLite alone, a page at a time. */
   private turns(response: ServerResponse, url: URL, headers: Headers): void {
     const page = pageNumber(url);
-    if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
-    send(response, 200, turnsPage({ ...listTurns(this.options.db, page), page }, this.options.timeZone), headers);
+    if (page === 0) return send(response, 404, this.message('見つかりません', true), headers);
+    send(response, 200, turnsPage({ ...listTurns(this.options.db, page), page }, this.options.timeZone, this.options.avatarId), headers);
   }
 
   private waits() {
@@ -183,27 +185,27 @@ export class Dashboard {
    */
   private async memos(response: ServerResponse, url: URL, headers: Headers): Promise<void> {
     const page = pageNumber(url);
-    if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
+    if (page === 0) return send(response, 404, this.message('見つかりません', true), headers);
     const { rows, more } = listMemoTurns(this.options.db, page);
     const source = { db: this.options.db, sessionDirectory: this.options.sessionDirectory };
     const memos = [];
     for (const row of rows) memos.push({ row, memo: await readMemo(source, row) });
-    send(response, 200, memosPage({ page, more, memos }, this.options.timeZone), headers);
+    send(response, 200, memosPage({ page, more, memos }, this.options.timeZone, this.options.avatarId), headers);
   }
 
   private dove(response: ServerResponse, url: URL, headers: Headers): void {
     const page = pageNumber(url);
-    if (page === 0) return send(response, 404, messagePage('見つかりません', true), headers);
-    send(response, 200, dovePage({ ...listDovePosts(this.options.db, page), page }, this.options.timeZone, this.options.name), headers);
+    if (page === 0) return send(response, 404, this.message('見つかりません', true), headers);
+    send(response, 200, dovePage({ ...listDovePosts(this.options.db, page), page }, this.options.timeZone, this.options.name, this.options.avatarId), headers);
   }
 
   /** The charts of a period, from `turn_stats` alone and counted by SQLite (ADR 0049), with the series of tokens chosen. */
   private stats(response: ServerResponse, url: URL, headers: Headers): void {
     const period = statsPeriod(url);
     const tokens = statsTokens(url);
-    if (!period || !tokens) return send(response, 404, messagePage('見つかりません', true), headers);
+    if (!period || !tokens) return send(response, 404, this.message('見つかりません', true), headers);
     const { db, now, timeZone } = this.options;
-    send(response, 200, statsPage(readStats(db, { period, now: now(), timeZone }), timeZone, tokens), headers);
+    send(response, 200, statsPage(readStats(db, { period, now: now(), timeZone }), timeZone, tokens, this.options.avatarId), headers);
   }
 
   /** The approvals, all or those of one outcome; an outcome not in the list is not a page. */
@@ -211,14 +213,14 @@ export class Dashboard {
     const page = pageNumber(url);
     const asked = url.searchParams.getAll('state');
     const state = asked.length === 1 && (APPROVAL_STATES as readonly string[]).includes(asked[0]!) ? asked[0] as ApprovalState : undefined;
-    if (page === 0 || asked.length > 1 || (asked.length === 1 && state === undefined)) return send(response, 404, messagePage('見つかりません', true), headers);
+    if (page === 0 || asked.length > 1 || (asked.length === 1 && state === undefined)) return send(response, 404, this.message('見つかりません', true), headers);
     const list = listApprovals(this.options.db, { page, now: this.options.now(), ...(state ? { state } : {}) });
-    send(response, 200, approvalsPage({ ...list, page, ...(state ? { state } : {}) }, this.options.timeZone), headers);
+    send(response, 200, approvalsPage({ ...list, page, ...(state ? { state } : {}) }, this.options.timeZone, this.options.avatarId), headers);
   }
 
   /** A turn read from the session record, recorded or still running; or one of its images. */
   private async turn(response: ServerResponse, turnId: string, image: number | undefined, headers: Headers): Promise<void> {
-    const notFound = () => send(response, 404, messagePage('見つかりません', true), headers);
+    const notFound = () => send(response, 404, this.message('見つかりません', true), headers);
     if (!TURN_ID.test(turnId)) return notFound();
     const source = { db: this.options.db, sessionDirectory: this.options.sessionDirectory };
     const row = findTurn(this.options.db, turnId);
@@ -226,7 +228,7 @@ export class Dashboard {
     const inProgress = running?.turnId === turnId ? running : undefined;
     if (!row && !inProgress) return notFound();
     const reading = await readTurn(source, row ? { row } : { inProgress: inProgress! });
-    if (image === undefined) return send(response, 200, turnPage({ ...(row ? { row } : { inProgress }), reading }, this.options.timeZone), headers);
+    if (image === undefined) return send(response, 200, turnPage({ ...(row ? { row } : { inProgress }), reading }, this.options.timeZone, this.options.avatarId), headers);
     const picture = reading.found ? turnImages(reading.entries)[image] : undefined;
     if (!picture || !IMAGE_TYPES.has(picture.mimeType)) return notFound();
     const body = Buffer.from(picture.data, 'base64');
@@ -240,10 +242,10 @@ export class Dashboard {
   private async files(response: ServerResponse, url: URL, headers: Headers): Promise<void> {
     const location = locate(url.pathname);
     const query = fileQuery(url);
-    if (!location || !query) return send(response, 404, messagePage('見つかりません', true), headers);
+    if (!location || !query) return send(response, 404, this.message('見つかりません', true), headers);
     const roots = await this.fileRoots();
     const refused = (reason: Parameters<typeof refusedFilePage>[0]['reason'], target?: string) =>
-      send(response, 404, refusedFilePage({ location, reason, ...(target === undefined ? {} : { target }) }, this.options.name), headers);
+      send(response, 404, refusedFilePage({ location, reason, ...(target === undefined ? {} : { target }) }, this.options.name, this.options.avatarId), headers);
     if (query.download || query.image) {
       const opened = await openFile(roots, location);
       if (opened.kind === 'refused') return refused(opened.reason, opened.target);
@@ -255,7 +257,7 @@ export class Dashboard {
         mimeType = imageType(head.subarray(0, bytesRead));
         if (!mimeType) {
           await handle.close();
-          return send(response, 404, messagePage('見つかりません', true), headers);
+          return send(response, 404, this.message('見つかりません', true), headers);
         }
       }
       response.writeHead(200, {
@@ -269,14 +271,14 @@ export class Dashboard {
     const found = await look(roots, location);
     if (found.kind === 'refused') return refused(found.reason, found.target);
     if (found.kind === 'directory') {
-      if (query.raw || !query.listing) return send(response, 404, messagePage('見つかりません', true), headers);
+      if (query.raw || !query.listing) return send(response, 404, this.message('見つかりません', true), headers);
       const listed = listDirectory(found, query.listing);
-      return send(response, 200, directoryPage({ location, view: query.listing, ...listed }, this.options.timeZone), headers);
+      return send(response, 200, directoryPage({ location, view: query.listing, ...listed }, this.options.timeZone, this.options.avatarId), headers);
     }
     const head = await readHead(roots, location, TEXT_LIMIT);
     if (head.kind === 'refused') return refused(head.reason, head.target);
     const content = classify(head.head, head.size, TEXT_LIMIT);
-    send(response, 200, filePage({ location, size: head.size, mtimeMs: head.mtimeMs, content, raw: query.raw }, this.options.timeZone), headers);
+    send(response, 200, filePage({ location, size: head.size, mtimeMs: head.mtimeMs, content, raw: query.raw }, this.options.timeZone, this.options.avatarId), headers);
   }
 
   private async fileRoots(): Promise<FileRoots> {
@@ -291,10 +293,10 @@ export class Dashboard {
   /** The callback's answer to a browser's login, which goes back to the page it began at (ADR 0058). */
   finishLogin(response: ServerResponse, outcome: BrowserOutcome): void {
     setSecurityHeaders(response);
-    if (outcome.browser === 'refused') return send(response, outcome.status, refusedPage(outcome.code));
+    if (outcome.browser === 'refused') return send(response, outcome.status, refusedPage(outcome.code, this.options.avatarId));
     // Not a redirect: a Strict cookie is not sent on a navigation that began at GitHub, and a redirect carries that
     // navigation on. A page of this origin that moves on starts a navigation of its own, which the cookie goes with.
-    send(response, 200, signedInPage(outcome.returnTo), { 'set-cookie': this.options.browser.issued(outcome.session) });
+    send(response, 200, signedInPage(outcome.returnTo, this.options.avatarId), { 'set-cookie': this.options.browser.issued(outcome.session) });
   }
 
   /** Whether a callback outcome is one of the dashboard's. */
@@ -304,11 +306,16 @@ export class Dashboard {
 
   private logout(request: IncomingMessage, response: ServerResponse): void {
     // The CSRF check (ADR 0049): a form of this origin sends its Origin with a POST; anything else is refused.
-    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, messagePage('ログアウトできませんでした'));
+    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, this.message('ログアウトできませんでした'));
     const { browser, sessions } = this.options;
     const session = browser.session(request, { legacy: true });
     if (session) sessions.revoke(session.token);
     response.writeHead(303, { location: SIGNED_OUT_PATH, 'set-cookie': browser.cleared() }).end();
+  }
+
+  /** A short answer of the dashboard's, headed like its other pages. */
+  private message(heading: string, signedIn = false): Html {
+    return messagePage(heading, signedIn, this.options.avatarId);
   }
 
   private async status(): Promise<DashboardStatus> {

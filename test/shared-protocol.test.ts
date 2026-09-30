@@ -18,6 +18,11 @@ const settings = {
   reviewTimeoutMinutes: { value: 30, config: 30, overridden: false },
   awakeHours: { value: { start: '07:00', end: '23:00' }, config: { start: '07:00', end: '23:00' }, overridden: false, timeZone: 'Asia/Tokyo' },
   pingIntervalMinutes: { value: false, config: 180, overridden: true },
+  judgeLogprobs: { value: 'on', config: 'on', overridden: false, available: true },
+  judgeJev: { value: 'on', config: 'off', overridden: true, available: true },
+  judgeAdopted: { value: 'jev', config: 'logprobs', overridden: true },
+  judgeLogprobsThresholds: { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false },
+  judgeJevThresholds: { value: { owner: 0.6, return: 0.95 }, config: { owner: 0.5, return: 0.9 }, overridden: true },
 };
 
 test('a message is read with its place in the stream, its request and its fields', () => {
@@ -63,6 +68,25 @@ test('an approval keeps what the owner is shown of it', () => {
   assert.deepEqual(readEnvelope(envelope('approval.pending', approval))?.event, { type: 'approval.pending', approval });
 });
 
+test('an approval is placed in one of three places, and its odds keep the places named and drop what is not one (ADR 0062)', () => {
+  const approval = (placement: string, probabilities?: Record<string, unknown>) => ({
+    approvalId: 'a1', revision: 1, kind: 'slack-post', createdAt: 't0', expiresAt: 't1',
+    target: { channel: 'work/#dev', placement, replyTo: { speaker: '山田', at: '2026-09-25 14:32:05', text: '明日？' } },
+    text: '大丈夫です。', reason: { verdict: 'owner', issues: [], ...(probabilities ? { placement: { probabilities } } : {}) }, history: [],
+  });
+  const read = (value: unknown) => {
+    const event = readEnvelope(envelope('approval.pending', value))?.event;
+    return event?.type === 'approval.pending' ? event.approval : undefined;
+  };
+  for (const placement of ['thread', 'channel', 'broadcast']) assert.equal(read(approval(placement))?.target.placement, placement);
+  assert.equal(read(approval('elsewhere')), undefined);
+  assert.deepEqual(read(approval('broadcast', { thread: 0.1, channel: 0.2, broadcast: 0.7 }))?.reason.placement,
+    { probabilities: { thread: 0.1, channel: 0.2, broadcast: 0.7 } });
+  assert.deepEqual(read(approval('thread', { thread: 0.8, broadcast: 0.2, elsewhere: 0.5, channel: 'x' }))?.reason.placement,
+    { probabilities: { thread: 0.8, broadcast: 0.2 } }, 'not every place need be there');
+  assert.equal(read(approval('thread', { elsewhere: 1 }))?.reason.placement, undefined);
+});
+
 test('the answers to commands and the other events are read too', () => {
   const event = (type: string, payload: unknown) => readEnvelope(envelope(type, payload))?.event;
   assert.deepEqual(event('command.accepted', { messageId: 'm1', eventId: 'e1', state: 'queued' }),
@@ -88,6 +112,9 @@ test('an event it does not know, or one whose payload is not the contract’s, s
   assert.deepEqual(readEnvelope(envelope('model.routes', {})), { position: { epoch: 'epoch-1', streamId: 'stream-1', seq: 3 }, event: { type: 'ignored' } });
   assert.deepEqual(readEnvelope(envelope('conversation.message', { text: 1 }))?.event, { type: 'ignored' });
   assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, turnFold: { value: 'sometimes' } } }))?.event, { type: 'ignored' });
+  const { available: _available, ...withoutAvailable } = settings.judgeJev;
+  assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, judgeJev: withoutAvailable } }))?.event, { type: 'ignored' },
+    'a judge is listed with whether it can be turned on');
 });
 
 test('what is not an envelope at all is not read', () => {

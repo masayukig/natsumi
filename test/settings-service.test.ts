@@ -18,6 +18,8 @@ const NOW = Date.parse('2026-09-29T03:00:00.000Z');
 const DEFAULTS: SettingsDefaults = {
   turnFold: 'off', eventModelCalls: 8, eventTimeoutMinutes: 10, reviewModelCalls: 40, reviewTimeoutMinutes: 30,
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180, timeZone: 'Asia/Tokyo',
+  judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs', judgeAvailable: { logprobs: true, jev: true },
+  judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.6, return: 0.95 },
 };
 
 /** The loop's side of the routes and the fold, as a stand-in: what it chose, where it is, and what is ready. */
@@ -56,14 +58,14 @@ class FakeRoutes implements RouteControl {
 }
 
 async function withSettings(fn: (context: { settings: RuntimeSettings; routes: FakeRoutes; data: string; logs: string[];
-  events: Record<string, any>[] }) => Promise<void>, prepare?: (state: string) => Promise<void>) {
+  events: Record<string, any>[] }) => Promise<void>, prepare?: (state: string) => Promise<void>, defaults: SettingsDefaults = DEFAULTS) {
   const data = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-settings-service-')));
   const state = join(data, STATE_DIRECTORY);
   await mkdir(state, { mode: 0o700 });
   await prepare?.(state);
   const routes = new FakeRoutes(data);
   const logs: string[] = [];
-  const settings = await RuntimeSettings.open({ dataDirectory: data, defaults: DEFAULTS, routes, now: () => NOW, log: line => logs.push(line) });
+  const settings = await RuntimeSettings.open({ dataDirectory: data, defaults, routes, now: () => NOW, log: line => logs.push(line) });
   const events: Record<string, any>[] = [];
   settings.subscribe(event => events.push(event));
   try { await fn({ settings, routes, data, logs, events }); } finally { await rm(data, { recursive: true, force: true }); }
@@ -207,4 +209,42 @@ test('changes from two devices at once are written one after the other, and neit
     settings.set({ key: 'pingIntervalMinutes', value: 60, deviceId: 'c' }),
   ]);
   assert.deepEqual((await readOverrides(data)).values, { eventModelCalls: 11, reviewModelCalls: 44, pingIntervalMinutes: 60 });
+}));
+
+// ADR 0059: which of the dove's judges are on, and which one decides.
+test('the judges are listed with whether the config has an endpoint for each, and are in force for the next draft', () => withSettings(async ({ settings }) => {
+  const view = settings.view();
+  assert.deepEqual(view.judgeLogprobs, { value: 'on', config: 'on', overridden: false, available: true });
+  assert.deepEqual(view.judgeJev, { value: 'off', config: 'off', overridden: false, available: true });
+  assert.deepEqual(view.judgeAdopted, { value: 'logprobs', config: 'logprobs', overridden: false });
+  assert.deepEqual({ ...settings.judges(), thresholds: undefined }, { logprobs: true, jev: false, adopted: 'logprobs', thresholds: undefined });
+  await settings.set({ key: 'judgeJev', value: 'on', deviceId: 'd' });
+  await settings.set({ key: 'judgeAdopted', value: 'jev', deviceId: 'd' });
+  await settings.set({ key: 'judgeLogprobs', value: 'off', deviceId: 'd' });
+  assert.deepEqual({ ...settings.judges(), thresholds: undefined }, { logprobs: false, jev: true, adopted: 'jev', thresholds: undefined });
+  await settings.reset({ key: 'judgeLogprobs', deviceId: 'd' });
+  assert.deepEqual({ ...settings.judges(), thresholds: undefined }, { logprobs: true, jev: true, adopted: 'jev', thresholds: undefined });
+}));
+
+test('a judge the config has no endpoint for cannot be turned on, and one turned on before stays off in force', () => withSettings(async ({ settings, data }) => {
+  assert.deepEqual(settings.view().judgeJev, { value: 'on', config: 'off', overridden: true, available: false });
+  assert.deepEqual({ ...settings.judges(), thresholds: undefined }, { logprobs: true, jev: false, adopted: 'logprobs', thresholds: undefined }, 'on in the file, yet there is nothing to ask');
+  assert.deepEqual(await settings.set({ key: 'judgeJev', value: 'on', deviceId: 'd' }), { kind: 'rejected', code: 'judge-unavailable' });
+  assert.equal((await settings.set({ key: 'judgeJev', value: 'off', deviceId: 'd' })).kind, 'accepted', 'off is always taken');
+  assert.deepEqual((await readOverrides(data)).values, { judgeJev: 'off' });
+  // Adopting a judge that is not there is taken: the other decides while it has no answer, as when it is off.
+  assert.equal((await settings.set({ key: 'judgeAdopted', value: 'jev', deviceId: 'd' })).kind, 'accepted');
+}, async state => {
+  await writeFile(join(state, RUNTIME_SETTINGS_FILE), JSON.stringify({ overrides: { judgeJev: 'on' } }));
+}, { ...DEFAULTS, judgeAvailable: { logprobs: true, jev: false } }));
+
+test('each judge\'s thresholds are the config\'s until overridden, and are read for the next draft (ADR 0059)', () => withSettings(async ({ settings, data }) => {
+  assert.deepEqual(settings.view().judgeJevThresholds, { value: { owner: 0.6, return: 0.95 }, config: { owner: 0.6, return: 0.95 }, overridden: false });
+  assert.deepEqual(settings.judges().thresholds, { logprobs: { owner: 0.5, return: 0.9 }, jev: { owner: 0.6, return: 0.95 } });
+  await settings.set({ key: 'judgeJevThresholds', value: { owner: 0.7, return: 0.99 }, deviceId: 'd' });
+  assert.deepEqual(settings.judges().thresholds.jev, { owner: 0.7, return: 0.99 });
+  assert.deepEqual((await readOverrides(data)).values, { judgeJevThresholds: { owner: 0.7, return: 0.99 } });
+  assert.deepEqual(await settings.set({ key: 'judgeJevThresholds', value: { owner: 0.99, return: 0.7 }, deviceId: 'd' }), { kind: 'rejected', code: 'invalid-value' });
+  await settings.reset({ key: 'judgeJevThresholds', deviceId: 'd' });
+  assert.deepEqual(settings.judges().thresholds.jev, { owner: 0.6, return: 0.95 });
 }));

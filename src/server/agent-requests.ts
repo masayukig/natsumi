@@ -98,7 +98,7 @@ export class AgentRequests {
         return { ok: false, text: `頼めませんでした。「${agent}」が前のやり取りに続けることを受け付けませんでした。新しく頼むなら continue を false にしてください。` };
       }
       if (kind === 'refused') return { ok: false, text: `頼めませんでした。「${agent}」が受け付けませんでした。` };
-      return { ok: false, text: `頼めませんでした。「${agent}」につながりません。時間をおいてもう一度頼むか、急ぎなら本人に伝えてください。` };
+      return { ok: false, text: `頼めませんでした。「${agent}」につながりません。時間をおいてもう一度頼むか、急ぎならマスターに伝えてください。` };
     }
     if (this.closed) return { ok: false, text: '頼んだかどうか分かりません。サーバーが止まるところです。' };
     this.record(agent, sent);

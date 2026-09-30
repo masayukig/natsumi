@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import type { Fold } from './fold-setting.ts';
 import { isoAt } from './nightly.ts';
-import { REFLECTION_REQUEST } from './prompts.ts';
+import { isReflectionRequest } from './prompts.ts';
 import { openStateDatabase } from './state-db.ts';
 
 /**
@@ -213,7 +213,7 @@ async function listMemos(cli: Extract<StatsCommand, { memos: number }>, write: (
       try { entry = JSON.parse(line); } catch { continue; }
       if (entry.type !== 'message' || !entry.message) continue;
       const text = textOf(entry.message.content).trim();
-      if (entry.message.role === 'user') { asked = text === REFLECTION_REQUEST; continue; }
+      if (entry.message.role === 'user') { asked = isReflectionRequest(text); continue; }
       if (entry.message.role !== 'assistant' || !asked) continue;
       asked = false;
       if (text) memos.push({ at: entry.timestamp ?? '', text: text.replace(/\s+/g, ' ') });

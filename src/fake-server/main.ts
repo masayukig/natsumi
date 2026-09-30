@@ -83,7 +83,8 @@ interface Issue {
   flagged?: true;
 }
 
-type Placement = 'thread' | 'channel';
+/** Where a reply goes (ADR 0062): its thread, the channel itself, or its thread shown in the channel too. */
+type Placement = 'thread' | 'channel' | 'broadcast';
 
 interface Approval {
   approvalId: string;
@@ -98,7 +99,7 @@ interface Approval {
   reason: {
     verdict: 'owner' | 'no-verdict' | 'rewrite-limit';
     issues: Issue[];
-    placement?: { probabilities: { thread: number; channel: number } };
+    placement?: { probabilities: Partial<Record<Placement, number>> };
   };
   history: { text: string; issues: Issue[] }[];
 }
@@ -118,7 +119,11 @@ const ROUTES: RouteView[] = [
 const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
   turnFold: 'off', eventModelCalls: 8, eventTimeoutMinutes: 10, reviewModelCalls: 40, reviewTimeoutMinutes: 30,
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
+  judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs',
+  judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.5, return: 0.9 },
 };
+/** Which of the dove's judges the made-up config has an endpoint for: Jev has none, so it cannot be turned on (ADR 0059). */
+const JUDGE_AVAILABLE = { judgeLogprobs: true, judgeJev: false };
 
 interface ClientEnvelope {
   requestId: string;
@@ -163,7 +168,7 @@ function startingApprovals(): Approval[] {
       reason: {
         verdict: 'rewrite-limit',
         issues: [promise, { name: 'not-in-thread', label: 'スレッドに無い情報', score: 0.12 }, { name: 'false-claim', label: '事実と違う説明', score: 0.05 }],
-        placement: { probabilities: { thread: 0.8, channel: 0.2 } },
+        placement: { probabilities: { thread: 0.8, channel: 0.15, broadcast: 0.05 } },
       },
       history: [
         { text: '明日なら何時でも大丈夫です！', issues: [{ ...promise, score: 0.91 }] },
@@ -185,14 +190,15 @@ function laterApproval(): Approval {
   return {
     approvalId: 'approval-dm', revision: 1, kind: 'slack-post', createdAt: new Date().toISOString(), expiresAt: fromNow(7),
     target: {
-      channel: 'work/@佐藤', placement: 'thread',
+      channel: 'work/@佐藤', placement: 'broadcast',
       replyTo: { speaker: '佐藤', at: '2026-09-26 09:05:12', text: '来週の件、先方に日程を伝えてもいいですか？' },
     },
     text: 'はい、来週の水曜で先方に伝えてください。', expression: 'neutral',
     reason: {
       verdict: 'owner',
       issues: [{ ...promise, score: 0.64 }, { name: 'not-in-thread', label: 'スレッドに無い情報', score: 0.58, flagged: true }],
-      placement: { probabilities: { thread: 0.55, channel: 0.45 } },
+      // Odds as a judge from before the three places gave them: two places, not three.
+      placement: { probabilities: { thread: 0.45, broadcast: 0.55 } },
     },
     history: [],
   };
@@ -259,6 +265,9 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       eventModelCalls: item('eventModelCalls'), eventTimeoutMinutes: item('eventTimeoutMinutes'),
       reviewModelCalls: item('reviewModelCalls'), reviewTimeoutMinutes: item('reviewTimeoutMinutes'),
       awakeHours: { ...item('awakeHours'), timeZone: 'Asia/Tokyo' }, pingIntervalMinutes: item('pingIntervalMinutes'),
+      judgeLogprobs: { ...item('judgeLogprobs'), available: JUDGE_AVAILABLE.judgeLogprobs },
+      judgeJev: { ...item('judgeJev'), available: JUDGE_AVAILABLE.judgeJev }, judgeAdopted: item('judgeAdopted'),
+      judgeLogprobsThresholds: item('judgeLogprobsThresholds'), judgeJevThresholds: item('judgeJevThresholds'),
     };
   }
 
@@ -331,7 +340,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     if (typeof approvalId !== 'string' || typeof revision !== 'number' || !Number.isInteger(revision)) return reject('invalid-request');
     if (decision !== 'approve' && decision !== 'edit' && decision !== 'reject') return reject('invalid-request');
     if (decision === 'edit' && (typeof text !== 'string' || text.trim() === '')) return reject('invalid-request');
-    if (placement !== undefined && placement !== 'thread' && placement !== 'channel') return reject('invalid-request');
+    if (placement !== undefined && placement !== 'thread' && placement !== 'channel' && placement !== 'broadcast') return reject('invalid-request');
 
     const already = closed.get(approvalId);
     if (already) {
@@ -369,6 +378,9 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     } else {
       const checked = checkSetting(key, value);
       if (!checked.ok) return reject(checked.code);
+      if ((checked.key === 'judgeLogprobs' || checked.key === 'judgeJev') && checked.value === 'on' && !JUDGE_AVAILABLE[checked.key]) {
+        return reject('judge-unavailable');
+      }
       if (checked.key === 'modelRoute') {
         const route = ROUTES.find((r) => r.name === checked.value);
         if (!route) return reject('unknown-route');

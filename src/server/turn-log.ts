@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { REFLECTION_REQUEST } from './prompts.ts';
+import { isReflectionRequest } from './prompts.ts';
 import type { TurnInProgress } from './thinking-loop.ts';
 import { turnKind, type TurnKind, type TurnPlace } from './turn-stats.ts';
 
@@ -134,7 +134,7 @@ export async function readMemo(source: TurnSource, row: TurnRow): Promise<MemoRe
     if (entries.length === 0 && !whole) continue;
     if (entries.at(-1)?.id !== place.lastEntryId) return { found: false, reason: 'moved' };
     const asked = entries.findLastIndex(entry => entry.type === 'message'
-      && (entry.message as { role?: string } | undefined)?.role === 'user' && contentText((entry.message as { content?: unknown }).content) === REFLECTION_REQUEST);
+      && (entry.message as { role?: string } | undefined)?.role === 'user' && isReflectionRequest(contentText((entry.message as { content?: unknown }).content)));
     if (asked >= 0) {
       const answer = entries.slice(asked + 1).find(entry => entry.type === 'message' && (entry.message as { role?: string } | undefined)?.role === 'assistant');
       return answer ? { found: true, text: contentText((answer.message as { content?: unknown }).content) } : { found: false, reason: 'no-memo' };

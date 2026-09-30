@@ -38,6 +38,7 @@ test('natsumi passes, by her directory or by her ID as a built-in avatar, with h
     'filled in with the faceless pictures: none',
     'the server\'s defaults:',
     '- sdctl-params.yaml',
+    '- personality.md',
   ]);
 });
 
@@ -54,6 +55,12 @@ test('what is broken fails the check, and what is only missing is listed apart',
     assert.ok(good.lines.includes('- spritesheet'));
     assert.ok(good.lines.includes('- slack/happy'));
     assert.ok(good.lines.includes('- appearance.yaml'));
+    // Without one the memory starts from the fixed template: listed with the defaults, and not an error.
+    assert.ok(good.lines.includes('- personality.md'));
+    await writeFile(join(dir, 'personality.md'), '# 性格・話し方\n\nのんびり\n');
+    const own = await check(dir);
+    assert.equal(own.code, 0);
+    assert.ok(!own.lines.includes('- personality.md'), own.lines.join('\n'));
 
     await writeFile(join(dir, 'avatar.json'), JSON.stringify({ name: 'はな' }));
     const bad = await check(dir);
@@ -68,6 +75,6 @@ test('what is broken fails the check, and what is only missing is listed apart',
     // A name without a slash is a built-in avatar's ID; a directory beside it is named with ./.
     const unknown = await check('hana');
     assert.equal(unknown.code, 1);
-    assert.deepEqual(unknown.lines, ['errors (the server does not start):', '- hana is not a built-in avatar (iori, nanashi, natsumi)']);
+    assert.deepEqual(unknown.lines, ['errors (the server does not start):', '- hana is not a built-in avatar (iori, myao, nanashi, natsumi)']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

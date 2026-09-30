@@ -54,7 +54,7 @@ export async function writeAgentList(options: {
 /** The dove is the server's own, so what it does is written here rather than read from a card. */
 const DOVE = [
   '- 名乗り: ポッポさん（Slack への送信役の鳩）',
-  '- 説明: あなたの代わりに Slack へ投稿し（/work の画像も付けられます）、リアクションを付けます。投稿の下書きは判定にかけられ、そのまま届けるか、本人に回すか、理由を添えて突き返します。',
+  '- 説明: あなたの代わりに Slack へ投稿し（/work の画像も付けられます）、リアクションを付けます。投稿の下書きは判定にかけられ、そのまま届けるか、マスターに回すか、理由を添えて突き返します。',
   '- 頼み方: message は見出し付きの決まった形で書きます。書き方と返事の読み方は /manual/slack.md にあります。',
 ];
 

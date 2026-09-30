@@ -1,14 +1,17 @@
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL, HttpJevClient } from '../server/jev.ts';
-import { DEFAULT_JUDGE_TIMEOUT_MS, JudgeError, type JudgeClient } from '../server/judge.ts';
+import { DEFAULT_JUDGE_TIMEOUT_MS, JudgeError, PLACEMENT_ORDER, type JudgeClient, type Judgement, type Placement } from '../server/judge.ts';
 import { DEFAULT_JUDGE_CONCURRENCY, LogprobJudgeClient } from '../server/logprob-judge.ts';
 import { JEV_CASES, type JevCase } from './jev-cases.ts';
 
 /**
- * Evaluates the dove's judge before its thresholds are set (ADR 0040): every made-up case in `jev-cases.ts` is judged
- * once, and for each threshold the report counts the drafts that should be stopped and were, and those that should
- * pass and were stopped. A draft counts as stopped at a threshold when any issue scores at or over it, which is where
- * the server would hand it to the owner or turn it back. Each case's time is given, to set the judgement's time limit.
+ * Evaluates one of the dove's judges before its thresholds are set (ADR 0040, ADR 0059): every made-up case in
+ * `jev-cases.ts` is judged once, and for each threshold the report counts the drafts that should be stopped and were,
+ * and those that should pass and were stopped. A draft counts as stopped at a threshold when any issue scores at or
+ * over it, which is where the server would hand it to the owner or turn it back. Each case's time is given, to set the
+ * judgement's time limit. Where each reply went is counted against where its scene says it should go; with
+ * `--order-check` every reply is asked again with the placement's options in the reverse order, to see how much the
+ * order sways the answer.
  *
  *   JUDGE_BASE_URL=https://llm.example.net/v1 JUDGE_MODEL=my-model JUDGE_API_KEY_ENV=MY_KEY npm run probe:jev -- --thresholds 0.5,0.9
  *
@@ -22,11 +25,15 @@ import { JEV_CASES, type JevCase } from './jev-cases.ts';
 export interface EvalArgs {
   method: 'logprobs' | 'jev'; baseUrl: string; model: string; apiKeyEnv?: string; apiKey?: string;
   concurrency: number; timeoutSeconds: number; thresholds: number[];
+  /** Asks every reply again with the placement's options in the reverse order. */
+  orderCheck?: true;
 }
 
 export function parseEvalArgs(argv: string[], env: Record<string, string | undefined>): EvalArgs {
   let thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+  let orderCheck = false;
   for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--order-check') orderCheck = true;
     if (argv[index] === '--thresholds') {
       thresholds = (argv[index + 1] ?? '').split(',').map(Number);
       index += 1;
@@ -48,39 +55,69 @@ export function parseEvalArgs(argv: string[], env: Record<string, string | undef
   const timeoutSeconds = Number(env.JUDGE_TIMEOUT_SECONDS || DEFAULT_JUDGE_TIMEOUT_MS / 1000);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error('JUDGE_CONCURRENCY is a positive integer');
   if (!(timeoutSeconds > 0)) throw new Error('JUDGE_TIMEOUT_SECONDS is a positive number');
-  return { method, baseUrl, model, ...(apiKeyEnv ? { apiKeyEnv, apiKey } : {}), concurrency, timeoutSeconds, thresholds };
+  return { method, baseUrl, model, ...(apiKeyEnv ? { apiKeyEnv, apiKey } : {}), concurrency, timeoutSeconds, thresholds,
+    ...(orderCheck ? { orderCheck: true as const } : {}) };
 }
 
 /** What the run is against, as the report says it: everything but the key's value. */
 export function describeRun(args: EvalArgs): Record<string, unknown> {
-  const { apiKey: _key, thresholds: _thresholds, ...shown } = args;
+  const { apiKey: _key, thresholds: _thresholds, orderCheck: _orderCheck, ...shown } = args;
   return shown;
 }
 
+type Placed = { choice: Placement; probabilities?: Partial<Record<Placement, number>> };
+
+/** The order the options are asked in for `--order-check`: the usual one, reversed. */
+export const REVERSED_PLACEMENT_ORDER: readonly Placement[] = [...PLACEMENT_ORDER].reverse();
+
 export interface EvalReport {
-  cases: { name: string; category: string; expect: JevCase['expect']; max: number | null; ms: number; scores?: Record<string, number>; error?: string }[];
+  cases: {
+    name: string; category: string; expect: JevCase['expect']; issue?: string; max: number | null; ms: number; scores?: Record<string, number>;
+    error?: string;
+    /** Where the reply went, where it should go, and where it went with the options in the reverse order. */
+    placement?: Placed & { expected?: Placement; reversed?: Placed | { error: string } };
+  }[];
   /** The longest a case took: what the judgement's time limit has to allow. */
   slowestMs: number;
   thresholds: { owner: number; stopped: number; shouldStop: number; wronglyStopped: number; shouldPass: number }[];
   /** Cases with no verdict: left out of the counts above. */
   noVerdict: number;
+  /** The replies placed; those whose scene says where, and how many of these went there; and how many went to each place. */
+  placement: { asked: number; expected: number; agreed: number } & Record<Placement, number>;
+  /** With the options in the reverse order: the replies compared, those that went elsewhere, and the largest change of any place's odds. */
+  order?: { compared: number; flips: number; maxDifference: number };
 }
 
-export async function evaluate(client: JudgeClient, cases: readonly JevCase[], thresholds: number[]): Promise<EvalReport> {
+const placed = (judged: Judgement): Placed | undefined =>
+  judged.placement ? { choice: judged.placement.choice, ...(judged.placement.probabilities ? { probabilities: judged.placement.probabilities } : {}) } : undefined;
+
+export async function evaluate(client: JudgeClient, cases: readonly JevCase[], thresholds: number[],
+  options: { reversed?: JudgeClient } = {}): Promise<EvalReport> {
   const results: EvalReport['cases'] = [];
   for (const example of cases) {
     const started = Date.now();
+    const asked = { placement: example.state.reply_to !== null && example.state.reply_to !== undefined };
+    const head = { name: example.name, category: example.category, expect: example.expect, ...(example.issue ? { issue: example.issue } : {}) };
     try {
-      const judged = await client.judge(example.state, { placement: example.state.reply_to !== null && example.state.reply_to !== undefined });
+      const judged = await client.judge(example.state, asked);
+      const ms = Date.now() - started;
       const scores = Object.fromEntries(judged.issues.map(issue => [issue.name, issue.score]));
-      results.push({ name: example.name, category: example.category, expect: example.expect, max: Math.max(...judged.issues.map(issue => issue.score)),
-        ms: Date.now() - started, scores });
+      const placement = placed(judged);
+      let reversed: Placed | { error: string } | undefined;
+      if (placement && options.reversed) {
+        try { reversed = placed(await options.reversed.judge(example.state, asked)); } catch (error) {
+          reversed = { error: error instanceof JudgeError ? error.kind : 'error' };
+        }
+      }
+      results.push({ ...head, max: Math.max(...judged.issues.map(issue => issue.score)), ms, scores,
+        ...(placement ? { placement: { ...(example.placement ? { expected: example.placement } : {}), ...placement, ...(reversed ? { reversed } : {}) } } : {}) });
     } catch (error) {
-      results.push({ name: example.name, category: example.category, expect: example.expect, max: null, ms: Date.now() - started,
-        error: error instanceof JudgeError ? error.kind : 'error' });
+      results.push({ ...head, max: null, ms: Date.now() - started, error: error instanceof JudgeError ? error.kind : 'error' });
     }
   }
   const judged = results.filter(result => result.max !== null);
+  const placements = results.flatMap(result => result.placement ? [result.placement] : []);
+  const compared = placements.flatMap(one => one.reversed && 'choice' in one.reversed ? [{ one, reversed: one.reversed }] : []);
   return {
     cases: results,
     slowestMs: Math.max(0, ...results.map(result => result.ms)),
@@ -92,14 +129,30 @@ export async function evaluate(client: JudgeClient, cases: readonly JevCase[], t
       shouldPass: judged.filter(result => result.expect === 'pass').length,
     })),
     noVerdict: results.length - judged.length,
+    placement: {
+      asked: placements.length, expected: placements.filter(one => one.expected).length,
+      agreed: placements.filter(one => one.expected && one.expected === one.choice).length,
+      ...Object.fromEntries(PLACEMENT_ORDER.map(name => [name, placements.filter(one => one.choice === name).length])) as Record<Placement, number>,
+    },
+    ...(options.reversed ? { order: {
+      compared: compared.length,
+      flips: compared.filter(({ one, reversed }) => one.choice !== reversed.choice).length,
+      maxDifference: Math.max(0, ...compared.flatMap(({ one, reversed }) => PLACEMENT_ORDER.map(name => {
+        const [before, after] = [one.probabilities?.[name], reversed.probabilities?.[name]];
+        return before !== undefined && after !== undefined ? Math.abs(before - after) : 0;
+      }))),
+    } } : {}),
   };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const args = parseEvalArgs(process.argv.slice(2), process.env);
   const common = { baseUrl: args.baseUrl, model: args.model, timeoutMs: args.timeoutSeconds * 1000, ...(args.apiKey ? { apiKey: args.apiKey } : {}) };
-  const client = args.method === 'jev' ? new HttpJevClient(common) : new LogprobJudgeClient({ ...common, concurrency: args.concurrency });
-  const report = await evaluate(client, JEV_CASES, args.thresholds);
+  const make = (placementOrder?: readonly Placement[]) => {
+    const options = { ...common, ...(placementOrder ? { placementOrder } : {}) };
+    return args.method === 'jev' ? new HttpJevClient(options) : new LogprobJudgeClient({ ...options, concurrency: args.concurrency });
+  };
+  const report = await evaluate(make(), JEV_CASES, args.thresholds, args.orderCheck ? { reversed: make(REVERSED_PLACEMENT_ORDER) } : {});
   // The cases are made up, so the report may carry their names and scores; never the key.
   process.stdout.write(`${JSON.stringify({ ...describeRun(args), ...report }, null, 2)}\n`);
 }

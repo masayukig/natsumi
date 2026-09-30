@@ -24,7 +24,7 @@ const fullAnswer = () => ({
   model: 'jev-1.13.0',
   answers: {
     ...Object.fromEntries(JUDGE_ISSUES.map((issue, index) => [issue.name, { type: 'noul', noul: index === 1 ? 0.9 : 0.05 }])),
-    placement: { type: 'choice', choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 }, confidence: 0.7 },
+    placement: { type: 'choice', choice: 'thread', probabilities: { thread: 0.7, channel: 0.2, broadcast: 0.1 }, confidence: 0.7 },
   },
   usage: { input_tokens: 321, output_tokens: 0 },
 });
@@ -47,7 +47,7 @@ test('one call asks every issue as a Noul and the placement as a Choice, in Engl
     assert.doesNotMatch(body.questions[issue.name].instructions, /[぀-ヿ一-鿿]/, `${issue.name} is asked in English`);
   }
   assert.equal(body.questions.placement.type, 'choice');
-  assert.deepEqual(Object.keys(body.questions.placement.criteria).sort(), ['channel', 'thread']);
+  assert.deepEqual(Object.keys(body.questions.placement.criteria), ['thread', 'channel', 'broadcast']);
 });
 
 test('the answer becomes a score per issue, with its Japanese label, and the placement', async () => {
@@ -55,7 +55,16 @@ test('the answer becomes a score per issue, with its Japanese label, and the pla
   const judged = await client.judge(STATE, { placement: true });
   assert.equal(judged.issues.length, JUDGE_ISSUES.length);
   assert.deepEqual(judged.issues[1], { name: JUDGE_ISSUES[1]!.name, label: JUDGE_ISSUES[1]!.label, score: 0.9 });
-  assert.deepEqual(judged.placement, { choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 } });
+  assert.deepEqual(judged.placement, { choice: 'thread', probabilities: { thread: 0.7, channel: 0.2, broadcast: 0.1 } });
+});
+
+test('each of the three placements is taken as chosen, and probabilities missing one of them are left out', async () => {
+  for (const choice of ['channel', 'broadcast'] as const) {
+    const answer = fullAnswer();
+    answer.answers.placement = { type: 'choice', choice, probabilities: { thread: 0.5, channel: 0.5 } } as never;
+    const judged = await new HttpJevClient({ model: 'm', fetch: answering(200, answer).fetch }).judge(STATE, { placement: true });
+    assert.deepEqual(judged.placement, { choice });
+  }
 });
 
 test('a Jev-compatible server of her own: another base URL and model, and no key means no Authorization header', async () => {
@@ -90,7 +99,8 @@ for (const [name, status, body, kind] of [
   ['a body that is not JSON', 200, 'not json', 'malformed'],
   ['a question kind the server refuses', 400, { error: 'unsupported question type' }, 'http-400'],
   ['a placement with no choice', 200, { answers: { ...Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { noul: 0.1 }])), placement: { confidence: 0.5 } } }, 'malformed'],
-  ['an answer missing an issue', 200, { answers: { placement: { choice: 'thread', probabilities: { thread: 1, channel: 0 } } } }, 'malformed'],
+  ['an answer missing an issue', 200, { answers: { placement: { choice: 'thread', probabilities: { thread: 1, channel: 0, broadcast: 0 } } } }, 'malformed'],
+  ['a placement that is none of the three', 200, { answers: { ...Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { noul: 0.1 }])), placement: { choice: 'elsewhere' } } }, 'malformed'],
   ['a score out of range', 200, { answers: Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { noul: 2 }])) }, 'malformed'],
 ] as const) {
   test(`${name} is no verdict, and the error names only its kind`, async () => {
@@ -126,4 +136,14 @@ test('the verdict: send under the owner threshold, the owner between, returned a
   assert.equal(returned.verdict, 'return');
   assert.deepEqual(returned.issues.filter(issue => issue.flagged).map(issue => issue.name), [JUDGE_ISSUES[0]!.name, JUDGE_ISSUES[1]!.name]);
   assert.equal(returned.issues[2]!.flagged, undefined, 'an issue under the threshold carries no flag');
+});
+
+test('the placement\'s options are sent in the order asked: thread, channel, broadcast, or another order when told', async () => {
+  const order = async (placementOrder?: ('thread' | 'channel' | 'broadcast')[]) => {
+    const stub = answering(200, fullAnswer());
+    await new HttpJevClient({ model: 'jev-latest', fetch: stub.fetch, ...(placementOrder ? { placementOrder } : {}) }).judge(STATE, { placement: true });
+    return Object.keys(JSON.parse(String(stub.calls[0]!.init.body)).questions.placement.criteria);
+  };
+  assert.deepEqual(await order(), ['thread', 'channel', 'broadcast']);
+  assert.deepEqual(await order(['broadcast', 'channel', 'thread']), ['broadcast', 'channel', 'thread']);
 });

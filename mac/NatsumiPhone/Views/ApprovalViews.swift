@@ -176,24 +176,26 @@ struct ApprovalDetailView: View {
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) { Rectangle().fill(Comic.floor).frame(width: 3) }
             }
-            HStack(spacing: 8) {
-                Text(props.placement).font(Comic.font(14))
-                Spacer(minLength: 8)
-                ForEach(props.placementOptions) { option in
-                    Button { sinks.approvalPlacement(.approvalPlacementChosen(option.placement)) } label: {
-                        Text(option.title)
-                            .font(Comic.font(13, bold: option.isSelected))
-                            .foregroundStyle(option.isSelected ? Comic.ink : Comic.pageInk)
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 36)
-                            .background {
-                                InkedPaper(
-                                    shape: Capsule(), fill: option.isSelected ? Comic.send : Comic.surface,
-                                    ink: option.isSelected ? Comic.ink : Comic.pageInk, line: 2)
-                            }
+            Text(props.placement).font(Comic.font(14))
+            if !props.placementOptions.isEmpty {
+                // Three choices do not fit beside the words, so they have a row of their own.
+                HStack(spacing: 8) {
+                    ForEach(props.placementOptions) { option in
+                        Button { sinks.approvalPlacement(.approvalPlacementChosen(option.placement)) } label: {
+                            Text(option.title)
+                                .font(Comic.font(13, bold: option.isSelected))
+                                .foregroundStyle(option.isSelected ? Comic.ink : Comic.pageInk)
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 36)
+                                .background {
+                                    InkedPaper(
+                                        shape: Capsule(), fill: option.isSelected ? Comic.send : Comic.surface,
+                                        ink: option.isSelected ? Comic.ink : Comic.pageInk, line: 2)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(option.isSelected ? .isSelected : [])
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(option.isSelected ? .isSelected : [])
                 }
             }
             if let odds = props.placementOdds {

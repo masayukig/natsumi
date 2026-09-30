@@ -78,7 +78,7 @@ test('natsumi has her own look and draws with the server\'s default params', asy
   assert.deepEqual(avatar.appearance?.keep, ['freckles', 'large sagging breasts']);
   assert.equal(avatar.appearance?.outfit, 'black business suit,  collared white shirt,');
   assert.equal(avatar.sdctlParams, await readFile(join(FALLBACK, 'sdctl-params.yaml'), 'utf8'));
-  assert.deepEqual(avatar.defaults, ['sdctl-params.yaml']);
+  assert.deepEqual(avatar.defaults, ['sdctl-params.yaml', 'personality.md']);
 });
 
 test('the manifest lists every file with its size and hash under the version', async () => {
@@ -100,7 +100,7 @@ test('an avatar of only a name is filled with the faceless pictures, never with 
   assert.equal(avatar.name, 'はな');
   assert.deepEqual(avatar.filled, ['spritesheet', ...EXPRESSIONS.map(expression => `icons/${expression}`),
     ...EXPRESSIONS.map(expression => `slack/${expression}`)]);
-  assert.deepEqual(avatar.defaults, ['pet.json', 'appearance.yaml', 'sdctl-params.yaml']);
+  assert.deepEqual(avatar.defaults, ['pet.json', 'appearance.yaml', 'sdctl-params.yaml', 'personality.md']);
   assert.deepEqual(avatar.files.get('spritesheet.webp')!.data, await readFile(join(FALLBACK, 'spritesheet.webp')));
   assert.deepEqual(avatar.files.get('icons/sad.webp')!.data, await readFile(join(FALLBACK, 'icons', 'sad.webp')));
   assert.deepEqual(avatar.slack('sad'), await readFile(join(FALLBACK, 'slack', 'sad.png')));
@@ -252,17 +252,44 @@ test('inspecting sorts what stops the start from what is filled and what takes t
   assert.deepEqual(good.errors, []);
   assert.equal(good.avatar?.id, 'hana');
   assert.equal(good.filled.length, 1 + EXPRESSIONS.length * 2);
-  assert.deepEqual(good.defaults, ['pet.json', 'appearance.yaml', 'sdctl-params.yaml']);
+  assert.deepEqual(good.defaults, ['pet.json', 'appearance.yaml', 'sdctl-params.yaml', 'personality.md']);
   const bad = await inspectAvatar(await bare(join(root, 'bad'), { name: 'はな', framesPerSecond: 0 }));
   assert.equal(bad.avatar, undefined);
   assert.ok(bad.errors.length >= 2, bad.errors.join(' / '));
+}));
+
+// personality.md is where her memory's personality starts from (ADR 0060): optional, read as it is, and no part of
+// the bundle the apps are given, since only the server reads it.
+test('an avatar\'s personality.md is read as it is and kept out of the bundle', () => scratch(async root => {
+  const dir = await bare(root);
+  const without = await loadAvatar({ directory: dir });
+  assert.equal(without.personality, undefined);
+  assert.ok(without.defaults.includes('personality.md'));
+  const text = '# 性格・話し方\n\nのんびりしていて、語尾をのばす。\n';
+  await writeFile(join(dir, 'personality.md'), text);
+  const avatar = await loadAvatar({ directory: dir });
+  assert.equal(avatar.personality, text);
+  assert.ok(!avatar.defaults.includes('personality.md'));
+  assert.ok(![...avatar.files.keys()].some(path => path.includes('personality')));
+  assert.equal(avatar.version, without.version);
+}));
+
+test('a personality.md that is there but empty, or leads outside, stops the start', () => scratch(async root => {
+  const dir = await bare(root);
+  await writeFile(join(dir, 'personality.md'), ' \n\n');
+  await refused(dir, /personality\.md: must be text/);
+  await rm(join(dir, 'personality.md'));
+  const outside = join(root, 'outside.md');
+  await writeFile(outside, '# 性格\n\nよその性格\n');
+  await symlink(outside, join(dir, 'personality.md'));
+  await refused(dir, /personality\.md leads outside the directory/);
 }));
 
 // The built-in avatars are the image's own: a broken one is a broken image, so each is held to the start's checks here.
 test('every built-in avatar passes the start\'s checks under the ID its directory is named by', async () => {
   const names = (await readdir(BUILT_IN_DIRECTORY, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(await builtInAvatars(), names);
-  assert.deepEqual(names, ['iori', 'nanashi', 'natsumi']);
+  assert.deepEqual(names, ['iori', 'myao', 'nanashi', 'natsumi']);
   for (const id of names) {
     const inspected = await inspectAvatar(join(BUILT_IN_DIRECTORY, id));
     assert.deepEqual(inspected.errors, [], id);
@@ -277,7 +304,7 @@ test('iori has her own name, complete assets and drawing settings', async () => 
   const avatar = await loadAvatar({ id: 'iori' });
   assert.equal(avatar.name, '伊織');
   assert.deepEqual(avatar.filled, []);
-  assert.deepEqual(avatar.defaults, []);
+  assert.deepEqual(avatar.defaults, ['personality.md']);
   assert.equal(avatar.appearance?.lora, 'iori_funaki_anima.v4');
   assert.deepEqual(avatar.appearance?.keep, ['freckles', 'purple eyes', 'light brown hair']);
   assert.equal(avatar.appearance?.outfit, 'white dress,');
@@ -294,7 +321,7 @@ test('an ID chooses a built-in avatar, the same as leaving the avatar out for na
 test('an ID that is no built-in avatar stops the start', async () => {
   for (const id of ['hana', 'fallback']) {
     await assert.rejects(loadAvatar({ id }), (error: unknown) => error instanceof ConfigError && error.path === 'avatar.id'
-      && error.message === `avatar.id: ${id} is not a built-in avatar (iori, nanashi, natsumi)`, id);
+      && error.message === `avatar.id: ${id} is not a built-in avatar (iori, myao, nanashi, natsumi)`, id);
   }
 });
 
@@ -304,7 +331,7 @@ test('nanashi is a built-in avatar that lacks nothing, and the one the missing p
   assert.equal(nanashi.id, 'nanashi');
   assert.equal(nanashi.name, '名無し');
   assert.deepEqual(nanashi.filled, []);
-  assert.deepEqual(nanashi.defaults, ['appearance.yaml']);
+  assert.deepEqual(nanashi.defaults, ['appearance.yaml', 'personality.md']);
   assert.equal(nanashi.appearance, undefined);
   assert.equal(await realpath(FALLBACK_DIRECTORY), await realpath(join(BUILT_IN_DIRECTORY, 'nanashi')));
   assert.deepEqual(nanashi.files.get('spritesheet.webp')!.data, await readFile(join(FALLBACK, 'spritesheet.webp')));
@@ -350,7 +377,7 @@ test('an angry that is out of shape stops the start like any other feeling', () 
 }));
 
 test('all built-in avatars carry every feeling of the spec, angry included', async () => {
-  for (const id of ['iori', 'nanashi', 'natsumi']) {
+  for (const id of ['iori', 'myao', 'nanashi', 'natsumi']) {
     const dir = join(BUILT_IN_DIRECTORY, id);
     const manifest = JSON.parse(await readFile(join(dir, 'avatar.json'), 'utf8'));
     for (const expression of AVATAR_EXPRESSIONS) {
@@ -361,4 +388,23 @@ test('all built-in avatars carry every feeling of the spec, angry included', asy
   }
   const nanashi = JSON.parse(await readFile(join(FALLBACK, 'avatar.json'), 'utf8'));
   assert.deepEqual(Object.keys(nanashi.expressions).sort(), [...AVATAR_EXPRESSIONS].sort());
+});
+
+test('myao has her own name, complete assets and Anima drawing settings', async () => {
+  const avatar = await loadAvatar({ id: 'myao' });
+  assert.equal(avatar.name, 'ミャオ');
+  assert.deepEqual(avatar.filled, []);
+  assert.deepEqual(avatar.defaults, []);
+  // Her personality to start from, in the owner's words (ADR 0060).
+  assert.equal(avatar.personality, await readFile(join(BUILT_IN_DIRECTORY, 'myao', 'personality.md'), 'utf8'));
+  assert.match(avatar.personality!, /^# 性格・話し方\n[\s\S]*一人称は、ミャー/);
+  assert.equal(avatar.appearance?.lora, 'myao_anima.v1');
+  assert.deepEqual(avatar.appearance?.keep, ['pale blue-gray hair', 'amber eyes', 'cat ears']);
+  for (const word of avatar.appearance!.keep) {
+    assert.ok(avatar.appearance!.body.includes(word), `body must contain keep word: ${word}`);
+  }
+  assert.ok(!avatar.appearance!.body.includes('short hair'));
+  assert.equal(avatar.appearance?.outfitName, '黄色いシャツ');
+  assert.match(avatar.sdctlParams, /anima_anima-base-v1.0/);
+  assert.match(avatar.sdctlParams, /human ears, extra ears, normal ears, realistic ears:1\.7/);
 });
