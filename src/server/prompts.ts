@@ -263,6 +263,14 @@ export const REFLECTION_REQUEST = '<turn_memo>\n'
   + '長く考えずに書いてください。ツールは使えません。このメモは本人には届きません。\n'
   + '</turn_memo>';
 
+/**
+ * Whether a user message is the server's memo request. Known by its tag rather than by the exact text: a session keeps
+ * the requests it was sent under their wording at the time, and those are still memo requests after the wording changes.
+ */
+export function isReflectionRequest(text: string): boolean {
+  return text.startsWith('<turn_memo>\n') && text.endsWith('\n</turn_memo>');
+}
+
 export const compactionInstructions = (self: Self) => `これは${self.name} (${self.id})（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。`
   + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（/memory に書いたかどうか）を必ず残してください。'
   + 'ファイルやコードに関する項目は「なし」で構いません。';
