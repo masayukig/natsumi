@@ -1618,7 +1618,9 @@ export class ThinkingLoop {
     for (const handling of open) handling.replied = true;
     if (this.turn) this.turn.firstOutAt ??= this.now();
     this.emit('conversation.message', shown(row, taken.length > 0 ? taken.map(image => shownImage(image)) : undefined));
-    return { ok: true, text: `本人の Mac にセリフ${taken.length > 0 ? `と画像 ${taken.length} 枚` : ''}を送りました。このセリフは確定しました。`
+    // Fork (ADR F01): with the owner on Slack, the line goes to their channel, not to a Mac.
+    const where = this.options.ownerOnSlack === true ? '本人の Slack のチャンネル' : '本人の Mac';
+    return { ok: true, text: `${where}にセリフ${taken.length > 0 ? `と画像 ${taken.length} 枚` : ''}を送りました。このセリフは確定しました。`
       + (target ? 'ここまでに届いた本人のメッセージには返事を済ませました。' : '')
       + '続けて話してもかまいませんが、同じことを繰り返さないでください。ほかにやることがなければ、ツールを呼ばずに終えてください。' };
   }

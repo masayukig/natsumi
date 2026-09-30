@@ -44,4 +44,5 @@ Slack は読みもので、本人の発言も `attention` として届き、nats
 - 本人は Slack だけで natsumi と話せる。Mac と iPhone のクライアントも、これまでどおり使える（同じ会話が両方に出る）。
 - 本人が画像だけを送った発言は会話に渡らない（`conversation.send` が本文しか持たないため）。DM ならこれまでどおり `attention` として届く。
 - 本人の発言はファイルにも残るので、natsumi は `sources_updated` でも同じ発言を見る。prompt で、改めて返事をしなくてよいと伝える。
-- 返事は `reply_to_mac` の答えの文で「本人の Mac に送りました」と言い続ける。
+- 返事の `reply_to_mac` の答えの文は、`slack.owner` があれば「本人の Slack のチャンネルに送りました」と言う（無ければ上流と同じ「本人の Mac に送りました」）。
+  答えの文は会話の中に積まれるもので、prefix（system prompt・ツールの説明）ではないので、設定で変えてもキャッシュは崩れない。ツールの説明は変えない。
