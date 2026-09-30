@@ -1,5 +1,5 @@
 import type { ContextEvent, ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import { REFLECTION_REQUEST } from './prompts.ts';
+import { isReflectionRequest } from './prompts.ts';
 
 /**
  * Folding the turns that have ended (ADR 0047). The session records every turn whole; what the model is sent has
@@ -64,7 +64,7 @@ export function foldTurns(messages: readonly AgentMessage[]): AgentMessage[] | u
 }
 
 function isRequest(message: AgentMessage): boolean {
-  return message.role === 'user' && textOf(message.content) === REFLECTION_REQUEST;
+  return message.role === 'user' && isReflectionRequest(textOf(message.content));
 }
 
 /** One ended turn: its steps, then the answer to its memo request. `kept` holds every read already kept. */

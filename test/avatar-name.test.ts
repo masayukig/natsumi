@@ -52,12 +52,12 @@ test('the default self is natsumi, the same as the avatar in the image', async (
 });
 
 test('her instructions open with the display name and the ID side by side', () => {
-  assert.ok(composeSystemPrompt(parts).startsWith('あなたはなつみ (natsumi)。一人の本人（オーナー）専属の秘書で、'));
+  assert.ok(composeSystemPrompt(parts).startsWith('あなたはなつみ (natsumi)。あなたのオーナー（持ち主）であるマスター専属の秘書で、'));
   const hana = composeSystemPrompt({ ...parts, self: HANA });
-  assert.ok(hana.startsWith('あなたははな (hana)。一人の本人（オーナー）専属の秘書で、'));
+  assert.ok(hana.startsWith('あなたははな (hana)。あなたのオーナー（持ち主）であるマスター専属の秘書で、'));
   assert.ok(!hana.includes('natsumi。'));
-  assert.ok(compactionInstructions(HANA).startsWith('これははな (hana)（本人専属の秘書）の思考の記録です。'));
-  assert.ok(compactionInstructions(DEFAULT_SELF).startsWith('これはなつみ (natsumi)（本人専属の秘書）の思考の記録です。'));
+  assert.ok(compactionInstructions(HANA).startsWith('これははな (hana)（マスター専属の秘書）の思考の記録です。'));
+  assert.ok(compactionInstructions(DEFAULT_SELF).startsWith('これはなつみ (natsumi)（マスター専属の秘書）の思考の記録です。'));
 });
 
 test('the curator is told whose memory it keeps by the display name', () => {

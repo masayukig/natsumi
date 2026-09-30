@@ -2,7 +2,7 @@ import { posix } from 'node:path';
 import { filesUrl } from './dashboard-files.ts';
 import { localTime, page, TURNS_PATH, turnPath } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
-import { REFLECTION_REQUEST } from './prompts.ts';
+import { isReflectionRequest } from './prompts.ts';
 import type { TurnInProgress } from './thinking-loop.ts';
 import { contentText, imagesIn, isEvents, type RecordEntry, type TurnReading, type TurnRow } from './turn-log.ts';
 
@@ -124,7 +124,7 @@ function steps(turnId: string, entries: RecordEntry[], timeZone: string): Html {
       }
       if (message.role === 'user') {
         const text = contentText(message.content);
-        if (text === REFLECTION_REQUEST) {
+        if (isReflectionRequest(text)) {
           memo = true;
           return html`<details class="step memo-request"><summary>一行メモの依頼 ${at}</summary><pre>${text}</pre></details>`;
         }
