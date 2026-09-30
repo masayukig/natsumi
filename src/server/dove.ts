@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Transaction } from './conversation-store.ts';
 import { parseDoveRequest } from './dove-request.ts';
 import { discardImages, type ImageLimits, type ImageStore, type TakenImage } from './images.ts';
-import { decideVerdict, JudgeError, type JudgeClient, type ScoredIssue, type Thresholds } from './judge.ts';
+import { judgeSideBySide, JUDGE_METHODS, type JudgeChoice, type JudgeMethod, type JudgeSlot, type Placement, type ScoredIssue } from './judge.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -19,20 +19,25 @@ import { postWithImages } from './slack-images.ts';
  *
  * She asks through `ask_agent` with the agent `poppo`, and the tool only says the request was taken. The request is
  * read and its target matched against the record at once, so a request out of shape never goes further. Then, in the
- * background, the draft is judged by Jev over what surrounds its target, and the server's rule on the scores decides:
- * send it now, hand it to the owner, or turn it back to natsumi with the reasons. The third return on the same target
+ * background, the draft is judged over what surrounds its target by the judges that are on, side by side (ADR 0059),
+ * and the server's rule on the deciding judge's scores decides: send it now, hand it to the owner, or turn it back to
+ * natsumi with the reasons. The third return on the same target
  * goes to the owner instead, with the drafts before it. A reaction with any emoji that exists is put on with neither
  * Jev nor the owner. Whatever happens comes back to her as an `agent_reply` event from `poppo`, in the server's words,
  * naming no ID (ADR 0024).
  *
  * A post may carry images from /work (ADR 0044), copied to the server's side as it is asked, so that the owner approves
- * and Slack is sent the copy. Only the text is judged; images alone go with neither Jev nor the owner, placed by the
+ * and Slack is sent the copy. Only the text is judged; images alone go with neither a judge nor the owner, placed by the
  * rule used without a verdict.
  *
  * What the owner decides is final and is taken once: a second answer gets the first one back (ADR 0002). Only what she
  * approved, or her own text, is sent, and the mechanical check comes right before every send, hers included.
  *
- * The log names the workspace, the Slack method and Slack's code, or Jev's kind of failure; never a draft nor an ID.
+ * A reply goes to one of three places (ADR 0062): its thread (`thread`), the channel itself with no thread (`channel`),
+ * or its thread shown in the channel too (`broadcast`, Slack's `reply_broadcast`). Slack uploads images with no such
+ * choice, so images placed as a broadcast go to the thread alone.
+ *
+ * The log names the workspace, the Slack method and Slack's code, or a judge's kind of failure; never a draft nor an ID.
  */
 
 export const DOVE_NAME = 'poppo';
@@ -44,12 +49,11 @@ const REPLY_TO_HEAD_CHARS = 100;
 const DRAFT_HEAD_CHARS = 60;
 
 export interface DoveConfig {
-  thresholds: Thresholds;
   /** How long an approval waits for the owner. */
   approvalDays: number;
-  /** Without a verdict, a reply to a top-level message goes to the channel while at most this many came after it. */
+  /** Without a verdict, a reply to a top-level message goes to the channel itself while at most this many came after it. */
   placementFollowing: number;
-  /** What Jev is shown around the target: how many messages, and the characters each keeps. */
+  /** What the judges are shown of the channel and of the thread, each: how many messages, and the characters each keeps. */
   judgeContext: { messages: number; chars: number };
   /** How large and how many the images of one request may be. */
   images: ImageLimits;
@@ -62,8 +66,10 @@ export interface SlackDoveOptions {
   archive: SlackArchive;
   /** The Web API of each configured workspace, by its name in the config. */
   workspaces: Record<string, SlackApi>;
-  /** Without it every draft is "no verdict" and goes to the owner. */
-  judge?: JudgeClient;
+  /** The judges the config has an endpoint for, each with its thresholds. Without any every draft goes to the owner. */
+  judges: Partial<Record<JudgeMethod, JudgeSlot>>;
+  /** Which judges are on and which one decides, read as each draft is judged: the settings may change it (ADR 0059). */
+  judgeChoice: () => JudgeChoice;
   config: DoveConfig;
   /** Where Slack fetches the icons from: `<publicOrigin>/avatar/<feeling>.png` (ADR 0040). */
   publicOrigin: string;
@@ -78,7 +84,6 @@ export interface SlackDoveOptions {
   log?: (line: string) => void;
 }
 
-type Placement = 'thread' | 'channel';
 type Result = 'sent' | 'reacted' | 'to_owner' | 'returned' | 'rejected' | 'expired' | 'not_sent';
 type Failure = 'mechanical-check' | 'slack-error' | 'target-gone' | 'interrupted';
 
@@ -196,8 +201,8 @@ export class SlackDove {
     return { ok: true, text: kind === 'reaction'
       ? `ポッポさんがリアクションの依頼を受け付けました。付けたかどうか${later}`
       : body === ''
-        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。本文が無いので、判定にも本人にも回さずに届けます。届けたかどうか${later}`
-        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。届けたか、本人に回したか、突き返したか${later}` };
+        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。本文が無いので、判定にもマスターにも回さずに届けます。届けたかどうか${later}`
+        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。届けたか、マスターに回したか、突き返したか${later}` };
   }
 
   /**
@@ -250,7 +255,7 @@ export class SlackDove {
     if (!changed) return accepted(this.approval(row.approval_id)!.state);
     if (state === 'rejected') {
       this.emit('approval.resolved', { approvalId: row.approval_id, revision: row.revision, state, resolvedAt: now });
-      this.tell(row.post_id, 'rejected', 'ポッポ。本人が見送ったから、届けなかったよ。');
+      this.tell(row.post_id, 'rejected', 'ポッポ。マスターが見送ったから、届けなかったよ。');
     } else {
       this.enqueue(() => this.sendApproved(row.approval_id));
     }
@@ -271,7 +276,7 @@ export class SlackDove {
       });
       if (!changed) continue;
       this.emit('approval.resolved', { approvalId: row.approval_id, revision: row.revision, state: 'expired', resolvedAt: now });
-      this.tell(row.post_id, 'expired', 'ポッポ。本人が決めないまま期限が過ぎたから、届けなかったよ。');
+      this.tell(row.post_id, 'expired', 'ポッポ。マスターが決めないまま期限が過ぎたから、届けなかったよ。');
     }
   }
 
@@ -312,31 +317,31 @@ export class SlackDove {
     if (post.kind === 'reaction') return this.react(post);
     const target = this.target(post);
     if (post.text === '') return this.sendImagesAlone(post, target);
-    const { judgeContext, thresholds } = this.options.config;
-    let judged: { verdict: 'send' | 'owner' | 'return'; issues: ScoredIssue[]; placement?: { choice: Placement; probabilities?: Record<string, number> } }
-      | undefined;
-    const judge = this.options.judge;
-    if (judge) {
-      const replyTo = target.message;
-      try {
-        const answer = await judge.judge({
-          channel: target.label,
-          reply_to: replyTo ? { from: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, judgeContext.chars) } : null,
-          conversation: this.options.archive.around(target, judgeContext.messages, judgeContext.chars),
-          draft: post.text,
-        }, { placement: replyTo !== undefined && !replyTo.threadTs });
-        judged = { ...decideVerdict(answer, thresholds), ...(answer.placement ? { placement: answer.placement } : {}) };
-      } catch (error) {
-        this.log(`dove: ${error instanceof JudgeError ? error.message : `judge: no verdict (${describeFailure(error)})`}`);
-      }
+    const { judgeContext } = this.options.config;
+    const replyTo = target.message;
+    const choice = this.options.judgeChoice();
+    const { now, ...conversation } = this.options.archive.flows(target, judgeContext.messages, judgeContext.chars);
+    const both = await judgeSideBySide(this.options.judges, choice, {
+      channel: target.label, now,
+      reply_to: replyTo ? { from: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, judgeContext.chars), in_thread: replyTo.threadTs !== undefined } : null,
+      conversation,
+      draft: post.text,
+      // Fork: a reply to a message inside a thread stays in that thread; the judge is not asked where (fork 8e4b1b1).
+    }, { placement: replyTo !== undefined && replyTo.threadTs === undefined });
+    for (const method of JUDGE_METHODS) {
+      const result = both.results[method];
+      if (result && 'error' in result) this.log(`dove: judge (${method}): no verdict (${result.error})`);
     }
+    const judged = both.decided;
     if (this.closed) return;
     const placement: Placement = !target.message ? 'channel' : judged?.placement?.choice ?? this.defaultPlacement(target);
     const history = this.returnedBefore(post);
     const verdict = !judged ? 'no-verdict' : judged.verdict === 'return' && history.length >= MAX_RETURNS ? 'rewrite-limit' : judged.verdict;
+    const kept = (method: JudgeMethod) => { const result = both.results[method]; return result ? JSON.stringify(result) : null; };
     this.setPost(postId, {
       verdict, placement, ...(judged ? { scores: JSON.stringify(judged.issues) } : {}),
       ...(judged?.placement?.probabilities ? { placement_probabilities: JSON.stringify(judged.placement.probabilities) } : {}),
+      judge_adopted: both.adopted, judge_decided_by: both.decidedBy, judgement_logprobs: kept('logprobs'), judgement_jev: kept('jev'),
     });
     const flagged = (judged?.issues ?? []).filter(issue => issue.flagged).map(issue => issue.label);
     if (verdict === 'send') {
@@ -344,7 +349,7 @@ export class SlackDove {
       const delivered = await this.deliver(post, post.text, placement);
       if (delivered === true) {
         this.setPost(postId, { state: 'sent', sent_text: post.text, sent_placement: placement });
-        this.tell(postId, 'sent', `ポッポ！ ${where(target.label, placement)}に${this.withImages(postId)}届けたよ。`);
+        this.tell(postId, 'sent', `ポッポ！ ${this.sentTo(post, target.label, placement)}よ。`);
       } else this.fail(post, delivered);
       return;
     }
@@ -353,18 +358,18 @@ export class SlackDove {
       const left = MAX_RETURNS - history.length - 1;
       this.tell(postId, 'returned', `ポッポ、これは届けられないよ。気になったところ: ${flagged.join('・')}。`
         + '直すなら、書き直してもう一度頼んでね。'
-        + (left > 0 ? `同じ返信先で突き返せるのはあと ${left} 回で、その次は本人に回すよ。` : '次に突き返すときは、これまでの下書きと一緒に本人に回すよ。'));
+        + (left > 0 ? `同じ返信先で突き返せるのはあと ${left} 回で、その次はマスターに回すよ。` : '次に突き返すときは、これまでの下書きと一緒にマスターに回すよ。'));
       return;
     }
     this.hand(post, target, { verdict, placement, issues: judged?.issues ?? [], probabilities: judged?.placement?.probabilities, history });
     this.tell(postId, 'to_owner', verdict === 'owner'
-      ? `ポッポ…気になるところ（${flagged.join('・')}）があるから、本人に見てもらうね。本人が決めたら、また知らせるよ。`
+      ? `ポッポ…気になるところ（${flagged.join('・')}）があるから、マスターに見てもらうね。マスターが決めたら、また知らせるよ。`
       : verdict === 'rewrite-limit'
-        ? `ポッポ…同じ返信先で ${MAX_RETURNS + 1} 回目だから、これまでの下書きと一緒に本人に見てもらうね。本人が決めたら、また知らせるよ。`
-        : 'ポッポ…今は判定ができなかったから、本人に見てもらうね。本人が決めたら、また知らせるよ。');
+        ? `ポッポ…同じ返信先で ${MAX_RETURNS + 1} 回目だから、これまでの下書きと一緒にマスターに見てもらうね。マスターが決めたら、また知らせるよ。`
+        : 'ポッポ…今は判定ができなかったから、マスターに見てもらうね。マスターが決めたら、また知らせるよ。');
   }
 
-  /** Images with no text (ADR 0044): nothing for Jev to judge, so neither Jev nor the owner; placed as without a verdict. */
+  /** Images with no text (ADR 0044): nothing to judge, so neither a judge nor the owner; placed as without a verdict. */
   private async sendImagesAlone(post: PostRow, target: ResolvedTarget): Promise<void> {
     const placement: Placement = !target.message ? 'channel' : this.defaultPlacement(target);
     this.setPost(post.post_id, { placement, state: 'sending' });
@@ -420,8 +425,8 @@ export class SlackDove {
       });
       this.emit('approval.resolved', { approvalId, revision: approval.revision, state: approval.state, resolvedAt, delivery: 'sent', sentText: text });
       this.tell(post.post_id, 'sent', approval.state === 'edited'
-        ? `ポッポ！ 本人が直した本文で、${where(shown.target.channel, placement)}に${this.withImages(post.post_id)}届けたよ。届けた本文:「${text}」`
-        : `ポッポ！ 本人が承認したから、${where(shown.target.channel, placement)}に${this.withImages(post.post_id)}届けたよ。`);
+        ? `ポッポ！ マスターが直した本文で、${this.sentTo(post, shown.target.channel, placement)}よ。届けた本文:「${text}」`
+        : `ポッポ！ マスターが承認したから、${this.sentTo(post, shown.target.channel, placement)}よ。`);
       return;
     }
     this.fail(post, delivered);
@@ -453,10 +458,12 @@ export class SlackDove {
     if (post.target_ts && !this.options.archive.isPresent(post.workspace, post.channel_id, post.target_ts)) return 'target-gone';
     const api = this.options.workspaces[post.workspace];
     if (!api) return 'slack-error';
-    const threadTs = placement === 'thread' && post.target_ts ? post.target_thread_ts ?? post.target_ts : undefined;
+    const replyThread = post.target_ts ? post.target_thread_ts ?? post.target_ts : undefined;
     const expression = post.expression ?? 'neutral';
     try {
       if (images.length > 0) {
+        // A broadcast of images stays in the thread: Slack's upload cannot show it in the channel too.
+        const threadTs = placement === 'channel' ? undefined : replyThread;
         // The copies taken when she asked, never /work again. Slack takes no icon with an upload.
         const files = await Promise.all(images.map(async image => ({ filename: basename(image.source),
           data: await readFile(this.options.images.path(image.file)) })));
@@ -466,7 +473,10 @@ export class SlackDove {
           log: line => this.log(`slack (${post.workspace}): ${line}`) });
         return true;
       }
+      // The channel itself takes no thread; a broadcast goes to the thread and is shown in the channel too.
+      const threadTs = placement === 'channel' ? undefined : replyThread;
       await api.postMessage(post.channel_id, text, { ...(threadTs ? { threadTs } : {}),
+        ...(threadTs && placement === 'broadcast' ? { replyBroadcast: true } : {}),
         iconUrl: `${this.options.avatarBaseUrl ?? `${this.options.publicOrigin}/avatar`}/${expression}.png` });
       return true;
     } catch (error) {
@@ -510,7 +520,10 @@ export class SlackDove {
     return streak;
   }
 
-  /** Without Jev's choice: a reply to a top-level message the channel has not moved on from goes to the channel. */
+  /**
+   * Without a judge's choice (ADR 0039, ADR 0062): a reply to a top-level message the channel has not moved on from goes
+   * to the channel itself, and any other to the thread. Never a broadcast.
+   */
   private defaultPlacement(target: ResolvedTarget): Placement {
     const message = target.message!;
     if (message.threadTs) return 'thread';
@@ -554,6 +567,15 @@ export class SlackDove {
       JOIN images i ON i.image_id = p.image_id WHERE p.post_id = ? ORDER BY p.position`).all(postId) as unknown as ImageRow[];
   }
 
+  /**
+   * Where it went, for the line that says it was sent, up to its verb: into the thread shown in the channel too for a
+   * broadcast, or else where it was put, with its images.
+   */
+  private sentTo(post: PostRow, label: string, placement: Placement): string {
+    if (post.target_ts && placement === 'broadcast' && this.images(post.post_id).length === 0) return `${label} のスレッドに返し、チャンネルにも出した`;
+    return `${where(label, placement)}に${this.withImages(post.post_id)}届けた`;
+  }
+
   /** `画像 2 枚と一緒に` when the post has images, for the line that says it was sent. */
   private withImages(postId: string): string {
     const count = this.images(postId).length;
@@ -588,8 +610,9 @@ export class SlackDove {
   private log(line: string): void { this.options.log?.(line); }
 }
 
+/** Where a post was put: the channel itself, or the thread, which is where a broadcast of images stays. */
 function where(label: string, placement: Placement): string {
-  return placement === 'thread' ? `${label} のスレッド` : label;
+  return placement === 'channel' ? label : `${label} のスレッド`;
 }
 
 function cut(text: string, max: number): string {

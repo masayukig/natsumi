@@ -9,7 +9,7 @@ import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from './avatar-manual.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { catalogContextWindow } from '../pi/auth.ts';
-import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgeConfig,
+import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgesConfig,
   type ServerConfig } from './config.ts';
 import { BrowserSessions } from './browser/session-cookie.ts';
 import { WebApp } from './browser/web-app.ts';
@@ -31,7 +31,7 @@ import { SlackDove } from './dove.ts';
 import { IMAGE_DIRECTORY, ImageStore } from './images.ts';
 import { HttpJevClient } from './jev.ts';
 import { LogprobJudgeClient } from './logprob-judge.ts';
-import type { JudgeClient } from './judge.ts';
+import { JUDGE_METHODS, type JudgeClient, type JudgeMethod, type JudgeSlot } from './judge.ts';
 import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
@@ -75,8 +75,11 @@ export interface StartOptions {
   a2a?: { pollIntervalMs?: number };
   /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
   slack?: { connector?: SlackConnector };
-  /** Replaces the judge built from `slack.judge`. Tests hand in a stand-in; nothing reaches a model or TypeSafe from them. */
-  judge?: { client?: JudgeClient };
+  /**
+   * Replaces the judges built from `slack.judge`, each where the config has one. Tests hand in stand-ins; nothing reaches
+   * a model or TypeSafe from them.
+   */
+  judge?: { clients?: Partial<Record<JudgeMethod, JudgeClient>> };
   /** Where the browser's bundle is read from (ADR 0058). Tests point it at a directory of their own. */
   web?: { bundleDirectory?: string };
 }
@@ -125,7 +128,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
     appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
   }))) : [];
-  const judgeKey = config.slack?.judge?.apiKey ? await readSecret(config.slack.judge.apiKey, 'slack.judge.apiKey', options.env) : undefined;
+  const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
+  for (const method of JUDGE_METHODS) {
+    const reference = config.slack?.judge?.[method]?.apiKey;
+    if (reference) judgeKeys[method] = await readSecret(reference, `slack.judge.${method}.apiKey`, options.env);
+  }
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
@@ -183,8 +190,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     };
     const { turnFold, eventModelCalls, eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes,
       timeZone } = config.loop;
+    const judges = config.slack?.judge;
     const settings = await RuntimeSettings.open({ dataDirectory, routes: routeControl, now, log, defaults: { turnFold, eventModelCalls,
-      eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes, timeZone } });
+      eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes, timeZone,
+      // The dove's judges (ADR 0059): on as the config has them, and only those it has an endpoint for can be turned on.
+      judgeLogprobs: judges?.logprobs?.enabled ? 'on' : 'off', judgeJev: judges?.jev?.enabled ? 'on' : 'off',
+      judgeAdopted: judges?.adopted ?? JUDGE_DEFAULTS.adopted,
+      judgeLogprobsThresholds: judges?.logprobs?.thresholds ?? JUDGE_DEFAULTS.thresholds,
+      judgeJevThresholds: judges?.jev?.thresholds ?? JUDGE_DEFAULTS.jev.thresholds, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined } } });
     // The page on drawing and the sdctl params, for the workspace to read as /manual/avatar (ADR 0057).
     await writeAvatarManual(join(dataDirectory, AVATAR_MANUAL_DIRECTORY), avatar);
     // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).
@@ -219,20 +232,20 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its answers
     // are raised into the loop, which is opened next with the dove as one of the agents she can ask.
     let raiseInto: ThinkingLoop | undefined;
-    const judge = options.judge?.client ?? judgeClient(slackConfig?.judge, judgeKey);
     const theDove = dove = archive && slackConfig ? new SlackDove({
       db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
-      ...(judge ? { judge } : {}),
-      config: { thresholds: slackConfig.judge?.thresholds ?? JUDGE_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
-        placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
+      judges: judgeSlots(slackConfig.judge, judgeKeys, options.judge?.clients), judgeChoice: () => settings.judges(),
+      config: { approvalDays: slackConfig.approvalExpiryDays, placementFollowing: slackConfig.placementFollowing,
+        judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
       publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
       ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR F01)
       images,
       now, log, raise: record => raiseInto?.raise('dove-reply', record),
     }) : undefined;
     if (slackConfig) {
-      log(slackConfig.judge ? `slack: drafts are judged by ${slackConfig.judge.method}`
-        : 'slack: no judge is configured; every draft goes to the owner');
+      const configured = JUDGE_METHODS.filter(method => slackConfig.judge?.[method]);
+      log(slackConfig.judge ? `slack: the judges are ${configured.map(method => `${method} (${slackConfig.judge![method]!.enabled ? 'on' : 'off'})`).join(', ')}; `
+        + `${slackConfig.judge.adopted} is adopted` : 'slack: no judge is configured; every draft goes to the owner');
     }
 
     // The manual's index goes into her instructions (ADR 0056). Without it she is pointed at /manual/INDEX.md instead,
@@ -249,6 +262,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         compatible: route.compatible !== undefined })) },
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
+      ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours() },
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
@@ -371,7 +385,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, browser, login, loop: thinkingLoop, dataDirectory,
-      name: avatar.name,
+      name: avatar.name, avatarId: avatar.id,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
       isConnected: deviceId => connections.isConnected(deviceId), now });
@@ -461,9 +475,18 @@ function shutdown(db: DatabaseSync | undefined, lock: ProcessLock) {
   try { db?.close(); } finally { lock.release(); }
 }
 
-/** The dove's judge by the method the config names (ADR 0040), or none. */
-function judgeClient(judge: JudgeConfig | undefined, apiKey: string | undefined): JudgeClient | undefined {
-  if (!judge) return undefined;
-  const common = { baseUrl: judge.baseUrl, model: judge.model, timeoutMs: judge.timeoutSeconds * 1000, ...(apiKey ? { apiKey } : {}) };
-  return judge.method === 'jev' ? new HttpJevClient(common) : new LogprobJudgeClient({ ...common, concurrency: judge.concurrency });
+/** The dove's judges the config has an endpoint for (ADR 0040, ADR 0059), each with its own thresholds. */
+function judgeSlots(judges: JudgesConfig | undefined, keys: Partial<Record<JudgeMethod, string>>,
+  replaced: Partial<Record<JudgeMethod, JudgeClient>> | undefined): Partial<Record<JudgeMethod, JudgeSlot>> {
+  const slots: Partial<Record<JudgeMethod, JudgeSlot>> = {};
+  for (const method of JUDGE_METHODS) {
+    const judge = judges?.[method];
+    if (!judge) continue;
+    const apiKey = keys[method];
+    const common = { baseUrl: judge.baseUrl, model: judge.model, timeoutMs: judge.timeoutSeconds * 1000, ...(apiKey ? { apiKey } : {}) };
+    const client = replaced?.[method] ?? (method === 'jev' ? new HttpJevClient(common)
+      : new LogprobJudgeClient({ ...common, concurrency: judge.concurrency ?? JUDGE_DEFAULTS.concurrency }));
+    slots[method] = { client, thresholds: judge.thresholds };
+  }
+  return slots;
 }

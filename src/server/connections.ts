@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { DEFAULT_STREAM_BUFFER_SIZE, DeviceStreams, EventStream, PROTOCOL_VERSION } from './device-streams.ts';
+import { isPlacement, type Placement } from './judge.ts';
 import type { VerifiedSession } from './sessions.ts';
 
 export { PROTOCOL_VERSION };
@@ -22,7 +23,6 @@ const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversati
 const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide',
   'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
 const DECISIONS = new Set(['approve', 'edit', 'reject']);
-const PLACEMENTS = new Set(['thread', 'channel']);
 
 /**
  * How an upgrade was let in: by the app's bearer token, or by the browser's cookie with the public origin as the Origin
@@ -88,7 +88,7 @@ export interface HubPush {
 export interface HubApprovals {
   pending(): unknown[];
   decide(input: { approvalId: string; revision: number; decision: 'approve' | 'edit' | 'reject'; text?: string;
-    placement?: 'thread' | 'channel'; deviceId: string }): RelayedOutcome;
+    placement?: Placement; deviceId: string }): RelayedOutcome;
   subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void;
 }
 
@@ -268,14 +268,14 @@ export class ConnectionHub {
       case 'approval.decide': {
         const { approvalId, revision, decision, text, placement } = payload;
         if (!isId(approvalId) || !Number.isInteger(revision) || typeof decision !== 'string' || !DECISIONS.has(decision)
-          || (placement !== undefined && (typeof placement !== 'string' || !PLACEMENTS.has(placement)))
+          || (placement !== undefined && !isPlacement(placement))
           || (decision === 'edit' && (typeof text !== 'string' || text.trim() === '' || Buffer.byteLength(text) > MAX_TEXT_BYTES))) {
           return reject('invalid-request');
         }
         const approvals = this.options.approvals;
         if (!approvals) return reject('invalid-request');
         return answer(stream!, approvals.decide({ approvalId, revision: revision as number, decision: decision as 'approve' | 'edit' | 'reject',
-          ...(decision === 'edit' ? { text: text as string } : {}), ...(placement ? { placement: placement as 'thread' | 'channel' } : {}),
+          ...(decision === 'edit' ? { text: text as string } : {}), ...(placement ? { placement: placement as Placement } : {}),
           deviceId: connection.deviceId! }), id);
       }
       case 'model.list': {

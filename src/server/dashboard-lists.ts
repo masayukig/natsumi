@@ -1,6 +1,7 @@
-import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DovePostRow, type SessionState, type Waits } from './dashboard-records.ts';
+import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
+import type { Placement } from './judge.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import type { MemoReading, TurnRow } from './turn-log.ts';
 
@@ -31,8 +32,8 @@ function table(head: Html, rows: Html[], empty: string): Html {
     : html`<div class="table"><table class="list"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-export function waitsPage(waits: Waits, timeZone: string): Html {
-  return page('失敗と待ち', renderWaits(waits, timeZone), { signedIn: true, current: '失敗と待ち' });
+export function waitsPage(waits: Waits, timeZone: string, avatarId?: string): Html {
+  return page('失敗と待ち', renderWaits(waits, timeZone), { signedIn: true, current: '失敗と待ち', avatarId });
 }
 
 /** The failures and what waits, as one section the script refreshes in place. */
@@ -56,7 +57,7 @@ ${table(html`<th>時刻</th><th>種類</th><th>出来事</th><th>outcome</th>`, 
 <h3>承認待ち</h3>
 <p><small><a href="${pageHref(APPROVALS_PATH, 1, { state: 'pending' })}">承認待ちの一覧</a> ・ <a href="${APPROVALS_PATH}">これまでの承認</a></small></p>
 ${waits.approvals.length === 0 ? html`<p><small>承認待ちはありません。</small></p>` : html`<div class="cards">${waits.approvals.map(item => html`<article class="card">
-<p><code>${item.kind}</code>${item.channel && html` ${item.channel}`}${item.placement && html` <small>${item.placement}</small>`}
+<p><code>${item.kind}</code>${item.channel && html` ${item.channel}`}${item.placement && html` <small>${placeWord(item.placement)}</small>`}
 ${item.verdict && html` <small>判定 ${item.verdict}</small>`}${item.flagged.length > 0 && html` <small class="bad">${item.flagged.join('、')}</small>`}</p>
 ${item.text !== undefined && html`<div class="prose">${item.text}</div>`}
 <p><small>${at(item.createdAt)} から</small> ${item.expired ? html`<span class="bad">期限切れ</span> <small>${at(item.expiresAt)}</small>`
@@ -95,7 +96,7 @@ const MEMO_MISSING: Record<Exclude<MemoReading, { found: true }>['reason'], stri
   'no-memo': 'このターンに一行メモはありません。',
 };
 
-export function memosPage(list: { page: number; more: boolean; memos: { row: TurnRow; memo: MemoReading }[] }, timeZone: string): Html {
+export function memosPage(list: { page: number; more: boolean; memos: { row: TurnRow; memo: MemoReading }[] }, timeZone: string, avatarId?: string): Html {
   const main = html`<section id="memos">
 <h2>一行メモ</h2>
 <p><small>ターンの終わりに書いた一行メモを、新しい順に 20 件ずつ出します。時刻を押すとそのターンの詳細です。</small></p>
@@ -106,21 +107,24 @@ ${memo.found ? html`<div class="prose">${memo.text}</div>` : html`<p><small>${ME
 </article>`)}</div>`}
 ${pages(MEMOS_PATH, list.page, list.more, '新しいメモ', '古いメモ')}
 </section>`;
-  return page('一行メモ', main, { signedIn: true, current: '一行メモ' });
+  return page('一行メモ', main, { signedIn: true, current: '一行メモ', avatarId });
 }
 
-export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[] }, timeZone: string, name = DEFAULT_SELF.name): Html {
+export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[] }, timeZone: string, name = DEFAULT_SELF.name, avatarId?: string): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const main = html`<section id="dove">
 <h2>ポッポさん</h2>
-<p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。</small></p>
+<p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。
+2 つの判定を掛けた投稿は、それぞれの判定と、決めた方を並べます。投稿先の channel は、返信先があればスレッドに返してチャンネルにも出したものです。</small></p>
 ${list.rows.length === 0 ? html`<p>まだ依頼はありません。</p>` : html`<div class="cards">${list.rows.map(post => html`<article class="card" id="${post.postId}">
 <p><strong>${post.kind === 'reaction' ? 'リアクション' : '投稿'}</strong> ${post.channel} <small>${post.reference}</small>
 <small>${at(post.createdAt)}</small></p>
 <dl class="facts">
 <div><dt>状態</dt><dd>${doveState(post.state)}${post.failure && html` <code>${post.failure}</code>`} <small>${at(post.updatedAt)} に更新</small></dd></div>
-<div><dt>判定</dt><dd>${post.verdict ?? '—'}${post.scores.length > 0 && html` ${post.scores.map(score => html`<small${score.flagged ? html` class="bad"` : ''}>${score.label} ${score.score.toFixed(2)}</small> `)}`}</dd></div>
-<div><dt>投稿先</dt><dd>${post.placement ?? '—'}${post.sentPlacement && post.sentPlacement !== post.placement && html` <small>送った先 ${post.sentPlacement}</small>`}</dd></div>
+<div><dt>判定</dt><dd>${post.verdict ?? '—'}${post.scores.length > 0 && html` ${scoreList(post.scores)}`}</dd></div>
+${post.judges && judgeRows(post.judges)}
+<div><dt>投稿先</dt><dd>${post.placement ? placeWord(post.placement) : '—'}${post.sentPlacement && post.sentPlacement !== post.placement && html` <small>送った先 ${placeWord(post.sentPlacement)}</small>`}</dd></div>
+${post.ownerDecision && html`<div><dt>本人の判断</dt><dd>${APPROVAL_LABELS[post.ownerDecision as ApprovalState] ?? post.ownerDecision}</dd></div>`}
 ${post.expression && html`<div><dt>表情</dt><dd>${post.expression}</dd></div>`}
 </dl>
 <div class="prose">${post.text}</div>
@@ -128,7 +132,33 @@ ${post.sentText && post.sentText !== post.text && html`<p><small>送った文</s
 </article>`)}</div>`}
 ${pages(DOVE_PATH, list.page, list.more, '新しい依頼', '古い依頼')}
 </section>`;
-  return page('ポッポさん', main, { signedIn: true, current: 'ポッポさん' });
+  return page('ポッポさん', main, { signedIn: true, current: 'ポッポさん', avatarId });
+}
+
+function scoreList(scores: DoveScore[]): Html {
+  return html`${scores.map(score => html`<small${score.flagged ? html` class="bad"` : ''}>${score.label} ${score.score.toFixed(2)}</small> `)}`;
+}
+
+const JUDGE_LABELS = { logprobs: 'logprobs', jev: 'Jev' } as const;
+
+const PLACE_WORDS: Record<Placement, string> = { thread: 'スレッド', channel: 'チャンネル', broadcast: 'チャンネルにも' };
+/** Where a post was to go or went, in words (ADR 0062); a value it does not know, as it is. */
+const placeWord = (placement: string): string => Object.hasOwn(PLACE_WORDS, placement) ? PLACE_WORDS[placement as Placement] : placement;
+
+/** The two judges side by side (ADR 0059): each one's verdict, scores and placement, or why it had none, or that it was off. */
+function judgeRows(judges: DoveJudges): Html {
+  const row = (method: 'logprobs' | 'jev') => {
+    const judged = judges[method];
+    const body = !judged ? html`無効` : 'error' in judged ? html`判定なし <code>${judged.error}</code>`
+      : html`${judged.verdict} ${scoreList(judged.scores)}${judged.placement && html`<small>${placeWord(judged.placement)}${
+        typeof judged.probabilities?.[judged.placement as Placement] === 'number' && ` ${judged.probabilities[judged.placement as Placement]!.toFixed(2)}`}</small>`}`;
+    return html`<div><dt>${JUDGE_LABELS[method]} の判定${judges.adopted === method ? '（採用）' : ''}</dt><dd>${body}</dd></div>`;
+  };
+  const decided = judges.decidedBy === null ? 'どちらも答えなかった（本人へ）'
+    : judges.decidedBy === judges.adopted ? judges.decidedBy : `${judges.decidedBy}（採用した方が答えなかった）`;
+  return html`${row('logprobs')}
+${row('jev')}
+<div><dt>決めた方</dt><dd>${decided}</dd></div>`;
 }
 
 function doveState(state: string): Html {
@@ -143,7 +173,7 @@ const DECISIONS: Record<string, string> = { approve: 'そのまま承認', edit:
 const DEVICE_ID_SHOWN = 'device-'.length + 8;
 
 /** The approvals, all or one outcome's (ADR 0040, ADR 0041), each with its post in the dove's list. */
-export function approvalsPage(list: { page: number; more: boolean; rows: ApprovalRow[]; state?: ApprovalState }, timeZone: string): Html {
+export function approvalsPage(list: { page: number; more: boolean; rows: ApprovalRow[]; state?: ApprovalState }, timeZone: string, avatarId?: string): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const query: Record<string, string> = list.state ? { state: list.state } : {};
   const filters = [{ label: 'すべて', href: APPROVALS_PATH, current: list.state === undefined },
@@ -156,7 +186,7 @@ ${list.rows.length === 0 ? html`<p>${list.state ? `${APPROVAL_LABELS[list.state]
     : html`<div class="cards">${list.rows.map(item => approvalCard(item, at))}</div>`}
 ${pages(APPROVALS_PATH, list.page, list.more, '新しい承認', '古い承認', query)}
 </section>`;
-  return page('承認の履歴', main, { signedIn: true, current: '承認の履歴' });
+  return page('承認の履歴', main, { signedIn: true, current: '承認の履歴', avatarId });
 }
 
 function approvalCard(item: ApprovalRow, at: (iso: string) => string): Html {
@@ -165,11 +195,11 @@ function approvalCard(item: ApprovalRow, at: (iso: string) => string): Html {
   const device = item.deviceId && (item.deviceId.length > DEVICE_ID_SHOWN
     ? html`<code title="${item.deviceId}">${item.deviceId.slice(0, DEVICE_ID_SHOWN)}…</code>` : html`<code>${item.deviceId}</code>`);
   return html`<article class="card" id="${item.approvalId}">
-<p><strong>${approvalState(item.state, label)}</strong> <code>${item.kind}</code>${shown.channel && html` ${shown.channel}`}${shown.placement && html` <small>${shown.placement}</small>`}
+<p><strong>${approvalState(item.state, label)}</strong> <code>${item.kind}</code>${shown.channel && html` ${shown.channel}`}${shown.placement && html` <small>${placeWord(shown.placement)}</small>`}
 <small>${at(item.createdAt)}</small></p>
 <dl class="facts">
 <div><dt>期限</dt><dd>${at(item.expiresAt)}${item.expired && html` <span class="bad">期限切れ</span> <small>まだ閉じていません</small>`}</dd></div>
-<div><dt>決めたこと</dt><dd>${item.decision ? DECISIONS[item.decision] ?? item.decision : '—'}${item.decidedPlacement && html` <small>置き場所 ${item.decidedPlacement}</small>`}
+<div><dt>決めたこと</dt><dd>${item.decision ? DECISIONS[item.decision] ?? item.decision : '—'}${item.decidedPlacement && html` <small>置き場所 ${placeWord(item.decidedPlacement)}</small>`}
 ${device && html` <small>端末</small> ${device}`}</dd></div>
 <div><dt>閉じた時刻</dt><dd>${item.resolvedAt ? at(item.resolvedAt) : '—'}</dd></div>
 <div><dt>送った結果</dt><dd>${item.delivery === 'sent' ? html`<span class="ok">送れた</span>` : item.delivery === 'failed'
@@ -195,7 +225,7 @@ function approvalState(state: string, label: string): Html {
 const SESSION_STATES: Record<SessionState | 'gone', string> = { live: '有効', revoked: '失効', expired: '期限切れ', gone: 'もう無い' };
 
 /** The devices and the login sessions; `currentSessionId` is this browser's own. */
-export function devicesPage(view: DevicesView, currentSessionId: string, timeZone: string): Html {
+export function devicesPage(view: DevicesView, currentSessionId: string, timeZone: string, avatarId?: string): Html {
   const at = (iso: string) => localTime(iso, timeZone);
   const { counts, rows } = view.sessions;
   const main = html`<section id="devices">
@@ -217,7 +247,7 @@ ${table(html`<th>セッション</th><th>状態</th><th>最後の利用</th><th>
 <td>${at(session.lastUsedAt)}</td><td>${at(session.expiresAt)}</td><td>${at(session.createdAt)}</td>
 <td>${session.devices}</td></tr>`), 'セッションはありません。')}
 </section>`;
-  return page('端末', main, { signedIn: true, current: '端末' });
+  return page('端末', main, { signedIn: true, current: '端末', avatarId });
 }
 
 /** The first page of a list, a later one, or 0 for a page asked for that is not a page. */

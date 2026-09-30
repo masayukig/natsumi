@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ContextEvent } from '@earendil-works/pi-coding-agent';
-import { REFLECTION_REQUEST } from '../src/server/prompts.ts';
+import { isReflectionRequest, REFLECTION_REQUEST } from '../src/server/prompts.ts';
 import { ALREADY_READ, foldTurns, MEMO_CUT, MEMO_HEADING, MEMO_MAX_CHARS, SENT } from '../src/server/turn-fold.ts';
 
 // Folding the turns that have ended (ADR 0047): what the model is sent, never what the session records.
@@ -205,4 +205,25 @@ test('a memo of "なし" leaves no line, like an empty one; a memo past the limi
   // Within the limit it stands whole, with its line breaks folded into spaces.
   const short = foldTurns([events('一つ目'), ...reflection('15:00 に会議。\n資料は未確認。'), events('次')])!;
   assert.ok(short.map(texts).includes(`${MEMO_HEADING}15:00 に会議。 資料は未確認。`));
+});
+
+/** The memo request as an older session recorded it, under wording the server no longer sends. */
+const FORMER_REFLECTION_REQUEST = '<turn_memo>\n'
+  + 'このターンはここまでです。このターンで分かったことを、100 字以内のメモにしてください。\n'
+  + '</turn_memo>';
+
+test('a memo request is known by its tag, so one worded before a change is still folded as one', () => {
+  assert.ok(isReflectionRequest(REFLECTION_REQUEST));
+  assert.ok(isReflectionRequest(FORMER_REFLECTION_REQUEST));
+  assert.ok(!isReflectionRequest('<events>\n{"type":"mac_message","text":"<turn_memo>"}\n</events>'));
+  assert.ok(!isReflectionRequest('<turn_memo>だけ'));
+
+  const folded = foldTurns([events('質問'), assistant(think('考え'), say('済んだ')), user(FORMER_REFLECTION_REQUEST),
+    assistant(think('振り返りの思考'), say('予定を確認した。')), events('次の質問')]);
+  assert.ok(folded);
+  assert.deepEqual(shape(folded), [
+    'user: <events>\n{"type":"mac_message","text":"質問"}\n</events>',
+    `assistant: ${MEMO_HEADING}予定を確認した。`,
+    'user: <events>\n{"type":"mac_message","text":"次の質問"}\n</events>',
+  ]);
 });

@@ -56,6 +56,33 @@ struct ApprovalProtocolTests {
         #expect(approval.target.placement == nil)
     }
 
+    @Test("置き場所は thread・channel・broadcast の 3 つを読み、確率も 3 つまで読む")
+    func threePlacements() throws {
+        let approval = try #require(pending(Fixture.approval(
+            "a1", placement: "broadcast", probabilities: ["thread": 0.2, "channel": 0.3, "broadcast": 0.5])))
+        #expect(approval.target.placement == .broadcast)
+        #expect(approval.reason.placementOdds == ApprovalPlacementOdds(thread: 0.2, channel: 0.3, broadcast: 0.5))
+        #expect(try #require(pending(Fixture.approval("a2", placement: "channel"))).target.placement == .channel)
+    }
+
+    @Test("確率は、欠けたキーを無いものとし、知らないキーを無視する。読めるキーが無ければ見立ては無い")
+    func partialOdds() throws {
+        let partial = try #require(pending(Fixture.approval("a1", probabilities: ["broadcast": 0.6, "somewhere": 0.4])))
+        #expect(partial.reason.placementOdds == ApprovalPlacementOdds(thread: nil, channel: nil, broadcast: 0.6))
+
+        let unknown = try #require(pending(Fixture.approval("a2", probabilities: ["somewhere": 1])))
+        #expect(unknown.reason.placementOdds == nil)
+
+        var broken = Fixture.approval("a3")
+        broken["reason"] = ["verdict": "owner", "issues": [], "placement": ["probabilities": ["thread": "high", "channel": 0.3]]]
+        let approval = try #require(pending(broken))
+        #expect(approval.reason.placementOdds == ApprovalPlacementOdds(thread: nil, channel: 0.3, broadcast: nil))
+
+        var notAnObject = Fixture.approval("a4")
+        notAnObject["reason"] = ["verdict": "owner", "issues": [], "placement": ["probabilities": [0.7, 0.3]]]
+        #expect(try #require(pending(notAnObject)).reason.placementOdds == nil)
+    }
+
     @Test("slack-post でない承認と、形の壊れた承認は読まない")
     func otherKinds() {
         var calendar = Fixture.approval("a4")
@@ -124,6 +151,10 @@ struct ApprovalProtocolTests {
         let edit = payload(.edit(text: "10 時でお願いします。", placement: .thread))
         #expect(edit as? [String: AnyHashable] == [
             "approvalId": "a1", "revision": 2, "decision": "edit", "text": "10 時でお願いします。", "placement": "thread",
+        ])
+        let broadcast = payload(.approve(placement: .broadcast))
+        #expect(broadcast as? [String: AnyHashable] == [
+            "approvalId": "a1", "revision": 2, "decision": "approve", "placement": "broadcast",
         ])
         let reject = payload(.reject)
         #expect(reject as? [String: AnyHashable] == ["approvalId": "a1", "revision": 2, "decision": "reject"])

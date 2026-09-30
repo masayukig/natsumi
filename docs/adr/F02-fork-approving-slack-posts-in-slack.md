@@ -22,6 +22,7 @@
   既に閉じた承認のボタンが押されたときも、書き換えるだけにする。
 - どの承認をどのメッセージにしたかは、fork だけの表 `fork_slack_approval_messages` に持つ。番号付きの migration ではなく、起動時に `CREATE TABLE IF NOT EXISTS` で作る。
   起動時には、まだ投稿していない承認待ちを投稿し、止まっていた間に閉じた承認のメッセージを書き換える。
+- 追記: 置き場所が 3 つになった（[ADR 0062](0062-three-placements-for-a-reply.md)）ので、投稿先は「スレッド」「スレッド（チャンネルにも表示）」「チャンネル」のどれかで出す。知らない値はチャンネルとして出す。ボタンは今までどおり「送る」「見送る」だけで、置き場所は選び直せない。
 - Slack App には Interactivity（`settings.interactivity.is_enabled: true`、Socket Mode なので Request URL なし）と `im:write` を足す。`chat.update` は `chat:write` で足りる。
 
 退けた案:

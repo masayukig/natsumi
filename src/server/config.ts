@@ -233,10 +233,11 @@ export interface SlackConfig {
    */
   ignored: string[];
   /**
-   * The dove's judge (ADR 0040), resolved against `pi`: the logprobs of pi's own compatible model unless told otherwise.
-   * Absent when there is nothing to judge with; every draft is then "no verdict" and goes to the owner.
+   * The dove's judges (ADR 0040, ADR 0059), resolved against `pi`: the logprobs of pi's own compatible model unless told
+   * otherwise, and Jev when it is written. Absent when there is nothing to judge with; every draft is then "no verdict"
+   * and goes to the owner.
    */
-  judge?: JudgeConfig;
+  judge?: JudgesConfig;
   /** How long an approval waits for the owner before it expires. */
   approvalExpiryDays: number;
   /** Without a verdict, a reply to a top-level message goes to the channel while at most this many came after it. */
@@ -259,18 +260,28 @@ export interface SlackConfig {
 }
 
 /**
- * How the dove judges drafts (ADR 0040). `logprobs` asks an OpenAI-compatible model each question for one token and
- * reads the probabilities of its answers; `jev` calls TypeSafe AI's Jev API, or a server that answers the same API.
+ * How the dove judges drafts (ADR 0040, ADR 0059): two judges side by side, each with an endpoint of its own. `logprobs`
+ * asks an OpenAI-compatible model each question for one token and reads the probabilities of its answers; `jev` calls
+ * TypeSafe AI's Jev API, or a server that answers the same API. A judge the config has no endpoint for is left out, and
+ * cannot be turned on from the settings; one that is there may still be off until the settings turn it on.
  */
+export interface JudgesConfig {
+  /** The judge whose verdict decides while it has one (ADR 0059). */
+  adopted: 'logprobs' | 'jev';
+  logprobs?: JudgeConfig & { concurrency: number };
+  jev?: JudgeConfig;
+}
+
 export interface JudgeConfig {
-  method: 'logprobs' | 'jev';
+  /** Whether it judges, until the settings say otherwise. */
+  enabled: boolean;
   /** For `logprobs` the OpenAI-compatible base (`…/v1`); for `jev` the base of `/v1/systemone`. */
   baseUrl: string;
   /** Absent when the endpoint needs none: then no Authorization header is sent. */
   apiKey?: SecretReference;
   model: string;
   /** Questions asked at once by the logprobs method, one request each. */
-  concurrency: number;
+  concurrency?: number;
   /** A judgement not done in this time is "no verdict". */
   timeoutSeconds: number;
   /** A score at or over `owner` hands the draft to the owner; one at or over `return` turns it back to natsumi. */
@@ -283,9 +294,13 @@ export const SLACK_DEFAULTS = {
   judgeContext: { messages: 5, chars: 500 }, postImages: { maxBytes: 10 * 1024 * 1024, maxCount: 4 },
 };
 export const JUDGE_DEFAULTS = {
-  method: 'logprobs' as const, concurrency: 4, timeoutSeconds: 30, thresholds: { owner: 0.5, return: 0.9 },
-  jev: { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' },
+  adopted: 'logprobs' as const, concurrency: 4, timeoutSeconds: 30, thresholds: { owner: 0.5, return: 0.9 },
+  /** Its own thresholds (ADR 0059), set by the evaluation of the scenes before the release; the settings tune them while she runs. */
+  jev: { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', thresholds: { owner: 0.5, return: 0.9 } },
 };
+/** The keys of one judge's endpoint, as `slack.judge` had them before ADR 0059 and each judge has them now. */
+const JUDGE_ENDPOINT_KEYS = ['baseUrl', 'apiKeyEnv', 'apiKeyFile', 'model', 'timeoutSeconds', 'thresholds'];
+const JUDGES_KEYS = ['adopted', 'logprobs', 'jev'];
 const MAX_JUDGE_CONCURRENCY = 16;
 const MIN_JUDGE_TIMEOUT_SECONDS = 5;
 const MAX_JUDGE_TIMEOUT_SECONDS = 300;
@@ -427,7 +442,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     throw new ConfigError('curator.route', 'must be one of pi.routes');
   }
   if (config.slack) {
-    const judge = parseJudge((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
+    const judge = parseJudges((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
   }
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
@@ -921,19 +936,84 @@ function parseSources(value: unknown, path: string): SourcesConfig {
 }
 
 /**
- * The judge, resolved against pi (ADR 0040). The logprobs method borrows pi's compatible endpoint, key and model for
- * whatever the section leaves out; a key is borrowed only with the endpoint it belongs to. Without a section and
- * without a compatible model there is no judge. A key set here goes over plain http only to a loopback host.
+ * The judges, resolved against pi (ADR 0040, ADR 0059). The logprobs judge borrows pi's compatible endpoint, key and
+ * model for whatever its section leaves out, and is there without a section when pi has a compatible model; Jev is
+ * there when it is written. The form of before, one `method` with its endpoint's keys beside it, is read as that judge
+ * alone on and adopted, so a config need not change with the release.
  */
-function parseJudge(value: unknown, path: string, pi: PiConfig): JudgeConfig | undefined {
+function parseJudges(value: unknown, path: string, pi: PiConfig): JudgesConfig | undefined {
   // The default route's, fixed at startup: switching routes never changes what the dove judges with (ADR 0046).
   const lender = defaultRoute(pi);
-  const compatible = lender.compatible;
-  if (value === undefined && !compatible) return undefined;
-  const judge = object(value ?? {}, path);
-  onlyKeys(judge, path, ['method', 'baseUrl', 'apiKeyEnv', 'apiKeyFile', 'model', 'concurrency', 'timeoutSeconds', 'thresholds']);
-  const method = judge.method ?? JUDGE_DEFAULTS.method;
-  if (method !== 'logprobs' && method !== 'jev') throw new ConfigError(`${path}.method`, 'must be logprobs or jev');
+  if (value === undefined) {
+    return lender.compatible ? { adopted: JUDGE_DEFAULTS.adopted, logprobs: logprobsJudge({}, path, lender, true, JUDGE_DEFAULTS.thresholds) } : undefined;
+  }
+  const judge = object(value, path);
+  const before = Object.keys(judge).filter(key => !JUDGES_KEYS.includes(key));
+  if (before.length > 0) {
+    const mixed = Object.keys(judge).find(key => JUDGES_KEYS.includes(key));
+    if (mixed) throw new ConfigError(`${path}.${before[0]}`, `is the form of before ADR 0059; write either it or ${JUDGES_KEYS.join('/')}, not both`);
+    onlyKeys(judge, path, ['method', 'concurrency', ...JUDGE_ENDPOINT_KEYS]);
+    const method = judge.method ?? JUDGE_DEFAULTS.adopted;
+    if (method !== 'logprobs' && method !== 'jev') throw new ConfigError(`${path}.method`, 'must be logprobs or jev');
+    const { method: _method, ...endpoint } = judge;
+    if (method === 'logprobs') return { adopted: method, logprobs: logprobsJudge(endpoint, path, lender, true, JUDGE_DEFAULTS.thresholds) };
+    judgeConcurrency(endpoint.concurrency, path);
+    const { concurrency: _concurrency, ...jev } = endpoint;
+    return {
+      adopted: method,
+      ...(lender.compatible ? { logprobs: logprobsJudge({}, `${path}.logprobs`, lender, false, JUDGE_DEFAULTS.thresholds) } : {}),
+      jev: judgeEndpoint('jev', jev, path, lender, true, JUDGE_DEFAULTS.thresholds),
+    };
+  }
+  const adopted = judge.adopted ?? JUDGE_DEFAULTS.adopted;
+  if (adopted !== 'logprobs' && adopted !== 'jev') throw new ConfigError(`${path}.adopted`, 'must be logprobs or jev');
+  const section = (name: 'logprobs' | 'jev') => {
+    if (judge[name] === undefined) return undefined;
+    const written = object(judge[name], `${path}.${name}`);
+    const enabled = written.enabled ?? true;
+    if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.${name}.enabled`, 'must be true or false');
+    const { enabled: _enabled, ...endpoint } = written;
+    return { enabled, endpoint };
+  };
+  const logprobsSection = section('logprobs');
+  const jevSection = section('jev');
+  let logprobs: JudgesConfig['logprobs'];
+  if (!logprobsSection) {
+    if (lender.compatible) logprobs = logprobsJudge({}, `${path}.logprobs`, lender, true, JUDGE_DEFAULTS.thresholds);
+  } else if (logprobsSection.enabled || lender.compatible || logprobsSection.endpoint.baseUrl !== undefined) {
+    // Off with nothing to borrow and nothing written is no judge at all; on, it needs an endpoint.
+    logprobs = logprobsJudge(logprobsSection.endpoint, `${path}.logprobs`, lender, logprobsSection.enabled, JUDGE_DEFAULTS.thresholds);
+  }
+  const jev = jevSection ? judgeEndpoint('jev', jevSection.endpoint, `${path}.jev`, lender, jevSection.enabled, JUDGE_DEFAULTS.jev.thresholds) : undefined;
+  if (!logprobs && !jev) return undefined;
+  if (judge.adopted !== undefined && !(adopted === 'logprobs' ? logprobs : jev)) {
+    throw new ConfigError(`${path}.adopted`, 'names a judge with no endpoint in the config');
+  }
+  return { adopted, ...(logprobs ? { logprobs } : {}), ...(jev ? { jev } : {}) };
+}
+
+function logprobsJudge(endpoint: Record<string, unknown>, path: string, lender: ModelRoute, enabled: boolean,
+  thresholds: { owner: number; return: number }): JudgeConfig & { concurrency: number } {
+  const concurrency = judgeConcurrency(endpoint.concurrency, path);
+  const { concurrency: _concurrency, ...rest } = endpoint;
+  const judge = judgeEndpoint('logprobs', rest, path, lender, enabled, thresholds);
+  const { timeoutSeconds, thresholds: read, ...head } = judge;
+  return { ...head, concurrency, timeoutSeconds, thresholds: read };
+}
+
+function judgeConcurrency(value: unknown, path: string): number {
+  const concurrency = value ?? JUDGE_DEFAULTS.concurrency;
+  if (!positiveInteger(concurrency, 1) || (concurrency as number) > MAX_JUDGE_CONCURRENCY) {
+    throw new ConfigError(`${path}.concurrency`, `must be an integer from 1 to ${MAX_JUDGE_CONCURRENCY}`);
+  }
+  return concurrency as number;
+}
+
+/** One judge's endpoint. A key set here goes over plain http only to a loopback host. */
+function judgeEndpoint(method: 'logprobs' | 'jev', judge: Record<string, unknown>, path: string, lender: ModelRoute, enabled: boolean,
+  defaultThresholds: { owner: number; return: number }): JudgeConfig {
+  const compatible = method === 'logprobs' ? lender.compatible : undefined;
+  onlyKeys(judge, path, JUDGE_ENDPOINT_KEYS);
   const ownKey = judge.apiKeyEnv === undefined && judge.apiKeyFile === undefined ? undefined : secretReference(judge, path, 'apiKey');
   const basePath = `${path}.baseUrl`;
   let baseUrl: string;
@@ -960,10 +1040,6 @@ function parseJudge(value: unknown, path: string, pi: PiConfig): JudgeConfig | u
   else if (method === 'jev') model = JUDGE_DEFAULTS.jev.model;
   else if (compatible) model = lender.model.id;
   else throw new ConfigError(`${path}.model`, 'is required when pi has no compatible provider to borrow it from');
-  const concurrency = judge.concurrency ?? JUDGE_DEFAULTS.concurrency;
-  if (!positiveInteger(concurrency, 1) || (concurrency as number) > MAX_JUDGE_CONCURRENCY) {
-    throw new ConfigError(`${path}.concurrency`, `must be an integer from 1 to ${MAX_JUDGE_CONCURRENCY}`);
-  }
   const timeout = judge.timeoutSeconds ?? JUDGE_DEFAULTS.timeoutSeconds;
   if (!positiveInteger(timeout, MIN_JUDGE_TIMEOUT_SECONDS) || (timeout as number) > MAX_JUDGE_TIMEOUT_SECONDS) {
     throw new ConfigError(`${path}.timeoutSeconds`, `must be an integer from ${MIN_JUDGE_TIMEOUT_SECONDS} to ${MAX_JUDGE_TIMEOUT_SECONDS}`);
@@ -972,15 +1048,14 @@ function parseJudge(value: unknown, path: string, pi: PiConfig): JudgeConfig | u
   const thresholds = object(judge.thresholds ?? {}, thresholdsPath);
   onlyKeys(thresholds, thresholdsPath, ['owner', 'return']);
   const read = (name: 'owner' | 'return') => {
-    const threshold = thresholds[name] ?? JUDGE_DEFAULTS.thresholds[name];
+    const threshold = thresholds[name] ?? defaultThresholds[name];
     if (typeof threshold !== 'number' || !(threshold > 0 && threshold <= 1)) throw new ConfigError(`${thresholdsPath}.${name}`, 'must be a number over 0 and at most 1');
     return threshold;
   };
   const owner = read('owner');
   const returnAt = read('return');
   if (owner > returnAt) throw new ConfigError(thresholdsPath, 'owner must not be over return');
-  return { method, baseUrl, ...(apiKey ? { apiKey } : {}), model, concurrency: concurrency as number, timeoutSeconds: timeout as number,
-    thresholds: { owner, return: returnAt } };
+  return { enabled, baseUrl, ...(apiKey ? { apiKey } : {}), model, timeoutSeconds: timeout as number, thresholds: { owner, return: returnAt } };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {

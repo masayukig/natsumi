@@ -59,6 +59,7 @@ async function fakeWebApi(t: test.TestContext, options: { uploadStatus?: number;
       }
       if (request.url?.startsWith('/upload/')) return response.writeHead(options.uploadStatus ?? 200).end('OK');
       if (request.url === '/api/files.completeUploadExternal') return json(options.complete ?? { ok: true, files: [] });
+      if (request.url === '/api/chat.postMessage') return json({ ok: true, ts: '1790000000.000200' });
       json({ ok: false, error: 'unknown_method' });
     });
   });
@@ -119,4 +120,17 @@ test('Slack refusing the completion is named by the call and its code', async t 
   const f = await fakeWebApi(t, { complete: { ok: false, error: 'channel_not_found' } });
   await assert.rejects(f.api.uploadFiles('C1', [{ filename: 'cat.png', data: Buffer.from('x') }], {}),
     (error: unknown) => error instanceof SlackCallError && describeFailure(error) === 'files.completeUploadExternal: channel_not_found');
+});
+
+// ADR 0059: a reply placed in the channel is a reply in its thread, shown in the channel too.
+test('a post in a thread may be shown in the channel too, and a post without a thread never carries reply_broadcast', async t => {
+  const f = await fakeWebApi(t);
+  const form = () => Object.fromEntries(new URLSearchParams(f.calls.at(-1)!.body.toString()));
+  assert.equal(await f.api.postMessage('C1', '了解です', { threadTs: '1790000000.000100', replyBroadcast: true, iconUrl: 'https://natsumi.example.test/avatar/happy.png' }),
+    '1790000000.000200');
+  assert.deepEqual([form().thread_ts, form().reply_broadcast], ['1790000000.000100', 'true']);
+  await f.api.postMessage('C1', '了解です', { threadTs: '1790000000.000100', iconUrl: 'https://natsumi.example.test/avatar/happy.png' });
+  assert.equal(form().reply_broadcast, undefined);
+  await f.api.postMessage('C1', 'おはよう', { replyBroadcast: true, iconUrl: 'https://natsumi.example.test/avatar/happy.png' });
+  assert.deepEqual([form().thread_ts, form().reply_broadcast], [undefined, undefined]);
 });

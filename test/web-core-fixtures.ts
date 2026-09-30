@@ -31,6 +31,11 @@ export const settingsView = (overrides: Partial<SettingsView> = {}): SettingsVie
   reviewTimeoutMinutes: { value: 30, config: 30, overridden: false },
   awakeHours: { value: { start: '07:00', end: '23:00' }, config: { start: '07:00', end: '23:00' }, overridden: false, timeZone: 'Asia/Tokyo' },
   pingIntervalMinutes: { value: 180, config: 180, overridden: false },
+  judgeLogprobs: { value: 'on', config: 'on', overridden: false, available: true },
+  judgeJev: { value: 'off', config: 'off', overridden: false, available: false },
+  judgeAdopted: { value: 'logprobs', config: 'logprobs', overridden: false },
+  judgeLogprobsThresholds: { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false },
+  judgeJevThresholds: { value: { owner: 0.6, return: 0.95 }, config: { owner: 0.5, return: 0.9 }, overridden: true },
   ...overrides,
 });
 
