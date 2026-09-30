@@ -198,8 +198,8 @@ export class SlackDove {
     return { ok: true, text: kind === 'reaction'
       ? `ポッポさんがリアクションの依頼を受け付けました。付けたかどうか${later}`
       : body === ''
-        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。本文が無いので、判定にも本人にも回さずに届けます。届けたかどうか${later}`
-        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。届けたか、本人に回したか、突き返したか${later}` };
+        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。本文が無いので、判定にもマスターにも回さずに届けます。届けたかどうか${later}`
+        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。届けたか、マスターに回したか、突き返したか${later}` };
   }
 
   /**
@@ -252,7 +252,7 @@ export class SlackDove {
     if (!changed) return accepted(this.approval(row.approval_id)!.state);
     if (state === 'rejected') {
       this.emit('approval.resolved', { approvalId: row.approval_id, revision: row.revision, state, resolvedAt: now });
-      this.tell(row.post_id, 'rejected', 'ポッポ。本人が見送ったから、届けなかったよ。');
+      this.tell(row.post_id, 'rejected', 'ポッポ。マスターが見送ったから、届けなかったよ。');
     } else {
       this.enqueue(() => this.sendApproved(row.approval_id));
     }
@@ -273,7 +273,7 @@ export class SlackDove {
       });
       if (!changed) continue;
       this.emit('approval.resolved', { approvalId: row.approval_id, revision: row.revision, state: 'expired', resolvedAt: now });
-      this.tell(row.post_id, 'expired', 'ポッポ。本人が決めないまま期限が過ぎたから、届けなかったよ。');
+      this.tell(row.post_id, 'expired', 'ポッポ。マスターが決めないまま期限が過ぎたから、届けなかったよ。');
     }
   }
 
@@ -353,15 +353,15 @@ export class SlackDove {
       const left = MAX_RETURNS - history.length - 1;
       this.tell(postId, 'returned', `ポッポ、これは届けられないよ。気になったところ: ${flagged.join('・')}。`
         + '直すなら、書き直してもう一度頼んでね。'
-        + (left > 0 ? `同じ返信先で突き返せるのはあと ${left} 回で、その次は本人に回すよ。` : '次に突き返すときは、これまでの下書きと一緒に本人に回すよ。'));
+        + (left > 0 ? `同じ返信先で突き返せるのはあと ${left} 回で、その次はマスターに回すよ。` : '次に突き返すときは、これまでの下書きと一緒にマスターに回すよ。'));
       return;
     }
     this.hand(post, target, { verdict, placement, issues: judged?.issues ?? [], probabilities: judged?.placement?.probabilities, history });
     this.tell(postId, 'to_owner', verdict === 'owner'
-      ? `ポッポ…気になるところ（${flagged.join('・')}）があるから、本人に見てもらうね。本人が決めたら、また知らせるよ。`
+      ? `ポッポ…気になるところ（${flagged.join('・')}）があるから、マスターに見てもらうね。マスターが決めたら、また知らせるよ。`
       : verdict === 'rewrite-limit'
-        ? `ポッポ…同じ返信先で ${MAX_RETURNS + 1} 回目だから、これまでの下書きと一緒に本人に見てもらうね。本人が決めたら、また知らせるよ。`
-        : 'ポッポ…今は判定ができなかったから、本人に見てもらうね。本人が決めたら、また知らせるよ。');
+        ? `ポッポ…同じ返信先で ${MAX_RETURNS + 1} 回目だから、これまでの下書きと一緒にマスターに見てもらうね。マスターが決めたら、また知らせるよ。`
+        : 'ポッポ…今は判定ができなかったから、マスターに見てもらうね。マスターが決めたら、また知らせるよ。');
   }
 
   /** Images with no text (ADR 0044): nothing to judge, so neither a judge nor the owner; placed as without a verdict. */
@@ -420,8 +420,8 @@ export class SlackDove {
       });
       this.emit('approval.resolved', { approvalId, revision: approval.revision, state: approval.state, resolvedAt, delivery: 'sent', sentText: text });
       this.tell(post.post_id, 'sent', approval.state === 'edited'
-        ? `ポッポ！ 本人が直した本文で、${this.sentTo(post, shown.target.channel, placement)}よ。届けた本文:「${text}」`
-        : `ポッポ！ 本人が承認したから、${this.sentTo(post, shown.target.channel, placement)}よ。`);
+        ? `ポッポ！ マスターが直した本文で、${this.sentTo(post, shown.target.channel, placement)}よ。届けた本文:「${text}」`
+        : `ポッポ！ マスターが承認したから、${this.sentTo(post, shown.target.channel, placement)}よ。`);
       return;
     }
     this.fail(post, delivered);

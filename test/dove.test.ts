@@ -320,7 +320,7 @@ test('approving sends exactly the approved text, once, and tells the devices and
     delivery: 'sent', sentText: '承認を待つ下書き' });
   const last = f.lines().at(-1)!;
   assert.equal(last.result, 'sent');
-  assert.match(String(last.text), /本人/);
+  assert.match(String(last.text), /マスター/);
   // The same answer again, from another device: the first decision stands and nothing is sent twice.
   assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'reject', deviceId: 'd2' }),
     { kind: 'accepted', approvalId, revision: 1, state: 'approved' });
