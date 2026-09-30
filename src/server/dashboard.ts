@@ -9,10 +9,12 @@ import {
   type SortKey,
 } from './dashboard-files.ts';
 import { directoryPage, filePage, filesIndexPage, refusedFilePage } from './dashboard-files-view.ts';
-import { approvalsPage, devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
-import { APPROVAL_STATES, listApprovals, listDovePosts, readDevices, readWaits, type ApprovalState } from './dashboard-records.ts';
+import { approvalsPage, checkPage, checksPage, devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
 import {
-  APPROVALS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH,
+  APPROVAL_STATES, findSelfCheck, listApprovals, listDovePosts, listSelfChecks, readDevices, readWaits, type ApprovalState,
+} from './dashboard-records.ts';
+import {
+  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH,
   signedInPage, signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
 import { statsPage, statsTokens } from './dashboard-charts.ts';
@@ -21,6 +23,7 @@ import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
 import type { BrowserSessions } from './browser/session-cookie.ts';
 import type { Html } from './html.ts';
+import type { ToolOutcome } from './loop-tools.ts';
 import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
 import { codeManualDirectory } from './manual.ts';
 import { AVATAR_MANUAL_DIRECTORY } from './avatar-manual.ts';
@@ -36,8 +39,9 @@ import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } fr
  * The login is the app's GitHub login, ending with a session in the browser's cookie (ADR 0058, `browser/`), the one
  * the chat and the settings use too. A browser that still has the dashboard's cookie of before is moved to it here.
  *
- * Nothing here changes state but the logout, a POST whose Origin must be the public origin. The chat and the settings
- * change state over the WebSocket, not here: the dashboard stays read-only (ADR 0058).
+ * Nothing here changes state but two POSTs whose Origin must be the public origin: the logout, and the owner's cancel
+ * of one self-check (ADR 0064), made through the loop's own `SelfChecks.cancel`. The chat and the settings change state
+ * over the WebSocket, not here (ADR 0058).
  */
 
 /**
@@ -47,10 +51,11 @@ import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } fr
 export const DASHBOARD_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:",
   "connect-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"].join('; ');
 
-/** The loop as the dashboard uses it: reads of what it keeps, and no way to change any of it. */
+/** The loop as the dashboard uses it: reads of what it keeps, and the one change it takes, a self-check's cancel (ADR 0064). */
 export interface DashboardLoop {
   dashboardState(): LoopDashboardState;
   turnInProgress(): TurnInProgress | undefined;
+  cancelSelfCheck(checkId: string): ToolOutcome;
 }
 
 export interface DashboardOptions {
@@ -98,6 +103,9 @@ const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp
 /** A turn ID as the loop makes them; anything else is not looked up. */
 const TURN_ID = /^turn-[A-Za-z0-9-]{1,80}$/;
 const TURN_ROUTE = /^\/dashboard\/turns\/([^/]+)(?:\/images\/(0|[1-9][0-9]{0,5}))?$/;
+/** A self-check's page, or its cancel; the ID is one `SelfChecks` makes (`check-` and a UUID), or nothing is looked up. */
+const CHECK_ID = /^check-[A-Za-z0-9-]{1,80}$/;
+const CHECK_ROUTE = /^\/dashboard\/checks\/(check-[A-Za-z0-9-]{1,80})(\/cancel)?$/;
 
 type Headers = Record<string, string | string[]>;
 
@@ -130,6 +138,11 @@ export class Dashboard {
       if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
       return this.logout(request, response);
     }
+    const check = CHECK_ROUTE.exec(path);
+    if (check?.[2]) {
+      if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
+      return this.cancelCheck(request, response, check[1]!);
+    }
     if (method !== 'GET') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'GET' });
 
     // The one place the old cookie is still sent, and read, to be replaced by the new one.
@@ -152,6 +165,12 @@ export class Dashboard {
     if (path === TURNS_PATH) return this.turns(response, url, renewed);
     if (path === WAITS_PATH) return send(response, 200, waitsPage(this.waits(), this.options.timeZone, this.options.avatarId), renewed);
     if (path === WAITS_LIVE_PATH) return send(response, 200, renderWaits(this.waits(), this.options.timeZone), renewed);
+    if (path === CHECKS_PATH) return this.checks(response, url, renewed);
+    if (check) {
+      const booked = findSelfCheck(this.options.db, check[1]!);
+      if (!booked) return send(response, 404, this.message('待っている予約ではありません', true), renewed);
+      return send(response, 200, checkPage(booked, this.options.timeZone, this.options.avatarId), renewed);
+    }
     if (path === MEMOS_PATH) return this.memos(response, url, renewed);
     if (path === DOVE_PATH) return this.dove(response, url, renewed);
     if (path === APPROVALS_PATH) return this.approvals(response, url, renewed);
@@ -177,6 +196,29 @@ export class Dashboard {
   private waits() {
     const { db, now, nightlyRotationAt, timeZone } = this.options;
     return readWaits(db, { now: now(), nightlyRotationAt, timeZone });
+  }
+
+  /** The self-checks still waiting, a page at a time, and a word on the one just cancelled when its ID is one. */
+  private checks(response: ServerResponse, url: URL, headers: Headers): void {
+    const page = pageNumber(url);
+    const cancelled = url.searchParams.getAll('cancelled');
+    if (page === 0 || cancelled.length > 1) return send(response, 404, this.message('見つかりません', true), headers);
+    const word = cancelled.length === 1 && CHECK_ID.test(cancelled[0]!) ? { cancelled: cancelled[0]! } : {};
+    send(response, 200, checksPage({ ...listSelfChecks(this.options.db, page), page, ...word }, this.options.timeZone, this.options.avatarId), headers);
+  }
+
+  /**
+   * The owner's cancel of one self-check (ADR 0064), guarded as the logout is: the Origin must be the public origin
+   * (with the Strict cookie, the CSRF check), and the session must be live. A POST never starts a login.
+   */
+  private cancelCheck(request: IncomingMessage, response: ServerResponse, checkId: string): void {
+    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, this.message('削除できませんでした'));
+    const session = this.options.browser.session(request, { legacy: true });
+    if (!session) return send(response, 403, this.message('ログインが切れました。もう一度開いてください'));
+    const renewed: Headers = { 'set-cookie': this.options.browser.renewed(session) };
+    const outcome = this.options.loop.cancelSelfCheck(checkId);
+    if (!outcome.ok) return send(response, 409, this.message(outcome.text, true), renewed);
+    response.writeHead(303, { location: `${CHECKS_PATH}?cancelled=${encodeURIComponent(checkId)}`, ...renewed }).end();
   }
 
   /**
