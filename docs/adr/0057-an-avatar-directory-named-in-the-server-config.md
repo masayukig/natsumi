@@ -40,6 +40,10 @@
     知らない ID は、組み込みの ID の一覧を添えて `ConfigError`（`avatar.id`）で止まる。一覧はディレクトリから決まり、config の検査の時点では分からないので、アバターを読むときに確かめる。
   - `avatar.directory`: 足すアバターのディレクトリ（絶対パス）。
 - `avatar` を省略すると、`avatar.id` が `natsumi` のときと同じになる。
+- `avatar.appearance`（省略可）: `appearance.yaml` の絶対パス。選んだアバターの `appearance.yaml` を、混ぜずに丸ごと置き換える。
+  組み込みのアバターを、ディレクトリを写さずに衣装違いで使うためのもの。`avatar.id` とも `avatar.directory` とも書ける。
+  アバターの `appearance.yaml` と同じ検査をし、無い・壊れていると `ConfigError`（`avatar.appearance`）で止まる。
+  運用者が指したファイルなので、ディレクトリの外を指す検査はせず、symlink（ConfigMap のマウント）もたどる。アプリには渡さないので、版は変わらない。
 - 足すアバターの置き場所の目安は、永続ボリュームの別の場所を読み取り専用でサーバーにだけ見せる形（例 `/var/lib/natsumi-avatars/<id>`）。作業環境には見せない。
 - 組み込みも足すものも、検査とのっぺらぼうの埋め方は同じである。組み込みのアバターが検査に通らないのは image の不具合なので、テストで固定する。
 

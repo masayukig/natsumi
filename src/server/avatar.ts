@@ -104,7 +104,8 @@ const APPEARANCE_KEYS = ['lora', 'body', 'outfit', 'outfitName', 'keep', 'exampl
 
 /**
  * The avatar the config names: a built-in one by its ID, or one added by its directory; natsumi when it names none.
- * An unknown ID or a broken avatar stops the start as a config error on the setting that named it.
+ * An unknown ID or a broken avatar stops the start as a config error on the setting that named it. An `appearance.yaml`
+ * the config names replaces the avatar's own, whole; it is followed through symlinks, as a ConfigMap mounts it.
  */
 export async function loadAvatar(choice: AvatarConfig | undefined): Promise<Avatar> {
   const chosen = choice ?? { id: DEFAULT_AVATAR_ID };
@@ -113,7 +114,13 @@ export async function loadAvatar(choice: AvatarConfig | undefined): Promise<Avat
   if (directory === undefined) throw new ConfigError(setting, await notBuiltIn((chosen as { id: string }).id));
   const inspected = await inspectAvatar(directory);
   if (!inspected.avatar) throw new ConfigError(setting, inspected.errors.join('; '));
-  return inspected.avatar;
+  if (chosen.appearance === undefined) return inspected.avatar;
+  const text = await readFile(chosen.appearance, 'utf8').catch(() => undefined);
+  if (text === undefined) throw new ConfigError('avatar.appearance', 'cannot be read');
+  const errors: string[] = [];
+  const appearance = parseAppearance(text, errors);
+  if (!appearance) throw new ConfigError('avatar.appearance', errors.join('; '));
+  return { ...inspected.avatar, appearance, defaults: inspected.avatar.defaults.filter(name => name !== 'appearance.yaml') };
 }
 
 /** The directory of a built-in avatar, or undefined when the image has none of that ID. */
