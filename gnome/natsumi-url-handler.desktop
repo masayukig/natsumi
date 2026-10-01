@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=natsumi login
+Comment=Hands natsumi://oauth/callback to the natsumi GNOME Shell extension
+Exec=gdbus call --session --dest io.github.masayukig.Natsumi --object-path /io/github/masayukig/Natsumi --method io.github.masayukig.Natsumi.OpenUri %u
+MimeType=x-scheme-handler/natsumi;
+NoDisplay=true
