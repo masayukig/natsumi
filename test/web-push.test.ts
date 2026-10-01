@@ -218,3 +218,17 @@ test('a subscription is one per device and an endpoint belongs to one device', (
   assert.equal(subscriptions.remove('device-b', 'https://push.example.test/one'), false, 'not the endpoint it has now');
   assert.equal(subscriptions.remove('device-b', 'https://push.example.test/two'), true);
 });
+
+test('an answer that comes after the notifier has closed touches nothing, even with the database closed', async () => {
+  let answer!: (status: number) => void;
+  const { db, subscriptions, logs, notifier, emit } = await notifierWith(() => 0);
+  device(db, 'device-away');
+  subscriptions.save('device-away', parseSubscription(subscriptionJson('https://push.example.test/away', browserKeys()))!);
+  (notifier as unknown as { send: () => Promise<number> }).send = () => new Promise(resolve => { answer = resolve; });
+  await emit(reply('おかえり'));
+  notifier.close();
+  db.close();
+  answer(410);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(logs, []);
+});

@@ -29,6 +29,7 @@ export const BUNDLE_DIRECTORIES = ['../../../dist/web/', '../../../web/'].map(pa
 
 /** A file of the bundle: a plain name, no directories, no dot in front. */
 const BUNDLE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const BUNDLE_TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -94,8 +95,10 @@ export class WebApp {
 
   private manifest(response: ServerResponse): void {
     const { name, icon } = this.options;
-    // A PNG's width and height are the first two fields of its IHDR.
-    const icons = icon ? [{ src: '/avatar/neutral.png', type: 'image/png', sizes: `${icon.readUInt32BE(16)}x${icon.readUInt32BE(20)}` }] : [];
+    // A PNG's width and height are the first two fields of its IHDR, right after the signature; anything else goes without sizes.
+    const png = icon && icon.length >= 24 && icon.subarray(0, 8).equals(PNG_SIGNATURE) && icon.toString('latin1', 12, 16) === 'IHDR';
+    const icons = icon ? [{ src: '/avatar/neutral.png', type: 'image/png',
+      ...(png ? { sizes: `${icon.readUInt32BE(16)}x${icon.readUInt32BE(20)}` } : {}) }] : [];
     const body = Buffer.from(JSON.stringify({ name, short_name: name, start_url: '/', scope: '/', display: 'standalone', icons }));
     response.writeHead(200, { 'content-type': 'application/manifest+json', 'content-length': body.length }).end(body);
   }

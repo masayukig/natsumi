@@ -512,6 +512,8 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 - 受け付けると `command.accepted`（中身なし）が返る。形が合わなければ `invalid-request`。bearer の接続（アプリ）からの `subscription` も断る。
 - 購読は端末ごとに 1 つで、送るたびに上書きする。同じ endpoint を別の端末が登録すると、前の端末の購読は消える。
 - 解除のコマンドは無い。ブラウザで購読を止めると、push service が 404 か 410 を返し、そのときサーバーが購読を消す。
+- サーバーの VAPID の鍵が作り直されると、古い鍵の購読への push は 401・403 で断られ、サーバーは消さない。ブラウザはページを開いたときに購読の `applicationServerKey` とページの鍵を比べ、違えば購読し直して登録する。
+- タブが開いていてつながっている間は、見えていなくても送らない。
 
 ### いつ何を送るか
 
@@ -523,7 +525,7 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 既読・確認・承認が閉じたことは送らない（ブラウザは届いた push をすべて通知として出す）。1 回だけ送り、送り直さない。
 push service が 404 か 410 を返すと、その購読を消す。
 
-push は RFC 8291 の `aes128gcm` で購読の鍵に暗号化し、VAPID（RFC 8292、ES256。`aud` は endpoint のオリジン、`exp` は 12 時間後、`sub` は `publicOrigin`）を付けて POST する。
+push は RFC 8291 の `aes128gcm` で購読の鍵に暗号化し、VAPID（RFC 8292、ES256。`aud` は endpoint のオリジン、`exp` は 12 時間後、`sub` は `publicOrigin`）を付けて POST する（redirect は追わない）。Apple の push service は https でない・localhost の `sub` を 403 で断る。
 ヘッダーは `Authorization: vapid t=<JWT>, k=<公開鍵>`、`Content-Encoding: aes128gcm`、`TTL: 86400`、`Urgency: high`。平文は UTF-8 の JSON である。
 
 ```json

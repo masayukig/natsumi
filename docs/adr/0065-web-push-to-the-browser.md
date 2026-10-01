@@ -24,6 +24,7 @@ cookie でつないだ接続からの `push.register` は `invalid-request` で�
 - 送り先は、Web Push の購読があり、その端末が最後に同期したセッションが生きていて、いまつながっていない端末である。iPhone の登録と同じ規則で、同じ問い合わせの形を使う。
   ブラウザのタブが開いていてつながっていれば、会話のイベントで届くので送らない。
 - iPhone の background push（既読のカーソル・知らせの確認・承認が閉じた）に当たるものは送らない。ブラウザは、届いた push をすべて通知として見せる約束（`userVisibleOnly`）でしか購読できないからである。
+- 送り先の endpoint は、ログインした本人（`allowedUserId`）の接続からしか登録できない。サーバーは https であることだけを確かめ、宛先のホストは絞らない。redirect は追わない。
 - 1 回だけ送る。送り直しはしない。返事と知らせは会話に残っていて、開けば同期で読める。
 - push service が 404 か 410 を返したら、その購読を消す。ほかの失敗は log に残すだけにする。log には端末の ID と HTTP の status だけを出し、本文と endpoint は出さない（endpoint はそれだけで送り先になる）。
 
@@ -43,6 +44,7 @@ cookie でつないだ接続からの `push.register` は `invalid-request` で�
   読めない鍵があれば、作り直さずに起動を止める。作り直すと、今までの購読がすべて無効になるからである。
 - config には何も足さない。鍵はこのサーバーのもので、外の誰かと分け合うものではないからである。
 - JWT の `aud` は endpoint のオリジン、`exp` は 12 時間後、`sub` は `publicOrigin` とする。送るたびに作る。
+  Apple の push service は https でない、または localhost の `sub` を 403 で断るので、http の `publicOrigin` で動かす開発の環境では Safari に届かない。
 - 公開鍵は、ログインした後の `/`・`/settings` のページに `<meta name="natsumi-push-key">` として載せる。ページの JS がそれで購読する。
 
 ### 登録は `push.register` を広げて行う
@@ -84,5 +86,9 @@ cookie でつないだ接続からの `push.register` は `invalid-request` で�
 - iOS・iPadOS の Safari は、ホーム画面に追加したときだけ Web Push を持つ。iPhone はアプリを使う前提なので、これを目当てにはしない。
 - 読んだ後の片づけ（background push に当たるもの）は無いので、Mac で読んだ返事の通知もブラウザには残る。気になるようなら、通知を開いたときにページの側で片づけることを考える。
 - 送り直しが無いので、push service が一時的に落ちていると、その間の通知は届かない。
-- data directory に `.natsumi/web-push-key.pem` が増える。消すと次の起動で別の鍵が作られ、今までの購読は push service に断られて消える。ブラウザで「通知を受け取る」を押し直せば戻る。
+- data directory に `.natsumi/web-push-key.pem` が増える。消すと次の起動で別の鍵が作られ、今までの購読への push は push service に 401 か 403 で断られる。
+  サーバーはこれを購読が無くなったとは見ないので、購読は残り、届かないまま送り続ける。
+  ブラウザは、ページを開いたときに購読の鍵（`applicationServerKey`）とページの鍵を比べ、違えば購読を止めて、通知が許可されていれば今の鍵で購読し直して登録する（許可が無ければ「off」と出す）。
+  つまり、鍵を作り直した後は、各ブラウザでなつみを 1 度開くまで通知が届かない。
+- タブを開いたまま裏に回している（見えていない）ブラウザも、つながっている端末なので push は送らない。会話のイベントはそのタブに届いている。
 - [権限と秘密の一覧](../permissions.md)に、VAPID の鍵、購読、push service への送信を足した。

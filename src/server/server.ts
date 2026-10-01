@@ -396,7 +396,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
-          pushKey: vapid.publicKey, icon: avatar.slack('neutral')! }),
+          pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

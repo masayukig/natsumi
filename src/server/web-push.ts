@@ -218,7 +218,7 @@ export class WebPushNotifier {
   private dispatch(plaintext: Buffer) {
     for (const target of this.options.subscriptions.targets(this.options.allowedUserId)) {
       if (this.options.isConnected(target.deviceId)) continue;
-      void this.deliver(target, plaintext);
+      void this.deliver(target, plaintext).catch(() => { /* a store closed on the way out; nothing to tell */ });
     }
   }
 
@@ -237,6 +237,7 @@ export class WebPushNotifier {
       this.options.log(`web push: no answer for ${target.deviceId}`);
       return;
     }
+    if (this.closed) return;
     if (status === 404 || status === 410) {
       if (this.options.subscriptions.remove(target.deviceId, target.endpoint)) {
         this.options.log(`web push: removed the subscription of ${target.deviceId} (${status})`);
@@ -259,7 +260,8 @@ export function webPushPayload(title: string, tag: string, line: Parameters<type
 }
 
 async function post(request: WebPushRequest): Promise<number> {
-  const response = await fetch(request.endpoint, { method: 'POST', headers: request.headers, body: new Uint8Array(request.body),
+  // A push service answers where it is asked; a redirect is never followed.
+  const response = await fetch(request.endpoint, { method: 'POST', headers: request.headers, body: new Uint8Array(request.body), redirect: 'error',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   await response.body?.cancel();
   return response.status;
