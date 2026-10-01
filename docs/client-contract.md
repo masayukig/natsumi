@@ -98,7 +98,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel / broadcast） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
-| `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
+| `push.register` | token、publicKey、environment（ブラウザは subscription） | `command.accepted`（environment。ブラウザは中身なし）、または invalid-request。下記「iPhone への通知」「ブラウザへの通知」 |
 | `model.list` | — | `command.accepted`（`modelRoutes` と同じ形: defaultRoute、current、chosen、routes）、または `service.unavailable`。下記「モデルの経路」 |
 | `model.use` | route（経路の名前） | `command.accepted`（chosen、current）、または unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「モデルの経路」 |
 | `settings.list` | — | `command.accepted`（settings: 設定の一覧）、または `service.unavailable`。下記「実行中の設定」 |
@@ -493,6 +493,50 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 - アプリはバッジを直し、届いている通知のうち、`position` が `readThroughPosition` 以下の返事と、確認済みの知らせを消す。
 - background push は iOS が間引くので確実には届かない。アプリは前に戻ったとき、同期した状態に合わせて通知とバッジを片づける。
 
+## ブラウザへの通知
+
+ブラウザは、閉じている間の返事・知らせ・承認待ちを Web Push で受けられる（[ADR 0065](adr/0065-web-push-to-the-browser.md)）。
+送り先を決める規則は iPhone と同じで、購読があり、その端末のセッションが生きていて、**いま接続していない**端末に送る。
+
+### 登録
+
+ブラウザは購読したとき（設定の画面の「通知を受け取る」）と、その後の同期のたびに、`push.register` を送る。
+
+```json
+{"subscription":{"endpoint":"https://push.example.test/send/abc","keys":{"p256dh":"BNcR…","auth":"tBHI…"}}}
+```
+
+- `subscription` は `PushSubscription.toJSON()` の形のまま送ってよい（`expirationTime` は見ない）。
+  `endpoint` は https の URL、`keys.p256dh` は P-256 の公開鍵（非圧縮、65 バイト）、`keys.auth` は 16 バイトで、どちらも base64url である。
+- 購読は VAPID の公開鍵（ページの `<meta name="natsumi-push-key">`）を `applicationServerKey` にし、`userVisibleOnly: true` で作る。
+- 受け付けると `command.accepted`（中身なし）が返る。形が合わなければ `invalid-request`。bearer の接続（アプリ）からの `subscription` も断る。
+- 購読は端末ごとに 1 つで、送るたびに上書きする。同じ endpoint を別の端末が登録すると、前の端末の購読は消える。
+- 解除のコマンドは無い。ブラウザで購読を止めると、push service が 404 か 410 を返し、そのときサーバーが購読を消す。
+- サーバーの VAPID の鍵が作り直されると、古い鍵の購読への push は 401・403 で断られ、サーバーは消さない。ブラウザはページを開いたときに購読の `applicationServerKey` とページの鍵を比べ、違えば購読し直して登録する。
+- タブが開いていてつながっている間は、見えていなくても送らない。
+
+### いつ何を送るか
+
+| きっかけ | 送るもの |
+| --- | --- |
+| 返事（kind: reply）・知らせ（kind: notice）を記録した | 本文 |
+| 承認待ちができた（`approval.pending`） | 承認待ちの見出しと下書き |
+
+既読・確認・承認が閉じたことは送らない（ブラウザは届いた push をすべて通知として出す）。1 回だけ送り、送り直さない。
+push service が 404 か 410 を返すと、その購読を消す。
+
+push は RFC 8291 の `aes128gcm` で購読の鍵に暗号化し、VAPID（RFC 8292、ES256。`aud` は endpoint のオリジン、`exp` は 12 時間後、`sub` は `publicOrigin`）を付けて POST する（redirect は追わない）。Apple の push service は https でない・localhost の `sub` を 403 で断る。
+ヘッダーは `Authorization: vapid t=<JWT>, k=<公開鍵>`、`Content-Encoding: aes128gcm`、`TTL: 86400`、`Urgency: high`。平文は UTF-8 の JSON である。
+
+```json
+{"title":"なつみ","tag":"message-example","text":"猫を描いてみました。（画像 1 枚）","expression":"happy","icon":"https://natsumi.example.net/avatar/happy.png"}
+{"title":"なつみ","tag":"approval-example","text":"承認待ちがあります（work/#dev）\n明日は 10 時からなら大丈夫です。"}
+```
+
+- `title` はアバターの表示名、`tag` は messageId か approvalId である。
+- `text`・`expression`・`icon` は iPhone の `e` の平文と同じ規則で作る（上記「e の暗号」の切り方と画像の印）。1 つの record（平文 3993 バイト）に収まらなければ、さらに短く切る。
+- service worker は `title` と `text` と `icon` で通知を出し、`tag` で同じ行の通知をまとめる。押されたら、開いているタブを前に出すか、`/` を開く。
+
 ## 承認と外部実行
 
 ### Slack の投稿の承認
@@ -579,7 +623,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 ## ブラウザ
 
 ブラウザは、`/` でなつみと話し、`/settings` で実行中の設定を変える、もう 1 台の端末である（[ADR 0058](adr/0058-settings-and-chat-in-the-browser.md)）。
-開いている間だけの端末で、通知は受けない。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
+閉じている間の返事と知らせは、Web Push で受けられる（下記「ブラウザへの通知」、[ADR 0065](adr/0065-web-push-to-the-browser.md)）。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
 
 ### ログインと cookie
 
@@ -599,6 +643,9 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
   サーバーは束を checkout の `dist/web/`（image では `/app/dist/web/`）から読む。
 - CSP は `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://<publicOrigin のホスト>; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` である。
   inline の script と style、`eval`、ほかのオリジンからの読み込みはできない。
+- HTML の head には、Web App Manifest（`<link rel="manifest" href="/app/manifest.webmanifest">`）と、Web Push の VAPID の公開鍵（`<meta name="natsumi-push-key" content="…">`、base64url）が載る。
+  manifest はサーバーがアバターから作り（名前は表示名、アイコンは `/avatar/neutral.png`）、ログイン無しで取れる。
+- service worker は束の `/app/sw.js` である。サーバーはこのファイルにだけ `Service-Worker-Allowed: /` を付けるので、scope `/` で登録できる。
 
 ### WSS への接続
 
@@ -607,7 +654,8 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 - つないだ後は、上記「端末の登録と stream」と同じである。最初の `session.sync` で deviceId を受け取り、手元（localStorage など）に控えて、次の接続の envelope に付ける。
 - 話す（`conversation.send`）、既読（`conversation.read`）、知らせの確認（`notification.ack`）、承認（`approval.decide`）、経路（`model.*`）、設定（`settings.*`）は、Mac・iPhone と同じに使える。
   承認は外に作用するので、押し間違いの確認は画面の側で行う。
-- `push.register` は `command.rejected`（`invalid-request`）で断られる。ブラウザがつながっていても、iPhone への通知は止まらない（通知の判定は端末ごとで、ブラウザは登録を持たない）。
+- `push.register` は Web Push の購読（`subscription`）だけを受け付け、APNs の登録（`token`・`publicKey`・`environment`）は `command.rejected`（`invalid-request`）で断られる（下記「ブラウザへの通知」）。
+  ブラウザがつながっていても、iPhone への通知は止まらない（通知の判定は端末ごとである）。
 - 返事の画像（`images`）は `GET /v1/images/<imageId>` を cookie 付きで取る（`<img src>` でよい。同じオリジンなので cookie が付く）。
   URL は imageId だけで決め、クエリを足さない。同じ URL なら、ブラウザは一度取った画像を HTTP のキャッシュから出す（上記「承認と外部実行」の「画像」）。
   このキャッシュはログアウトしても端末に残る。
@@ -618,7 +666,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 `npm run fake-server -- [--bundle <dir>]` は、GitHub もモデルも使わずにブラウザの画面を試すための偽のサーバーである（`http://localhost:8787`）。
 
 - `/`・`/settings` を cookie 無しで開くと `/fake-login?to=<戻り先>` に回され、そこで cookie `natsumi_session=fake-session` が付いて戻る。テストはこの cookie を自分で付けてもよい。
-- `/v1/ws` は、cookie があって Origin が `http://localhost:<port>` でなければ 403 を返す。cookie でつないだ接続の `push.register` は断る。
+- `/v1/ws` は、cookie があって Origin が `http://localhost:<port>` でなければ 403 を返す。cookie でつないだ接続の `push.register` は、`subscription` なら受け付け（何も送らない）、APNs の登録なら断る。
 - `settings.*` は本物と同じ規則で答え、ログアウト（`POST /auth/logout`、または同じオリジンからの `POST /dashboard/logout`）で config の値に戻る。
 - 束は `--bundle` のディレクトリ（省略すると本物と同じ場所）から配る。
 

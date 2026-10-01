@@ -108,6 +108,8 @@ export interface SettingsProps {
   status: StatusProps;
   reconnect?: { label: string };
   rows: SettingRowProps[];
+  /** This browser's notifications (ADR 0065). */
+  notifications: { status: 'unsupported' | 'off' | 'busy' | 'on'; error?: string };
 }
 
 export type ScreenProps = ChatProps | SettingsProps;
@@ -312,5 +314,6 @@ export function settingsProps(state: AppState): SettingsProps {
       canReset: item.overridden, busy: entry.pending !== undefined, ...(entry.error ? { error: entry.error } : {}),
     };
   }) : [];
-  return { screen: 'settings', name, ...(face ? { face } : {}), ...statusOf(state), rows };
+  const { status, error } = state.push;
+  return { screen: 'settings', name, ...(face ? { face } : {}), ...statusOf(state), rows, notifications: { status, ...(error ? { error } : {}) } };
 }

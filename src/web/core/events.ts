@@ -1,4 +1,5 @@
 import type { AvatarManifest } from '../../shared/protocol/avatar.ts';
+import type { WebPushSubscription } from '../../shared/protocol/envelope.ts';
 import type { Decision, Placement } from '../../shared/protocol/conversation.ts';
 import type { SettingKey } from '../../shared/protocol/settings.ts';
 import type { SettingInput } from './settings.ts';
@@ -18,6 +19,7 @@ export type AppEvent =
   | { type: 'avatar-loaded'; manifest: AvatarManifest }
   | { type: 'avatar-failed' }
   | { type: 'visibility'; visible: boolean }
+  | { type: 'push-checked'; supported: boolean; subscription?: WebPushSubscription; error?: 'denied' | 'failed' }
   // The chat.
   | { type: 'send'; text: string }
   | { type: 'retry-send'; requestId: string }
@@ -30,4 +32,5 @@ export type AppEvent =
   | { type: 'approval-cancel'; approvalId: string }
   // The settings.
   | { type: 'setting-submit'; input: SettingInput }
-  | { type: 'setting-reset'; key: SettingKey };
+  | { type: 'setting-reset'; key: SettingKey }
+  | { type: 'push-toggle'; on: boolean };

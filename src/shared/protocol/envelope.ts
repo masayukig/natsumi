@@ -74,7 +74,11 @@ export type ClientCommand =
   | { type: 'approval.decide'; payload: { approvalId: string; revision: number; decision: Decision; text?: string; placement?: Placement } }
   | { type: 'settings.list'; payload: Record<string, never> }
   | { type: 'settings.set'; payload: { [K in SettingKey]: { key: K; value: SettingValues[K] } }[SettingKey] }
-  | { type: 'settings.reset'; payload: { key: SettingKey } };
+  | { type: 'settings.reset'; payload: { key: SettingKey } }
+  | { type: 'push.register'; payload: { subscription: WebPushSubscription } };
+
+/** A browser's Web Push subscription as `PushSubscription.toJSON()` gives it, the keys in base64url (ADR 0065). */
+export interface WebPushSubscription { endpoint: string; keys: { p256dh: string; auth: string } }
 
 export function encodeCommand(input: { requestId: string; deviceId?: string; command: ClientCommand }): string {
   const { requestId, deviceId, command } = input;

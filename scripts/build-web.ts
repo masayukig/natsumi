@@ -1,6 +1,7 @@
 /**
  * Builds the browser's app (ADR 0058) into dist/web/: src/web/main.ts bundled into one ES module, app.js, with its
- * source map, and src/web/app.css beside it. The server serves these under /app/ by name.
+ * source map, src/web/app.css beside it, and the service worker that shows Web Push, sw.js (ADR 0065). The server serves
+ * these under /app/ by name.
  *
  *   node scripts/build-web.ts [--out <dir>]
  */
@@ -25,6 +26,19 @@ await build({
   jsxImportSource: 'preact',
   minify: true,
   sourcemap: 'linked',
+  legalComments: 'none',
+  logLevel: 'warning',
+});
+// A classic script, not a module: every browser that has Web Push runs one as a service worker.
+await build({
+  absWorkingDir: root,
+  entryPoints: { sw: 'src/web/sw.ts' },
+  outdir: values.out,
+  bundle: true,
+  format: 'iife',
+  target: ['es2022', 'safari16'],
+  platform: 'browser',
+  minify: true,
   legalComments: 'none',
   logLevel: 'warning',
 });

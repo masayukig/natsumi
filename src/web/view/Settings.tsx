@@ -9,12 +9,33 @@ import type { Dispatch } from './parts.tsx';
 export function Settings({ props, dispatch }: { props: SettingsProps; dispatch: Dispatch }) {
   return (
     <main class="settings">
+      <Notifications notifications={props.notifications} dispatch={dispatch} />
       <p class="intro">ここで変えた値は、サーバーの config の上書きとして残ります。「config に戻す」で上書きを消します。</p>
       {props.rows.map(row => (
         // A new value from the server draws the fields afresh; while it stays, what the owner typed stays.
         <SettingRow key={`${row.key}:${JSON.stringify(row.control)}`} row={row} dispatch={dispatch} />
       ))}
     </main>
+  );
+}
+
+/** This browser's notifications (ADR 0065): asked of the browser here, and kept by the browser, not the server's config. */
+function Notifications({ notifications, dispatch }: { notifications: SettingsProps['notifications']; dispatch: Dispatch }) {
+  const { status, error } = notifications;
+  return (
+    <section class="setting" aria-labelledby="notifications-label">
+      <h2 id="notifications-label">このブラウザへの通知</h2>
+      <p class="help">このブラウザでなつみを開いていない間の返事・知らせ・承認待ちを、通知で受け取ります。</p>
+      {status === 'unsupported'
+        ? <p class="note">このブラウザ、またはサーバーでは通知を使えません。</p>
+        : (
+          <button type="button" class={status === 'on' ? '' : 'primary'} disabled={status === 'busy'}
+            onClick={() => dispatch({ type: 'push-toggle', on: status !== 'on' })}>
+            {status === 'busy' ? '設定しています…' : status === 'on' ? '通知を止める' : '通知を受け取る'}
+          </button>
+        )}
+      {error && <p class="error" role="alert">{error}</p>}
+    </section>
   );
 }
 

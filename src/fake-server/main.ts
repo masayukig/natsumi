@@ -21,7 +21,7 @@
  * `/` and `/settings` without the cookie go to `/fake-login`, which sets `natsumi_session=fake-session` (FAKE_SESSION_COOKIE,
  * which a test may also set itself) and goes back. With it they serve the server's own page, which loads the bundle
  * (`--bundle <dir>`, by default where the build puts it) from `/app/`. `/v1/ws` refuses the cookie from an Origin other
- * than its own, and such a connection may not register for pushes; the images take the cookie too. A POST to
+ * than its own, and such a connection registers a Web Push subscription only (ADR 0065); the images take the cookie too. A POST to
  * `/dashboard/logout` from its own origin clears the cookie.
  */
 import { readFileSync } from 'node:fs';
@@ -307,10 +307,10 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         converse(String(payload.text), requestId);
         return;
       case 'push.register':
-        // A browser is never pushed to, so it has nothing to register (ADR 0058).
-        if (browser) { broadcast('command.rejected', { code: 'invalid-request' }, requestId); return; }
+        // A browser registers a Web Push subscription and nothing else, an app never one (ADR 0065).
+        if (browser !== ('subscription' in payload)) { broadcast('command.rejected', { code: 'invalid-request' }, requestId); return; }
         // Nothing is sent from here: the simulator's pushes are not the server's to make.
-        broadcast('command.accepted', { environment: payload.environment }, requestId);
+        broadcast('command.accepted', browser ? {} : { environment: payload.environment }, requestId);
         return;
       case 'approval.decide':
         decide(payload, requestId);
@@ -475,7 +475,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       response.writeHead(302, { Location: to, 'Set-Cookie': `${FAKE_SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Strict` }).end();
     } else if (url.pathname.startsWith('/app/') && request.method === 'GET') {
       const file = await readBundleFile(url.pathname.slice('/app/'.length), options.bundleDirectory);
-      if (file) response.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.data.length }).end(file.data);
+      if (file) response.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.data.length, ...file.headers }).end(file.data);
       else response.writeHead(404).end();
     } else if (url.pathname === '/dashboard/logout' && request.method === 'POST') {
       if (request.headers.origin !== origin()) { response.writeHead(403).end(); return; }

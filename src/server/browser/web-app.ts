@@ -19,12 +19,17 @@ export const WEB_APP_PAGES: readonly BrowserReturn[] = ['/', '/settings'];
 export const BUNDLE_PATH = '/app/';
 export const BUNDLE_SCRIPT = 'app.js';
 export const BUNDLE_STYLE = 'app.css';
+/** The service worker that shows Web Push (ADR 0065). Served under `/app/` and allowed the scope `/`. */
+export const SERVICE_WORKER = 'sw.js';
+/** The Web App Manifest, made from the avatar rather than read from the bundle. */
+export const MANIFEST = 'manifest.webmanifest';
 
 /** `dist/web/` in a checkout (built beside `src/`), and `/app/dist/web/` in the image (beside `dist/src/`). */
 export const BUNDLE_DIRECTORIES = ['../../../dist/web/', '../../../web/'].map(path => fileURLToPath(new URL(path, import.meta.url)));
 
 /** A file of the bundle: a plain name, no directories, no dot in front. */
 const BUNDLE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const BUNDLE_TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -40,6 +45,10 @@ export interface WebAppOptions {
   name: string;
   /** Where the bundle is read from; by default the first of BUNDLE_DIRECTORIES that has the script. */
   bundleDirectory?: string;
+  /** The VAPID public key, base64url, which the page hands the browser to subscribe with (ADR 0065). */
+  pushKey?: string;
+  /** Her neutral face as a PNG (the Slack icon at `/avatar/neutral.png`), the manifest's icon. */
+  icon?: Buffer;
 }
 
 export class WebApp {
@@ -60,6 +69,7 @@ export class WebApp {
     response.setHeader('content-security-policy', this.csp);
     response.setHeader('x-frame-options', 'DENY');
     if (request.method !== 'GET') return send(response, 405, message('この方法では受け付けていません'), { allow: 'GET' });
+    if (url.pathname === `${BUNDLE_PATH}${MANIFEST}`) return this.manifest(response);
     if (url.pathname.startsWith(BUNDLE_PATH)) return this.bundleFile(response, url.pathname.slice(BUNDLE_PATH.length));
 
     const page = url.pathname as BrowserReturn;
@@ -74,13 +84,23 @@ export class WebApp {
       }
       return send(response, outcome.status, message('ログインを始められませんでした'), cleared);
     }
-    send(response, 200, await webAppPage(this.options.name, this.options.bundleDirectory), { 'set-cookie': browser.renewed(session) });
+    send(response, 200, await webAppPage(this.options.name, this.options.bundleDirectory, this.options.pushKey), { 'set-cookie': browser.renewed(session) });
   }
 
   private async bundleFile(response: ServerResponse, name: string): Promise<void> {
     const file = await readBundleFile(name, this.options.bundleDirectory);
     if (!file) return send(response, 404, message('見つかりません'));
-    response.writeHead(200, { 'content-type': file.contentType, 'content-length': file.data.length }).end(file.data);
+    response.writeHead(200, { 'content-type': file.contentType, 'content-length': file.data.length, ...file.headers }).end(file.data);
+  }
+
+  private manifest(response: ServerResponse): void {
+    const { name, icon } = this.options;
+    // A PNG's width and height are the first two fields of its IHDR, right after the signature; anything else goes without sizes.
+    const png = icon && icon.length >= 24 && icon.subarray(0, 8).equals(PNG_SIGNATURE) && icon.toString('latin1', 12, 16) === 'IHDR';
+    const icons = icon ? [{ src: '/avatar/neutral.png', type: 'image/png',
+      ...(png ? { sizes: `${icon.readUInt32BE(16)}x${icon.readUInt32BE(20)}` } : {}) }] : [];
+    const body = Buffer.from(JSON.stringify({ name, short_name: name, start_url: '/', scope: '/', display: 'standalone', icons }));
+    response.writeHead(200, { 'content-type': 'application/manifest+json', 'content-length': body.length }).end(body);
   }
 }
 
@@ -93,17 +113,22 @@ export function webAppCsp(publicOrigin: string): string {
 }
 
 /** The one page of `/` and `/settings`: the bundle's, or one saying there is none yet. */
-export async function webAppPage(name: string, bundleDirectory?: string): Promise<Html> {
+export async function webAppPage(name: string, bundleDirectory?: string, pushKey?: string): Promise<Html> {
   const directory = await findBundle(bundleDirectory);
-  return directory ? appPage(name, await exists(join(directory, BUNDLE_STYLE))) : missingPage(name);
+  return directory ? appPage(name, await exists(join(directory, BUNDLE_STYLE)), pushKey) : missingPage(name);
 }
 
-/** A file of the bundle by its name, read now: a bundle rebuilt while the server runs is served as it is. */
-export async function readBundleFile(name: string, bundleDirectory?: string): Promise<{ contentType: string; data: Buffer } | undefined> {
+/**
+ * A file of the bundle by its name, read now: a bundle rebuilt while the server runs is served as it is. The service
+ * worker carries the header that lets it take `/` as its scope.
+ */
+export async function readBundleFile(name: string, bundleDirectory?: string):
+  Promise<{ contentType: string; data: Buffer; headers: Record<string, string> } | undefined> {
   const contentType = BUNDLE_TYPES[name.slice(name.lastIndexOf('.'))];
   const directory = BUNDLE_FILE.test(name) && contentType ? await findBundle(bundleDirectory) : undefined;
   const data = directory ? await readFile(join(directory, name)).catch(() => undefined) : undefined;
-  return data && contentType ? { contentType, data } : undefined;
+  const headers: Record<string, string> = name === SERVICE_WORKER ? { 'service-worker-allowed': '/' } : {};
+  return data && contentType ? { contentType, data, headers } : undefined;
 }
 
 async function findBundle(bundleDirectory: string | undefined): Promise<string | undefined> {
@@ -115,13 +140,15 @@ async function findBundle(bundleDirectory: string | undefined): Promise<string |
 
 const exists = (path: string) => readFile(path).then(() => true, () => false);
 
-function appPage(name: string, style: boolean): Html {
+function appPage(name: string, style: boolean, pushKey: string | undefined): Html {
   return html`<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${name}</title>
+<link rel="manifest" href="${BUNDLE_PATH}${MANIFEST}">
+${pushKey ? html`<meta name="natsumi-push-key" content="${pushKey}">` : ''}
 ${style ? html`<link rel="stylesheet" href="${BUNDLE_PATH}${BUNDLE_STYLE}">` : ''}
 <script type="module" src="${BUNDLE_PATH}${BUNDLE_SCRIPT}"></script>
 </head>

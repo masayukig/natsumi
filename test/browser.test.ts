@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { Context } from '@earendil-works/pi-ai';
 import WebSocket from 'ws';
+import type { WebPushRequest } from '../src/server/web-push.ts';
 import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
 import { approveAtGitHub, login, MINUTE, PUBLIC_ORIGIN, startFixture, type Fixture, type FixtureOptions } from './support/server-fixture.ts';
 
@@ -221,6 +222,29 @@ test('with a bundle the page loads it, and the bundle is served to anyone, by it
   await writeFile(join(bundle, '.hidden.js'), 'not served\n');
 }, webBundle: root => join(root, 'bundle') }));
 
+test('the page names the manifest and the VAPID key; the service worker may take / as its scope (ADR 0065)', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const page = await f.fetch('/', withCookie(`${COOKIE}=${cookie}`));
+  assert.match(page.text, /<link rel="manifest" href="\/app\/manifest\.webmanifest">/);
+  const key = /<meta name="natsumi-push-key" content="([\w-]+)">/.exec(page.text)?.[1];
+  assert.equal(Buffer.from(key!, 'base64url').length, 65);
+  assert.equal((await stat(join(f.data, '.natsumi', 'web-push-key.pem'))).mode & 0o777, 0o600);
+  const manifest = await f.fetch('/app/manifest.webmanifest');
+  assert.equal(manifest.headers.get('content-type'), 'application/manifest+json');
+  const { icons, ...rest } = manifest.json() as { icons: { src: string; sizes: string }[] };
+  assert.deepEqual(rest, { name: 'なつみ', short_name: 'なつみ', start_url: '/', scope: '/', display: 'standalone' });
+  assert.equal(icons[0]!.src, '/avatar/neutral.png');
+  assert.match(icons[0]!.sizes, /^\d+x\d+$/);
+  const worker = await f.fetch('/app/sw.js');
+  assert.equal(worker.headers.get('service-worker-allowed'), '/');
+  assert.equal((await f.fetch('/app/app.js')).headers.get('service-worker-allowed'), null);
+}, { prepare: async data => {
+  const bundle = join(data, '..', 'bundle');
+  await mkdir(bundle, { recursive: true });
+  await writeFile(join(bundle, 'app.js'), 'console.log("fixture bundle");\n');
+  await writeFile(join(bundle, 'sw.js'), 'self.addEventListener("push", () => {});\n');
+}, webBundle: root => join(root, 'bundle') }));
+
 // The WebSocket.
 
 test('/v1/ws takes the cookie only when the Origin is the public origin', () => withFixture(async f => {
@@ -238,7 +262,7 @@ test('/v1/ws takes the cookie only when the Origin is the public origin', () => 
   assert.equal(await connect(f.wsUrl, browserHeaders(cookie)), 401, 'an expired cookie opens nothing');
 }));
 
-test('the browser is one more device: it syncs, talks and changes a setting, and may not register for pushes', () => withFixture(async f => {
+test('the browser is one more device: it syncs, talks and changes a setting, and may not register for APNs', () => withFixture(async f => {
   const cookie = await browserLogin(f);
   const browser = await device(f, browserHeaders(cookie));
   const snapshot = await browser.sync(undefined);
@@ -270,6 +294,50 @@ test('an image of the conversation is fetched with the cookie, as with the app�
   assert.equal((await f.fetch('/v1/images/fixture-image', withCookie(`${COOKIE}=fixture-unknown-token`))).status, 401);
   assert.equal((await f.fetch('/auth/logout', withCookie(`${COOKIE}=${cookie}`, { method: 'POST' }))).status, 401, 'the app’s logout takes the bearer only');
 }));
+
+test('a browser registers a Web Push subscription, and is pushed to while it is away only (ADR 0065)', async () => {
+  const sent: WebPushRequest[] = [];
+  let status = 201;
+  await withFixture(async f => {
+    const cookie = await browserLogin(f);
+    const browser = await device(f, browserHeaders(cookie));
+    await browser.sync(undefined);
+    const keys = createECDH('prime256v1');
+    keys.generateKeys();
+    const subscription = { endpoint: 'https://push.example.test/send/one', expirationTime: null,
+      keys: { p256dh: keys.getPublicKey().toString('base64url'), auth: Buffer.alloc(16, 1).toString('base64url') } };
+    const refused = await browser.request('push.register', { subscription: { ...subscription, endpoint: 'http://push.example.test/' } });
+    assert.deepEqual([refused.type, refused.payload.code], ['command.rejected', 'invalid-request']);
+    const registered = await browser.request('push.register', { subscription });
+    assert.deepEqual([registered.type, registered.payload], ['command.accepted', {}]);
+    // An app's bearer connection may not register a subscription.
+    const phone = await device(f, { authorization: `Bearer ${(await login(f)).token}` });
+    await phone.sync(undefined);
+    const fromApp = await phone.request('push.register', { subscription });
+    assert.deepEqual([fromApp.type, fromApp.payload.code], ['command.rejected', 'invalid-request']);
+
+    f.model.auto = (context: Context) => context.messages.at(-1)?.role === 'user'
+      ? { calls: [{ name: 'reply_to_mac', arguments: { text: '架空の返事', expression: 'happy' } }] } : {};
+    const talk = async (text: string) => {
+      const accepted = await phone.request('conversation.send', { text });
+      await phone.until(message => message.type === 'conversation.event.completed' && message.payload.eventId === accepted.payload.eventId);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    };
+    await talk('ブラウザがつながっているとき');
+    assert.equal(sent.length, 0, 'a connected browser gets the conversation instead');
+    await browser.close();
+    await talk('ブラウザがはなれているとき');
+    assert.deepEqual(sent.map(request => [request.endpoint, request.headers['content-encoding']]), [[subscription.endpoint, 'aes128gcm']]);
+    assert.match(sent[0]!.headers.authorization!, /^vapid t=/);
+
+    status = 410;
+    await talk('購読が切れたあと');
+    await talk('もう送らない');
+    assert.equal(sent.length, 2, 'the subscription went with the 410');
+    assert.ok(f.logs.some(line => line.includes('web push: removed the subscription')), f.logs.join('\n'));
+    await phone.close();
+  }, { webPush: { send: async request => { sent.push(request); return status; } } });
+});
 
 test('the iPhone away is still pushed to while the browser is connected', async () => {
   const apns = await new FakeApns().start();

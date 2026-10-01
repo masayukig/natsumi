@@ -1,6 +1,6 @@
 import type { AvatarManifest } from '../../shared/protocol/avatar.ts';
 import type { Approval, Decision, EventState, Expression, Placement, ShownMessage } from '../../shared/protocol/conversation.ts';
-import type { Position } from '../../shared/protocol/envelope.ts';
+import type { Position, WebPushSubscription } from '../../shared/protocol/envelope.ts';
 import type { SettingKey, SettingsView } from '../../shared/protocol/settings.ts';
 
 /**
@@ -34,6 +34,12 @@ export type ApprovalFlow =
 
 /** A setting's change or reset the server has not answered, or the words for why the last one did not go through. */
 export interface SettingEntry { pending?: string; error?: string }
+
+/**
+ * This browser's notifications (ADR 0065): not offered by the browser or the server, off, being asked of the browser,
+ * or on with the subscription registered on every sync. `error` is the words for why the last try did not go through.
+ */
+export interface PushState { status: 'unsupported' | 'off' | 'busy' | 'on'; subscription?: WebPushSubscription; error?: string }
 
 export interface AppState {
   screen: Screen;
@@ -78,4 +84,6 @@ export interface AppState {
 
   settings?: SettingsView;
   settingEntries: Partial<Record<SettingKey, SettingEntry>>;
+
+  push: PushState;
 }
