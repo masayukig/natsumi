@@ -19,6 +19,11 @@ const CODES: Record<string, string> = {
   'not-implemented': 'サーバーがまだこの操作に対応していません。',
 };
 
+/** Why turning the notifications on did not go through (ADR 0065). */
+export const pushWords = (error: 'denied' | 'failed'): string => (error === 'denied'
+  ? '通知が許可されていません。ブラウザの設定で、このサイトの通知を許可してください。'
+  : '通知を有効にできませんでした。');
+
 export const codeWords = (code: string): string => CODES[code] ?? `受け付けられませんでした（${code}）。`;
 
 /** Whether the code says natsumi cannot talk now, which `service.unavailable` carries. */

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { settingsProps } from '../src/web/core/props.ts';
 import { parseSettingInput } from '../src/web/core/settings.ts';
-import { Driver, server, settingsView } from './web-core-fixtures.ts';
+import { Driver, server, settingsView, snapshot } from './web-core-fixtures.ts';
 
 /**
  * The settings (`/settings`) as the core decides them (ADR 0058, docs/client-contract.md 実行中の設定): the config's value
@@ -144,4 +144,36 @@ test('each judge\'s thresholds are shown and changed as two numbers, checked by 
   }
   const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'judgeLogprobsThresholds', owner: '0.4', return: '0.8' } }));
   assert.deepEqual([set?.type, set?.payload], ['settings.set', { key: 'judgeLogprobsThresholds', value: { owner: 0.4, return: 0.8 } }]);
+});
+
+test('this browser’s notifications are turned on and off here, and the subscription is registered on every sync (ADR 0065)', () => {
+  const driver = onSettings();
+  const notifications = () => settingsProps(driver.state).notifications;
+  assert.deepEqual(notifications(), { status: 'unsupported' }, 'until the browser has been looked at');
+  driver.dispatch({ type: 'push-checked', supported: true });
+  assert.deepEqual(notifications(), { status: 'off' });
+
+  assert.deepEqual(driver.dispatch({ type: 'push-toggle', on: true }), [{ kind: 'subscribe-push' }]);
+  assert.deepEqual(notifications(), { status: 'busy' });
+  assert.deepEqual(driver.dispatch({ type: 'push-toggle', on: true }), [], 'not asked twice');
+  driver.dispatch({ type: 'push-checked', supported: true, error: 'denied' });
+  assert.equal(notifications().status, 'off');
+  assert.match(notifications().error ?? '', /許可されていません/);
+
+  driver.dispatch({ type: 'push-toggle', on: true });
+  const subscription = { endpoint: 'https://push.example.test/one', keys: { p256dh: 'BKey', auth: 'auth' } };
+  const [registered] = Driver.sent(driver.dispatch({ type: 'push-checked', supported: true, subscription }));
+  assert.deepEqual([registered?.type, registered?.payload], ['push.register', { subscription }]);
+  assert.deepEqual(notifications(), { status: 'on' });
+
+  // Again after the socket comes back and syncs.
+  driver.dispatch({ type: 'socket-closed', code: 1006 }, { type: 'reconnect-due' }, { type: 'socket-opened' });
+  const sync = Driver.sent(driver.effects).filter(command => command.type === 'session.sync').at(-1)!;
+  const [again] = Driver.sent(driver.dispatch(server('session.snapshot', snapshot(), { seq: 1, requestId: sync.requestId })))
+    .filter(command => command.type === 'push.register');
+  assert.deepEqual(again?.payload, { subscription });
+
+  assert.deepEqual(driver.dispatch({ type: 'push-toggle', on: false }), [{ kind: 'unsubscribe-push' }]);
+  assert.deepEqual(Driver.sent(driver.dispatch({ type: 'push-checked', supported: true })), []);
+  assert.deepEqual(notifications(), { status: 'off' });
 });

@@ -6,7 +6,7 @@ import type { AppEvent } from './events.ts';
 import { parseSettingInput } from './settings.ts';
 import type { AppState, ApprovalFlow, Screen } from './state.ts';
 import { place } from './stream.ts';
-import { codeWords, resolutionWords, unavailableWords } from './words.ts';
+import { codeWords, pushWords, resolutionWords, unavailableWords } from './words.ts';
 
 /**
  * The browser app's mediator (ADR 0058; the Mac's `UIMediator`, mac/CLAUDE.md): (state, event) → (state, effects). It is
@@ -27,7 +27,7 @@ export function initialState(options: { screen: Screen; idPrefix: string; device
     avatarRequested: false,
     messages: [], pending: {}, expression: 'neutral', outbox: [], sentCount: 0,
     readThrough: null, unreadReplyCount: 0, unacknowledged: [], localReads: [],
-    approvals: [], flows: {}, results: [], settingEntries: {},
+    approvals: [], flows: {}, results: [], settingEntries: {}, push: { status: 'unsupported' },
   };
 }
 
@@ -62,7 +62,7 @@ class Run {
     switch (event.type) {
       case 'started':
         this.set({ link: 'connecting', avatarRequested: true });
-        this.effects.push({ kind: 'connect' }, { kind: 'fetch-avatar' });
+        this.effects.push({ kind: 'connect' }, { kind: 'fetch-avatar' }, { kind: 'check-push' });
         return;
       case 'socket-opened':
         this.set({ socketOpen: true });
@@ -89,6 +89,18 @@ class Run {
         return;
       case 'visibility':
         this.set({ visible: event.visible });
+        return;
+      case 'push-checked': {
+        const { supported, subscription, error } = event;
+        this.set({ push: { status: !supported ? 'unsupported' : subscription ? 'on' : 'off', ...(subscription ? { subscription } : {}),
+          ...(error ? { error: pushWords(error) } : {}) } });
+        this.registerPush();
+        return;
+      }
+      case 'push-toggle':
+        if (this.state.push.status === 'unsupported' || this.state.push.status === 'busy') return;
+        this.set({ push: { status: 'busy' } });
+        this.effects.push({ kind: event.on ? 'subscribe-push' : 'unsubscribe-push' });
         return;
       case 'send':
         this.sendMessage(event.text);
@@ -240,6 +252,13 @@ class Run {
       this.effects.push({ kind: 'fetch-avatar' });
     }
     this.resendUnsent(wasUnsent);
+    this.registerPush();
+  }
+
+  /** On every sync, as the iPhone does: the server keeps one subscription per device and drops it when it is gone. */
+  private registerPush(): void {
+    const { subscription } = this.state.push;
+    if (this.synced && subscription) this.send({ type: 'push.register', payload: { subscription } });
   }
 
   /** After a sync, what was written while away goes; the server answers a request it has already the same. */
@@ -258,6 +277,7 @@ class Run {
       this.set({ link: 'synced', attempts: 0, syncRequest: undefined, unavailable: undefined });
       this.device(accepted.deviceId);
       this.resendUnsent();
+      this.registerPush();
       return;
     }
     if (!requestId) return;

@@ -9,7 +9,7 @@ import { Driver, owner, reply, server, snapshot } from './web-core-fixtures.ts';
 
 test('starting connects and asks for the avatar; opening syncs from nothing, with the device it remembered', () => {
   const driver = new Driver({ deviceId: 'device-old' });
-  assert.deepEqual(driver.dispatch({ type: 'started' }).map(effect => effect.kind), ['connect', 'fetch-avatar']);
+  assert.deepEqual(driver.dispatch({ type: 'started' }).map(effect => effect.kind), ['connect', 'fetch-avatar', 'check-push']);
   const [sync] = Driver.sent(driver.dispatch({ type: 'socket-opened' }));
   assert.deepEqual(sync, { v: 1, requestId: sync!.requestId, deviceId: 'device-old', type: 'session.sync', payload: { resume: null } });
 });

@@ -409,6 +409,8 @@ test('the browser logs in at the fake login, gets the page, and connects with it
   assert.equal((await browser.next(e => e.requestId === sync)).type, 'session.snapshot');
   const push = await browser.request('push.register', { token: 'ab', publicKey: 'x', environment: 'sandbox' });
   assert.deepEqual([push.type, push.payload.code], ['command.rejected', 'invalid-request']);
+  const subscribed = await browser.request('push.register', { subscription: { endpoint: 'https://push.example.test/one', keys: {} } });
+  assert.equal(subscribed.type, 'command.accepted');
   const image = await fetch(`${base}/v1/images/image-fake-happy`, { headers: { cookie: FAKE_SESSION_COOKIE } });
   assert.equal(image.status, 200);
   browser.close();

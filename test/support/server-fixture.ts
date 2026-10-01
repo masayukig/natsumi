@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { JudgeClient } from '../../src/server/judge.ts';
 import { startServer, type RunningServer } from '../../src/server/server.ts';
 import type { SlackApi, SlackSocket } from '../../src/server/slack-api.ts';
+import type { WebPushRequest } from '../../src/server/web-push.ts';
 import { fixtureRuntime } from './fixture.ts';
 import { ScriptedModel } from './scripted-model.ts';
 
@@ -107,6 +108,8 @@ export interface FixtureOptions {
   prepare?: (data: string) => Promise<void>;
   /** Where the browser's bundle is read from (ADR 0058), under the fixture's root. None by default, so none is found. */
   webBundle?: (root: string) => string;
+  /** Stands in for the push services of Web Push (ADR 0065). */
+  webPush?: { send: (request: WebPushRequest) => Promise<number> };
 }
 
 export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
@@ -142,6 +145,7 @@ export async function startFixture(options: FixtureOptions = {}) {
       pi: { runtime: fixtureRuntime, configureSession: session => { session.agent.streamFunction = model.streamFunction; } },
       streamBufferSize: options.streamBufferSize,
       web: { bundleDirectory: options.webBundle ? options.webBundle(root) : join(root, 'no-bundle') },
+      ...(options.webPush ? { webPush: options.webPush } : {}),
       ...(apns ? { apns: { origins: { sandbox: apns.origin, production: apns.origin }, retryDelaysMs: apns.retryDelaysMs } } : {}),
       ...(slack ? { slack: { connector: () => ({ api: slack.api, socket: slack.api }) }, ...(slack.judge ? { judge: { clients: { logprobs: slack.judge, jev: slack.judge } } } : {}) } : {}),
     });
