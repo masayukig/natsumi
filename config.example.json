@@ -38,7 +38,6 @@
     "compactionKeepRecent": 20000,
     "awakeHours": { "start": "08:00", "end": "23:00" },
     "pingIntervalMinutes": 30,
-    "selfCheck": { "minDelayMinutes": 5, "maxDelayDays": 7, "maxPending": 5, "maxPerDay": 20 },
     "expressionResetMinutes": 3,
     "reviewModelCalls": 40,
     "reviewTimeoutMinutes": 30,

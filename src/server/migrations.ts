@@ -815,4 +815,40 @@ export const MIGRATIONS: readonly Migration[] = [
         AND (SELECT target_ts FROM dove_posts p WHERE p.post_id = approvals.post_id) IS NOT NULL;
     `,
   },
+  {
+    version: 25,
+    name: 'repeating self-checks',
+    foreignKeysOff: true,
+    sql: `
+      -- A self-check may repeat by a cron expression, read on the owner's clock (ADR 0063). cron is NULL for a one-off;
+      -- a repeating one stays pending, due_at moving to its next run each time it is delivered or passed over, and is
+      -- never delivered for good. The folding of the same reason is gone, and its key and unique index with it, as are
+      -- the limits the creation index counted for. The table is made again to drop them, and every row is carried over
+      -- as a one-off.
+      CREATE TABLE self_checks_new (
+        check_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        cron TEXT,
+        due_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'cancelled')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (cron IS NULL OR state <> 'delivered')
+      ) STRICT;
+      INSERT INTO self_checks_new SELECT check_id, reason, NULL, due_at, state, created_at, updated_at FROM self_checks;
+
+      -- Which event carried which check, and the run it carried: a repeating check is carried by many events.
+      CREATE TABLE self_check_deliveries (
+        event_id TEXT NOT NULL REFERENCES loop_events (event_id),
+        check_id TEXT NOT NULL REFERENCES self_checks (check_id),
+        due_at TEXT NOT NULL,
+        PRIMARY KEY (event_id, check_id)
+      ) STRICT;
+      INSERT INTO self_check_deliveries SELECT event_id, check_id, due_at FROM self_checks WHERE state = 'delivered';
+
+      DROP TABLE self_checks;
+      ALTER TABLE self_checks_new RENAME TO self_checks;
+      CREATE INDEX self_checks_by_due ON self_checks (state, due_at);
+    `,
+  },
 ];

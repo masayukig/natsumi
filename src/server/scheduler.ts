@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Transaction } from './conversation-store.ts';
 import type { ToolOutcome } from './loop-tools.ts';
+import { lastRun, nextRun, parseCron } from './cron.ts';
 import { clockMinutes, instant, isoAt, localDateTime, localParts, minutesOfDay, previousOccurrence } from './nightly.ts';
 
 /** The local hours natsumi is up. Pings and self-checks happen only inside them; `end` may be past midnight. */
@@ -14,21 +15,8 @@ export interface AwakeHours { start: string; end: string }
 export type Live<T> = T | (() => T);
 export const current = <T>(value: Live<T>): T => typeof value === 'function' ? (value as () => T)() : value;
 
-/** What the server allows for self-checks (ADR 0014). */
-export interface SelfCheckLimits {
-  /** The nearest a booking may be. */
-  minDelayMinutes: number;
-  /** The farthest a booking may be. */
-  maxDelayDays: number;
-  /** Bookings waiting at once. */
-  maxPending: number;
-  /** Bookings made in one local day, cancelled ones included. */
-  maxPerDay: number;
-}
-
 export const DEFAULT_AWAKE_HOURS: AwakeHours = { start: '08:00', end: '23:00' };
 export const DEFAULT_PING_INTERVAL_MINUTES = 30;
-export const DEFAULT_SELF_CHECK_LIMITS: SelfCheckLimits = { minDelayMinutes: 5, maxDelayDays: 7, maxPending: 5, maxPerDay: 20 };
 export const DEFAULT_EXPRESSION_RESET_MINUTES = 3;
 /** How often the scheduler looks at the clock. */
 export const SCHEDULER_TICK_MS = 10_000;
@@ -36,51 +24,71 @@ export const SCHEDULER_TICK_MS = 10_000;
 const MINUTE = 60_000;
 
 export function isAwake(ms: number, hours: AwakeHours, timeZone: string): boolean {
-  const now = minutesOfDay(ms, timeZone);
-  const start = clockMinutes(hours.start);
-  const end = clockMinutes(hours.end);
-  return start < end ? now >= start && now < end : now >= start || now < end;
+  return awakeAt(minutesOfDay(ms, timeZone), hours);
 }
 
-/** A booking that has come due. */
-export interface DueCheck { checkId: string; reason: string; dueAt: number }
+/** Whether a local minute of the day is inside the awake hours. */
+function awakeAt(minute: number, hours: AwakeHours): boolean {
+  const start = clockMinutes(hours.start);
+  const end = clockMinutes(hours.end);
+  return start < end ? minute >= start && minute < end : minute >= start || minute < end;
+}
+
+/** A booking that has come due: for a repeating one, the run it is delivered for. */
+export interface DueCheck { checkId: string; reason: string; dueAt: number; cron?: string }
 
 const LOCAL_TIME = /^(\d{2}):(\d{2})$/;
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/;
 
 /**
- * The checks natsumi books for herself (ADR 0014), kept in SQLite so they survive a restart.
- * Every limit is enforced here and a refusal is a sentence she can read; nothing throws at the thinking loop.
+ * The checks natsumi books for herself (ADR 0014, ADR 0063), kept in SQLite so they survive a restart. A booking is a
+ * one-off at an absolute time, or repeats by a cron expression read on the owner's clock. A refusal is a sentence she
+ * can read; nothing throws at the thinking loop.
  */
 export class SelfChecks {
   private readonly db: DatabaseSync;
   private readonly now: () => number;
   private readonly timeZone: string;
-  private readonly limits: SelfCheckLimits;
   private readonly awakeHours: Live<AwakeHours>;
 
-  constructor(options: { db: DatabaseSync; now: () => number; timeZone: string; limits: SelfCheckLimits; awakeHours: Live<AwakeHours> }) {
+  constructor(options: { db: DatabaseSync; now: () => number; timeZone: string; awakeHours: Live<AwakeHours> }) {
     this.db = options.db;
     this.now = options.now;
     this.timeZone = options.timeZone;
-    this.limits = options.limits;
     this.awakeHours = options.awakeHours;
   }
 
-  /** Books a check `inMinutes` from now or `at` a local time, resolved to an absolute time before it is saved. */
-  schedule(reason: string, when: { inMinutes?: number; at?: string }): ToolOutcome {
+  /**
+   * Books a check `inMinutes` from now or `at` a local time, resolved to an absolute time before it is saved, or one
+   * that repeats by `cron`. There is no limit on how soon, how far or how many (ADR 0063).
+   */
+  schedule(reason: string, when: { inMinutes?: number; at?: string; cron?: string }): ToolOutcome {
     const refuse = (text: string): ToolOutcome => ({ ok: false, text: `予約していません。${text}` });
     const trimmed = reason.trim();
     if (trimmed === '') return refuse('reason に、この予約の理由（何を確かめるか）を書いてください。');
-    if ((when.inMinutes === undefined) === (when.at === undefined)) return refuse('in_minutes と at のどちらか一方だけを指定してください。');
+    const given = [when.inMinutes, when.at, when.cron].filter(value => value !== undefined).length;
+    if (given !== 1) return refuse('cron・at・in_minutes のどれか 1 つだけを指定してください。');
     const now = this.now();
-    const { minDelayMinutes, maxDelayDays, maxPending, maxPerDay } = this.limits;
-    const nearest = `予約は今から最短で ${minDelayMinutes} 分より先にしてください。`;
+    const hours = current(this.awakeHours);
+    const awake = `起きている時間帯（${hours.start}〜${hours.end}）`;
+
+    if (when.cron !== undefined) {
+      const parsed = parseCron(when.cron);
+      if (!parsed.ok) return refuse(`cron の式を読めません。${parsed.reason}`);
+      const { cron } = parsed;
+      if (nextRun(cron, now, this.timeZone) === undefined) return refuse(`cron "${cron.text}" に当てはまる時刻がありません。`);
+      const next = nextRun(cron, now, this.timeZone, minute => awakeAt(minute, hours));
+      if (next === undefined) return refuse(`cron "${cron.text}" の時刻はどれも${awake}の外なので、一度も届きません。`);
+      const checkId = this.insert(trimmed, cron.text, next, now);
+      return { ok: true, text: `cron "${cron.text}"（${this.timeZone}）で繰り返しの確認を予約しました（check_id: ${checkId}）。`
+        + `次は ${localDateTime(next, this.timeZone)} です。${awake}の外の回は飛ばします。`
+        + '時刻が来るたびに self_check のイベントが届き、取り消すまで続きます。' };
+    }
 
     let dueAt: number;
     if (when.inMinutes !== undefined) {
       if (!Number.isInteger(when.inMinutes)) return refuse('in_minutes は分の整数で書いてください。');
-      if (when.inMinutes < minDelayMinutes) return refuse(nearest);
+      if (when.inMinutes < 1) return refuse('in_minutes は 1 以上にしてください。');
       dueAt = now + when.inMinutes * MINUTE;
     } else {
       const resolved = this.resolveLocal(when.at!, now);
@@ -89,44 +97,19 @@ export class SelfChecks {
       }
       dueAt = resolved;
       if (dueAt <= now) return refuse(`${localDateTime(dueAt, this.timeZone)} は過去の時刻です。今は ${localDateTime(now, this.timeZone)}（${this.timeZone}）です。`);
-      if (dueAt - now < minDelayMinutes * MINUTE) return refuse(nearest);
     }
-    if (dueAt - now > maxDelayDays * 1440 * MINUTE) return refuse(`予約できるのは ${maxDelayDays} 日先までです。`);
-
-    const key = reasonKey(trimmed);
-    const same = this.db.prepare(`SELECT check_id, due_at FROM self_checks WHERE state = 'pending' AND reason_key = ?`).get(key) as
-      { check_id: string; due_at: string } | undefined;
-    if (same) {
-      return { ok: true, text: `新しい予約は作らず、同じ理由の予約 ${same.check_id}（${this.local(same.due_at)}）にまとめました。`
-        + '時刻を変えるなら、cancel_self_check で取り消してから予約し直してください。' };
-    }
-    const pending = this.db.prepare(`SELECT COUNT(*) AS n FROM self_checks WHERE state = 'pending'`).get() as { n: number };
-    if (pending.n >= maxPending) {
-      return refuse(`同時に持てる予約は ${maxPending} 件までです。list_self_checks で確かめ、要らないものは cancel_self_check で取り消せます。`);
-    }
-    const today = localParts(now, this.timeZone);
-    const midnight = instant(today.year, today.month, today.day, 0, 0, this.timeZone);
-    const booked = this.db.prepare('SELECT COUNT(*) AS n FROM self_checks WHERE created_at >= ?').get(isoAt(midnight)) as { n: number };
-    if (booked.n >= maxPerDay) return refuse(`1 日に予約できるのは ${maxPerDay} 件までです。今日はもう予約できません。`);
-
-    const checkId = `check-${randomUUID()}`;
-    const iso = isoAt(now);
-    this.db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, event_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)`).run(checkId, trimmed, key, isoAt(dueAt), iso, iso);
-    const local = localDateTime(dueAt, this.timeZone);
-    const hours = current(this.awakeHours);
-    const night = isAwake(dueAt, hours, this.timeZone) ? ''
-      : `起きている時間帯（${hours.start}〜${hours.end}）の外なので、実際に届くのは ${hours.start} 以降です。`;
-    return { ok: true, text: `${local}（${this.timeZone}）に確認を予約しました（check_id: ${checkId}）。${night}その時刻に self_check のイベントが届きます。` };
+    const checkId = this.insert(trimmed, null, dueAt, now);
+    const night = isAwake(dueAt, hours, this.timeZone) ? '' : `${awake}の外なので、実際に届くのは ${hours.start} 以降です。`;
+    return { ok: true, text: `${localDateTime(dueAt, this.timeZone)}（${this.timeZone}）に確認を予約しました（check_id: ${checkId}）。${night}その時刻に self_check のイベントが届きます。` };
   }
 
-  /** The bookings still waiting, soonest first. */
+  /** The bookings still waiting, soonest first; a repeating one with its expression, at its next run. */
   list(): ToolOutcome {
-    const rows = this.db.prepare(`SELECT check_id, reason, due_at FROM self_checks WHERE state = 'pending' ORDER BY due_at, check_id`).all() as
-      { check_id: string; reason: string; due_at: string }[];
+    const rows = this.db.prepare(`SELECT check_id, reason, cron, due_at FROM self_checks WHERE state = 'pending' ORDER BY due_at, check_id`).all() as
+      { check_id: string; reason: string; cron: string | null; due_at: string }[];
     if (rows.length === 0) return { ok: true, text: '予約している確認はありません。' };
-    const lines = rows.map(row => `- ${row.check_id} ${this.local(row.due_at)} ${row.reason}`);
-    return { ok: true, text: `予約している確認（${this.timeZone}）:\n${lines.join('\n')}` };
+    const lines = rows.map(row => `- ${row.check_id} ${this.local(row.due_at)} ${row.reason}${row.cron === null ? '' : `（繰り返し: ${row.cron}）`}`);
+    return { ok: true, text: `予約している確認（${this.timeZone}。繰り返しは次の時刻）:\n${lines.join('\n')}` };
   }
 
   cancel(checkId: string): ToolOutcome {
@@ -136,31 +119,86 @@ export class SelfChecks {
     return { ok: true, text: `予約 ${checkId} を取り消しました。` };
   }
 
-  /** Bookings whose time has come, oldest first. */
+  /**
+   * Bookings whose time has come, oldest first. A one-off comes however late. A repeating one comes once for its
+   * latest run, however many passed, and only when that run is inside the awake hours and after they last began: a run
+   * outside them, or one left behind by a night, is passed over and the booking moves to its next run (ADR 0063).
+   */
   due(): DueCheck[] {
-    const rows = this.db.prepare(`SELECT check_id, reason, due_at FROM self_checks WHERE state = 'pending' AND due_at <= ? ORDER BY due_at, check_id`)
-      .all(isoAt(this.now())) as { check_id: string; reason: string; due_at: string }[];
-    return rows.map(row => ({ checkId: row.check_id, reason: row.reason, dueAt: Date.parse(row.due_at) }));
+    const now = this.now();
+    const rows = this.db.prepare(`SELECT check_id, reason, cron, due_at FROM self_checks WHERE state = 'pending' AND due_at <= ? ORDER BY due_at, check_id`)
+      .all(isoAt(now)) as { check_id: string; reason: string; cron: string | null; due_at: string }[];
+    const hours = current(this.awakeHours);
+    const woke = previousOccurrence(now, hours.start, this.timeZone);
+    const due: DueCheck[] = [];
+    for (const row of rows) {
+      if (row.cron === null) {
+        due.push({ checkId: row.check_id, reason: row.reason, dueAt: Date.parse(row.due_at) });
+        continue;
+      }
+      const parsed = parseCron(row.cron);
+      const run = parsed.ok ? lastRun(parsed.cron, now, this.timeZone) : undefined;
+      if (run !== undefined && isAwake(run, hours, this.timeZone) && run >= woke) {
+        due.push({ checkId: row.check_id, reason: row.reason, dueAt: run, cron: row.cron });
+      } else {
+        this.advance(row.check_id, row.cron, now);
+      }
+    }
+    return due;
   }
 
   /**
-   * Marks bookings as handed to an event. The event and these rows have to be written together, or a check is
-   * handed over twice or never: the `Transaction` the caller must pass is the proof that they are.
+   * Marks bookings as handed to an event: a one-off is done, a repeating one moves to its next run. The event and these
+   * rows have to be written together, or a check is handed over twice or never: the `Transaction` the caller must pass
+   * is the proof that they are.
    */
-  deliver(checkIds: string[], eventId: string, _transaction: Transaction): void {
-    const update = this.db.prepare(`UPDATE self_checks SET state = 'delivered', event_id = ?, updated_at = ? WHERE check_id = ? AND state = 'pending'`);
-    const iso = isoAt(this.now());
-    for (const checkId of checkIds) update.run(eventId, iso, checkId);
+  deliver(checks: DueCheck[], eventId: string, _transaction: Transaction): void {
+    const now = this.now();
+    const iso = isoAt(now);
+    const record = this.db.prepare('INSERT INTO self_check_deliveries (event_id, check_id, due_at) VALUES (?, ?, ?)');
+    const done = this.db.prepare(`UPDATE self_checks SET state = 'delivered', updated_at = ? WHERE check_id = ? AND state = 'pending'`);
+    for (const check of checks) {
+      record.run(eventId, check.checkId, isoAt(check.dueAt));
+      if (check.cron === undefined) done.run(iso, check.checkId);
+      else this.advance(check.checkId, check.cron, now);
+    }
   }
 
-  /** The checks an event carried, with how late each was when the event was raised. */
-  carriedBy(eventId: string, raisedAt: number): { check_id: string; reason: string; scheduled_for: string; late_minutes?: number }[] {
-    const rows = this.db.prepare('SELECT check_id, reason, due_at FROM self_checks WHERE event_id = ? ORDER BY due_at, check_id').all(eventId) as
-      { check_id: string; reason: string; due_at: string }[];
+  /** The checks an event carried, with how late each was when the event was raised, and a repeating one's expression. */
+  carriedBy(eventId: string, raisedAt: number): { check_id: string; reason: string; scheduled_for: string; late_minutes?: number; cron?: string }[] {
+    const rows = this.db.prepare(`SELECT d.check_id, c.reason, c.cron, d.due_at FROM self_check_deliveries d
+      JOIN self_checks c ON c.check_id = d.check_id WHERE d.event_id = ? ORDER BY d.due_at, d.check_id`).all(eventId) as
+      { check_id: string; reason: string; cron: string | null; due_at: string }[];
     return rows.map(row => {
       const late = Math.floor((raisedAt - Date.parse(row.due_at)) / MINUTE);
-      return { check_id: row.check_id, reason: row.reason, scheduled_for: this.local(row.due_at), ...(late >= 1 ? { late_minutes: late } : {}) };
+      return { check_id: row.check_id, reason: row.reason, scheduled_for: this.local(row.due_at), ...(late >= 1 ? { late_minutes: late } : {}),
+        ...(row.cron === null ? {} : { cron: row.cron }) };
     });
+  }
+
+  private insert(reason: string, cron: string | null, dueAt: number, now: number): string {
+    const checkId = `check-${randomUUID()}`;
+    const iso = isoAt(now);
+    this.db.prepare(`INSERT INTO self_checks (check_id, reason, cron, due_at, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?)`).run(checkId, reason, cron, isoAt(dueAt), iso, iso);
+    return checkId;
+  }
+
+  /**
+   * Moves a repeating booking to its next run after now inside the awake hours, or to its next run at all when the
+   * hours in force leave none. One with no run left, which a booking never starts as, is cancelled.
+   */
+  private advance(checkId: string, text: string, now: number): void {
+    const parsed = parseCron(text);
+    const hours = current(this.awakeHours);
+    const next = parsed.ok
+      ? nextRun(parsed.cron, now, this.timeZone, minute => awakeAt(minute, hours)) ?? nextRun(parsed.cron, now, this.timeZone)
+      : undefined;
+    if (next === undefined) {
+      this.db.prepare(`UPDATE self_checks SET state = 'cancelled', updated_at = ? WHERE check_id = ?`).run(isoAt(now), checkId);
+    } else {
+      this.db.prepare('UPDATE self_checks SET due_at = ?, updated_at = ? WHERE check_id = ?').run(isoAt(next), isoAt(now), checkId);
+    }
   }
 
   private local(iso: string): string { return localDateTime(Date.parse(iso), this.timeZone); }
@@ -186,10 +224,6 @@ export class SelfChecks {
     const expected = `${date.year}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')} ${hour}:${minute}`;
     return localDateTime(ms, this.timeZone) === expected ? ms : undefined;
   }
-}
-
-function reasonKey(reason: string): string {
-  return reason.normalize('NFKC').replace(/\s+/g, ' ').trim();
 }
 
 /** What the scheduler needs from the thinking loop. */

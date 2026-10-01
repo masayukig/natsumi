@@ -1,14 +1,15 @@
-import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
-import { APPROVALS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
+import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type BookedCheck, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
+import { APPROVALS_PATH, checkPath, CHECKS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
 import type { Placement } from './judge.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import type { MemoReading, TurnRow } from './turn-log.ts';
 
 /**
- * The dashboard's lists (ADR 0049): the failures and what waits, the memos, the dove's posts and the devices. Like the
- * other pages they only read, every value goes through `html`, and a failure or a memo links to its turn. The
- * failures and waits refresh themselves; the other lists are read again by reloading.
+ * The dashboard's lists (ADR 0049): the failures and what waits, the self-checks, the memos, the dove's posts and the
+ * devices. Every value goes through `html`, and a failure or a memo links to its turn. The failures and waits refresh
+ * themselves; the other lists are read again by reloading. They only read, but for the one change the dashboard takes:
+ * a self-check's cancel, posted from its own page that asks first (ADR 0064).
  */
 
 const KINDS = { events: 'ターン', review: '夜の振り返り', curator: '記憶の整理' } as const;
@@ -42,7 +43,7 @@ export function renderWaits(waits: Waits, timeZone: string): Html {
   const turnLink = (turnId: string | null, label: string) => turnId ? html`<a href="${turnPath(turnId)}">${label}</a>` : label;
   return html`<section id="waits" data-refresh="${WAITS_LIVE_PATH}" aria-live="polite">
 <h2>失敗と待ち</h2>
-<p><small>それぞれ新しいもの（待っているものは近いもの）から最大 20 件です。承認などの操作はアプリで行います。</small></p>
+<p><small>それぞれ新しいもの（待っているものは近いもの）から最大 20 件です。承認などの操作はアプリで行います。予約の削除は「予約」のページで行います。</small></p>
 
 <h3>失敗した出来事</h3>
 ${table(html`<th>時刻</th><th>出来事</th><th>理由</th><th>ターン</th>`, waits.failedEvents.map(event => html`<tr>
@@ -64,9 +65,10 @@ ${item.text !== undefined && html`<div class="prose">${item.text}</div>`}
     : html`<small>期限 ${at(item.expiresAt)}</small>`}</p></article>`)}</div>`}
 
 <h3>予約した確認</h3>
+<p><small><a href="${CHECKS_PATH}">予約の一覧と削除</a></small></p>
 <dl class="facts"><div><dt>次の夜の切り替え</dt><dd>${waits.nextRotationAt === null ? 'しない設定' : at(waits.nextRotationAt)}</dd></div></dl>
-${table(html`<th>予定</th><th>理由</th><th>予約した時刻</th>`, waits.checks.map(check => html`<tr>
-<td>${at(check.dueAt)}</td><td class="words">${check.reason}</td><td>${at(check.createdAt)}</td></tr>`), '予約した確認はありません。')}
+${table(html`<th>予定</th><th>繰り返し</th><th>理由</th><th>予約した時刻</th>`, waits.checks.map(check => html`<tr>
+<td>${at(check.dueAt)}</td><td>${repeats(check)}</td><td class="words">${check.reason}</td><td>${at(check.createdAt)}</td></tr>`), '予約した確認はありません。')}
 
 <h3>外のエージェントへの依頼</h3>
 ${table(html`<th>相手</th><th>状態</th><th>送った時刻</th><th>最後の変化</th><th>task</th>`, waits.agentTasks.map(task => html`<tr>
@@ -80,6 +82,49 @@ ${table(html`<th>時刻</th><th>結果</th><th>理由</th><th>記録</th>`, wait
 <td>${rotation.reason ?? ''}</td><td><code>${rotation.fromSessionFile}</code>${rotation.toSessionFile && html` → <code>${rotation.toSessionFile}</code>`}</td>
 </tr>`), 'まだ夜の切り替えはありません。')}
 </section>`;
+}
+
+/** A booking's kind: the expression of a repeating one, read on the owner's clock (ADR 0063), or a one-off. */
+function repeats(check: BookedCheck): Html {
+  return check.cron === null ? html`<small>一回きり</small>` : html`<code>${check.cron}</code>`;
+}
+
+/**
+ * The self-checks still waiting, soonest first, each with a link to the page that asks before it is cancelled (ADR
+ * 0064). The list itself posts nothing, and is not refreshed, so a row does not move under the pointer.
+ */
+export function checksPage(list: { page: number; more: boolean; rows: BookedCheck[]; cancelled?: string }, timeZone: string, avatarId?: string): Html {
+  const at = (iso: string) => localTime(iso, timeZone);
+  const main = html`<section id="checks">
+<h2>予約した確認</h2>
+${list.cancelled !== undefined && html`<p class="note">予約 <code>${list.cancelled}</code> を削除しました。</p>`}
+<p><small>自分で予約した確認のうち、待っているものを近い順に 50 件ずつ出します。時刻は ${timeZone} で、繰り返しは次に届く時刻です。
+起きている時間帯の外の一回きりは、起きてから届きます。削除すると、なつみの予約の一覧（list_self_checks）からも消えます。</small></p>
+${table(html`<th>繰り返し</th><th>次の時刻</th><th>理由</th><th>check_id</th><th>予約した時刻</th><th></th>`, list.rows.map(check => html`<tr>
+<td>${repeats(check)}</td><td>${at(check.dueAt)}</td><td class="words">${check.reason}</td><td><code>${check.checkId}</code></td>
+<td>${at(check.createdAt)}</td><td><a href="${checkPath(check.checkId)}">削除…</a></td></tr>`), '待っている予約はありません。')}
+${pages(CHECKS_PATH, list.page, list.more, '近い予約', '先の予約')}
+</section>`;
+  return page('予約', main, { signedIn: true, current: '予約', avatarId });
+}
+
+/** One booking, and the question before its cancel: a POST form, checked for its Origin on the server (ADR 0064). */
+export function checkPage(check: BookedCheck, timeZone: string, avatarId?: string): Html {
+  const at = (iso: string) => localTime(iso, timeZone);
+  const main = html`<section id="check">
+<h2>この予約を削除しますか</h2>
+<dl class="facts">
+<div><dt>繰り返し</dt><dd>${repeats(check)}</dd></div>
+<div><dt>次の時刻</dt><dd>${at(check.dueAt)} <small>${timeZone}</small></dd></div>
+<div><dt>理由</dt><dd class="words">${check.reason}</dd></div>
+<div><dt>check_id</dt><dd><code>${check.checkId}</code></dd></div>
+<div><dt>予約した時刻</dt><dd>${at(check.createdAt)}</dd></div>
+</dl>
+<p><small>${check.cron === null ? 'この予約は届かなくなります。' : 'この繰り返しは、これから先の回もすべて届かなくなります。'}元に戻すことはできません。</small></p>
+<form method="post" action="${checkPath(check.checkId)}/cancel"><button type="submit">この予約を削除する</button></form>
+<p><a href="${CHECKS_PATH}">やめる</a></p>
+</section>`;
+  return page('予約の削除', main, { signedIn: true, current: '予約', avatarId });
 }
 
 function agentState(state: string): Html {
@@ -115,7 +160,7 @@ export function dovePage(list: { page: number; more: boolean; rows: DovePostRow[
   const main = html`<section id="dove">
 <h2>ポッポさん</h2>
 <p><small>${name}がポッポさんに頼んだ投稿とリアクションを、新しい順に 50 件ずつ出します。点数は問題点ごとの判定で、赤は引っかかったものです。
-2 つの判定を掛けた投稿は、それぞれの判定と、決めた方を並べます。投稿先の channel は、返信先があればスレッドに返してチャンネルにも出したものです。</small></p>
+2 つの判定を掛けた投稿は、それぞれの判定と、決めた方を並べます。投稿先のスレッドは返す相手のスレッドにだけ、チャンネルはチャンネル直下に、チャンネルにもはスレッドに返してチャンネルにも出したものです。</small></p>
 ${list.rows.length === 0 ? html`<p>まだ依頼はありません。</p>` : html`<div class="cards">${list.rows.map(post => html`<article class="card" id="${post.postId}">
 <p><strong>${post.kind === 'reaction' ? 'リアクション' : '投稿'}</strong> ${post.channel} <small>${post.reference}</small>
 <small>${at(post.createdAt)}</small></p>

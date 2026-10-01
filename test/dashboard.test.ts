@@ -9,6 +9,7 @@ import {
   approveAtGitHub, CLIENT_SECRET, login, MINUTE, OWNER, PUBLIC_ORIGIN, startFixture, UPSTREAM_DETAIL, type Fixture,
 } from './support/server-fixture.ts';
 import { sessionCookie } from '../src/server/browser/session-cookie.ts';
+import { SelfChecks } from '../src/server/scheduler.ts';
 import { TurnStats } from '../src/server/turn-stats.ts';
 import { SessionRecord } from './support/session-record.ts';
 
@@ -433,8 +434,8 @@ test('the failures and waits show what the state database holds, and refresh as 
   try {
     db.prepare(`INSERT INTO loop_events (event_id, kind, state, reason, created_at, updated_at)
       VALUES ('event-failed', 'mac_message', 'failed', 'model-error', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z')`).run();
-    db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, created_at, updated_at)
-      VALUES ('check-1', ?, 'k', '2026-01-01T03:00:00.000Z', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(`架空の確認 ${HOSTILE}`);
+    db.prepare(`INSERT INTO self_checks (check_id, reason, due_at, state, created_at, updated_at)
+      VALUES ('check-1', ?, '2026-01-01T03:00:00.000Z', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(`架空の確認 ${HOSTILE}`);
   } finally { db.close(); }
   const page = await f.fetch('/dashboard/waits', withCookie(cookie));
   assert.equal(page.status, 200, page.text);
@@ -447,6 +448,96 @@ test('the failures and waits show what the state database holds, and refresh as 
   assert.ok(!live.text.includes('<html'));
   assert.match(live.text, /^<section id="waits"/);
   assert.match(live.text, /model-error/);
+}));
+
+// The self-checks (ADR 0064): the owner sees what natsumi booked and cancels one, the way she would with cancel_self_check.
+
+/** Books checks straight into the state database: a repeating one, a one-off, and two that no longer wait. */
+function bookChecks(f: Fixture) {
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    const insert = db.prepare(`INSERT INTO self_checks (check_id, reason, cron, due_at, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`);
+    insert.run('check-every', `架空の繰り返し ${HOSTILE}`, '0 16 * * *', '2026-01-01T07:00:00.000Z', 'pending');
+    insert.run('check-once', '架空の一回きり', null, '2026-01-01T03:00:00.000Z', 'pending');
+    insert.run('check-cancelled', '架空の取り消し済み', '*/10 * * * *', '2026-01-01T00:10:00.000Z', 'cancelled');
+    insert.run('check-delivered', '架空の届いた', null, '2026-01-01T00:05:00.000Z', 'delivered');
+  } finally { db.close(); }
+}
+
+/** What natsumi's own list_self_checks reads, and the state of a booking. */
+function checksAsSheSees(f: Fixture) {
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    const list = new SelfChecks({ db, now: () => f.clock.now, timeZone: 'UTC', awakeHours: { start: '00:00', end: '23:59' } }).list().text;
+    const states = Object.fromEntries((db.prepare('SELECT check_id, state FROM self_checks').all() as { check_id: string; state: string }[])
+      .map(row => [row.check_id, row.state]));
+    return { list, states };
+  } finally { db.close(); }
+}
+
+test('the self-checks page needs the cookie and lists the bookings still waiting, repeating and one-off', () => withFixture(async f => {
+  assertLoginAgain(await f.fetch('/dashboard/checks'), f);
+  assertLoginAgain(await f.fetch('/dashboard/checks/check-every'), f);
+  const cookie = await browserLogin(f);
+  bookChecks(f);
+  const res = await f.fetch('/dashboard/checks', withCookie(cookie));
+  assert.equal(res.status, 200, res.text);
+  assert.match(res.text, /<code>0 16 \* \* \*<\/code>/);
+  assert.match(res.text, /架空の繰り返し &lt;img/);
+  assert.match(res.text, /架空の一回きり/);
+  assert.match(res.text, /<code>check-every<\/code>/);
+  assert.match(res.text, /<code>check-once<\/code>/);
+  assert.ok(!res.text.includes('check-cancelled') && !res.text.includes('check-delivered'), 'what was cancelled or delivered is not listed');
+  assert.ok(!res.text.includes('<img src=x'));
+  for (const path of ['/dashboard/checks?page=0', '/dashboard/checks?page=x', '/dashboard/checks/check-cancelled', '/dashboard/checks/check-delivered',
+    '/dashboard/checks/check-missing', '/dashboard/checks/..%2F..%2Fetc', '/dashboard/checks/check-every/other']) {
+    assert.equal((await f.fetch(path, withCookie(cookie))).status, 404, path);
+  }
+}));
+
+test('the owner cancels one booking from the page that asks first, and natsumi no longer lists it', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  bookChecks(f);
+  const ask = await f.fetch('/dashboard/checks/check-every', withCookie(cookie));
+  assert.equal(ask.status, 200, ask.text);
+  assert.match(ask.text, /<form method="post" action="\/dashboard\/checks\/check-every\/cancel">/);
+  assert.equal(checksAsSheSees(f).states['check-every'], 'pending', 'opening the page that asks changes nothing');
+
+  const res = await f.fetch('/dashboard/checks/check-every/cancel', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }));
+  assert.equal(res.status, 303, res.text);
+  assert.equal(res.headers.get('location'), '/dashboard/checks?cancelled=check-every');
+  const { list, states } = checksAsSheSees(f);
+  assert.equal(states['check-every'], 'cancelled', 'cancelled as cancel_self_check does, not deleted');
+  assert.equal(states['check-once'], 'pending', 'only the one asked for');
+  assert.ok(!list.includes('check-every') && list.includes('check-once'), list);
+
+  const after = await f.fetch('/dashboard/checks?cancelled=check-every', withCookie(cookie));
+  assert.match(after.text, /予約 <code>check-every<\/code> を削除しました/);
+  assert.ok(!after.text.includes('架空の繰り返し'));
+
+  const again = await f.fetch('/dashboard/checks/check-every/cancel', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }));
+  assert.equal(again.status, 409, 'a booking that no longer waits is not cancelled twice');
+  assert.match(again.text, /待っている予約ではありません/);
+}));
+
+test('a cancel without the public origin as its Origin, or without the session, is refused and cancels nothing', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  bookChecks(f);
+  for (const headers of [{}, { origin: 'https://attacker.example.test' }, { origin: 'null' }, { origin: `${PUBLIC_ORIGIN}.attacker.example.test` }] as Record<string, string>[]) {
+    const res = await f.fetch('/dashboard/checks/check-every/cancel', withCookie(cookie, { method: 'POST', headers }));
+    assert.equal(res.status, 403, JSON.stringify(headers));
+  }
+  const anonymous = await f.fetch('/dashboard/checks/check-every/cancel', { method: 'POST', headers: { origin: PUBLIC_ORIGIN } });
+  assert.equal(anonymous.status, 403, 'no session, no cancel; and no login is started from a POST');
+  assert.equal(anonymous.headers.get('location'), null);
+  const stale = await f.fetch('/dashboard/checks/check-every/cancel', withCookie('not-a-session', { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }));
+  assert.equal(stale.status, 403);
+  assert.equal((await f.fetch('/dashboard/checks/check-every/cancel', withCookie(cookie))).status, 405, 'a GET does not cancel');
+  assert.equal((await f.fetch('/dashboard/checks', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }))).status, 405);
+  const missing = await f.fetch('/dashboard/checks/..%2Fcheck-every/cancel', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }));
+  assert.equal(missing.status, 405, 'not a booking\'s cancel: a POST anywhere else under /dashboard is not taken');
+  assert.equal(checksAsSheSees(f).states['check-every'], 'pending');
 }));
 
 test('the memos page shows the memo each turn left, read from its record', () => withFixture(async f => {
@@ -715,7 +806,7 @@ test('every page of the dashboard is headed by the ID of the avatar the server s
       confusion: { repeatedCalls: 0, toolErrors: 0, doveRefusals: 0, unansweredMessages: 0 },
       place: { sessionFile: 'nowhere.jsonl', firstEntryId: 'a', lastEntryId: 'b', startOffset: 0, endOffset: 0 } });
   } finally { db.close(); }
-  for (const path of ['/dashboard', '/dashboard/turns', '/dashboard/turns/turn-fixture', '/dashboard/waits', '/dashboard/memos',
+  for (const path of ['/dashboard', '/dashboard/turns', '/dashboard/turns/turn-fixture', '/dashboard/waits', '/dashboard/checks', '/dashboard/memos',
     '/dashboard/dove', '/dashboard/approvals', '/dashboard/devices', '/dashboard/stats', '/dashboard/files', '/dashboard/files/work',
     '/dashboard/files/work/note.txt', '/dashboard/files/work/missing.txt', '/dashboard/nowhere']) {
     const res = await f.fetch(path, withCookie(cookie));

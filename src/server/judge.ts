@@ -63,18 +63,23 @@ export const JUDGE_ISSUES: readonly JudgeIssue[] = [
 
 /**
  * Where a reply goes, asked only when natsumi answers a message (ADR 0062): `thread` is its thread alone, `channel` the
- * channel itself with no thread, and `broadcast` its thread shown in the channel too (Slack's `reply_broadcast`). The
- * options keep this order in every method unless a client is told otherwise, which only the evaluation does.
+ * channel itself with no thread, and `broadcast` its thread shown in the channel too (Slack's `reply_broadcast`). A
+ * message in the channel itself is answered there, its question too; the thread is for a talk going on in it, or for a
+ * message the channel has since moved on from. The options keep this order in every method unless a client is told
+ * otherwise, which only the evaluation does.
  */
 export const JUDGE_PLACEMENT = {
   instructions: `${PREAMBLE}now is the time now. conversation.channel holds the latest messages in the channel itself and `
     + 'conversation.thread the latest in the thread of reply_to, each with the time of its last message. reply_to.in_thread is true when '
-    + 'that message is itself a reply in a thread. Where should the reply go? Any of the options may fit, even when reply_to is in a thread.',
+    + 'that message is itself a reply in a thread. Look at where the conversation goes on now, and put the reply in that flow. '
+    + 'Where should the reply go? Any of the options may fit, even when reply_to is in a thread.',
   criteria: {
-    thread: 'In the thread of the message it replies to, only: for a reply meant for that message alone, such as an answer to its question '
-      + 'or a report of what it asked for.',
-    channel: 'In the channel itself, as a new message with no thread. This is the default while the conversation goes on in the channel '
-      + 'itself, even for a message in a thread when the talk has moved on to the channel.',
+    thread: 'In the thread of the message it replies to, only. Use it only in one of these two cases: (1) the message it replies to is '
+      + 'in a thread, and the talk goes on in that thread; (2) after that message the channel has moved on to another topic, so that a '
+      + 'reply in the channel would not read as an answer to it.',
+    channel: 'In the channel itself, as a new message with no thread. This is the default when the message it replies to is in the '
+      + 'channel itself, even for an answer to its question or a reply to what it asked for. For a reply to a message in a thread '
+      + 'too, choose this when the talk has moved on to the channel.',
     broadcast: 'In the thread, and also shown in the channel: only for a reply to an old thread, going by the times, that is worth '
       + 'showing to everyone in the channel.',
   },
