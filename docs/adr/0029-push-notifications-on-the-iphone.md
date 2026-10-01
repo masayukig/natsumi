@@ -1,7 +1,7 @@
 # 0029. iPhone に通知を届ける
 
 - Date: 2026-09-23
-- Status: Accepted（iPhone 側の実装で決めた細部を末尾に追記、画像の付いた返事の本文の末尾に枚数の印を付けることを [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で追加）
+- Status: Accepted（iPhone 側の実装で決めた細部を末尾に追記、画像の付いた返事の本文の末尾に枚数の印を付けることを [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で追加、同じ送り先の規則でブラウザにも Web Push で送ることを [ADR 0065](0065-web-push-to-the-browser.md) で追加）
 
 ## Context
 
