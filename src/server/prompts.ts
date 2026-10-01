@@ -267,14 +267,18 @@ export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思�
  * how a memo is found again when the turn is folded, and because it follows the turn it asks about on the prefix: the
  * request itself costs only its own tokens. It is asked whether folding is on or off, so that the two differ only in
  * the folding. The memo is what the turn leaves behind once its thinking and its tools are folded, and what the night
- * reads back, so it asks for facts and failures rather than for what she said.
+ * reads back, so it asks for facts and failures rather than for what she said. It names where the turn begins — after
+ * the previous memo, as she sees it with folding off and on — so that the memo is not the previous one said again
+ * (ADR 0065).
  */
 export const REFLECTION_REQUEST = '<turn_memo>\n'
   + 'このターンはここまでです。このターンで分かったこと・うまくいかなかったことを、1〜2 文、合わせて 100 字以内のメモにしてください。長くなりそうなら、いちばん大事な 1 点だけにします。'
   + '途中の考えやツールの結果は後で見えなくなることがあり、このメモがその代わりに残ります。夜の振り返りでも読み返します。\n'
-  + '書くのは、調べて分かった事実（予定・数字・名前・ファイルの場所など）か、試してうまくいかなかったこと（何を試して、なぜだめだったか）です。'
+  + 'このターンとは、前のメモ（前の <turn_memo> への答えか、「（このターンの振り返り）」の行）より後に届いた出来事と、それに対してしたことです。\n'
+  + '書くのは、このターンで調べて分かった事実（予定・数字・名前・ファイルの場所など）か、試してうまくいかなかったこと（何を試して、なぜだめだったか）です。'
+  + '前のメモに書いたことは繰り返しません。このターンで確かめていないことを、確かめたように書きません。判断の理由に前のことを使ったなら、短く添えるのは構いません。'
   + 'マスターに言ったことの繰り返しは要りません。' + WHO_TO_WHOM + '前置きや見出しは付けず、メモの文だけを書きます。\n'
-  + '書くことがなければ「なし」と一語だけ書いてください。\n'
+  + 'このターンで新しく分かったこと・うまくいかなかったことがなければ、「なし」と一語だけ書いてください。何もせずに終えたターンは「なし」です。\n'
   + '長く考えずに書いてください。ツールは使えません。このメモはマスターには届きません。\n'
   + '</turn_memo>';
 
