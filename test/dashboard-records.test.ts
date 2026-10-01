@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  APPROVAL_STATES, APPROVALS_PER_PAGE, listApprovals, listDovePosts, DOVE_POSTS_PER_PAGE, readDevices, readWaits, WAIT_ROWS,
+  APPROVAL_STATES, APPROVALS_PER_PAGE, CHECKS_PER_PAGE, findSelfCheck, listApprovals, listDovePosts, listSelfChecks, DOVE_POSTS_PER_PAGE,
+  readDevices, readWaits, WAIT_ROWS,
 } from '../src/server/dashboard-records.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
@@ -151,20 +152,78 @@ test('an approval past its end but not yet settled is listed as run out', async 
 test('the self-checks she booked are listed by when they are due, with the next nightly switch', async () => {
   const f = await setup();
   try {
-    const check = (id: string, state: string, due: number, eventId: string | null = null) => f.run(`INSERT INTO self_checks
-      (check_id, reason, reason_key, due_at, state, event_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    id, `架空の理由 ${id}`, id, iso(due), state, eventId, iso(-DAY), iso(-DAY));
-    f.event('event-check', 'no-reply', { kind: 'self_check' });
+    const check = (id: string, state: string, due: number) => f.run(`INSERT INTO self_checks
+      (check_id, reason, due_at, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    id, `架空の理由 ${id}`, iso(due), state, iso(-DAY), iso(-DAY));
     check('check-later', 'pending', 2 * 60 * MINUTE);
     check('check-sooner', 'pending', 30 * MINUTE);
     check('check-gone', 'cancelled', 10 * MINUTE);
-    check('check-done', 'delivered', -10 * MINUTE, 'event-check');
+    check('check-done', 'delivered', -10 * MINUTE);
     const waits = readWaits(f.db, options);
     assert.deepEqual(waits.checks.map(item => [item.checkId, item.reason, item.dueAt]),
       [['check-sooner', '架空の理由 check-sooner', iso(30 * MINUTE)], ['check-later', '架空の理由 check-later', iso(2 * 60 * MINUTE)]]);
     // 09:00 UTC is 18:00 in Tokyo; the next 04:00 there is 19:00 UTC.
     assert.equal(waits.nextRotationAt, '2026-01-01T19:00:00.000Z');
     assert.equal(readWaits(f.db, { ...options, nightlyRotationAt: false }).nextRotationAt, null);
+  } finally { await f.cleanup(); }
+});
+
+test('the waits keep to the soonest self-checks, and tell a repeating one by its expression', async () => {
+  const f = await setup();
+  try {
+    f.run(`INSERT INTO self_checks (check_id, reason, cron, due_at, state, created_at, updated_at) VALUES ('check-daily', '架空の毎日', '0 16 * * *', ?, 'pending', ?, ?)`,
+      iso(MINUTE), iso(-DAY), iso(-DAY));
+    for (let index = 0; index < WAIT_ROWS; index++) {
+      f.run(`INSERT INTO self_checks (check_id, reason, due_at, state, created_at, updated_at) VALUES (?, '架空', ?, 'pending', ?, ?)`,
+        `check-${String(index).padStart(2, '0')}`, iso((index + 2) * MINUTE), iso(-DAY), iso(-DAY));
+    }
+    const { checks } = readWaits(f.db, options);
+    assert.equal(checks.length, WAIT_ROWS);
+    assert.deepEqual(checks[0], { checkId: 'check-daily', reason: '架空の毎日', cron: '0 16 * * *', dueAt: iso(MINUTE), createdAt: iso(-DAY) });
+    assert.equal(checks[1]!.cron, null, 'a one-off has no expression');
+  } finally { await f.cleanup(); }
+});
+
+// The page of self-checks, where the owner may cancel one (ADR 0064).
+
+test('the self-checks page lists every one still waiting, repeating or not, soonest first, a page at a time', async () => {
+  const f = await setup();
+  try {
+    const check = (id: string, cron: string | null, state: string, due: number) => f.run(`INSERT INTO self_checks
+      (check_id, reason, cron, due_at, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    id, `架空の理由 ${id}`, cron, iso(due), state, iso(-DAY), iso(-DAY));
+    check('check-once', null, 'pending', 2 * 60 * MINUTE);
+    check('check-every', '*/10 * * * *', 'pending', 10 * MINUTE);
+    check('check-cancelled', '0 16 * * *', 'cancelled', 5 * MINUTE);
+    check('check-delivered', null, 'delivered', -10 * MINUTE);
+    const first = listSelfChecks(f.db, 1);
+    assert.deepEqual(first.rows.map(row => [row.checkId, row.cron, row.dueAt, row.reason]), [
+      ['check-every', '*/10 * * * *', iso(10 * MINUTE), '架空の理由 check-every'],
+      ['check-once', null, iso(2 * 60 * MINUTE), '架空の理由 check-once'],
+    ]);
+    assert.equal(first.rows[0]!.createdAt, iso(-DAY));
+    assert.equal(first.more, false);
+
+    for (let index = 0; index < CHECKS_PER_PAGE; index++) check(`check-many-${String(index).padStart(3, '0')}`, null, 'pending', DAY + index * MINUTE);
+    const full = listSelfChecks(f.db, 1);
+    assert.equal(full.rows.length, CHECKS_PER_PAGE);
+    assert.equal(full.more, true);
+    const second = listSelfChecks(f.db, 2);
+    assert.deepEqual(second.rows.map(row => row.checkId), ['check-many-048', 'check-many-049']);
+    assert.equal(second.more, false);
+  } finally { await f.cleanup(); }
+});
+
+test('one self-check is found only while it waits', async () => {
+  const f = await setup();
+  try {
+    f.run(`INSERT INTO self_checks (check_id, reason, cron, due_at, state, created_at, updated_at) VALUES
+      ('check-every', '架空の毎日', '0 16 * * *', ?, 'pending', ?, ?), ('check-gone', '架空', NULL, ?, 'cancelled', ?, ?),
+      ('check-done', '架空', NULL, ?, 'delivered', ?, ?)`, iso(MINUTE), iso(-DAY), iso(-DAY), iso(MINUTE), iso(-DAY), iso(-DAY),
+    iso(-MINUTE), iso(-DAY), iso(-DAY));
+    assert.deepEqual(findSelfCheck(f.db, 'check-every'),
+      { checkId: 'check-every', reason: '架空の毎日', cron: '0 16 * * *', dueAt: iso(MINUTE), createdAt: iso(-DAY) });
+    for (const id of ['check-gone', 'check-done', 'check-missing']) assert.equal(findSelfCheck(f.db, id), undefined, id);
   } finally { await f.cleanup(); }
 });
 

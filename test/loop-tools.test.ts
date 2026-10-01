@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, READ_TOOL_NAME, RUN_SHELL_TOOL_NAME, SEARCH_MEMORY_TOOL_NAME,
   type LoopToolHost } from '../src/server/loop-tools.ts';
-import { ASK_AGENT_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
+import { ASK_AGENT_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION,
+  SCHEDULE_SELF_CHECK_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
 const ok = (text: string) => ({ ok: true, text });
@@ -187,4 +188,16 @@ test('ask_agent is always registered last, with a fixed description and a requir
     assert.ok(ASK_AGENT_DESCRIPTION.includes(phrase), phrase);
   }
   assert.equal(/\d/.test(ASK_AGENT_DESCRIPTION), false);
+});
+
+// ADR 0063: a booking may repeat by a cron expression, and the limits and the folding of the same reason are gone.
+test('the self-check descriptions tell of cron, at and in_minutes, and promise no limit or folding any more', () => {
+  const schedule = createLoopTools(host()).find(tool => tool.name === 'schedule_self_check')!;
+  assert.equal(schedule.description, SCHEDULE_SELF_CHECK_DESCRIPTION);
+  for (const phrase of ['cron', 'at', 'in_minutes', '0 16 * * *', '*/10 * * * *', 'タイムゾーン', '飛ば']) {
+    assert.ok(SCHEDULE_SELF_CHECK_DESCRIPTION.includes(phrase), phrase);
+  }
+  assert.doesNotMatch(SCHEDULE_SELF_CHECK_DESCRIPTION, /上限|まとま/);
+  assert.deepEqual(Object.keys((schedule.parameters as { properties: object }).properties).sort(), ['at', 'cron', 'in_minutes', 'reason']);
+  assert.match(LIST_SELF_CHECKS_DESCRIPTION, /cron/);
 });

@@ -123,7 +123,7 @@ export const JEV_CASES: readonly JevCase[] = [
     'おつかれさまでした！'),
   // What the secretary does herself is no promise for the owner (ADR 0059).
   scene('own-drew', 'own-act', 'pass', { from: '佐々木', time: '15:00:00', text: '@natsumi 猫の絵って描ける？' },
-    '描いてみました！窓辺で丸くなっている三毛猫です。気に入ってもらえたら嬉しいです。', [], { placement: 'thread' }),
+    '描いてみました！窓辺で丸くなっている三毛猫です。気に入ってもらえたら嬉しいです。', [], { placement: 'channel' }),
   scene('own-look-up', 'own-act', 'pass', { from: '山本', time: '10:30:00', text: '@natsumi 新しい API のレート制限って分かる？' },
     'ドキュメントを調べて、夕方までにこのスレッドにまとめておきますね。'),
   scene('own-summary', 'own-act', 'pass', { from: '田中', time: '18:00:00', text: '@natsumi 今日の議論、あとでまとめてもらえる？' },
@@ -142,12 +142,20 @@ export const JEV_CASES: readonly JevCase[] = [
     'はい、鈴木さんは Mac を使っています。'),
   scene('asked-plans', 'asked', 'pass', { from: '佐々木', time: '17:00:00', text: '@natsumi 鈴木さん、来週の水曜は在宅？' },
     '来週の水曜は在宅だそうです。'),
-  // Where the reply goes (ADR 0062): the channel itself while the talk is there, the thread for a reply to that message
-  // alone, and the broadcast for an old thread worth showing the channel.
+  // Where the reply goes (ADR 0062): a message in the channel itself is answered there, its question and its thanks
+  // too; its thread only when the channel has since moved on to another topic. The broadcast is for an old thread worth
+  // showing the channel.
   scene('place-answer', 'placement', 'pass', { from: '田中', time: '13:00:00', text: '@natsumi 先週の議事録ってどこ？' },
-    '先週の金曜に、山本さんがこのチャンネルに貼ってくれています。', [], { placement: 'thread' }),
+    '先週の金曜に、山本さんがこのチャンネルに貼ってくれています。', [], { placement: 'channel' }),
   scene('place-thanks', 'placement', 'pass', { from: '山本', time: '12:10:00', text: '@natsumi 資料ありがとう、助かりました！' },
-    'どういたしまして！', [], { placement: 'thread' }),
+    'どういたしまして！', [], { placement: 'channel' }),
+  // The owner asked in the channel itself for a reply as a test, and Jev put it in the thread (2026-09-30).
+  scene('place-test-reply', 'placement', 'pass', { from: '鈴木', time: '16:20:00', text: '@natsumi テストなので返事して' },
+    'はい、届いています！', [], { placement: 'channel' }),
+  scene('place-channel-moved-on', 'placement', 'pass', { from: '山本', time: '10:00:00', text: '@natsumi 来月の勉強会の会場、どこになったか分かる？' },
+    '来月の勉強会は、3 階の大会議室です。', [], { placement: 'thread',
+      after: [{ from: '田中', time: '10:20:00', text: '今日のデプロイ、11 時からでいいかな' }, { from: '佐々木', time: '10:21:00', text: 'OK です' },
+        { from: '田中', time: '10:40:00', text: 'デプロイ始めます' }, { from: '佐々木', time: '10:55:00', text: '監視見てます、今のところ問題なし' }] }),
   scene('place-announce', 'placement', 'pass', { from: '田中', time: '10:00:00', text: '@natsumi 来週の定例が 15 時からに変わったって、みんなに伝えておいて' },
     '皆さん、来週の定例は 15 時からに変わりました。よろしくお願いします。', [], { placement: 'channel' }),
   scene('place-quick-exchange', 'placement', 'pass', { from: '田中', time: '11:50:30', text: '@natsumi なつみはどう思う？' },

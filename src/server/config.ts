@@ -10,8 +10,8 @@ import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
-import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
-  type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
+import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES,
+  type AwakeHours } from './scheduler.ts';
 // The settings that may change while natsumi runs keep the rules the config gives them, from one place (ADR 0058).
 import { awakeHoursProblem, isFold, isPingInterval, isTurnLimit, MIN_PING_INTERVAL_MINUTES, ROUTE_NAME } from '../shared/protocol/settings.ts';
 
@@ -131,8 +131,6 @@ export interface LoopConfig {
   awakeHours: AwakeHours;
   /** Quiet minutes before a ping, or false for no pings. */
   pingIntervalMinutes: number | false;
-  /** Limits on the checks natsumi books for herself. */
-  selfCheck: SelfCheckLimits;
   /** Minutes an expression other than thinking stays before returning to neutral. */
   expressionResetMinutes: number;
   /** Model calls the nightly review turn may make: it reads and rewrites memory file by file (ADR 0018). */
@@ -148,6 +146,11 @@ export interface LoopConfig {
    * memo is asked for after every turn either way, so that on and off differ only in the folding.
    */
   turnFold: 'on' | 'off';
+  /**
+   * Settings still written but no longer read, present only when there are any: `selfCheck`, whose limits ADR 0063
+   * removed. They do not stop the start, which logs them.
+   */
+  ignored?: string[];
 }
 
 // The turns' limits live here rather than in the thinking loop, which loads Pi's SDK on import.
@@ -162,7 +165,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS, alwaysMemoryMaxChars: DEFAULT_ALWAYS_MAX_CHARS,
   shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS,
   workspaceSizeWarnBytes: DEFAULT_SIZE_WARN_BYTES,
-  awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES, selfCheck: DEFAULT_SELF_CHECK_LIMITS,
+  awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
   reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
   eventModelCalls: DEFAULT_EVENT_MODEL_CALLS, eventTimeoutMinutes: DEFAULT_EVENT_TIMEOUT_MINUTES,
@@ -1120,10 +1123,10 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     alwaysMemoryMaxChars: alwaysMax as number,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
     pingIntervalMinutes: ping,
-    selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),
     expressionResetMinutes: reset as number,
     reviewModelCalls: reviewCalls, reviewTimeoutMinutes: reviewMinutes,
     eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, turnFold,
+    ...('selfCheck' in loop ? { ignored: [`${path}.selfCheck`] } : {}),
   };
 }
 
@@ -1135,22 +1138,6 @@ function parseAwakeHours(value: unknown, path: string): AwakeHours {
     throw new ConfigError(`${path}.${problem.part}`, problem.reason === 'same-as-start' ? 'must differ from start' : 'must be a 24-hour HH:MM time');
   }
   return { start: hours.start as string, end: hours.end as string };
-}
-
-function parseSelfCheck(value: unknown, path: string): SelfCheckLimits {
-  const limits = object(value, path);
-  const keys = Object.keys(DEFAULT_SELF_CHECK_LIMITS) as (keyof SelfCheckLimits)[];
-  onlyKeys(limits, path, keys);
-  const parsed = { ...DEFAULT_SELF_CHECK_LIMITS };
-  for (const key of keys) {
-    const limit = limits[key] ?? DEFAULT_SELF_CHECK_LIMITS[key];
-    if (!positiveInteger(limit, 1)) throw new ConfigError(`${path}.${key}`, 'must be a positive integer');
-    parsed[key] = limit as number;
-  }
-  if (parsed.minDelayMinutes >= parsed.maxDelayDays * 1440) {
-    throw new ConfigError(`${path}.minDelayMinutes`, 'must be shorter than maxDelayDays');
-  }
-  return parsed;
 }
 
 function compactionThreshold(value: unknown, path: string): number {

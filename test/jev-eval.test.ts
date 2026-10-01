@@ -72,6 +72,25 @@ test('where a reply should go is given for the scenes that have a clear answer, 
   }
 });
 
+// 2026-09-30: asked in the channel itself for a reply as a test, Jev put it in the thread. A message in the channel
+// itself is answered there, unless the channel has since moved on to another topic.
+test('a question or a request in the channel itself is answered in the channel, and an old one the channel has moved on from in its thread', () => {
+  const find = (name: string) => JEV_CASES.find(example => example.name === name);
+  for (const name of ['place-answer', 'place-thanks', 'place-test-reply', 'own-drew']) {
+    assert.equal(find(name)?.placement, 'channel', name);
+    assert.equal(find(name)?.state.reply_to?.in_thread, false, name);
+  }
+  assert.match(find('place-test-reply')!.state.reply_to!.text, /テストなので返事して/);
+  const moved = find('place-channel-moved-on')!;
+  assert.equal(moved.placement, 'thread');
+  assert.equal(moved.state.reply_to?.in_thread, false);
+  const after = moved.state.conversation.channel.messages.filter(message => message.at > moved.state.reply_to!.at);
+  assert.ok(after.length >= 3, 'the channel went on to another topic after the message');
+  const inChannel = JEV_CASES.filter(example => example.placement && !example.state.reply_to?.in_thread);
+  assert.deepEqual(inChannel.filter(example => example.placement === 'thread').map(example => example.name), ['place-channel-moved-on'],
+    'a message in the channel itself goes to its thread only when the channel has moved on');
+});
+
 type Odds = { thread: number; channel: number; broadcast: number };
 const THREAD: Odds = { thread: 0.8, channel: 0.1, broadcast: 0.1 };
 

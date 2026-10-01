@@ -48,19 +48,25 @@ test('a private matter is one the conversation did not ask about, named with exa
   assert.match(privateMatter, /Answering exactly what was asked is fine/);
 });
 
-test('three placements (ADR 0062): the channel itself by default when the talk is there, the thread for a reply to that message alone, the broadcast only for an old thread', () => {
+test('three placements (ADR 0062): the channel itself by default for a message there, the thread only in two cases, the broadcast only for an old thread', () => {
   assert.deepEqual(Object.keys(JUDGE_PLACEMENT.criteria), ['thread', 'channel', 'broadcast']);
   assert.deepEqual(PLACEMENT_ORDER, ['thread', 'channel', 'broadcast']);
   assert.match(JUDGE_PLACEMENT.criteria.channel, /channel itself/);
   assert.match(JUDGE_PLACEMENT.criteria.channel, /no thread/);
-  assert.match(JUDGE_PLACEMENT.criteria.channel, /default/);
+  assert.match(JUDGE_PLACEMENT.criteria.channel, /default when the message it replies to is in the channel itself/);
+  // An answer to a question asked in the channel itself went to the thread (2026-09-30): it is the channel's.
+  assert.match(JUDGE_PLACEMENT.criteria.channel, /answer to its question/);
+  assert.match(JUDGE_PLACEMENT.criteria.channel, /talk has moved on to the channel/);
+  assert.doesNotMatch(JUDGE_PLACEMENT.criteria.thread, /answer to its question/);
   assert.match(JUDGE_PLACEMENT.criteria.thread, /only/);
-  assert.match(JUDGE_PLACEMENT.criteria.thread, /answer to its question/);
+  assert.match(JUDGE_PLACEMENT.criteria.thread, /\(1\)[^(]*in a thread[^(]*goes on in that thread/);
+  assert.match(JUDGE_PLACEMENT.criteria.thread, /\(2\)[^(]*moved on to another topic[^(]*would not read as an answer/);
   assert.match(JUDGE_PLACEMENT.criteria.broadcast, /also shown in the channel/);
   assert.match(JUDGE_PLACEMENT.criteria.broadcast, /old thread/);
   assert.match(JUDGE_PLACEMENT.instructions, /in_thread/, 'the judge is told how to see that the message is in a thread');
   assert.match(JUDGE_PLACEMENT.instructions, /\bnow\b/, 'the judge is told the time now, to tell how old a thread is');
   assert.match(JUDGE_PLACEMENT.instructions, /even when reply_to is in a thread/, 'every option is open for a message in a thread');
+  assert.match(JUDGE_PLACEMENT.instructions, /where the conversation goes on now/, 'the reply goes where the talk is');
 });
 
 test('both judges are asked the same, both answers are kept with their own thresholds, and the adopted one decides', async () => {

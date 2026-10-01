@@ -126,7 +126,7 @@ ${workspace}
 ## 出来事の種類
 - mac_message: マスターとの一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、マスターがまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
 - ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time はマスターのタイムゾーンの今の時刻です。マスターに伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。
-- self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの reason と予定の時刻（scheduled_for）があります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。
+- self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの check_id・reason・予定の時刻（scheduled_for）があります。繰り返しの予約には cron が付き、予約はそのまま次の時刻まで残ります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。繰り返しの予約は、過ぎた回がいくつあっても 1 回だけ届きます。
 - sources_updated: /sources の読みもの（Slack のチャンネルなど）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file と path（jq -s のパス）がその場所で、kind の意味と読み方は読みものごとのマニュアル（Slack なら /manual/slack.md）にあります。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。マスターには何も送りません。`;
 
@@ -226,12 +226,16 @@ export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_revie
   + '書かなくても夜は終わるが、その場合の説明はサーバーが機械的に付ける。';
 
 export const SCHEDULE_SELF_CHECK_DESCRIPTION = '後で自分からもう一度確かめるための予約をする。時刻が来ると、reason を添えた self_check のイベントが届く。'
-  + 'in_minutes（今から何分後か）と at（マスターのタイムゾーンの "HH:MM" か "YYYY-MM-DD HH:MM"）のどちらか一方だけを指定する。'
-  + '近すぎる先・遠すぎる先・件数には上限があり、同じ理由の予約は 1 件にまとまる。夜に来た予約は朝に届く。';
+  + 'cron・at・in_minutes のどれか 1 つだけを指定する。'
+  + 'cron は繰り返しで、マスターのタイムゾーンの 5 項目の cron 式（分 時 日 月 曜日）で書く'
+  + '（"0 16 * * *" は毎日 16:00、"*/10 * * * *" は 10 分ごと、"0 9 * * 1-5" は平日の 9:00）。取り消すまで続く。'
+  + 'at は一回きりで、マスターのタイムゾーンの "HH:MM" か "YYYY-MM-DD HH:MM"。in_minutes は一回きりで、今から何分後か。'
+  + '繰り返しの、起きている時間帯の外の回は飛ばされる。一回きりが夜に来たら、朝に届く。';
 
-export const LIST_SELF_CHECKS_DESCRIPTION = 'まだ届いていない自分の予約（schedule_self_check）を、check_id・時刻・理由で一覧する。';
+export const LIST_SELF_CHECKS_DESCRIPTION = 'まだ届いていない自分の予約（schedule_self_check）を、check_id・時刻・理由で一覧する。'
+  + '繰り返しの予約は、次の時刻と cron 式を添える。';
 
-export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の予約を、check_id を指定して取り消す。';
+export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の予約を、check_id を指定して取り消す。繰り返しの予約も、これで止める。';
 
 /**
  * Fixed like every description here: which agents exist is the config's, so the list lives in the manual she reads

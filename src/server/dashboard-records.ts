@@ -5,8 +5,9 @@ import { SESSION_TTL_MS } from './sessions.ts';
 import { turnKind, type TurnKind } from './turn-stats.ts';
 
 /**
- * What the dashboard lists from the state database alone (ADR 0049): the failures and what waits, the dove's posts and
- * the devices. Everything here reads; nothing writes. No token, hash or key is read out: the columns that hold them are
+ * What the dashboard lists from the state database alone (ADR 0049): the failures and what waits, the self-checks, the
+ * dove's posts and the devices. Everything here reads; nothing writes: a self-check is cancelled by the loop's own
+ * `SelfChecks` (ADR 0064). No token, hash or key is read out: the columns that hold them are
  * never selected.
  */
 
@@ -31,7 +32,8 @@ export interface PendingApproval {
   /** The labels of the issues the judge flagged. */
   flagged: string[];
 }
-export interface BookedCheck { checkId: string; reason: string; dueAt: string; createdAt: string }
+/** A self-check still waiting (ADR 0063): a repeating one has its expression, and is due at its next run. */
+export interface BookedCheck { checkId: string; reason: string; cron: string | null; dueAt: string; createdAt: string }
 export interface AgentTask { agent: string; taskId: string; state: string; sentAt: string; createdAt: string; updatedAt: string }
 export interface Rotation {
   rotationId: string; state: string; reason: string | null; fromSessionFile: string; toSessionFile: string | null; createdAt: string; updatedAt: string;
@@ -66,8 +68,8 @@ export function readWaits(db: DatabaseSync, options: { now: number; nightlyRotat
     approvalId: row.approval_id!, kind: row.kind!, createdAt: row.created_at!, expiresAt: row.expires_at!, expired: row.expires_at! <= now,
     ...shown(row.payload!),
   }));
-  const checks = all<Record<string, string>>(`SELECT check_id, reason, due_at, created_at FROM self_checks WHERE state = 'pending'
-    ORDER BY due_at, rowid`).map(row => ({ checkId: row.check_id!, reason: row.reason!, dueAt: row.due_at!, createdAt: row.created_at! }));
+  const checks = all<CheckRow>(`SELECT ${CHECK_COLUMNS} FROM self_checks WHERE state = 'pending' ORDER BY due_at, rowid LIMIT ?`, WAIT_ROWS)
+    .map(bookedCheck);
   const agentTasks = all<Record<string, string>>(`SELECT agent, task_id, state, sent_at, created_at, updated_at FROM agent_tasks
     ORDER BY state IN ('waiting', 'input-required') DESC, updated_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
     .map(row => ({ agent: row.agent!, taskId: row.task_id!, state: row.state!, sentAt: row.sent_at!, createdAt: row.created_at!, updatedAt: row.updated_at! }));
@@ -78,6 +80,27 @@ export function readWaits(db: DatabaseSync, options: { now: number; nightlyRotat
   const nextRotationAt = options.nightlyRotationAt === false ? null
     : isoAt(nextOccurrence(options.now, options.nightlyRotationAt, options.timeZone));
   return { failedEvents, cutTurns, approvals, checks, nextRotationAt, agentTasks, rotations };
+}
+
+/** The self-checks listed a page at a time (ADR 0064); nothing bounds how many she books (ADR 0063). */
+export const CHECKS_PER_PAGE = 50;
+
+type CheckRow = { check_id: string; reason: string; cron: string | null; due_at: string; created_at: string };
+const CHECK_COLUMNS = 'check_id, reason, cron, due_at, created_at';
+const bookedCheck = (row: CheckRow): BookedCheck =>
+  ({ checkId: row.check_id, reason: row.reason, cron: row.cron, dueAt: row.due_at, createdAt: row.created_at });
+
+/** A page of the self-checks still waiting, soonest first, as `list_self_checks` orders them. */
+export function listSelfChecks(db: DatabaseSync, page: number): { rows: BookedCheck[]; more: boolean } {
+  const rows = db.prepare(`SELECT ${CHECK_COLUMNS} FROM self_checks WHERE state = 'pending' ORDER BY due_at, check_id LIMIT ? OFFSET ?`)
+    .all(CHECKS_PER_PAGE + 1, (page - 1) * CHECKS_PER_PAGE) as CheckRow[];
+  return { rows: rows.slice(0, CHECKS_PER_PAGE).map(bookedCheck), more: rows.length > CHECKS_PER_PAGE };
+}
+
+/** One self-check, while it still waits; none once it was cancelled or, a one-off, delivered. */
+export function findSelfCheck(db: DatabaseSync, checkId: string): BookedCheck | undefined {
+  const row = db.prepare(`SELECT ${CHECK_COLUMNS} FROM self_checks WHERE check_id = ? AND state = 'pending'`).get(checkId) as CheckRow | undefined;
+  return row && bookedCheck(row);
 }
 
 /** What an approval's payload shows the owner; nothing when it cannot be read. */

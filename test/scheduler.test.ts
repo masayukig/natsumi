@@ -22,7 +22,6 @@ const MINUTE = 60_000;
 const TZ = 'Asia/Tokyo';
 const tokyo = (local: string) => Date.parse(`${local.replace(' ', 'T')}:00+09:00`);
 const AWAKE = { start: '08:00', end: '23:00' };
-const LIMITS = { minDelayMinutes: 5, maxDelayDays: 7, maxPending: 5, maxPerDay: 20 };
 
 async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
   const deadline = Date.now() + timeout;
@@ -57,7 +56,7 @@ async function setup(start: string) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime, now: () => f.clock,
-        loop: { ...LOOP_DEFAULTS, timeZone: TZ, awakeHours: AWAKE, selfCheck: LIMITS, eventModelCalls: 6, ...settings },
+        loop: { ...LOOP_DEFAULTS, timeZone: TZ, awakeHours: AWAKE, eventModelCalls: 6, ...settings },
         configureSession: (session: AgentSession) => { session.agent.streamFunction = model.streamFunction; },
         ...options,
       });
@@ -132,10 +131,10 @@ test('the awake hours are read in the owner\'s time zone and may run past midnig
   assert.equal(isAwake(tokyo('2026-09-17 12:00'), late, TZ), false);
 });
 
-test('a self-check is booked relative or at a local time and saved as an absolute time; what is out of bounds is refused with the reason', async () => {
+test('a self-check is booked relative or at a local time and saved as an absolute time; what cannot be read is refused with the reason', async () => {
   const f = await setup('2026-09-17 10:00');
   try {
-    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, limits: { ...LIMITS, maxPending: 3, maxPerDay: 4 }, awakeHours: AWAKE });
+    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, awakeHours: AWAKE });
     const due = () => (f.db.prepare(`SELECT reason, due_at FROM self_checks WHERE state = 'pending' ORDER BY due_at`).all() as { reason: string; due_at: string }[])
       .map(row => [row.reason, row.due_at]);
 
@@ -153,23 +152,19 @@ test('a self-check is booked relative or at a local time and saved as an absolut
       ['週末の予定を聞く', '2026-09-18T00:00:00.000Z'],
     ]);
 
-    // The same reason again is folded into the existing booking, which keeps its time and counts nothing.
-    const again = checks.schedule('　洗濯物を取り込んだか確認する ', { at: '11:00' });
-    assert.equal(again.ok, true, again.text);
-    assert.match(again.text, /まとめ/);
-    assert.match(again.text, /10:30/);
-    assert.equal(due().length, 3);
-
     const refusals: [string, ReturnType<SelfChecks['schedule']>, RegExp][] = [
       ['past', checks.schedule('朝の確認', { at: '09:00' }), /過去/],
-      ['too soon', checks.schedule('すぐの確認', { inMinutes: 4 }), /5 分/],
-      ['zero', checks.schedule('すぐの確認', { inMinutes: 0 }), /5 分/],
-      ['too far', checks.schedule('遠い確認', { at: '2026-09-24 10:01' }), /7 日/],
-      ['both', checks.schedule('両方', { inMinutes: 30, at: '15:00' }), /どちらか/],
-      ['neither', checks.schedule('なし', {}), /どちらか/],
+      ['now', checks.schedule('今の確認', { at: '10:00' }), /過去/],
+      ['zero', checks.schedule('すぐの確認', { inMinutes: 0 }), /1 以上/],
+      ['fraction', checks.schedule('すぐの確認', { inMinutes: 1.5 }), /整数/],
+      ['both', checks.schedule('両方', { inMinutes: 30, at: '15:00' }), /どれか 1 つ/],
+      ['cron and at', checks.schedule('両方', { cron: '0 16 * * *', at: '15:00' }), /どれか 1 つ/],
+      ['neither', checks.schedule('なし', {}), /どれか 1 つ/],
       ['bad time', checks.schedule('形が違う', { at: '3pm' }), /HH:MM/],
+      ['bad cron', checks.schedule('形が違う', { cron: '0 16 * *' }), /cron.*5 つ/],
+      ['never', checks.schedule('来ない日', { cron: '0 0 30 2 *' }), /当てはまる/],
+      ['only at night', checks.schedule('夜中', { cron: '0 3 * * *' }), /08:00〜23:00.*外/],
       ['no reason', checks.schedule('  ', { inMinutes: 30 }), /理由/],
-      ['full', checks.schedule('四件目', { inMinutes: 60 }), /同時.*3 件/],
     ];
     for (const [name, outcome, reason] of refusals) {
       assert.equal(outcome.ok, false, name);
@@ -177,7 +172,7 @@ test('a self-check is booked relative or at a local time and saved as an absolut
     }
     assert.equal(due().length, 3);
 
-    // The list reads the bookings; a cancelled one frees its place but still counts for the day.
+    // The list reads the bookings; a cancelled one is gone from it.
     const listed = checks.list();
     assert.equal(listed.ok, true);
     const id = /(check-[0-9a-f-]+)[^\n]*洗濯物/.exec(listed.text)?.[1];
@@ -186,22 +181,63 @@ test('a self-check is booked relative or at a local time and saved as an absolut
     assert.equal(checks.cancel('check-missing').ok, false);
     assert.equal(checks.cancel(id!).ok, true);
     assert.equal(checks.cancel(id!).ok, false);
-    assert.equal(checks.schedule('四件目', { inMinutes: 60 }).ok, true);
-    checks.cancel(/(check-[0-9a-f-]+)[^\n]*四件目/.exec(checks.list().text)![1]!);
-    const perDay = checks.schedule('五件目', { inMinutes: 90 });
-    assert.equal(perDay.ok, false);
-    assert.match(perDay.text, /1 日.*4 件/);
+    assert.doesNotMatch(checks.list().text, /洗濯物/);
+  } finally { await f.cleanup(); }
+});
 
-    // A new local day allows more.
-    f.at('2026-09-18 00:05');
-    assert.equal(checks.schedule('五件目', { inMinutes: 90 }).ok, true);
+test('there is no limit on how soon, how far, how many or how many a day, and the same reason may be booked twice', async () => {
+  const f = await setup('2026-09-17 10:00');
+  try {
+    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, awakeHours: AWAKE });
+    assert.match(checks.schedule('すぐの確認', { inMinutes: 1 }).text, /2026-09-17 10:01/);
+    assert.match(checks.schedule('遠い確認', { at: '2027-09-02 18:00' }).text, /2027-09-02 18:00/);
+    for (let i = 0; i < 30; i += 1) assert.equal(checks.schedule(`確認 ${i}`, { inMinutes: 10 + i }).ok, true, `booking ${i}`);
+    // A repeating and a one-off booking for the same reason are two bookings, and so are two one-offs.
+    const repeating = checks.schedule('水を飲んだか聞く', { cron: '0 16 * * *' });
+    const once = checks.schedule('水を飲んだか聞く', { at: '12:00' });
+    const again = checks.schedule(' 水を飲んだか聞く　', { at: '13:00' });
+    for (const outcome of [repeating, once, again]) assert.equal(outcome.ok, true, outcome.text);
+    assert.doesNotMatch(once.text + again.text, /まとめ/);
+    const count = f.db.prepare(`SELECT COUNT(*) AS n FROM self_checks WHERE state = 'pending'`).get() as { n: number };
+    assert.equal(count.n, 35);
+    assert.equal(checks.list().text.match(/水を飲んだか聞く/g)?.length, 3);
+  } finally { await f.cleanup(); }
+});
+
+test('a repeating booking is written as cron in the owner\'s time zone, and the list shows its expression and next run', async () => {
+  const f = await setup('2026-09-17 10:03');
+  try {
+    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, awakeHours: AWAKE });
+    const daily = checks.schedule('今日の予定を確かめる', { cron: '0 16 * * *' });
+    assert.equal(daily.ok, true, daily.text);
+    assert.match(daily.text, /0 16 \* \* \*/);
+    assert.match(daily.text, /2026-09-17 16:00/);
+    assert.match(daily.text, /繰り返し/);
+    const often = checks.schedule('様子を見る', { cron: '*/10 * * * *' });
+    assert.match(often.text, /2026-09-17 10:10/);
+    assert.equal(checks.schedule('昼の確認', { at: '12:00' }).ok, true);
+
+    const listed = checks.list().text;
+    assert.match(listed, /check-[0-9a-f-]+ 2026-09-17 10:10 様子を見る（繰り返し: \*\/10 \* \* \* \*）/);
+    assert.match(listed, /check-[0-9a-f-]+ 2026-09-17 12:00 昼の確認\n/);
+    assert.match(listed, /check-[0-9a-f-]+ 2026-09-17 16:00 今日の予定を確かめる（繰り返し: 0 16 \* \* \*）/);
+
+    // The next run shown is the next inside the awake hours: late at night, it is the morning's.
+    f.at('2026-09-17 22:55');
+    const night = checks.schedule('夜も見る', { cron: '*/10 * * * *' });
+    assert.match(night.text, /2026-09-18 08:00/);
+    assert.match(night.text, /08:00〜23:00.*外の回は飛ばします/);
+    // A repeating booking can be cancelled like any other.
+    const id = /(check-[0-9a-f-]+) [^\n]*今日の予定を確かめる/.exec(checks.list().text)![1]!;
+    assert.equal(checks.cancel(id).ok, true);
+    assert.doesNotMatch(checks.list().text, /今日の予定を確かめる/);
   } finally { await f.cleanup(); }
 });
 
 test('a booking outside the awake hours is accepted with a note that it waits for the morning', async () => {
   const f = await setup('2026-09-17 21:00');
   try {
-    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, limits: LIMITS, awakeHours: AWAKE });
+    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, awakeHours: AWAKE });
     const night = checks.schedule('寝る前の確認', { at: '23:30' });
     assert.equal(night.ok, true, night.text);
     assert.match(night.text, /08:00/);
@@ -274,13 +310,13 @@ test('natsumi books a self-check with the tools, sees it arrive as an event with
     const { loop, events, scheduler } = await f.open();
     const results = await ownerTurn(f, loop, events, '30 分後に洗濯物のことを聞いて', [
       ['schedule_self_check', { reason: '洗濯物を取り込んだか聞く', in_minutes: 30 }],
-      ['schedule_self_check', { reason: 'すぐ聞く', in_minutes: 2 }],
+      ['schedule_self_check', { reason: 'すぐ聞く', in_minutes: 0 }],
       ['schedule_self_check', { reason: '取り消す予定', at: '12:00' }],
       ['list_self_checks', {}],
     ]);
     assert.deepEqual(results.map(r => r.isError), [false, true, false, false]);
     assert.match(results[0]!.text, /2026-09-17 10:30/);
-    assert.match(results[1]!.text, /5 分/);
+    assert.match(results[1]!.text, /1 以上/);
     const cancelId = /(check-[0-9a-f-]+)[^\n]*取り消す予定/.exec(results[3]!.text)?.[1];
     assert.ok(cancelId, results[3]!.text);
     const cancelled = await ownerTurn(f, loop, events, 'お昼のは要らない', [['cancel_self_check', { check_id: cancelId }]]);
@@ -355,6 +391,114 @@ test('bookings survive a restart, and those that passed while stopped or asleep 
     morning.reply.finish();
     await second.loop.idle();
     assert.equal(f.model.calls, 4);
+  } finally { await f.cleanup(); }
+});
+
+test('a repeating booking comes at each run, says which booking it is and that it repeats, and stays booked until cancelled', async () => {
+  const f = await setup('2026-09-17 10:00');
+  try {
+    const { loop, events, scheduler } = await f.open();
+    const booked = await ownerTurn(f, loop, events, '毎時ちょうどに様子を見て', [
+      ['schedule_self_check', { reason: '部屋の様子を見る', cron: '0 * * * *' }],
+      ['schedule_self_check', { reason: '両方', cron: '0 * * * *', in_minutes: 30 }],
+    ]);
+    assert.deepEqual(booked.map(r => r.isError), [false, true]);
+    const checkId = /check-[0-9a-f-]+/.exec(booked[0]!.text)![0];
+
+    f.at('2026-09-17 11:00');
+    assert.equal(scheduler.tick(), 'self-check');
+    const first = await nextEvent(f);
+    assert.deepEqual(first.event.checks, [
+      { check_id: checkId, reason: '部屋の様子を見る', scheduled_for: '2026-09-17 11:00', cron: '0 * * * *' },
+    ]);
+    first.reply.call('list_self_checks', {});
+    first.reply.finish();
+    const after = await f.model.next();
+    assert.match(toolResults(after.context)[0]!.text, new RegExp(`${checkId} 2026-09-17 12:00 部屋の様子を見る（繰り返し: 0 \\* \\* \\* \\*）`));
+    after.finish();
+    await loop.idle();
+    assert.equal(scheduler.tick(), undefined, 'one run comes once');
+
+    f.at('2026-09-17 12:00');
+    assert.equal(scheduler.tick(), 'self-check');
+    const second = await nextEvent(f);
+    assert.deepEqual(second.event.checks.map((c: Record<string, unknown>) => [c.check_id, c.scheduled_for, c.cron]),
+      [[checkId, '2026-09-17 12:00', '0 * * * *']]);
+    second.reply.finish();
+    await loop.idle();
+
+    await ownerTurn(f, loop, events, 'もういいよ', [['cancel_self_check', { check_id: checkId }]]);
+    f.at('2026-09-17 13:00');
+    assert.equal(scheduler.tick(), 'ping', 'a cancelled repeating booking comes no more');
+    (await nextEvent(f)).reply.finish();
+    await loop.idle();
+  } finally { await f.cleanup(); }
+});
+
+test('the runs of a repeating booking outside the awake hours are skipped and it starts again in the morning, while a one-off waits for the morning', async () => {
+  const f = await setup('2026-09-17 22:00');
+  try {
+    const { loop, events, scheduler } = await f.open();
+    const booked = await ownerTurn(f, loop, events, '予定を入れて', [
+      ['schedule_self_check', { reason: '30 分ごとに見る', cron: '*/30 * * * *' }],
+      ['schedule_self_check', { reason: '七時と正午に見る', cron: '0 7,12 * * *' }],
+      ['schedule_self_check', { reason: '寝る前に聞く', at: '23:30' }],
+    ]);
+    assert.deepEqual(booked.map(r => r.isError), [false, false, false]);
+    assert.match(booked[1]!.text, /2026-09-18 12:00/);
+
+    f.at('2026-09-17 22:30');
+    assert.equal(scheduler.tick(), 'self-check');
+    const evening = await nextEvent(f);
+    assert.deepEqual(evening.event.checks.map((c: Record<string, unknown>) => c.reason), ['30 分ごとに見る']);
+    evening.reply.finish();
+    await loop.idle();
+
+    // The night passes; the runs at 23:00 and after pile up nowhere.
+    for (const at of ['2026-09-17 23:00', '2026-09-17 23:30', '2026-09-18 03:00', '2026-09-18 07:00', '2026-09-18 07:59']) {
+      f.at(at);
+      assert.equal(scheduler.tick(), undefined, at);
+    }
+    f.at('2026-09-18 08:00');
+    assert.equal(scheduler.tick(), 'self-check');
+    const morning = await nextEvent(f);
+    assert.deepEqual(morning.event.checks.map((c: Record<string, unknown>) => [c.reason, c.scheduled_for, c.late_minutes]), [
+      ['寝る前に聞く', '2026-09-17 23:30', 510],
+      ['30 分ごとに見る', '2026-09-18 08:00', undefined],
+    ]);
+    morning.reply.finish();
+    await loop.idle();
+    f.at('2026-09-18 08:30');
+    assert.equal(scheduler.tick(), 'self-check');
+    const next = await nextEvent(f);
+    assert.deepEqual(next.event.checks.map((c: Record<string, unknown>) => [c.reason, c.scheduled_for]), [['30 分ごとに見る', '2026-09-18 08:30']]);
+    next.reply.finish();
+    await loop.idle();
+  } finally { await f.cleanup(); }
+});
+
+test('the runs of a repeating booking missed while the server was stopped come once, as the latest of them', async () => {
+  const f = await setup('2026-09-17 10:00');
+  try {
+    const first = await f.open();
+    await ownerTurn(f, first.loop, first.events, '毎時聞いて', [['schedule_self_check', { reason: '毎時の確認', cron: '0 * * * *' }]]);
+    await first.loop.close();
+
+    f.at('2026-09-17 13:30');
+    const second = await f.open();
+    assert.equal(second.scheduler.tick(), 'self-check');
+    const late = await nextEvent(f);
+    assert.deepEqual(late.event.checks.map((c: Record<string, unknown>) => [c.reason, c.scheduled_for, c.late_minutes]),
+      [['毎時の確認', '2026-09-17 13:00', 30]]);
+    late.reply.finish();
+    await second.loop.idle();
+    assert.equal(second.scheduler.tick(), undefined);
+    f.at('2026-09-17 14:00');
+    assert.equal(second.scheduler.tick(), 'self-check');
+    const next = await nextEvent(f);
+    assert.deepEqual(next.event.checks.map((c: Record<string, unknown>) => c.scheduled_for), ['2026-09-17 14:00']);
+    next.reply.finish();
+    await second.loop.idle();
   } finally { await f.cleanup(); }
 });
 
@@ -587,7 +731,7 @@ test('a booking reads the awake hours in force when it is made (ADR 0058)', asyn
   const f = await setup('2026-09-17 21:00');
   try {
     let hours = AWAKE;
-    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, limits: LIMITS, awakeHours: () => hours });
+    const checks = new SelfChecks({ db: f.db, now: () => f.clock, timeZone: TZ, awakeHours: () => hours });
     assert.match(checks.schedule('一件目', { at: '23:30' }).text, /08:00 以降/);
     hours = { start: '09:00', end: '23:45' };
     const inside = checks.schedule('二件目', { at: '23:30' });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { approvalsPage, devicesPage, dovePage, memosPage, renderWaits, waitsPage } from '../src/server/dashboard-lists.ts';
-import type { ApprovalRow, DevicesView, DovePostRow, Waits } from '../src/server/dashboard-records.ts';
+import { approvalsPage, checkPage, checksPage, devicesPage, dovePage, memosPage, renderWaits, waitsPage } from '../src/server/dashboard-lists.ts';
+import type { ApprovalRow, BookedCheck, DevicesView, DovePostRow, Waits } from '../src/server/dashboard-records.ts';
 import type { TurnRow } from '../src/server/turn-log.ts';
 
 // The pages of the lists (ADR 0049): the failures and the waits, the memos, the dove's posts and the devices. Every
@@ -18,7 +18,8 @@ function waits(overrides: Partial<Waits> = {}): Waits {
     cutTurns: [{ turnId: 'turn-9', kind: 'events', startedAt: AT, eventKinds: 'mac_message', outcome: 'model-call-limit' }],
     approvals: [{ approvalId: 'approval-1', kind: 'slack-post', createdAt: AT, expiresAt: '2026-01-02T00:00:00.000Z', expired: false,
       channel: '#架空のチャンネル', placement: 'broadcast', text: `架空の下書き ${HOSTILE}`, verdict: 'owner', flagged: ['口調'] }],
-    checks: [{ checkId: 'check-1', reason: `架空の理由 ${HOSTILE}`, dueAt: '2026-01-01T01:00:00.000Z', createdAt: AT }],
+    checks: [{ checkId: 'check-1', reason: `架空の理由 ${HOSTILE}`, cron: null, dueAt: '2026-01-01T01:00:00.000Z', createdAt: AT },
+      { checkId: 'check-2', reason: '架空の毎日', cron: '0 16 * * *', dueAt: '2026-01-01T07:00:00.000Z', createdAt: AT }],
     nextRotationAt: '2026-01-01T19:00:00.000Z',
     agentTasks: [{ agent: 'wiki', taskId: 'task-1', state: 'input-required', sentAt: AT, createdAt: AT, updatedAt: AT },
       { agent: 'artist', taskId: 'task-2', state: 'gave-up', sentAt: AT, createdAt: AT, updatedAt: AT }],
@@ -71,6 +72,52 @@ test('an approval past its end is marked as run out', () => {
   assert.match(text, /期限切れ/);
 });
 
+test('the waits tell a repeating self-check by its expression and lead to the page where one is cancelled', () => {
+  const text = renderWaits(waits(), ZONE).text;
+  assert.match(text, /<h3>予約した確認[\s\S]*href="\/dashboard\/checks"/);
+  assert.match(text, /2026-01-01 16:00:00[\s\S]*<code>0 16 \* \* \*<\/code>/, 'the next run, in the time zone, with the expression');
+  assert.match(text, /2026-01-01 10:00:00[\s\S]*一回きり/);
+});
+
+// The self-checks (ADR 0064): the one place on the dashboard where something is changed, and only one booking at a time.
+
+const CHECKS: BookedCheck[] = [
+  { checkId: 'check-every', reason: `架空の繰り返し ${HOSTILE}`, cron: '*/10 * * * *', dueAt: '2026-01-01T00:10:00.000Z', createdAt: AT },
+  { checkId: 'check-once', reason: '架空の一回きり', cron: null, dueAt: '2026-01-01T03:00:00.000Z', createdAt: AT },
+];
+
+test('the self-checks page lists each booking with its kind, its next time in the time zone, its reason and its ID', () => {
+  const text = checksPage({ page: 1, more: false, rows: CHECKS }, ZONE).text;
+  assert.match(text, /aria-current="page">予約/);
+  assert.match(text, /繰り返し[\s\S]*<code>\*\/10 \* \* \* \*<\/code>[\s\S]*2026-01-01 09:10:00[\s\S]*架空の繰り返し &lt;img[\s\S]*<code>check-every<\/code>/);
+  assert.match(text, /一回きり[\s\S]*2026-01-01 12:00:00[\s\S]*架空の一回きり[\s\S]*<code>check-once<\/code>/);
+  assert.match(text, /Asia\/Tokyo/, 'the time zone the times are in');
+  assert.ok(!text.includes('<img src=x'), 'nothing is read as markup');
+  // A cancel starts at a page that asks first; the list itself has no form but the logout.
+  assert.match(text, /<a href="\/dashboard\/checks\/check-every">削除…<\/a>/);
+  assert.match(text, /<a href="\/dashboard\/checks\/check-once">削除…<\/a>/);
+  assert.equal(text.match(/<form/g)?.length, 1);
+});
+
+test('the self-checks page says when none waits, pages on, and tells of the one just cancelled', () => {
+  assert.match(checksPage({ page: 1, more: false, rows: [] }, ZONE).text, /待っている予約はありません/);
+  const paged = checksPage({ page: 2, more: true, rows: CHECKS }, ZONE).text;
+  assert.match(paged, /href="\/dashboard\/checks"/);
+  assert.match(paged, /href="\/dashboard\/checks\?page=3"/);
+  const done = checksPage({ page: 1, more: false, rows: [], cancelled: 'check-every' }, ZONE).text;
+  assert.match(done, /予約 <code>check-every<\/code> を削除しました/);
+});
+
+test('the page before a cancel shows the booking and asks, with a POST form to cancel it and a way back', () => {
+  const text = checkPage(CHECKS[0]!, ZONE).text;
+  assert.match(text, /<code>\*\/10 \* \* \* \*<\/code>/);
+  assert.match(text, /2026-01-01 09:10:00/);
+  assert.match(text, /架空の繰り返し &lt;img/);
+  assert.match(text, /<form method="post" action="\/dashboard\/checks\/check-every\/cancel"><button type="submit">この予約を削除する<\/button><\/form>/);
+  assert.match(text, /<a href="\/dashboard\/checks">やめる<\/a>/);
+  assert.ok(!text.includes('<img src=x'));
+});
+
 function memoRow(overrides: Partial<TurnRow> = {}): TurnRow {
   return {
     turnId: 'turn-1', kind: 'events', startedAt: AT, turnMs: 12_300, fold: 'on', route: 'local', eventKinds: 'mac_message', outcome: 'ok',
@@ -115,6 +162,9 @@ test('the dove’s posts show the judgement, the scores, the state, where they w
   assert.match(text, /口調[^<]*0\.72/);
   assert.match(text, /#架空のチャンネル/);
   assert.match(text, /投稿先<\/dt><dd>スレッド <small>送った先 チャンネル<\/small>/, 'the places in words (ADR 0062)');
+  // The three places, told as ADR 0062 has them: no longer that channel is the thread shown in the channel too.
+  assert.doesNotMatch(text, /返信先があればスレッドに返してチャンネルにも出したもの/);
+  assert.match(text, /スレッドは返す相手のスレッドにだけ、チャンネルはチャンネル直下に、チャンネルにもはスレッドに返してチャンネルにも出したもの/);
   assert.match(text, /架空の下書き &lt;img/);
   assert.match(text, /本人が直した文/);
   assert.match(text, /2026-01-01 09:00:00/);
@@ -180,7 +230,7 @@ test('the devices page shows each device, whether it is connected, its push, and
 
 test('the navigation has every list and the statistics, and nothing is still to come', () => {
   const text = memosPage({ page: 1, more: false, memos: [] }, ZONE).text;
-  for (const [label, href] of [['失敗と待ち', '/dashboard/waits'], ['一行メモ', '/dashboard/memos'], ['ポッポさん', '/dashboard/dove'],
+  for (const [label, href] of [['失敗と待ち', '/dashboard/waits'], ['予約', '/dashboard/checks'], ['一行メモ', '/dashboard/memos'], ['ポッポさん', '/dashboard/dove'],
     ['承認の履歴', '/dashboard/approvals'], ['端末', '/dashboard/devices'], ['統計', '/dashboard/stats']]) {
     assert.match(text, new RegExp(`<a href="${href}"[^>]*>${label}</a>`), label);
   }
