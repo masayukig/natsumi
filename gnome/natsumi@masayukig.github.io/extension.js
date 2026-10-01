@@ -46,6 +46,8 @@ export default class NatsumiExtension extends Extension {
         this._expanded = false;
         this._modal = null;
         this._signals = [];
+        this._lastActive = GLib.get_monotonic_time();
+        this._faded = false;
 
         this._buildPet();
         this._buildColumn();
@@ -64,6 +66,8 @@ export default class NatsumiExtension extends Extension {
         for (const key of ['scale', 'face-icons'])
             this._signals.push(this._settings.connect(`changed::${key}`, () => this._resize()));
         this._signals.push(this._settings.connect('changed::server-url', () => this._startSession()));
+        this._signals.push(this._settings.connect('changed::hidden', () => this._applyHidden()));
+        this._applyHidden();
 
         this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000 / 6, () => this._tick());
         this._poll = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => this._watchPointer());
@@ -98,7 +102,10 @@ export default class NatsumiExtension extends Extension {
         this._session = new Session(this._settings, {
             status: (text, state) => this._onStatus(text, state),
             snapshot: payload => this._onSnapshot(payload),
-            event: (type, payload) => this._onEvent(type, payload),
+            event: (type, payload) => {
+                this._poke();
+                this._onEvent(type, payload);
+            },
         });
         this._session.start();
         // The avatar needs no login, so she shows up before the owner logs in.
@@ -247,6 +254,10 @@ export default class NatsumiExtension extends Extension {
         this._pet.add_child(this._art);
         this._pet.add_child(this._dot);
         Main.layoutManager.addTopChrome(this._pet);
+        this._pet.connect('enter-event', () => {
+            this._poke();
+            return Clutter.EVENT_PROPAGATE;
+        });
 
         let down = null, grab = null, moved = false;
         this._pet.connect('button-press-event', (_a, e) => {
@@ -280,6 +291,10 @@ export default class NatsumiExtension extends Extension {
 
     _buildColumn() {
         this._column = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, width: COLUMN_W, reactive: true});
+        this._column.connect('enter-event', () => {
+            this._poke();
+            return Clutter.EVENT_PROPAGATE;
+        });
         this._noticeCards = [0, 1].map(() => {
             const card = new St.BoxLayout({style: 'background-color: #fff3b0; color: #222; border-radius: 10px;' +
                 ' padding: 6px 8px; margin-bottom: 6px;', visible: false});
@@ -351,6 +366,9 @@ export default class NatsumiExtension extends Extension {
         menu.addMenuItem(this._statusItem);
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         menu.addAction('話しかける', () => this._talk());
+        this._shownItem = new PopupMenu.PopupSwitchMenuItem('ペットを出す', !this._settings.get_boolean('hidden'));
+        this._shownItem.connect('toggled', (_i, state) => this._settings.set_boolean('hidden', !state));
+        menu.addMenuItem(this._shownItem);
         menu.addAction('返事をすべて既読にする', () => {
             const last = this._model.messages.at(-1);
             if (last) this._session?.send('conversation.read', {throughMessageId: last.messageId});
@@ -428,13 +446,14 @@ export default class NatsumiExtension extends Extension {
         const x = Math.min(Math.max(px + pw / 2 - COLUMN_W / 2, wa.x), wa.x + wa.width - COLUMN_W);
         const above = py - height - 6;
         this._column.set_position(Math.round(x), Math.round(above >= wa.y ? above : py + ph + 6));
-        this._column.visible = this._balloon.visible || this._olderLabel.visible ||
-            this._noticeCards.some(c => c.visible);
+        this._column.visible = !this._settings.get_boolean('hidden') && (this._balloon.visible || this._olderLabel.visible ||
+            this._noticeCards.some(c => c.visible));
     }
 
     // ---- drawing ----
 
     _tick() {
+        this._fade();
         if (!this._frames) return GLib.SOURCE_CONTINUE;
         const expression = this._model.expression;
         let key, pixbuf;
@@ -502,10 +521,38 @@ export default class NatsumiExtension extends Extension {
         return GLib.SOURCE_CONTINUE;
     }
 
+    _applyHidden() {
+        const hidden = this._settings.get_boolean('hidden');
+        this._pet.visible = !hidden;
+        this._shownItem.setToggleState(!hidden);
+        this._layoutColumn();
+    }
+
+    // ---- fading ----
+
+    _poke() {
+        this._lastActive = GLib.get_monotonic_time();
+        this._fade();
+    }
+
+    /** After fade-after minutes without a pointer on her, a reply or a word to her, she goes see-through. */
+    _fade() {
+        const minutes = this._settings.get_int('fade-after');
+        const faded = minutes > 0 && !this._modal && !this._pet.hover &&
+            GLib.get_monotonic_time() - this._lastActive > minutes * 60e6;
+        if (faded === this._faded) return;
+        this._faded = faded;
+        const opacity = faded ? Math.round(this._settings.get_int('fade-opacity') * 255 / 100) : 255;
+        for (const actor of [this._pet, this._column]) actor.ease({opacity, duration: faded ? 1000 : 200});
+    }
+
     // ---- talking ----
 
     _talk() {
         if (this._modal) return;
+        // Talking to her brings her back, or the reply would go nowhere.
+        this._settings.set_boolean('hidden', false);
+        this._poke();
         const [px, py] = this._pet.get_position();
         const [pw] = this._pet.get_size();
         const wa = this._workArea();
