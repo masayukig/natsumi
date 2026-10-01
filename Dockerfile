@@ -89,6 +89,9 @@ COPY --from=build /app/dist/web ./dist/web
 # natsumi, the avatar used when the config names none, and the faceless pictures and default params that fill in what
 # an avatar lacks (ADR 0057). The apps fetch the avatar at /v1/avatar, and Slack its icons at /avatar/ (ADR 0040).
 COPY assets/avatars/ ./assets/avatars/
+# Fork only: avatars kept out of the built-ins (avatars/iori/README.md), chosen with `avatar.directory`
+# (e.g. /app/avatars/iori).
+COPY avatars/ ./avatars/
 # The page on drawing the server writes for the workspace from the avatar (ADR 0057).
 COPY assets/manual/ ./assets/manual/
 # The dashboard's style sheet and script, served at /dashboard/static/ (ADR 0049).
