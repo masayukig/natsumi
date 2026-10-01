@@ -38,7 +38,7 @@ function cut(text) {
 export default class NatsumiExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
-        this._model = {messages: [], cursor: null, unread: 0, notices: [], expression: 'neutral', thinking: '',
+        this._model = {messages: [], cursor: null, unread: 0, notices: [], expression: 'neutral', thinking: '', pending: false,
             avatarVersion: null};
         this._avatar = null;
         this._frames = null;
@@ -121,6 +121,7 @@ export default class NatsumiExtension extends Extension {
         m.notices = p.unacknowledgedNotificationIds ?? [];
         m.expression = p.avatar?.expression ?? 'neutral';
         m.thinking = '';
+        m.pending = (p.pendingEvents ?? []).length > 0;
         if (p.avatarVersion && p.avatarVersion !== m.avatarVersion) {
             m.avatarVersion = p.avatarVersion;
             this._loadAvatar();
@@ -139,6 +140,8 @@ export default class NatsumiExtension extends Extension {
                 this._expanded = false;
             }
             if (p.kind === 'notice') m.notices.push(p.messageId);
+            // The owner's message, from any device, is a turn she has yet to finish.
+            if (p.role === 'owner') m.pending = true;
             break;
         case 'conversation.read':
             m.cursor = p.readThroughMessageId;
@@ -155,6 +158,7 @@ export default class NatsumiExtension extends Extension {
             break;
         case 'conversation.event.completed':
             m.thinking = '';
+            m.pending = false;
             break;
         case 'service.unavailable':
             this._statusItem.label.text = `natsumi は休んでいます（${p.code}）`;
@@ -210,9 +214,11 @@ export default class NatsumiExtension extends Extension {
         this._replyLabel.visible = !!reply;
         this._countLabel.text = m.unread > 1 ? `未読 ${m.unread} 件` : '';
         this._closeButton.visible = !!reply;
-        this._thinkingLabel.text = m.thinking;
-        this._thinkingLabel.visible = m.thinking !== '';
-        this._balloon.visible = !!reply || m.thinking !== '';
+        // Her line of thinking when the server sends one; otherwise just that she is on it.
+        const thinking = m.thinking || (m.pending ? '考え中…' : '');
+        this._thinkingLabel.text = thinking;
+        this._thinkingLabel.visible = thinking !== '';
+        this._balloon.visible = !!reply || thinking !== '';
 
         // The newest two notices get their own card; older ones are counted.
         const shown = m.notices.slice(-2);
