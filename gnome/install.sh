@@ -15,5 +15,7 @@ gnome-extensions install --force "$out/$uuid.shell-extension.zip"
 apps=${XDG_DATA_HOME:-$HOME/.local/share}/applications
 mkdir -p "$apps"
 cp "$here/natsumi-url-handler.desktop" "$apps/"
+# Without this the handler is the default but not "registered" for the type, and the portal finds no app.
+update-desktop-database "$apps"
 xdg-mime default natsumi-url-handler.desktop x-scheme-handler/natsumi
 echo "installed $uuid; natsumi:// -> $(xdg-mime query default x-scheme-handler/natsumi)"
