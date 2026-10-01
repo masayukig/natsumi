@@ -251,6 +251,36 @@ const FORMER_REFLECTION_REQUEST = '<turn_memo>\n'
   + 'このターンはここまでです。このターンで分かったことを、100 字以内のメモにしてください。\n'
   + '</turn_memo>';
 
+/** The memo request as sessions recorded it before it named the turn's bounds (ADR 0065). */
+const UNBOUNDED_REFLECTION_REQUEST = '<turn_memo>\n'
+  + 'このターンはここまでです。このターンで分かったこと・うまくいかなかったことを、1〜2 文、合わせて 100 字以内のメモにしてください。長くなりそうなら、いちばん大事な 1 点だけにします。'
+  + '途中の考えやツールの結果は後で見えなくなることがあり、このメモがその代わりに残ります。夜の振り返りでも読み返します。\n'
+  + '書くのは、調べて分かった事実（予定・数字・名前・ファイルの場所など）か、試してうまくいかなかったこと（何を試して、なぜだめだったか）です。'
+  + 'マスターに言ったことの繰り返しは要りません。「自分」「本人」「あの人」は使わず、マスター・あなたの名前・ポッポさん・Slack の名前などの呼び名で、誰が誰に何をしたかを書きます。'
+  + '前置きや見出しは付けず、メモの文だけを書きます。\n'
+  + '書くことがなければ「なし」と一語だけ書いてください。\n'
+  + '長く考えずに書いてください。ツールは使えません。このメモはマスターには届きません。\n'
+  + '</turn_memo>';
+
+test('a session holding requests under the wording before and after the bounds folds each of them the same', () => {
+  assert.notEqual(REFLECTION_REQUEST, UNBOUNDED_REFLECTION_REQUEST);
+  assert.ok(isReflectionRequest(UNBOUNDED_REFLECTION_REQUEST));
+  const folded = foldTurns([
+    events('一つ目'), assistant(think('考え'), say('済んだ')), user(UNBOUNDED_REFLECTION_REQUEST),
+    assistant(think('振り返りの思考'), say('予定は 15:00。')),
+    events('二つ目'), assistant(think('考え'), say('済んだ')), user(REFLECTION_REQUEST),
+    assistant(think('振り返りの思考'), say('なし')),
+    events('三つ目'),
+  ]);
+  assert.ok(folded);
+  assert.deepEqual(shape(folded), [
+    'user: <events>\n{"type":"mac_message","text":"一つ目"}\n</events>',
+    `assistant: ${MEMO_HEADING}予定は 15:00。`,
+    'user: <events>\n{"type":"mac_message","text":"二つ目"}\n</events>',
+    'user: <events>\n{"type":"mac_message","text":"三つ目"}\n</events>',
+  ]);
+});
+
 test('a memo request is known by its tag, so one worded before a change is still folded as one', () => {
   assert.ok(isReflectionRequest(REFLECTION_REQUEST));
   assert.ok(isReflectionRequest(FORMER_REFLECTION_REQUEST));

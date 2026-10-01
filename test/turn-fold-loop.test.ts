@@ -182,7 +182,8 @@ test('folding is off by default: the next turn sees the whole record, the memo r
     const second = serialized(f.model.contexts[2]!);
     assert.match(second, /"thinking":"一つ目の思考"/);
     assert.ok(second.includes(JSON.stringify(REFLECTION_REQUEST).slice(1, 20)));
-    assert.equal(second.includes(MEMO_HEADING), false);
+    // The request names the heading; no memo stands under it as a line of her own.
+    assert.equal(second.includes(`"text":"${MEMO_HEADING}`), false);
   } finally { await f.cleanup(); }
 });
 
@@ -252,7 +253,7 @@ test('the nightly review is held on the folded context when folding is on', asyn
     assert.equal((await rotation).result, 'switched');
     const review = f.model.contexts.find(context => JSON.stringify(context.messages.at(-1)).includes('nightly_review'))!;
     assert.doesNotMatch(serialized(review), /"thinking":"昼の思考/);
-    assert.ok(serialized(review).includes(MEMO_HEADING));
+    assert.ok(serialized(review).includes(`"text":"${MEMO_HEADING}`));
     // The review is not asked for a memo: the session ends with it.
     assert.equal(f.model.reflections.length, 1);
   } finally { await f.cleanup(); }
@@ -356,6 +357,22 @@ test('the memo request asks for one or two sentences, and for "なし" alone whe
   assert.match(REFLECTION_REQUEST, /1〜2 文/);
   assert.match(REFLECTION_REQUEST, /100 字/);
   assert.match(REFLECTION_REQUEST, /「なし」/);
+});
+
+test('the memo request bounds the turn by the previous memo, in the form she sees it folded or not', () => {
+  // Folding off, the previous request stands as it was sent; folding on, its answer stands as a line under the heading.
+  assert.ok(REFLECTION_REQUEST.includes('前の <turn_memo>'));
+  assert.ok(REFLECTION_REQUEST.includes(MEMO_HEADING));
+  assert.match(REFLECTION_REQUEST, /より後に届いた出来事/);
+});
+
+test('the memo request keeps the previous memo out of the new one, and asks for "なし" when the turn found nothing new', () => {
+  assert.match(REFLECTION_REQUEST, /前のメモに書いたことは繰り返しません/);
+  assert.match(REFLECTION_REQUEST, /このターンで確かめていないこと/);
+  assert.match(REFLECTION_REQUEST, /新しく分かったこと・うまくいかなかったことがなければ、「なし」/);
+  assert.match(REFLECTION_REQUEST, /何もせずに終えたターンは「なし」/);
+  // A reason drawn from before the turn may still be given, briefly.
+  assert.match(REFLECTION_REQUEST, /判断の理由/);
 });
 
 /** The entries a row's offsets cover, read straight from its session file. */

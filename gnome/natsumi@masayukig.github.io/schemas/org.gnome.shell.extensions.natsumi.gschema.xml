@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.natsumi" path="/org/gnome/shell/extensions/natsumi/">
+    <key name="server-url" type="s">
+      <default>''</default>
+      <summary>The natsumi server's origin, e.g. https://natsumi.example.com</summary>
+    </key>
+    <key name="device-id" type="s">
+      <default>''</default>
+      <summary>The device ID the server issued to this desktop</summary>
+    </key>
+    <key name="scale" type="i">
+      <range min="50" max="200"/>
+      <default>100</default>
+      <summary>Size of the avatar, in percent</summary>
+    </key>
+    <key name="flee" type="b">
+      <default>false</default>
+      <summary>Run away from a pointer that lingers near her</summary>
+    </key>
+    <key name="face-icons" type="b">
+      <default>false</default>
+      <summary>Draw the face icon of the expression instead of the spritesheet</summary>
+    </key>
+    <key name="pet-x" type="i">
+      <default>-1</default>
+      <summary>Where she stands (-1: bottom right)</summary>
+    </key>
+    <key name="pet-y" type="i">
+      <default>-1</default>
+      <summary>Where she stands (-1: bottom right)</summary>
+    </key>
+    <key name="talk" type="as">
+      <default><![CDATA[['<Control><Alt>n']]]></default>
+      <summary>Open the box to talk to her</summary>
+    </key>
+  </schema>
+</schemalist>

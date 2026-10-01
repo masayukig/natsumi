@@ -1,0 +1,8 @@
+{
+  "uuid": "natsumi@masayukig.github.io",
+  "name": "natsumi",
+  "description": "natsumi on the GNOME desktop: the avatar stays on top, shows her replies and notices, and takes what you say.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.natsumi",
+  "url": "https://github.com/masayukig/natsumi"
+}
