@@ -36,6 +36,7 @@ import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackWorkspace } from './slack.ts';
+import { connectSignal, relayToSignal, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
@@ -78,6 +79,8 @@ export interface StartOptions {
   a2a?: { pollIntervalMs?: number };
   /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
   slack?: { connector?: SlackConnector };
+  /** Replaces the signal-cli daemon (ADR F04). */
+  signal?: { api?: SignalApi };
   /**
    * Replaces the judges built from `slack.judge`, each where the config has one. Tests hand in stand-ins; nothing reaches
    * a model or TypeSafe from them.
@@ -161,12 +164,16 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let scheduler: Scheduler | undefined;
   let dove: SlackDove | undefined;
   const slackWorkspaces: SlackWorkspace[] = [];
+  let signalOwner: SignalOwner | undefined;
+  const signalStops: (() => void)[] = [];
   const timers: NodeJS.Timeout[] = [];
   // Everything opened above, closed in the reverse order.
   const closeAll = async () => {
     timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
     await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
+    await signalOwner?.stop(); // Likewise for what the owner says on Signal (ADR F04).
+    signalStops.forEach(stop => stop());
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     webNotifier?.close();
@@ -274,6 +281,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
+      ...(config.signal ? { ownerOnSignal: true } : {}),
     });
     raiseInto = thinkingLoop;
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
@@ -287,6 +295,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
 
     // Each workspace connects in the background: Slack being out of reach, or a token it refuses, must not hold the
     // server's start. The socket reconnects on its own, and every connection fills in what was missed.
+    // Which device the owner message an event answers came from: a reply goes back where it was asked (ADR F01, ADR F04).
+    const askedOn = (eventId: string) => (db!.prepare(`SELECT m.device_id FROM loop_events e
+      JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
+      { device_id: string | null } | undefined)?.device_id;
     if (archive && slackConfig && !thinkingLoop.unavailable) {
       const owner = slackConfig.owner;
       for (const { name, api, socket } of slackConnections) {
@@ -296,9 +308,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
             ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}),
             ...(ownerHere.username ? { username: ownerHere.username } : {}), images, log,
-            askedOnSlack: eventId => (db!.prepare(`SELECT m.device_id FROM loop_events e
-              JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
-              { device_id: string | null } | undefined)?.device_id === 'slack' });
+            askedOnSlack: eventId => askedOn(eventId) === 'slack' });
           // Fork (ADR F02): and approves the dove's drafts in the DM with the bot.
           if (theDove) new SlackApprovals({ db, dove: theDove, api, socket, workspace: name, ownerUserId: ownerHere.userId, log }).sync();
         }
@@ -317,6 +327,25 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           () => { log(`slack (${name}): could not start; check the tokens and the App's settings`); },
         );
       }
+    }
+
+    // Fork (ADR F04): the owner talks with her over Signal, and approves the dove's drafts there when asked to. The
+    // daemon being out of reach holds nothing: the stream is tried again until it opens.
+    const signalConfig = config.signal;
+    if (signalConfig && !thinkingLoop.unavailable) {
+      const api = options.signal?.api ?? connectSignal(signalConfig);
+      signalStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal: eventId => askedOn(eventId) === 'signal' }));
+      if (signalConfig.approvals && !theDove) log('signal: approvals are on, but there is no dove without slack; nothing to approve');
+      const approvals = signalConfig.approvals && theDove
+        ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
+      if (approvals) signalStops.push(() => approvals.stop());
+      signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, ...(approvals ? { approvals } : {}),
+        say: ({ requestId, text }) => {
+          const outcome = thinkingLoop.send({ requestId, deviceId: 'signal', text });
+          if (outcome.kind !== 'accepted') log(`signal: the owner's message was not taken (${outcome.code})`);
+        } });
+      signalOwner.start();
+      approvals?.sync();
     }
 
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the

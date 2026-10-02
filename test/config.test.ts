@@ -753,3 +753,16 @@ test('the memory curator runs every night by default, on natsumi\'s route, with 
   assert.equal(parseConfig({ ...base(), curator: { rotateFiles: 0 } }).curator.rotateFiles, 0);
   rejects({ ...base(), curator: { persona: 'natsumi' } }, 'curator.persona');
 });
+
+test('fork (ADR F04): the signal section is off when absent, approvals are off by default, http reaches only loopback', () => {
+  const signal = { url: 'http://127.0.0.1:18080/', account: '+810000000002', owner: '+810000000001' };
+  assert.equal('signal' in parseConfig(base()), false);
+  assert.deepEqual(parseConfig({ ...base(), signal }).signal, { ...signal, url: 'http://127.0.0.1:18080', approvals: false });
+  assert.equal(parseConfig({ ...base(), signal: { ...signal, url: 'https://signal.example.test', approvals: true } }).signal?.approvals, true);
+  rejects({ ...base(), signal: { ...signal, url: 'http://signal.example.test' } }, 'signal.url', /loopback/);
+  rejects({ ...base(), signal: { ...signal, url: 'http://user:pw@127.0.0.1:18080' } }, 'signal.url');
+  rejects({ ...base(), signal: { ...signal, account: '09000000000' } }, 'signal.account', /E\.164/);
+  rejects({ ...base(), signal: { url: signal.url, account: signal.account } }, 'signal.owner');
+  rejects({ ...base(), signal: { ...signal, approvals: 'yes' } }, 'signal.approvals');
+  rejects({ ...base(), signal: { ...signal, group: 'x' } }, 'signal.group');
+});

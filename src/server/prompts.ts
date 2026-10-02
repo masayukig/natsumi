@@ -36,6 +36,12 @@ export const OWNER_ON_SLACK_SECTION = `## マスターのいる場所
 - マスターがそのチャンネルや DM に書いたことは、mac_message として届きます。同じものを /sources で見かけても、改めて返事をする必要はありません。
 - アバターの表情はマスターには見えません。`;
 
+/** Fork (ADR F04): the same, for an owner who talks with her over Signal. */
+export const OWNER_ON_SIGNAL_SECTION = `## マスターと Signal
+- マスターは Signal でもあなたと話します。マスターが Signal に書いたことは、mac_message として届きます。
+- Signal で届いたメッセージへの reply_to_mac のセリフと、notify_owner のセリフは、マスターの Signal に届きます。
+- Signal ではアバターの表情は見えません。`;
+
 /**
  * How memory, the diary and the turn memo name people (ADR 0061), with the name the writer calls natsumi by. Several people come and go in what she reads, and
  * "自分" or "本人" reads as someone else once the context is gone, so she names who did what to whom.
@@ -141,9 +147,11 @@ export function composeSystemPrompt(parts: {
   /** natsumi when left out. */
   self?: Self;
   ownerOnSlack?: boolean;
+  ownerOnSignal?: boolean;
 }): string {
   let instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex) : NO_WORKSPACE_SECTION, parts.self);
   if (parts.ownerOnSlack) instruction += `\n\n${OWNER_ON_SLACK_SECTION}`;
+  if (parts.ownerOnSignal) instruction += `\n\n${OWNER_ON_SIGNAL_SECTION}`;
   let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
   if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
   if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;
