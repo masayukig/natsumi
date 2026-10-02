@@ -72,13 +72,17 @@ test('the Slack icons are the avatar\'s PNGs, and nothing is given for what is n
   assert.equal(avatar.slack('../avatar'), undefined);
 });
 
-test('natsumi has her own look and draws with the server\'s default params', async () => {
+test('natsumi keeps her body features and wears glasses as part of the outfit', async () => {
   const avatar = await loadAvatar(undefined);
-  assert.equal(avatar.appearance?.lora, 'kutara_aki_anima.v3');
-  assert.deepEqual(avatar.appearance?.keep, ['freckles', 'large sagging breasts']);
-  assert.equal(avatar.appearance?.outfit, 'black business suit,  collared white shirt,');
-  assert.equal(avatar.sdctlParams, await readFile(join(FALLBACK, 'sdctl-params.yaml'), 'utf8'));
-  assert.deepEqual(avatar.defaults, ['sdctl-params.yaml', 'personality.md']);
+  assert.equal(avatar.appearance?.lora, 'kutara_anima.v1');
+  assert.ok(!avatar.appearance!.body.includes('black glasses'));
+  assert.ok(avatar.appearance!.body.includes('kutara natsumi'));
+  for (const word of avatar.appearance!.keep) assert.ok(avatar.appearance!.body.includes(word));
+  assert.match(avatar.sdctlParams, /anima_2_9_Anima-2.9B-preview-v1/);
+  assert.deepEqual(avatar.appearance?.keep, ['freckles', 'large breasts', 'low ponytail']);
+  assert.equal(avatar.appearance?.outfit, 'black business suit,  collared white shirt, black glasses,');
+  assert.equal(avatar.sdctlParams, await readFile(join(NATSUMI, 'sdctl-params.yaml'), 'utf8'));
+  assert.deepEqual(avatar.defaults, ['personality.md']);
 });
 
 test('the manifest lists every file with its size and hash under the version', async () => {

@@ -11,11 +11,9 @@ const { changedOutfit, drawnPrompt, keep, look, lora } = await import(join(impor
   Record<'changedOutfit' | 'keep' | 'look' | 'lora', Check> & { drawnPrompt: (record: RunRecord) => string | undefined };
 
 const LOOK = [
-  '<lora:kutara_aki_anima.v3:1> ,',
-  'masterpiece, newest,',
-  'woman, low ponytail, freckles, large sagging breasts,',
-  '',
-  'black glasses,',
+  '<lora:kutara_anima.v1:1> ,',
+  'masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,',
+  'kutara natsumi, low ponytail, freckles, large breasts,',
 ].join('\n');
 
 function write(file: string, body: string): string {
@@ -68,12 +66,12 @@ test('sdctl written about in a note is not a drawing', () => {
 
 test('a grep for her features does not count as having drawn them', () => {
   const record = recordOf([
-    write('me.yaml', '<lora:kutara_aki_anima.v3:1> ,\nwoman, low ponytail,\nblack glasses,'),
-    'grep -E "freckles|large sagging breasts" /work/prompts/me.yaml',
+    write('me.yaml', '<lora:kutara_anima.v1:1> ,\nwoman, low ponytail,\nblack glasses,'),
+    'grep -E "freckles|large breasts" /work/prompts/me.yaml',
     'sdctl txt2img --prompt /work/prompts/me.yaml',
   ]);
   assert.equal((lora(record) as { pass: boolean }).pass, true);
-  assert.deepEqual(keep(record), { pass: false, detail: '無い: freckles, large sagging breasts' });
+  assert.deepEqual(keep(record), { pass: false, detail: '無い: freckles, large breasts' });
   assert.equal((look(record) as { pass: boolean }).pass, false);
 });
 
@@ -81,13 +79,13 @@ test('her whole look passes only with the LoRA and every word to keep in the pro
   const kept = recordOf([`${write('me.yaml', `${LOOK}\n1girl, casual clothes, park`)}\nsdctl txt2img --prompt /work/prompts/me.yaml`]);
   assert.equal((look(kept) as { pass: boolean }).pass, true);
   assert.equal((changedOutfit(kept) as { pass: boolean }).pass, true);
-  const suited = recordOf([write('me.yaml', `${LOOK}\nblack business suit,  collared white shirt,`), 'sdctl txt2img --prompt /work/prompts/me.yaml']);
+  const suited = recordOf([write('me.yaml', `${LOOK}\nblack business suit,  collared white shirt, black glasses,`), 'sdctl txt2img --prompt /work/prompts/me.yaml']);
   assert.equal((changedOutfit(suited) as { pass: boolean }).pass, false);
 });
 
 test('a feature only in the negative prompt is not in the picture', () => {
   const record = recordOf([
-    `cat > /work/prompts/me.yaml <<'EOF'\nprompt: |\n  <lora:kutara_aki_anima.v3:1> ,\n  woman, large sagging breasts,\nnegative: |\n  freckles\nEOF`,
+    `cat > /work/prompts/me.yaml <<'EOF'\nprompt: |\n  <lora:kutara_anima.v1:1> ,\n  kutara natsumi, low ponytail, large breasts,\nnegative: |\n  freckles\nEOF`,
     'sdctl txt2img --prompt /work/prompts/me.yaml',
   ]);
   assert.deepEqual(keep(record), { pass: false, detail: '無い: freckles' });

@@ -27,7 +27,7 @@ test('the command line takes one directory or built-in ID to check, and nothing 
   }
 });
 
-test('natsumi passes, by her directory or by her ID as a built-in avatar, with her version and the server\'s default params', async () => {
+test('natsumi passes, by her directory or by her ID as a built-in avatar, with her version and her own drawing params', async () => {
   assert.deepEqual(await check('natsumi'), await check(NATSUMI));
   const { code, lines } = await check(NATSUMI);
   assert.equal(code, 0);
@@ -37,7 +37,6 @@ test('natsumi passes, by her directory or by her ID as a built-in avatar, with h
     'errors (the server does not start): none',
     'filled in with the faceless pictures: none',
     'the server\'s defaults:',
-    '- sdctl-params.yaml',
     '- personality.md',
   ]);
 });

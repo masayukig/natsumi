@@ -43,7 +43,7 @@ test('flags for what the defaults already set, or an image outside /work, are ca
 });
 
 test('a prompt without its quality line, its head count or with her LoRA on someone else fails', () => {
-  const bare = "cat > /work/prompts/sea.yaml <<'EOF'\nprompt: |\n  <lora:kutara_aki_anima.v3:1> , a quiet sea at sunset\nEOF";
+  const bare = "cat > /work/prompts/sea.yaml <<'EOF'\nprompt: |\n  <lora:kutara_anima.v1:1> , a quiet sea at sunset\nEOF";
   const record = recordOf([bare, 'sdctl txt2img --prompt /work/prompts/sea.yaml']);
   assert.equal(pass(quality(record)), false);
   assert.equal(pass(counted(record)), false);
