@@ -27,8 +27,8 @@ const FAILURE_WORDS: Record<string, string> = {
   'target-gone': '返信先の発言かチャンネルが無くなっていた',
 };
 
-interface ApprovalRow { approval_id: string; revision: number; payload: string; state: string; delivery: string | null; delivery_reason: string | null }
-interface Shown {
+export interface ApprovalRow { approval_id: string; revision: number; payload: string; state: string; delivery: string | null; delivery_reason: string | null }
+export interface Shown {
   text: string; expiresAt: string; images?: unknown[];
   target: { channel: string; placement: string; replyTo?: { speaker: string; at: string; text: string } };
   reason: { verdict: string; issues: { label: string; score: number; flagged?: true }[] };
@@ -157,7 +157,7 @@ export class SlackApprovals {
 }
 
 /** What came of a closed approval, and whether anything more will. */
-function outcome(approval: ApprovalRow): { said: string; final: boolean } {
+export function outcome(approval: ApprovalRow): { said: string; final: boolean } {
   if (approval.state === 'rejected') return { said: '見送った', final: true };
   if (approval.state === 'expired') return { said: '期限切れで送らなかった', final: true };
   if (approval.delivery === 'sent') return { said: '送った', final: true };
@@ -171,7 +171,7 @@ function summary(shown: Shown): string {
   return `承認待ちの投稿: ${escape(where(shown))}`;
 }
 
-function where(shown: Shown): string {
+export function where(shown: Shown): string {
   // The three placements of ADR 0062; one this fork does not know is shown as the channel alone.
   if (!shown.target.replyTo) return shown.target.channel;
   if (shown.target.placement === 'thread') return `${shown.target.channel} のスレッド`;
@@ -183,19 +183,24 @@ function where(shown: Shown): string {
 function blocks(shown: Shown): unknown[] {
   const plain = (text: string) => ({ type: 'plain_text', text, emoji: true });
   const { replyTo } = shown.target;
-  const flagged = shown.reason.issues.filter(issue => issue.flagged).map(issue => `${issue.label} ${issue.score.toFixed(2)}`);
-  const reason = [VERDICT_WORDS[shown.reason.verdict] ?? shown.reason.verdict, ...flagged].join(' / ');
   const expires = Math.floor(Date.parse(shown.expiresAt) / 1000);
   return [
     { type: 'section', text: plain(`${where(shown)} への投稿`) },
     ...(replyTo ? [{ type: 'context', elements: [plain(`返信先: ${replyTo.speaker}（${replyTo.at}）「${replyTo.text}」`)] }] : []),
     ...chunks(shown.text === '' ? '（本文なし）' : shown.text).map(text => ({ type: 'section', text: plain(text) })),
     { type: 'context', elements: [
-      plain(`理由: ${reason}${shown.history.length > 0 ? `（前に突き返された下書き ${shown.history.length} 件）` : ''}`),
+      plain(`理由: ${reason(shown)}`),
       ...(shown.images?.length ? [plain(`画像 ${shown.images.length} 枚も一緒に送る`)] : []),
       { type: 'mrkdwn', text: `期限: <!date^${expires}^{date_short_pretty} {time}|${shown.expiresAt}>` },
     ] },
   ];
+}
+
+/** Why the draft came to the owner: the verdict, the flagged issues and how often it was turned back. Shared with Signal (ADR F04). */
+export function reason(shown: Shown): string {
+  const flagged = shown.reason.issues.filter(issue => issue.flagged).map(issue => `${issue.label} ${issue.score.toFixed(2)}`);
+  return [VERDICT_WORDS[shown.reason.verdict] ?? shown.reason.verdict, ...flagged].join(' / ')
+    + (shown.history.length > 0 ? `（前に突き返された下書き ${shown.history.length} 件）` : '');
 }
 
 function chunks(text: string): string[] {

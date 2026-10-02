@@ -369,6 +369,8 @@ export interface ServerConfig {
   apns?: ApnsConfig;
   a2a?: A2AConfig;
   slack?: SlackConfig;
+  /** Fork (ADR F04): the owner talks with her over Signal, through a signal-cli daemon. Absent, there is no Signal. */
+  signal?: SignalConfig;
   sources: SourcesConfig;
   curator: CuratorConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
@@ -397,6 +399,7 @@ const SECTIONS = {
   apns: parseApns,
   a2a: parseA2A,
   slack: parseSlack,
+  signal: parseSignal,
   sources: parseSources,
   curator: parseCurator,
   avatar: parseAvatar,
@@ -437,6 +440,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
+    ...(root.signal === undefined ? {} : { signal: SECTIONS.signal(root.signal, 'signal') }),
     sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
@@ -870,6 +874,34 @@ function ownerUsername(value: unknown, path: string): string {
     throw new ConfigError(path, `must be 1 to ${MAX_OWNER_USERNAME_CHARS} characters without control characters`);
   }
   return text;
+}
+
+/**
+ * Fork (ADR F04): the signal-cli daemon's HTTP endpoint, the number natsumi is registered as, and the owner's number.
+ * `approvals` also hands the owner the dove's drafts there.
+ */
+export interface SignalConfig { url: string; account: string; owner: string; approvals: boolean }
+
+const PHONE_NUMBER = /^\+[1-9][0-9]{6,14}$/;
+
+function parseSignal(value: unknown, path: string): SignalConfig {
+  const signal = object(value, path);
+  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals']);
+  const urlPath = `${path}.url`;
+  const url = parseUrl(required(signal, 'url', path), urlPath);
+  // The daemon has no authentication of its own, so plain http reaches only a loopback host, such as a sidecar.
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+  }
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  const number = (key: 'account' | 'owner') => {
+    const text = required(signal, key, path);
+    if (typeof text !== 'string' || !PHONE_NUMBER.test(text)) throw new ConfigError(`${path}.${key}`, 'must be a phone number in E.164, such as +81XXXXXXXXXX');
+    return text;
+  };
+  const approvals = signal.approvals ?? false;
+  if (typeof approvals !== 'boolean') throw new ConfigError(`${path}.approvals`, 'must be true or false');
+  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals };
 }
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
