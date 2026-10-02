@@ -6,7 +6,7 @@ and her notices show as cards. Clicking her, or pressing Ctrl+Alt+N, opens a box
 
 The face icon's menu has a switch "ペットを出す" (setting `hidden`). Turn it off and she and her balloon and notice
 column are hidden; talking to her again (the menu's "話しかける" or the shortcut) shows her.
-When she has not been used for a while she fades: if `fade-after` minutes (0 = off, default 5) pass without the
+When she has not been used for a while she fades: if `fade-seconds` seconds (0 = off, default 300) pass without the
 pointer on her, a word to her or a server event, she and the column turn translucent
 (「しばらく使わないと半透明にする」). `fade-opacity` (percent, 10–100, default 40) sets how opaque she is while faded.
 

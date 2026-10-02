@@ -537,11 +537,11 @@ export default class NatsumiExtension extends Extension {
         this._fade();
     }
 
-    /** After fade-after minutes without a pointer on her, a reply or a word to her, she goes see-through. */
+    /** After fade-seconds without a pointer on her, a reply or a word to her, she goes see-through. */
     _fade() {
-        const minutes = this._settings.get_int('fade-after');
-        const faded = minutes > 0 && !this._modal && !this._pet.hover &&
-            GLib.get_monotonic_time() - this._lastActive > minutes * 60e6;
+        const seconds = this._settings.get_int('fade-seconds');
+        const faded = seconds > 0 && !this._modal && !this._pet.hover &&
+            GLib.get_monotonic_time() - this._lastActive > seconds * 1e6;
         if (faded === this._faded) return;
         this._faded = faded;
         const opacity = faded ? Math.round(this._settings.get_int('fade-opacity') * 255 / 100) : 255;

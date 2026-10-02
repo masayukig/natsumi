@@ -34,10 +34,10 @@
       <default>false</default>
       <summary>Keep her off the screen (talking to her brings her back)</summary>
     </key>
-    <key name="fade-after" type="i">
-      <range min="0" max="120"/>
-      <default>5</default>
-      <summary>Minutes without use before she goes see-through (0: never)</summary>
+    <key name="fade-seconds" type="i">
+      <range min="0" max="7200"/>
+      <default>300</default>
+      <summary>Seconds without use before she goes see-through (0: never)</summary>
     </key>
     <key name="fade-opacity" type="i">
       <range min="10" max="100"/>

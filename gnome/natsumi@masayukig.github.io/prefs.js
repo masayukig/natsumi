@@ -26,7 +26,7 @@ export default class NatsumiPreferences extends ExtensionPreferences {
             settings.bind(key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
             group.add(row);
         }
-        for (const [key, title, lower, upper, step] of [['fade-after', 'しばらく使わないと半透明にする（分、0 で無効）', 0, 120, 1],
+        for (const [key, title, lower, upper, step] of [['fade-seconds', 'しばらく使わないと半透明にする（秒、0 で無効）', 0, 7200, 10],
             ['fade-opacity', '半透明のときの濃さ（%）', 10, 100, 10]]) {
             const row = new Adw.SpinRow({title,
                 adjustment: new Gtk.Adjustment({lower, upper, step_increment: step})});
