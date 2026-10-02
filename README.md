@@ -637,6 +637,25 @@ Mac も iPhone も使わない本人のために、この fork では Slack の 
 - 直してから送ることは、まだできません。直したいときは見送って、natsumi に頼み直します。
 - Slack App に Interactivity と `im:write` が要ります（[Slack App の作り方](docs/slack-app.md)）。
 
+#### 本人と Signal で話す（fork）
+
+Slack の代わりに、または Slack と並べて、Signal を本人との会話の場にできます
+（[ADR F04](docs/adr/F04-fork-talking-with-the-owner-over-signal.md)）。
+natsumi の番号で登録した signal-cli を `daemon --http` で動かしておき、その URL を書きます。
+
+```json
+"signal": { "url": "http://127.0.0.1:18080", "account": "+81XXXXXXXXXX", "owner": "+81YYYYYYYYYY", "approvals": true }
+```
+
+- `url` は signal-cli の HTTP の口です。signal-cli には認証が無いので、http は loopback（同じ Pod のサイドカーなど）にだけ使えます。ほかは https です。
+- `account` は natsumi の番号、`owner` は本人の番号で、どちらも E.164（`+` と国番号から）で書きます。`signal` が無ければ何もしません。
+- 本人が natsumi に書いたことは、Mac からの送信と同じく本人との会話（`mac_message`、端末は `signal`）として届きます。ほかの人の発言・既読・入力中の通知は捨てます。
+- Signal で話しかけたメッセージへの返事と、知らせ（`notify_owner`）、どのメッセージにも答えていない返事を、本人に Signal で送ります。
+  ほかの場所（Slack・Mac・Web）で話しかけたメッセージへの返事は送りません。返事の画像は添付で送り、断られたら本文だけ送り直します。
+- `approvals`（既定 `false`）が `true` で、ポッポさん（`slack` の設定が要ります）がいるときは、承認待ちの下書きも Signal で送ります。
+  その発言に 👍 で送る、👎 か ❌ で見送る。引用して「送る」「見送る」（`ok`・`no`）と返しても同じです。決まったら（どこで決めても）、結果を 1 行送ります。
+- daemon に届かないあいだは、間をあけて（最長 1 分）つなぎ直します。
+
 ### 読みものの更新（sources_updated）
 
 `/sources` の下の読みもの（いまは Slack だけ）が変わったことを、出来事 `sources_updated` で natsumi に知らせます

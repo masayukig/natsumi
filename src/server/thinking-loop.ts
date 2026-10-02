@@ -229,6 +229,8 @@ export interface LoopOptions {
   replyImageLimits?: ImageLimits;
   /** Fork (ADR F01): the owner reads and writes the conversation in a Slack channel, not on a Mac. */
   ownerOnSlack?: boolean;
+  /** Fork (ADR F04): the owner also talks with her over Signal. */
+  ownerOnSignal?: boolean;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -863,7 +865,7 @@ export class ThinkingLoop {
     const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex, self: this.self,
       personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice(),
-      ownerOnSlack: this.options.ownerOnSlack === true });
+      ownerOnSlack: this.options.ownerOnSlack === true, ownerOnSignal: this.options.ownerOnSignal === true });
     return this.options.reviseSystemPrompt?.(prompt) ?? prompt;
   }
 
@@ -1631,7 +1633,8 @@ export class ThinkingLoop {
     if (this.turn) this.turn.firstOutAt ??= this.now();
     this.emit('conversation.message', shown(row, taken.length > 0 ? taken.map(image => shownImage(image)) : undefined));
     // Fork (ADR F01): with the owner on Slack, the line goes to their channel, not to a Mac.
-    const where = this.options.ownerOnSlack === true ? 'マスターの Slack のチャンネル' : 'マスターの Mac';
+    const where = this.options.ownerOnSlack === true ? 'マスターの Slack のチャンネル'
+      : this.options.ownerOnSignal === true ? 'マスターの Signal' : 'マスターの Mac';
     return { ok: true, text: `${where}にセリフ${taken.length > 0 ? `と画像 ${taken.length} 枚` : ''}を送りました。このセリフは確定しました。`
       + (target ? 'ここまでに届いたマスターのメッセージには返事を済ませました。' : '')
       + '続けて話してもかまいませんが、同じことを繰り返さないでください。ほかにやることがなければ、ツールを呼ばずに終えてください。' };
