@@ -38,6 +38,10 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata \
   && rm -rf /var/lib/apt/lists/*
+# Fork (ADR F04): pdftotext and pdftoppm, for the PDFs the owner sends on Signal.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends poppler-utils \
+  && rm -rf /var/lib/apt/lists/*
 # A name for the default UID, and the mount points of the four writable places.
 RUN groupadd --gid 1000 natsumi \
   && useradd --uid 1000 --gid 1000 --home-dir /home/natsumi --shell /bin/bash natsumi \

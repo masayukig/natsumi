@@ -181,7 +181,9 @@ export class SignalOwner {
       const placed = await placeFile(workDirectory, data, fileName(attachment.filename, attachment.id, at));
       if (!placed.ok) { refuse(placed.reason); continue; }
       const type = typeof attachment.contentType === 'string' ? `、${attachment.contentType}` : '';
-      lines.push(`（添付「${name}」: ${placed.path}${type}、${size(data.length)}）`);
+      const pdf = attachment.contentType === 'application/pdf' || placed.path.endsWith('.pdf')
+        ? '。本文は pdftotext、ページの画像は pdftoppm -png -r 100 で作って view で見る' : '';
+      lines.push(`（添付「${name}」: ${placed.path}${type}、${size(data.length)}${pdf}）`);
     }
     return lines;
   }
