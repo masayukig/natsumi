@@ -100,9 +100,11 @@ test('the page on images says how to draw with the default params, where to put 
   // Her own look, as the owner wrote it, line breaks and all.
   assert.ok(page.includes([
     '<lora:kutara_anima.v1:1> ,',
-    'masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,',
+    'masterpiece, newest,',
     'kutara natsumi, low ponytail, freckles, large breasts,',
-    'black business suit,  collared white shirt, black glasses,',
+    '',
+    'black glasses,',
+    'black business suit,  collared white shirt,',
   ].join('\n')));
 });
 
@@ -120,7 +122,7 @@ test('the page on images says her body lines go into every picture of her, whate
   const prompts = blocks.filter(block => block.includes('<lora:kutara_anima.v1:1>'));
   assert.ok(prompts.length >= 3, `${prompts.length} prompts of her`);
   for (const prompt of prompts) {
-    for (const line of ['kutara natsumi, low ponytail, freckles, large breasts,']) assert.ok(prompt.includes(line), `${line}\n${prompt}`);
+    for (const line of ['kutara natsumi, low ponytail, freckles, large breasts,', 'black glasses,']) assert.ok(prompt.includes(line), `${line}\n${prompt}`);
   }
   assert.ok(prompts.some(prompt => !prompt.includes('business suit')), 'no example in other clothes');
   assert.ok(prompts.some(prompt => /mood|feeling/i.test(prompt) || !/looking at viewer/.test(prompt)), 'no example that is not a selfie');

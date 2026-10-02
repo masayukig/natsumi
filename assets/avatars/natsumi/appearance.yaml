@@ -3,9 +3,11 @@
 lora: kutara_anima.v1
 body: |
   <lora:kutara_anima.v1:1> ,
-  masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,
+  masterpiece, newest,
   kutara natsumi, low ponytail, freckles, large breasts,
-outfit: "black business suit,  collared white shirt, black glasses,"
+
+  black glasses,
+outfit: "black business suit,  collared white shirt,"
 outfitName: スーツ
 keep:
   - freckles
@@ -18,7 +20,7 @@ examples:
       1girl, solo, selfie, upper body, smile, looking at viewer,
       outdoors, park, sunlight
   - title: 気分の絵
-    outfit: oversized cardigan, black glasses,
+    outfit: oversized cardigan,
     scene: |
       1girl, solo,
       A woman with glasses is gazing out of a rainy window, feeling calm.

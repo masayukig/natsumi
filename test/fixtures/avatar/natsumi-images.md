@@ -34,12 +34,14 @@ EOF
 
 ```
 <lora:kutara_anima.v1:1> ,
-masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,
+masterpiece, newest,
 kutara natsumi, low ponytail, freckles, large breasts,
-black business suit,  collared white shirt, black glasses,
+
+black glasses,
+black business suit,  collared white shirt,
 ```
 
-- **体の行**（`kutara natsumi, low ponytail, freckles, large breasts,` まで）は毎回そのまま写します。服を替えても、場面を文で書いても、`freckles`・`large breasts` と `low ponytail` を消しません。
+- **体の行**（`black glasses,` まで）は毎回そのまま写します。服を替えても、場面を文で書いても、`freckles`・`large breasts` と `low ponytail` を消しません。
 - **服の行**（最後の行）だけを、頼まれた服や場面に合わせて替えます。指定が無ければスーツです。
 
 描く前に確かめます（何も出なければよい）:
@@ -53,8 +55,10 @@ for w in kutara_anima.v1 freckles 'large breasts' 'low ponytail'; do grep -q "$w
 ```
 prompt: |
   <lora:kutara_anima.v1:1> ,
-  masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,
+  masterpiece, newest,
   kutara natsumi, low ponytail, freckles, large breasts,
+
+  black glasses,
   white knit sweater, long skirt,
   1girl, solo, selfie, upper body, smile, looking at viewer,
   outdoors, park, sunlight
@@ -65,9 +69,11 @@ prompt: |
 ```
 prompt: |
   <lora:kutara_anima.v1:1> ,
-  masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,
+  masterpiece, newest,
   kutara natsumi, low ponytail, freckles, large breasts,
-  oversized cardigan, black glasses,
+
+  black glasses,
+  oversized cardigan,
   1girl, solo,
   A woman with glasses is gazing out of a rainy window, feeling calm.
   indoors, window, rain, dim light
