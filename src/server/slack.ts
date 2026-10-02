@@ -388,11 +388,17 @@ export function relayToOwner(options: {
   log?: (line: string) => void;
   /** The waits before trying image blocks again that Slack refused, perhaps while the files were still processing. */
   retryDelays?: number[];
+  /**
+   * Whether the owner message of an event came from Slack. A reply to one that came from elsewhere (the Mac, the web, the
+   * desktop) is left out: it is answered where it was asked. Notices and replies to no message are posted all the same.
+   */
+  askedOnSlack?: (eventId: string) => boolean;
 }): () => void {
   const { api, channel, username, retryDelays } = options;
   let chain: Promise<void> = Promise.resolve();
   return options.loop.subscribe(({ type, payload }) => {
     if (type !== 'conversation.message' || payload.role !== 'natsumi' || typeof payload.text !== 'string') return;
+    if (typeof payload.replyTo === 'string' && options.askedOnSlack?.(payload.replyTo) === false) return;
     const text = payload.text;
     const expression = typeof payload.expression === 'string' ? payload.expression : 'neutral';
     const shown = Array.isArray(payload.images) ? payload.images as { imageId: string; mimeType: string }[] : [];
