@@ -35,7 +35,9 @@ async function until<T>(check: () => T | undefined | false, timeout = 5_000): Pr
 class FakeSignal implements SignalApi {
   sent: { message: string; attachments?: string[]; at: number }[] = [];
   refuseAttachments = false;
+  readMarks: number[] = [];
   private at = 1_790_000_000_000;
+  async read(timestamp: number) { this.readMarks.push(timestamp); }
   private push: ((event: Record<string, unknown>) => void) | undefined;
   async send(message: string, attachments?: string[]) {
     if (attachments?.length && this.refuseAttachments) throw new Error('rpc error -1');
@@ -64,9 +66,10 @@ const reaction = (emoji: string, targetSentTimestamp: number, isRemove = false) 
   dataMessage: { timestamp: 1_790_940_400_000, message: null, reaction: { emoji, targetAuthorNumber: BOT, targetSentTimestamp, isRemove } },
 });
 
-test('what the owner writes goes to say once per message; others, receipts, typing and profile keys are let go', () => {
+test('what the owner writes goes to say once per message and is marked read; others, receipts, typing and profile keys are let go', () => {
   const said: { requestId: string; text: string }[] = [];
-  const owner = new SignalOwner({ api: new FakeSignal(), owner: OWNER, say: input => { said.push(input); } });
+  const api = new FakeSignal();
+  const owner = new SignalOwner({ api, owner: OWNER, say: input => { said.push(input); } });
   const event = (envelope: Record<string, unknown>) => owner.handle({ envelope, account: BOT });
   event(text('元気？'));
   event(text('だれ？', {}, '+810000000009'));
@@ -77,6 +80,7 @@ test('what the owner writes goes to say once per message; others, receipts, typi
   // Without approvals a quoted reply is just something said.
   event(text('こんにちは', { quote: { id: 123, author: BOT, text: '元の発言' } }));
   assert.deepEqual(said, [{ requestId: 'signal:1790940371225', text: '元気？' }, { requestId: 'signal:1790940371225', text: 'こんにちは' }]);
+  assert.deepEqual(api.readMarks, [1_790_940_371_225, 1_790_940_371_225]);
 });
 
 test('her replies go to Signal only when asked on Signal; notices and replies to nothing go too, and images fall back to text', async () => {

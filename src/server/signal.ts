@@ -13,20 +13,28 @@ export interface SignalApi {
   send(message: string, attachments?: string[]): Promise<number>;
   /** The daemon's events, one parsed `data:` each, until the stream ends or `signal` aborts. */
   events(signal: AbortSignal): AsyncIterable<Record<string, unknown>>;
+  /** Tells the owner that the message sent at `timestamp` was read. signal-cli sends delivery receipts only. */
+  read?(timestamp: number): Promise<void>;
 }
 
 export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
   let id = 0;
+  const rpc = async (method: string, params: Record<string, unknown>) => {
+    const response = await fetch(`${config.url}/api/v1/rpc`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params: { account: config.account, ...params } }),
+    });
+    if (!response.ok) throw new Error(`http ${response.status}`);
+    const body = await response.json() as { result?: { timestamp?: unknown; results?: { type?: unknown }[] }; error?: { code?: unknown } };
+    if (body.error) throw new Error(`rpc error ${String(body.error.code)}`);
+    return body;
+  };
   return {
+    async read(timestamp) {
+      await rpc('sendReceipt', { recipient: config.owner, targetTimestamp: [timestamp], type: 'read' });
+    },
     async send(message, attachments) {
-      const response = await fetch(`${config.url}/api/v1/rpc`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method: 'send',
-          params: { account: config.account, recipient: [config.owner], message, ...(attachments?.length ? { attachments } : {}) } }),
-      });
-      if (!response.ok) throw new Error(`http ${response.status}`);
-      const body = await response.json() as { result?: { timestamp?: unknown; results?: { type?: unknown }[] }; error?: { code?: unknown } };
-      if (body.error) throw new Error(`rpc error ${String(body.error.code)}`);
+      const body = await rpc('send', { recipient: [config.owner], message, ...(attachments?.length ? { attachments } : {}) });
       const failed = body.result?.results?.find(result => result.type !== 'SUCCESS');
       if (failed) throw new Error(`send ${String(failed.type)}`);
       if (typeof body.result?.timestamp !== 'number') throw new Error('no timestamp');
@@ -116,6 +124,7 @@ export class SignalOwner {
     const quoted = message.quote?.id;
     if (approvals && typeof quoted === 'number' && approvals.answer(quoted, message.message)) return;
     const timestamp = message.timestamp ?? envelope.timestamp;
+    if (typeof timestamp === 'number') this.options.api.read?.(timestamp).catch(() => { /* only a read mark */ });
     this.options.say({ requestId: `signal:${String(timestamp)}`, text: message.message });
   }
 
