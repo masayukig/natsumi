@@ -312,6 +312,23 @@ test('iori has her own name, complete assets and drawing settings', async () => 
   assert.notEqual(avatar.version, (await loadAvatar(undefined)).version);
 });
 
+test('an appearance.yaml in the config replaces a built-in avatar\'s own, whole, through a symlink', () => scratch(async root => {
+  const iori = await loadAvatar({ id: 'iori' });
+  await mkdir(join(root, '..2026_x'));
+  await writeFile(join(root, '..2026_x', 'appearance.yaml'), 'body: woman, black glasses,\noutfit: black suit,\nkeep: [black glasses]\n');
+  await symlink('..2026_x', join(root, '..data'));
+  await symlink('..data/appearance.yaml', join(root, 'appearance.yaml'));
+  const suited = await loadAvatar({ id: 'iori', appearance: join(root, 'appearance.yaml') });
+  assert.deepEqual(suited.appearance, { body: 'woman, black glasses,', outfit: 'black suit,', keep: ['black glasses'], examples: [] });
+  assert.equal(suited.version, iori.version);
+  for (const [text, pattern] of [[undefined, /cannot be read/], ['outfit: suit,\n', /appearance\.yaml: body/]] as const) {
+    const path = join(root, `broken-${pattern.source.length}.yaml`);
+    if (text !== undefined) await writeFile(path, text);
+    await assert.rejects(loadAvatar({ id: 'iori', appearance: path }), (error: unknown) => error instanceof ConfigError
+      && error.path === 'avatar.appearance' && pattern.test(error.message));
+  }
+}));
+
 test('an ID chooses a built-in avatar, the same as leaving the avatar out for natsumi', async () => {
   const chosen = await loadAvatar({ id: 'natsumi' });
   assert.equal(chosen.version, (await loadAvatar(undefined)).version);
