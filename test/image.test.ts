@@ -103,10 +103,10 @@ test('the default params are the server\'s, for Anima, with a negative prompt an
   assert.equal(config.params, '/manual/avatar/sdctl-params.yaml');
   assert.match(await workspaceStage(), /^RUN mkdir -p \/manual\/agents \/manual\/avatar$/m);
   const params = (await loadAvatar(undefined)).sdctlParams;
-  assert.equal(params, await readFile(`${root}assets/avatars/nanashi/sdctl-params.yaml`, 'utf8'));
+  assert.equal(params, await readFile(`${root}assets/avatars/natsumi/sdctl-params.yaml`, 'utf8'));
   assert.match(params, /^negative_prompt: "[^"]+"$/m);
   // The model and its modules go with each request: the relay refuses POST options, so `models set` is no way.
-  assert.match(params, /^override_settings:\n  sd_model_checkpoint: "anima_mignolia_v10"\n  forge_additional_modules:\n    - "qwen_image_vae\.safetensors"\n    - "qwen_3_06b_base\.safetensors"$/m);
+  assert.match(params, /^override_settings:\n  sd_model_checkpoint: "anima_2_9_Anima-2.9B-preview-v1"\n  forge_additional_modules:\n    - "qwen_image_vae\.safetensors"\n    - "qwen_3_06b_base\.safetensors"$/m);
   for (const key of ['steps', 'width', 'height', 'cfg_scale', 'sampler', 'scheduler', 'seed']) assert.match(params, new RegExp(`^${key}: `, 'm'), key);
   assert.doesNotMatch(params, /^prompt:/m, 'the prompt is hers to write');
 });
@@ -277,8 +277,8 @@ test('through the runner, as run_shell runs it, sdctl draws JPEG through the rel
     assert.ok(drawing, 'no txt2img reached the relay');
     assert.equal(drawing.body!.prompt, 'a white cat');
     assert.equal(drawing.body!.negative_prompt, negative);
-    assert.equal(drawing.body!.steps, 30);
-    assert.equal((drawing.body!.override_settings as Record<string, unknown>).sd_model_checkpoint, 'anima_mignolia_v10');
+    assert.equal(drawing.body!.steps, 32);
+    assert.equal((drawing.body!.override_settings as Record<string, unknown>).sd_model_checkpoint, 'anima_2_9_Anima-2.9B-preview-v1');
     // JPEG begins with FF D8 FF.
     const head = await throughRunner(container, `head -c 3 ${saved.trim()} | od -An -tx1`);
     assert.equal(head.stdout.trim(), 'ff d8 ff');

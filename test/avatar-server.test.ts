@@ -95,7 +95,7 @@ test('the snapshot carries the version of the avatar', () => withServer(async f 
 test('the page on drawing and the params are written to the data directory for the workspace', () => withServer(async f => {
   assert.equal(await readFile(join(f.data, 'avatar', 'images.md'), 'utf8'), await readFile(join(FIXTURES, 'natsumi-images.md'), 'utf8'));
   assert.equal(await readFile(join(f.data, 'avatar', 'sdctl-params.yaml'), 'utf8'),
-    await readFile(join(FALLBACK, 'sdctl-params.yaml'), 'utf8'));
+    await readFile(join(NATSUMI, 'sdctl-params.yaml'), 'utf8'));
 }));
 
 test('an avatar the config names gives its name, its faceless fill-ins and its version everywhere', () => withServer(async f => {

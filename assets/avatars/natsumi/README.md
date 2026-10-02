@@ -13,7 +13,11 @@
 | `slack/<表情>.png` | Slack のアイコン。`icons/<表情>.webp` を 256×256 の PNG に縮めて変換したもの（Pillow で開き、RGB にして LANCZOS で縮め、PNG で保存）。`angry` も同じく作ってある。元の画像を差し替えたら作り直す |
 | `appearance.yaml` | 自分を描くときのプロンプト（LoRA・体の行・既定の服・確かめる語・例） |
 
-画像生成の params（`sdctl-params.yaml`）は置いていないので、サーバーの既定（名無しの `../nanashi/sdctl-params.yaml`）を使います。
+自分を描くときは専用の `sdctl-params.yaml` を使います。モデルは `anima_2_9_Anima-2.9B-preview-v1`（hash `0b3020d1b9`）、LoRAは `kutara_anima.v1`（強度1）です。
+ER SDE・Beta・32 steps・CFG 4・896×1152、`qwen_image_vae.safetensors` と `qwen_3_06b_base.safetensors` で生成を確認しました。
+体の行は `kutara natsumi, low ponytail, freckles, large breasts,`。黒縁眼鏡は衣装の行だけに含めています。
+`keep` の候補は `freckles`・`large breasts`・`low ponytail` で、本人のPR確認を待っています。
+既存の描画例は、私服の自撮りを眼鏡なし、雨窓のカーディガンを眼鏡ありで試し描きして確認しました。
 
 ## ライセンス
 
