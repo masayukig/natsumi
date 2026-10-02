@@ -76,6 +76,20 @@ test('anyone else in the owner\'s channel, and the owner elsewhere, are what the
   assert.deepEqual(f.told.map(attention => attention.kind), ['mention', 'mention']);
 });
 
+test('a reply to a message the owner sent from elsewhere is not posted; one to a message from Slack, a notice and a reply to none are', async () => {
+  const slack = new FakeSlack();
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  relayToOwner({ loop: { subscribe: l => { listener = l; return () => {}; } }, api: slack, workspace: 'work', channel: 'C1',
+    publicOrigin: 'https://natsumi.example.test', images: { read: async () => undefined },
+    askedOnSlack: eventId => eventId === 'event-slack' });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: 'デスクトップへ', replyTo: 'event-mac' } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: 'Slack へ', replyTo: 'event-slack' } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'notice', text: '知らせです' } });
+  listener({ type: 'conversation.message', payload: { role: 'natsumi', kind: 'reply', text: 'ひとりごと' } });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(slack.posts.map(post => post.text), ['Slack へ', '知らせです', 'ひとりごと']);
+});
+
 test('what natsumi says to the owner is posted in the channel, under her expression, with a reply\'s images shown in blocks', async () => {
   const slack = new FakeSlack();
   let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;

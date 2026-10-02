@@ -19,7 +19,7 @@ Slack は読みもので、本人の発言も `attention` として届き、nats
   `conversation.send` と同じ `ThinkingLoop.send()` に渡す。本人との会話（`mac_message`）であり、`attention` にはしない。
   `requestId` は `slack:<チャンネル>:<ts>` にし、メンションと同じ印で 1 つの発言を 1 度だけ渡す。受け取りの `reaction` はメンションと同じく付ける。
   ファイルへの記録は変えない。編集と削除は会話に渡さない。
-- natsumi の会話の発言（`conversation.message` のうち `role` が `natsumi` のもの、つまり返事と知らせ）は、ループの購読からそのチャンネルに `chat.postMessage` で投稿する。
+- natsumi の会話の発言（`conversation.message` のうち `role` が `natsumi` のもの、つまり返事と知らせ）は、ループの購読からそのチャンネルに `chat.postMessage` で投稿する。ただし、Slack 以外（Mac・Web・デスクトップ）から来たメッセージへの返事は投稿しない。聞かれた場所で答えれば足りる（2026-10-02 追記。返事が必ず Slack にも届いて、デスクトップで話していても通知が鳴っていたため）。知らせと、どのメッセージにも答えていない返事は、これまでどおり投稿する。
   本人自身のチャンネルなので、判定も承認も通さない。アイコンはポッポさんと同じ `<publicOrigin>/avatar/<表情>.png`。
   返事の画像（[ADR 0045](0045-showing-the-owner-images-with-a-reply.md)）は、ポッポさんと同じ `uploadFiles` で本文をコメントにして上げる。失敗はログに 1 行出すだけにする。
 - system prompt には、本人が Slack で読み書きしていることを固定の短い節として足す。ツールの名前は変えない。
@@ -41,7 +41,7 @@ Slack は読みもので、本人の発言も `attention` として届き、nats
 
 ## Consequences
 
-- 本人は Slack だけで natsumi と話せる。Mac と iPhone のクライアントも、これまでどおり使える（同じ会話が両方に出る）。
+- 本人は Slack だけで natsumi と話せる。Mac と iPhone のクライアントも、これまでどおり使える（会話は両方に出る。Slack に投稿されるのは、Slack で聞かれた返事と知らせ）。
 - 本人が画像だけを送った発言は会話に渡らない（`conversation.send` が本文しか持たないため）。DM ならこれまでどおり `attention` として届く。
 - 本人の発言はファイルにも残るので、natsumi は `sources_updated` でも同じ発言を見る。prompt で、改めて返事をしなくてよいと伝える。
 - 返事の `reply_to_mac` の答えの文は、`slack.owner` があれば「本人の Slack のチャンネルに送りました」と言う（無ければ上流と同じ「本人の Mac に送りました」）。

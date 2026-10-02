@@ -290,7 +290,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
             ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}),
-            ...(ownerHere.username ? { username: ownerHere.username } : {}), images, log });
+            ...(ownerHere.username ? { username: ownerHere.username } : {}), images, log,
+            askedOnSlack: eventId => (db!.prepare(`SELECT m.device_id FROM loop_events e
+              JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
+              { device_id: string | null } | undefined)?.device_id === 'slack' });
           // Fork (ADR F02): and approves the dove's drafts in the DM with the bot.
           if (theDove) new SlackApprovals({ db, dove: theDove, api, socket, workspace: name, ownerUserId: ownerHere.userId, log }).sync();
         }
