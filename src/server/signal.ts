@@ -1,6 +1,11 @@
+import { realpath, writeFile } from 'node:fs/promises';
+import { join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { DecideInput, DecideOutcome } from './dove.ts';
+import { isWithin, realPathAllowingMissing } from './paths.ts';
+import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
 import { outcome, reason, where, type ApprovalRow, type Shown } from './slack-approvals.ts';
+import { WORK_PATH } from './view.ts';
 
 /**
  * Fork (ADR F04): the owner talks with her over Signal, through the JSON-RPC and event stream of a signal-cli daemon.
@@ -15,6 +20,8 @@ export interface SignalApi {
   events(signal: AbortSignal): AsyncIterable<Record<string, unknown>>;
   /** Tells the owner that the message sent at `timestamp` was read. signal-cli sends delivery receipts only. */
   read?(timestamp: number): Promise<void>;
+  /** The bytes of a file the owner sent, by the id the daemon gave it. */
+  attachment?(id: string): Promise<Buffer>;
 }
 
 export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
@@ -25,11 +32,18 @@ export function connectSignal(config: { url: string; account: string; owner: str
       body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params: { account: config.account, ...params } }),
     });
     if (!response.ok) throw new Error(`http ${response.status}`);
-    const body = await response.json() as { result?: { timestamp?: unknown; results?: { type?: unknown }[] }; error?: { code?: unknown } };
+    const body = await response.json() as {
+      result?: { timestamp?: unknown; results?: { type?: unknown }[]; data?: unknown }; error?: { code?: unknown };
+    };
     if (body.error) throw new Error(`rpc error ${String(body.error.code)}`);
     return body;
   };
   return {
+    async attachment(attachmentId) {
+      const body = await rpc('getAttachment', { id: attachmentId });
+      if (typeof body.result?.data !== 'string') throw new Error('no data');
+      return Buffer.from(body.result.data, 'base64');
+    },
     async read(timestamp) {
       await rpc('sendReceipt', { recipient: config.owner, targetTimestamp: [timestamp], type: 'read' });
     },
@@ -71,8 +85,16 @@ interface Envelope {
     timestamp?: unknown; message?: unknown;
     reaction?: { emoji?: unknown; targetSentTimestamp?: unknown; isRemove?: unknown };
     quote?: { id?: unknown };
+    attachments?: { id?: unknown; contentType?: unknown; filename?: unknown; size?: unknown }[];
   };
 }
+
+/** Under /work, where the files the owner sends on Signal go. */
+export const SIGNAL_FILE_DIRECTORY = 'signal';
+
+/** The largest file taken from one message, and how many. Signal itself allows 100 MB. */
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
 
 /** The longest wait between tries to reach the daemon's event stream. */
 const MAX_BACKOFF_MS = 60_000;
@@ -87,6 +109,8 @@ export interface SignalOwnerOptions {
   say: (input: { requestId: string; text: string }) => void;
   approvals?: SignalApprovals;
   log?: (line: string) => void;
+  /** `/work` as the server sees it. Files the owner sends are put under it, and natsumi is told where. */
+  workDirectory?: string;
   /** The first wait before opening the stream again; it doubles up to a minute. */
   backoffMs?: number;
 }
@@ -105,8 +129,11 @@ export class SignalOwner {
     await this.running;
   }
 
-  /** One event of the stream, as the daemon writes it after `data:`. */
-  handle(event: Record<string, unknown>): void {
+  /**
+   * One event of the stream, as the daemon writes it after `data:`. A message with files is said once they are put in
+   * /work, so what it returns then is to be awaited; anything else is done at once.
+   */
+  handle(event: Record<string, unknown>): void | Promise<void> {
     const envelope = event.envelope as Envelope | undefined;
     // Early envelopes had no UUID, so the owner is known by the number.
     if (envelope?.sourceNumber !== this.options.owner) return;
@@ -120,12 +147,43 @@ export class SignalOwner {
       }
       return;
     }
-    if (typeof message.message !== 'string' || message.message.trim() === '') return;
+    const text = typeof message.message === 'string' && message.message.trim() !== '' ? message.message : undefined;
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    if (text === undefined && attachments.length === 0) return;
     const quoted = message.quote?.id;
-    if (approvals && typeof quoted === 'number' && approvals.answer(quoted, message.message)) return;
+    if (text !== undefined && attachments.length === 0 && approvals && typeof quoted === 'number' && approvals.answer(quoted, text)) return;
     const timestamp = message.timestamp ?? envelope.timestamp;
     if (typeof timestamp === 'number') this.options.api.read?.(timestamp).catch(() => { /* only a read mark */ });
-    this.options.say({ requestId: `signal:${String(timestamp)}`, text: message.message });
+    const say = (lines: string[]) => { this.options.say({ requestId: `signal:${String(timestamp)}`, text: [...text === undefined ? [] : [text], ...lines].join('\n') }); };
+    if (attachments.length === 0) { say([]); return; }
+    return this.bring(attachments, typeof timestamp === 'number' ? timestamp : Date.now()).then(say);
+  }
+
+  /** Puts each file in /work/signal and answers one line per file: where it is, or why it is not. Never throws. */
+  private async bring(attachments: NonNullable<NonNullable<Envelope['dataMessage']>['attachments']>, at: number): Promise<string[]> {
+    const { api, workDirectory } = this.options;
+    const lines: string[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const name = typeof attachment.filename === 'string' && attachment.filename !== '' ? attachment.filename : `添付 ${index + 1}`;
+      const refuse = (why: string) => { lines.push(`（添付「${name}」は受け取れませんでした: ${why}）`); };
+      if (index >= MAX_ATTACHMENTS) { refuse(`1 通から受け取るのは ${MAX_ATTACHMENTS} 個までです`); continue; }
+      if (typeof attachment.id !== 'string' || !api.attachment || workDirectory === undefined) { refuse('サーバーが受け取れない形でした'); continue; }
+      if (typeof attachment.size === 'number' && attachment.size > MAX_ATTACHMENT_BYTES) {
+        refuse(`${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB を超えています`);
+        continue;
+      }
+      let data: Buffer;
+      try { data = await api.attachment(attachment.id); } catch (error) {
+        this.log(`a file from the owner could not be fetched (${describe(error)})`);
+        refuse('Signal から取り出せませんでした');
+        continue;
+      }
+      const placed = await placeFile(workDirectory, data, fileName(attachment.filename, attachment.id, at));
+      if (!placed.ok) { refuse(placed.reason); continue; }
+      const type = typeof attachment.contentType === 'string' ? `、${attachment.contentType}` : '';
+      lines.push(`（添付「${name}」: ${placed.path}${type}、${size(data.length)}）`);
+    }
+    return lines;
   }
 
   private async run(): Promise<void> {
@@ -137,7 +195,7 @@ export class SignalOwner {
       try {
         for await (const event of this.options.api.events(signal)) {
           if (!up) { up = true; wait = first; this.log('the event stream is open'); }
-          this.handle(event);
+          await this.handle(event);
         }
         if (up) this.log('the event stream ended; reconnecting');
       } catch {
@@ -318,6 +376,51 @@ export class SignalApprovals {
   }
 
   private log(line: string): void { this.options.log?.(`signal: ${line}`); }
+}
+
+/** `20261002T132440Z-<the sender's name, or the daemon's id>.<extension>`, of safe characters only. */
+function fileName(filename: unknown, id: string, at: number): { stem: string; extension: string } {
+  const pick = (value: unknown) => typeof value === 'string' ? posix.basename(value.replaceAll('\\', '/')) : '';
+  const stemOf = (value: string) => value.replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 64);
+  const extensionOf = (value: string) => /\.([A-Za-z0-9]{1,8})$/.exec(value)?.[1]?.toLowerCase();
+  const stamp = new Date(at).toISOString().replace(/\.\d+Z$/, 'Z').replaceAll(/[-:]/g, '');
+  const given = pick(filename);
+  return {
+    stem: `${stamp}-${stemOf(given) || stemOf(pick(id)) || 'file'}`,
+    extension: extensionOf(given) ?? extensionOf(pick(id)) ?? 'bin',
+  };
+}
+
+/**
+ * Writes one file under /work/signal, as agent-files.ts does for an agent's images: never over another file (a name
+ * taken gets -2, -3, …) and never through a link that leads out of /work, since the directory is natsumi's to change.
+ */
+async function placeFile(workDirectory: string, data: Buffer, name: { stem: string; extension: string }):
+  Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
+  const outside = { ok: false as const, reason: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY} が ${WORK_PATH} の外を指しています` };
+  let root: string;
+  try { root = await realpath(workDirectory); } catch { return { ok: false, reason: `${WORK_PATH} がありません` }; }
+  const directory = join(root, SIGNAL_FILE_DIRECTORY);
+  try {
+    if (!isWithin(await realPathAllowingMissing(directory), root)) return outside;
+    await makeSharedDirectory(directory);
+    if (!isWithin(await realpath(directory), root)) return outside;
+  } catch { return { ok: false, reason: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY} を作れませんでした` }; }
+  for (let n = 1; n < 100; n++) {
+    const file = `${name.stem}${n === 1 ? '' : `-${n}`}.${name.extension}`;
+    try {
+      // `wx` makes a new file or fails: it never writes over one, and never through a link left in its place.
+      await writeFile(join(directory, file), data, { flag: 'wx', mode: SHARED_FILE_MODE });
+      return { ok: true, path: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY}/${file}` };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') break;
+    }
+  }
+  return { ok: false, reason: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY} に置けませんでした` };
+}
+
+function size(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function describe(error: unknown): string {
