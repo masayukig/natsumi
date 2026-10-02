@@ -182,6 +182,10 @@ natsumi が最初に持つ性格と話し方を決めたいときだけ、`perso
    姿だけを替えたいときは、`avatar.appearance` に別の `appearance.yaml` の絶対パスを書きます（例 `/etc/natsumi/appearance.yaml`）。
    アバターの `appearance.yaml` を混ぜずに丸ごと置き換えます。組み込みのアバターを、眼鏡やスーツの衣装違いで使うときなどに使います。
    検査はアバターの `appearance.yaml` と同じで、無い・壊れていると起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
+   画像生成の設定だけを替えたいときは、`avatar.sdctlParams` に別の `sdctl-params.yaml` の絶対パスを書きます（例 `/etc/natsumi/sdctl-params.yaml`）。
+   アバターの `sdctl-params.yaml`（無ければサーバーの既定）を混ぜずに丸ごと置き換え、`/manual/avatar/sdctl-params.yaml` と `images.md` の既定の行に使います。
+   モデルや LoRA を、image を作り直さずに替えるときなどに使います。`avatar.appearance` と併せて書けます。
+   検査はアバターの `sdctl-params.yaml` と同じで、無い・壊れていると起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
 3. サーバーを再起動します。アバターは起動時に 1 度だけ読みます。素材を直したときも、再起動で反映します。
 4. 起動のログに `avatar: <id> (<表示名>), version <版>` と、埋めたものが出ることを確かめます。
 5. アプリは、再接続したときに版が変わったことを知り、新しいアバターを取り直します。

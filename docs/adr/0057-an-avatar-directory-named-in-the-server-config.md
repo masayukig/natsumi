@@ -44,6 +44,11 @@
   組み込みのアバターを、ディレクトリを写さずに衣装違いで使うためのもの。`avatar.id` とも `avatar.directory` とも書ける。
   アバターの `appearance.yaml` と同じ検査をし、無い・壊れていると `ConfigError`（`avatar.appearance`）で止まる。
   運用者が指したファイルなので、ディレクトリの外を指す検査はせず、symlink（ConfigMap のマウント）もたどる。アプリには渡さないので、版は変わらない。
+- `avatar.sdctlParams`（省略可）: `sdctl-params.yaml` の絶対パス。選んだアバターの `sdctl-params.yaml`（無ければサーバーの既定）を、混ぜずに丸ごと置き換える。
+  モデルや LoRA などの描画の設定を、image を作り直さずに config だけで替えるためのもの。`avatar.id` とも `avatar.directory` とも、`avatar.appearance` とも書ける。
+  置き換えたものが `/manual/avatar/sdctl-params.yaml` に書かれ、`images.md` の既定の行にも使われる。
+  アバターの `sdctl-params.yaml` と同じ検査（YAML として読めて mapping であること）をし、無い・壊れていると `ConfigError`（`avatar.sdctlParams`）で止まる。
+  ディレクトリの外を指す検査をしないこと、symlink をたどること、版が変わらないことは `avatar.appearance` と同じ。
 - 足すアバターの置き場所の目安は、永続ボリュームの別の場所を読み取り専用でサーバーにだけ見せる形（例 `/var/lib/natsumi-avatars/<id>`）。作業環境には見せない。
 - 組み込みも足すものも、検査とのっぺらぼうの埋め方は同じである。組み込みのアバターが検査に通らないのは image の不具合なので、テストで固定する。
 
@@ -173,7 +178,7 @@
 
 - `avatar/images.md`: 画像を作るページ。今の `manual/images.md` を雛形にして、「既定はモデル…、896×1152（縦長）」の行を params から、「あなた自身の姿」の節と確かめる語のコマンドと例を `appearance.yaml` から作る。
   マニュアルは 1 ファイルのまま（ADR 0056 の読ませ方を崩さない）。
-- `avatar/sdctl-params.yaml`: アバターの params、無ければサーバーの既定。
+- `avatar/sdctl-params.yaml`: `avatar.sdctlParams` が指すもの、無ければアバターの params、無ければサーバーの既定。
 - どちらも起動のたびに書き直す（中身を丸ごと置き換える）。
 - 雛形はサーバーの image の `assets/manual/images.md` に置き、`manual/` からは外す。`manual/` に残すと、作業環境の image に書き出す前の雛形が載ってしまうからである。
 - ページのパスは `/manual/images.md` から `/manual/avatar/images.md` に変わる。目次（`manual/INDEX.md`）・作業環境のコマンドの行・ほかのページの案内をそろえる。

@@ -333,6 +333,40 @@ test('an appearance.yaml in the config replaces a built-in avatar\'s own, whole,
   }
 }));
 
+test('an sdctl-params.yaml in the config replaces the avatar\'s own, whole, through a symlink', () => scratch(async root => {
+  const natsumi = await loadAvatar(undefined);
+  const params = 'width: 1024\nheight: 1024\noverride_settings:\n  sd_model_checkpoint: other-model\n';
+  await mkdir(join(root, '..2026_x'));
+  await writeFile(join(root, '..2026_x', 'sdctl-params.yaml'), params);
+  await symlink('..2026_x', join(root, '..data'));
+  await symlink('..data/sdctl-params.yaml', join(root, 'sdctl-params.yaml'));
+  const replaced = await loadAvatar({ id: 'natsumi', sdctlParams: join(root, 'sdctl-params.yaml') });
+  assert.equal(replaced.sdctlParams, params);
+  assert.equal(replaced.version, natsumi.version);
+  assert.deepEqual(replaced.appearance, natsumi.appearance);
+  // One that had none of its own no longer stands on the server's default.
+  const hana = await loadAvatar({ directory: await bare(root), sdctlParams: join(root, 'sdctl-params.yaml') });
+  assert.equal(hana.sdctlParams, params);
+  assert.deepEqual(hana.defaults, ['pet.json', 'appearance.yaml', 'personality.md']);
+  for (const [text, pattern] of [[undefined, /cannot be read/], ['- a list\n', /sdctl-params\.yaml: must be a mapping/],
+    ['steps: [30\n', /sdctl-params\.yaml: not valid YAML/]] as const) {
+    const path = join(root, `broken-${pattern.source.length}.yaml`);
+    if (text !== undefined) await writeFile(path, text);
+    await assert.rejects(loadAvatar({ id: 'natsumi', sdctlParams: path }), (error: unknown) => error instanceof ConfigError
+      && error.path === 'avatar.sdctlParams' && pattern.test(error.message));
+  }
+}));
+
+test('the config may replace both the appearance and the sdctl params of one avatar', () => scratch(async root => {
+  const iori = await loadAvatar({ id: 'iori' });
+  await writeFile(join(root, 'appearance.yaml'), 'body: woman, black glasses,\noutfit: black suit,\n');
+  await writeFile(join(root, 'sdctl-params.yaml'), 'steps: 30\n');
+  const both = await loadAvatar({ id: 'iori', appearance: join(root, 'appearance.yaml'), sdctlParams: join(root, 'sdctl-params.yaml') });
+  assert.equal(both.appearance?.outfit, 'black suit,');
+  assert.equal(both.sdctlParams, 'steps: 30\n');
+  assert.equal(both.version, iori.version);
+}));
+
 test('an ID chooses a built-in avatar, the same as leaving the avatar out for natsumi', async () => {
   const chosen = await loadAvatar({ id: 'natsumi' });
   assert.equal(chosen.version, (await loadAvatar(undefined)).version);

@@ -105,7 +105,8 @@ const APPEARANCE_KEYS = ['lora', 'body', 'outfit', 'outfitName', 'keep', 'exampl
 /**
  * The avatar the config names: a built-in one by its ID, or one added by its directory; natsumi when it names none.
  * An unknown ID or a broken avatar stops the start as a config error on the setting that named it. An `appearance.yaml`
- * the config names replaces the avatar's own, whole; it is followed through symlinks, as a ConfigMap mounts it.
+ * or an `sdctl-params.yaml` the config names replaces the avatar's own, whole; it is followed through symlinks, as a
+ * ConfigMap mounts it. Neither is given to the apps, so neither changes the version.
  */
 export async function loadAvatar(choice: AvatarConfig | undefined): Promise<Avatar> {
   const chosen = choice ?? { id: DEFAULT_AVATAR_ID };
@@ -114,13 +115,29 @@ export async function loadAvatar(choice: AvatarConfig | undefined): Promise<Avat
   if (directory === undefined) throw new ConfigError(setting, await notBuiltIn((chosen as { id: string }).id));
   const inspected = await inspectAvatar(directory);
   if (!inspected.avatar) throw new ConfigError(setting, inspected.errors.join('; '));
-  if (chosen.appearance === undefined) return inspected.avatar;
-  const text = await readFile(chosen.appearance, 'utf8').catch(() => undefined);
-  if (text === undefined) throw new ConfigError('avatar.appearance', 'cannot be read');
-  const errors: string[] = [];
-  const appearance = parseAppearance(text, errors);
-  if (!appearance) throw new ConfigError('avatar.appearance', errors.join('; '));
-  return { ...inspected.avatar, appearance, defaults: inspected.avatar.defaults.filter(name => name !== 'appearance.yaml') };
+  let avatar = inspected.avatar;
+  if (chosen.appearance !== undefined) {
+    const text = await replacement(chosen.appearance, 'avatar.appearance');
+    const errors: string[] = [];
+    const appearance = parseAppearance(text, errors);
+    if (!appearance) throw new ConfigError('avatar.appearance', errors.join('; '));
+    avatar = { ...avatar, appearance, defaults: avatar.defaults.filter(name => name !== 'appearance.yaml') };
+  }
+  if (chosen.sdctlParams !== undefined) {
+    const sdctlParams = await replacement(chosen.sdctlParams, 'avatar.sdctlParams');
+    const errors: string[] = [];
+    checkSdctlParams(sdctlParams, errors);
+    if (errors.length > 0) throw new ConfigError('avatar.sdctlParams', errors.join('; '));
+    avatar = { ...avatar, sdctlParams, defaults: avatar.defaults.filter(name => name !== 'sdctl-params.yaml') };
+  }
+  return avatar;
+}
+
+/** The text of a file the config names in place of the avatar's own. */
+async function replacement(path: string, setting: string): Promise<string> {
+  const text = await readFile(path, 'utf8').catch(() => undefined);
+  if (text === undefined) throw new ConfigError(setting, 'cannot be read');
+  return text;
 }
 
 /** The directory of a built-in avatar, or undefined when the image has none of that ID. */
@@ -317,9 +334,7 @@ export async function inspectAvatar(directory: string): Promise<AvatarInspection
   if (params.kind === 'outside') errors.push('sdctl-params.yaml leads outside the directory');
   if (params.kind === 'ok') {
     sdctlParams = params.data.toString('utf8');
-    let parsed: unknown;
-    try { parsed = parse(sdctlParams); } catch { errors.push('sdctl-params.yaml: not valid YAML'); parsed = {}; }
-    if (!isObject(parsed)) errors.push('sdctl-params.yaml: must be a mapping');
+    checkSdctlParams(sdctlParams, errors);
   } else defaults.push('sdctl-params.yaml');
 
   let personality: string | undefined;
@@ -344,6 +359,13 @@ export async function inspectAvatar(directory: string): Promise<AvatarInspection
     slack: expression => (EXPRESSIONS as readonly string[]).includes(expression) ? slack.get(expression) : undefined,
   };
   return { avatar, errors, filled, defaults };
+}
+
+/** `sdctl-params.yaml`, checked: a YAML mapping. Every problem is added to `errors`. */
+function checkSdctlParams(text: string, errors: string[]): void {
+  let parsed: unknown;
+  try { parsed = parse(text); } catch { errors.push('sdctl-params.yaml: not valid YAML'); return; }
+  if (!isObject(parsed)) errors.push('sdctl-params.yaml: must be a mapping');
 }
 
 /** `appearance.yaml`, checked; every problem is added to `errors`. The trailing newline of a block is dropped. */
