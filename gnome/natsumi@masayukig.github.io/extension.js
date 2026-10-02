@@ -346,7 +346,9 @@ export default class NatsumiExtension extends Extension {
         this._entry.clutter_text.connect('activate', () => {
             const text = this._entry.get_text().trim();
             if (text !== '' && this._session?.send('conversation.send', {text}) === null) {
-                this._entry.hint_text = 'つながっていないので送れません';
+                // A hint does not show over typed text, so say it where it is seen, and keep the text.
+                Main.notify('natsumi', `つながっていないので送れません（${this._statusItem.label.text}）`);
+                this._session?.reconnect();
                 return;
             }
             this._closeEntry();
@@ -553,6 +555,8 @@ export default class NatsumiExtension extends Extension {
         // Talking to her brings her back, or the reply would go nowhere.
         this._settings.set_boolean('hidden', false);
         this._poke();
+        // Not online (the grey dot): start over now, so the line is likely to go by the time it is typed.
+        if (this._dot.visible) this._session?.reconnect();
         const [px, py] = this._pet.get_position();
         const [pw] = this._pet.get_size();
         const wa = this._workArea();
