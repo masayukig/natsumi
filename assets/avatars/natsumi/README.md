@@ -15,9 +15,9 @@
 
 自分を描くときは専用の `sdctl-params.yaml` を使います。モデルは `anima_2_9_Anima-2.9B-preview-v1`（hash `0b3020d1b9`）、LoRAは `kutara_anima.v1`（強度1）です。
 ER SDE・Beta・32 steps・CFG 4・896×1152、`qwen_image_vae.safetensors` と `qwen_3_06b_base.safetensors` で生成を確認しました。
-体の行は `kutara natsumi, low ponytail, freckles, large breasts,`。黒縁眼鏡は衣装の行だけに含めています。
-`keep` の候補は `freckles`・`large breasts`・`low ponytail` で、本人のPR確認を待っています。
-既存の描画例は、私服の自撮りを眼鏡なし、雨窓のカーディガンを眼鏡ありで試し描きして確認しました。
+品質の行は `masterpiece, newest,`。体の行は `kutara natsumi, low ponytail, freckles, large breasts,` と、空行を挟んだ `black glasses,` で、黒縁眼鏡は服ではなく体の行に含めています。
+`keep` は `freckles`・`large breasts`・`low ponytail`。
+眼鏡は体の行にあるので、描画例（私服の自撮り・雨窓のカーディガン）のどちらにも入ります。
 
 ## ライセンス
 

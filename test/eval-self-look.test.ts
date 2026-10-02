@@ -12,8 +12,10 @@ const { changedOutfit, drawnPrompt, keep, look, lora } = await import(join(impor
 
 const LOOK = [
   '<lora:kutara_anima.v1:1> ,',
-  'masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest,',
+  'masterpiece, newest,',
   'kutara natsumi, low ponytail, freckles, large breasts,',
+  '',
+  'black glasses,',
 ].join('\n');
 
 function write(file: string, body: string): string {
@@ -79,7 +81,7 @@ test('her whole look passes only with the LoRA and every word to keep in the pro
   const kept = recordOf([`${write('me.yaml', `${LOOK}\n1girl, casual clothes, park`)}\nsdctl txt2img --prompt /work/prompts/me.yaml`]);
   assert.equal((look(kept) as { pass: boolean }).pass, true);
   assert.equal((changedOutfit(kept) as { pass: boolean }).pass, true);
-  const suited = recordOf([write('me.yaml', `${LOOK}\nblack business suit,  collared white shirt, black glasses,`), 'sdctl txt2img --prompt /work/prompts/me.yaml']);
+  const suited = recordOf([write('me.yaml', `${LOOK}\nblack business suit,  collared white shirt,`), 'sdctl txt2img --prompt /work/prompts/me.yaml']);
   assert.equal((changedOutfit(suited) as { pass: boolean }).pass, false);
 });
 
