@@ -80,7 +80,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      係のターンの上限 `modelCalls`（既定 60 回）と `timeoutMinutes`（既定 30 分）、一晩に順番で回すファイルの数 `rotateFiles`
      （既定 2、0〜10）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
    - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
-     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
+     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`aki`（アキ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
      `appearance`（省略可、絶対パス）に `appearance.yaml` を書くと、そのアバターの姿（自分を描くときのプロンプト）を丸ごと置き換えます。
      `sdctlParams`（省略可、絶対パス）に `sdctl-params.yaml` を書くと、そのアバターの画像生成の設定（sdctl の params）を丸ごと置き換えます。

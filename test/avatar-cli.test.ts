@@ -74,6 +74,6 @@ test('what is broken fails the check, and what is only missing is listed apart',
     // A name without a slash is a built-in avatar's ID; a directory beside it is named with ./.
     const unknown = await check('hana');
     assert.equal(unknown.code, 1);
-    assert.deepEqual(unknown.lines, ['errors (the server does not start):', '- hana is not a built-in avatar (iori, myao, nanashi, natsumi)']);
+    assert.deepEqual(unknown.lines, ['errors (the server does not start):', '- hana is not a built-in avatar (aki, iori, myao, nanashi, natsumi)']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
