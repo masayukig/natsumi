@@ -36,7 +36,7 @@ Slack では、資料や見積もりや案内を PDF で貼ることが多い。
 
 ### 作業環境に poppler-utils を入れ、マニュアルに読み方を書く
 
-- 作業環境のイメージに `poppler-utils` を入れる。文字は `pdftotext <パス> -` で読み、図や表やスキャンは `pdftoppm -png -r 100 -f N -l N <パス> /work/pdf/<名前>` でページを画像にしてから `view` で見る。
+- 作業環境のイメージに `poppler-utils` と `poppler-data` を入れる（`poppler-data` は日本語などの文字の対応表で、無いと日本語の PDF は文字が取れず、ページも白く描かれる）。文字は `pdftotext <パス> -` で読み、図や表やスキャンは `pdftoppm -png -r 100 -f N -l N <パス> /work/pdf/<名前>` でページを画像にしてから `view` で見る。
 - `/sources` は読み取り専用なので、ページの画像は `/work` に作る。手順は `/manual/slack.md` の「PDF を読む」に書く。
 
 退けた案:
