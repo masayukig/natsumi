@@ -282,6 +282,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
       ...(config.signal ? { ownerOnSignal: true } : {}),
+      tellCutShort: true,
     });
     raiseInto = thinkingLoop;
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
