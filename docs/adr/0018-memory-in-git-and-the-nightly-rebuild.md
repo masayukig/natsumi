@@ -1,7 +1,7 @@
 # 0018. 記憶を git で持ち、shell で読み書きし、夜に組み直す
 
 - Date: 2026-09-18
-- Status: Accepted（足すコマンドの列挙と `git` を入れないこと、1 コマンドの長さの上限の理由づけ、閉じ込めの条件のうち資源と `/tmp` と 1 コマンドの時間、ツールの説明の中身は [ADR 0019](0019-a-workspace-not-a-memory-tool.md) で置き換え、夜の再構成に作業場の棚卸しを同 ADR で追加、常時記憶の上限を書き込みのときに掛ける形と、夜の再構成を手順から候補に変えること、夜のモデル呼び出しの上限の値は [ADR 0020](0020-limits-at-write-time-and-a-nightly-menu.md) で置き換え、引き継ぎを切り替えの記録にどう残すかは同 ADR で具体化、夜に記憶を組み直すのをなつみから人格を持たない記憶の整理係へ移すこと、固定のファイルに書けるのは係だけの `INDEX.md` を加えること、係のコミットは検査に当たれば全部を捨てることは [ADR 0055](0055-a-memory-curator-at-night.md) で置き換え・追加、`personality.md` が無いときにアバターの `personality.md` を初期値として置くことは [ADR 0060](0060-a-personality-to-start-from-in-the-avatar.md) で追加）
+- Status: Accepted（足すコマンドの列挙と `git` を入れないこと、1 コマンドの長さの上限の理由づけ、閉じ込めの条件のうち資源と `/tmp` と 1 コマンドの時間、ツールの説明の中身は [ADR 0019](0019-a-workspace-not-a-memory-tool.md) で置き換え、夜の再構成に作業場の棚卸しを同 ADR で追加、常時記憶の上限を書き込みのときに掛ける形と、夜の再構成を手順から候補に変えること、夜のモデル呼び出しの上限の値は [ADR 0020](0020-limits-at-write-time-and-a-nightly-menu.md) で置き換え、引き継ぎを切り替えの記録にどう残すかは同 ADR で具体化、夜に記憶を組み直すのをなつみから人格を持たない記憶の整理係へ移すこと、固定のファイルに書けるのは係だけの `INDEX.md` を加えること、係のコミットは検査に当たれば全部を捨てることは [ADR 0055](0055-a-memory-curator-at-night.md) で置き換え・追加、`personality.md` が無いときにアバターの `personality.md` を初期値として置くことは [ADR 0060](0060-a-personality-to-start-from-in-the-avatar.md) で追加、本人が自分でコミットした変更は検査の対象にしないことは [ADR 0067](0067-the-owner-commits-memory-over-ssh.md) で具体化）
 
 ## Context
 

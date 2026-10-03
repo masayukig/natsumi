@@ -1,7 +1,7 @@
 # 0033. 本番を Kubernetes に置く
 
 - Date: 2026-09-24
-- Status: Accepted
+- Status: Accepted（ssh の口で記憶の `.git` を書けるようにし、本人が自分でコミットしてよいこと、そのときに鍵の漏洩が SQLite と秘密に届かないための条件は [ADR 0067](0067-the-owner-commits-memory-over-ssh.md) で置き換え・条件づけ）
 
 ## Context
 
