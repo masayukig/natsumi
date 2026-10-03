@@ -33,10 +33,11 @@ RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yu
 
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
+# poppler-utils (pdftotext, pdftoppm) is for reading the PDFs taken in from Slack (ADR 0066).
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata \
+       bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata poppler-utils \
   && rm -rf /var/lib/apt/lists/*
 # Fork (ADR F04): pdftotext and pdftoppm, for the PDFs the owner sends on Signal.
 RUN apt-get update \
