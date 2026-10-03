@@ -1,0 +1,23 @@
+lora: kutara_anima.v6
+body: |
+  <lora:kutara_anima.v6:1>,
+  masterpiece, newest,
+  kutara aki, 1girl, black hair, bob cut, blunt bangs, gray eyes, freckles,
+outfit: "white tanktop, blue shorts,"
+outfitName: 白いタンクトップと青い短パン
+keep:
+  - black hair
+  - bob cut
+  - gray eyes
+  - freckles
+examples:
+  - title: 公園での自撮り
+    outfit: "white tanktop, blue shorts,"
+    scene: |
+      solo, selfie, upper body, smile, looking at viewer,
+      outdoors, park, sunlight
+  - title: 夏の休憩
+    outfit: "white tanktop, blue shorts,"
+    scene: |
+      solo, sitting, holding ice cream, smile,
+      outdoors, shade, summer

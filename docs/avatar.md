@@ -5,7 +5,7 @@ natsumi の姿と名前は、サーバーの設定で選ぶ「アバター」か
 
 アバターには 2 種類あります。
 
-- **組み込みのアバター**: サーバーの image に含まれていて、ID で選びます。`natsumi`（なつみ。既定）、`iori`（[伊織](../assets/avatars/iori/README.md)）、`myao`（[ミャオ](../assets/avatars/myao/README.md)）、`nanashi`（名無し。顔の無い人形）の 4 つです。
+- **組み込みのアバター**: サーバーの image に含まれていて、ID で選びます。`natsumi`（なつみ。既定）、`iori`（[伊織](../assets/avatars/iori/README.md)）、`myao`（[ミャオ](../assets/avatars/myao/README.md)）、`aki`（[アキ](../assets/avatars/aki/README.md)）、`nanashi`（名無し。顔の無い人形）の 5 つです。
 - **足すアバター**: 自分で作ったアバターのディレクトリで、パスで指します。この文書の手順で作るのはこちらです。
 
 組み込みも足すものも、同じ形のディレクトリで、同じ検査を受けます。
