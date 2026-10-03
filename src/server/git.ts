@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { join } from 'node:path';
 
 /**
  * The git CLI, run as a child process (ADR 0018). The memory repository is one the owner also pulls, pushes and
@@ -36,10 +37,15 @@ const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
  * left in the repository cannot change what committing does. A failing command throws unless `allowFailure`. `env`
  * adds to the environment, such as the dates a commit is to carry; it cannot take the identity's place, which
  * `identity` gives.
+ *
+ * The git directory is named, never found: `gitDirectory`, by default `.git` in `directory`, is both the git
+ * directory and the common one. The owner may write memory's `.git` over ssh, save its config (ADR 0067), and a
+ * `commondir` file there would otherwise send git to read another directory's config, one that can run commands.
  */
 export function runGit(directory: string, args: string[],
-  options: { allowFailure?: boolean; env?: Record<string, string>; identity?: GitIdentity } = {}): Promise<GitResult> {
+  options: { allowFailure?: boolean; env?: Record<string, string>; identity?: GitIdentity; gitDirectory?: string } = {}): Promise<GitResult> {
   const identity = options.identity ?? GIT_IDENTITY;
+  const gitDirectory = options.gitDirectory ?? join(directory, '.git');
   const full = ['-C', directory, '-c', 'core.hooksPath=/dev/null', '-c', `safe.directory=${directory}`,
     '-c', 'core.quotePath=false', '-c', 'commit.gpgsign=false', ...args];
   return new Promise((resolve, reject) => {
@@ -55,6 +61,8 @@ export function runGit(directory: string, args: string[],
         // No global or system config, and no prompt: the server never waits for a person.
         GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
         GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0',
+        // Set by name, so a commondir file in the git directory is never read.
+        GIT_DIR: gitDirectory, GIT_COMMON_DIR: gitDirectory,
       },
     }, (error, stdout, stderr) => {
       const code = error ? Number((error as NodeJS.ErrnoException & { code?: number }).code ?? 1) : 0;
