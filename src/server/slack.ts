@@ -5,8 +5,13 @@ import type { Attention } from './sources.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
 import { imageType } from './view.ts';
 
-/** The images the server fetches. Anything else attached is only noted. */
+/** The images the server fetches. Anything else attached but a PDF is only noted. */
 const IMAGE_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+/**
+ * A PDF is fetched too, for natsumi to read with poppler in the workspace; it never reaches the model as an image. The
+ * limit is the most an image may be set to: a document of some tens of pages fits, a whole scanned book does not.
+ */
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
 /** The subtypes that are someone saying something. Joins, topic changes and the like are not recorded. */
 const SPOKEN = new Set([undefined, 'file_share', 'thread_broadcast', 'bot_message', 'me_message']);
 
@@ -291,22 +296,26 @@ export class SlackWorkspace {
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
   }
 
-  /** Images within the limit are fetched beside the day's file; the rest are only noted by name. */
+  /** Images and PDFs within their limits are fetched beside the day's file; the rest are only noted by name. */
   private async files(channel: ChannelRow, message: SlackMessage): Promise<ArchivedMessage['files']> {
     const noted: ArchivedMessage['files'] = [];
     for (const [index, file] of message.files.entries()) {
-      const extension = IMAGE_TYPES[file.mimetype];
-      if (!extension || file.size > this.options.maxImageBytes || !file.url) { noted.push({ name: file.name }); continue; }
-      const path = this.options.archive.imagePath(this.options.name, channel.channel_id, message.ts, index, extension);
+      const pdf = file.mimetype === 'application/pdf';
+      const extension = pdf ? 'pdf' : IMAGE_TYPES[file.mimetype];
+      const limit = pdf ? MAX_PDF_BYTES : this.options.maxImageBytes;
+      if (!extension || file.size > limit || !file.url) { noted.push({ name: file.name }); continue; }
+      const path = this.options.archive.filePath(this.options.name, channel.channel_id, message.ts, index, extension);
       if (await exists(path.disk)) { noted.push({ name: file.name, path: path.shown }); continue; }
       try {
-        const body = await this.options.api.download(file.url, this.options.maxImageBytes);
-        if (!body || !imageType(body)) { noted.push({ name: file.name }); continue; }
+        const body = await this.options.api.download(file.url, limit);
+        // What Slack says a file is is the poster's word: the bytes have to agree.
+        const agrees = body && (pdf ? body.subarray(0, 5).toString('latin1') === '%PDF-' : imageType(body));
+        if (!agrees) { noted.push({ name: file.name }); continue; }
         await mkdir(dirname(path.disk), { recursive: true, mode: 0o750 });
         await writeFile(path.disk, body, { mode: 0o640 });
         noted.push({ name: file.name, path: path.shown });
       } catch (error) {
-        this.report('an image could not be fetched', error);
+        this.report(pdf ? 'a PDF could not be fetched' : 'an image could not be fetched', error);
         noted.push({ name: file.name });
       }
     }
