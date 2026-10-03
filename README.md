@@ -82,6 +82,8 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
      組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
+     `appearance`（省略可、絶対パス）に `appearance.yaml` を書くと、そのアバターの姿（自分を描くときのプロンプト）を丸ごと置き換えます。
+     `sdctlParams`（省略可、絶対パス）に `sdctl-params.yaml` を書くと、そのアバターの画像生成の設定（sdctl の params）を丸ごと置き換えます。
      壊れていれば起動せず、素材が足りないだけなら、名無し（`nanashi`）の、のっぺらぼうの素材で埋めて起動します。
      アバターの `personality.md`（省略可）は、記憶に `personality.md` がまだ無いときだけ、その初期値になります。すでにある性格は上書きしません。
      作り方と検査のコマンド `natsumi avatar check <ディレクトリか ID>` は [アバターの作り方](docs/avatar.md)、決めたことは [ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md) にあります。
@@ -816,7 +818,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.2。image の build でソースから入れます）を使い、
     Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの `/manual/avatar/images.md` にあります。
     サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさを差し込んで書き出します。
-  - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。アバターの `sdctl-params.yaml`、無ければサーバーの既定
+  - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。設定の `avatar.sdctlParams` があればそのファイル、無ければアバターの `sdctl-params.yaml`、無ければサーバーの既定
     （名無しの [assets/avatars/nanashi/sdctl-params.yaml](assets/avatars/nanashi/sdctl-params.yaml)）を、サーバーが起動のたびに書き出します。
     サーバーの既定は、Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
   - 接続先・既定の設定・出力の既定の `/work/images` と形式の JPEG は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。

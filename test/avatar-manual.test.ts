@@ -10,7 +10,7 @@ import { AVATAR_MANUAL_DIRECTORY, IMAGES_PAGE, readImagesTemplate, renderImagesP
 
 /**
  * What the server writes for the workspace from the avatar (ADR 0057): the page on drawing, with her own look and the
- * defaults of the params put in, and the params themselves. With natsumi, the page is the one the image held before.
+ * defaults of the params put in, and the params themselves. With natsumi, the fixture records her current drawing contract.
  */
 
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'avatar');
@@ -20,14 +20,17 @@ async function scratch(fn: (dir: string) => Promise<void>) {
   try { await fn(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-test('with natsumi, the page on drawing is word for word the manual/images.md the image held', async () => {
+test('with natsumi, the page on drawing is word for word her current drawing contract', async () => {
   const page = renderImagesPage(await readImagesTemplate(), await loadAvatar(undefined));
   assert.equal(page, await readFile(join(FIXTURES, 'natsumi-images.md'), 'utf8'));
 });
 
-test('with natsumi, the params say what the image\'s anima.yaml said', async () => {
+test('with natsumi, the params select Anima 2.9B and its modules', async () => {
   const avatar = await loadAvatar(undefined);
-  assert.deepEqual(parse(avatar.sdctlParams), parse(await readFile(join(FIXTURES, 'default-params.yaml'), 'utf8')));
+  const params = parse(avatar.sdctlParams);
+  assert.equal(params.override_settings.sd_model_checkpoint, 'anima_2_9_Anima-2.9B-preview-v1');
+  assert.deepEqual(params.override_settings.forge_additional_modules,
+    ['qwen_image_vae.safetensors', 'qwen_3_06b_base.safetensors']);
 });
 
 test('an avatar without a look of its own is told so, and nothing of natsumi\'s look is left in', () => scratch(async root => {
