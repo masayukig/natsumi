@@ -35,6 +35,7 @@ import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 import { parseView, viewImage } from './view.ts';
+import { CutShortNotices } from './turn-notice.ts';
 
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
 export const DEFAULT_NOTIFY_LIMITS = { perTurn: 3, perHour: 12 };
@@ -231,6 +232,8 @@ export interface LoopOptions {
   ownerOnSlack?: boolean;
   /** Fork (ADR F04): the owner also talks with her over Signal. */
   ownerOnSignal?: boolean;
+  /** Fork (ADR F05): the server tells the owner when a turn someone waits on is cut short. Off unless the server sets it. */
+  tellCutShort?: boolean;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -333,6 +336,8 @@ export class ThinkingLoop {
   private memoryNotice = '';
   /** What the persistent places hold, when they are past the warning; it waits for the next prompt (ADR 0019). */
   private workspaceNotice = '';
+  /** Fork (ADR F05): when the server last told the owner a turn was cut short. */
+  private readonly cutShortNotices = new CutShortNotices();
   /** The routes, the default, the route the session is on (unset until it is open) and the route chosen (ADR 0046). */
   private readonly routes: { list: LoopRoute[]; defaultRoute: string };
   private route: LoopRoute | undefined;
@@ -1021,6 +1026,14 @@ export class ThinkingLoop {
       this.emit('conversation.event.completed', {
         eventId: handling.eventId, messageId: handling.messageId, status, ...(status === 'failed' ? { reason: failure } : {}),
       });
+    }
+    // Fork (ADR F05): she cannot say the turn was cut, so the server does, through the path of her notices.
+    const cutNotice = failure && kind === 'events' && this.options.tellCutShort === true
+      ? this.cutShortNotices.take({ failure, kinds: this.store.eventKinds(handledIds), maxCalls, timeoutMinutes: timeoutMs / 60_000 }, endedAt)
+      : undefined;
+    if (cutNotice) {
+      this.emit('conversation.message', shown(this.store.insertMessage({ role: 'natsumi', kind: 'notice', text: cutNotice, expression: 'worried' })));
+      this.log(`thinking loop: the owner was told the turn was cut short (${failure})`);
     }
     this.handling.clear();
     this.turn = undefined;
