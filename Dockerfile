@@ -29,7 +29,7 @@ RUN go test ./... \
 # sdctl, which natsumi draws with (ADR 0044). Its releases carry no binary, so it is built from its source at a fixed
 # version, static like the runner.
 FROM golang:1.27 AS sdctl
-RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.2
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.3
 
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).

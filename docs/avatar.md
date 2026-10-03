@@ -141,6 +141,7 @@ natsumi は、自分が入る絵（自撮り、気分の絵、ほかの人と並
 中身は sdctl の params の YAML で、サーバーの既定（名無しの [assets/avatars/nanashi/sdctl-params.yaml](../assets/avatars/nanashi/sdctl-params.yaml)）が見本です。
 
 - モデルとモジュールは、生成ごとの `override_settings` で指定します（中継が WebUI の設定の変更を通さないため）。
+- WebUI の拡張（always-on script）の設定は `alwayson_scripts` に書きます。txt2img・img2img・hires の要求にそのまま渡ります（例: ADetailer で顔を描き直す。拡張は WebUI 側に入っている必要があります）。
 - `prompt` は書きません。プロンプトは natsumi が毎回書くものです。
 - `/manual/avatar/images.md` の「既定はモデル…、896×1152（縦長）」の行は、この `override_settings.sd_model_checkpoint`・`width`・`height` から作られます。
 
