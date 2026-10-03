@@ -377,8 +377,11 @@ export interface ServerConfig {
   avatar?: AvatarConfig;
 }
 
-/** A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start. */
-export type AvatarConfig = { id: string } | { directory: string };
+/**
+ * A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start.
+ * `appearance` and `sdctlParams`, the absolute paths of an `appearance.yaml` and an `sdctl-params.yaml`, replace the avatar's own.
+ */
+export type AvatarConfig = ({ id: string } | { directory: string }) & { appearance?: string; sdctlParams?: string };
 
 const AVATAR_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -924,17 +927,21 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
 
 function parseAvatar(value: unknown, path: string): AvatarConfig {
   const avatar = object(value, path);
-  onlyKeys(avatar, path, ['id', 'directory']);
+  onlyKeys(avatar, path, ['id', 'directory', 'appearance', 'sdctlParams']);
   if (avatar.id !== undefined && avatar.directory !== undefined) throw new ConfigError(path, 'set id or directory, not both');
   if (avatar.id === undefined && avatar.directory === undefined) {
     throw new ConfigError(path, 'set id (a built-in avatar) or directory (an avatar of your own)');
   }
-  if (avatar.directory !== undefined) return { directory: absolutePath(avatar.directory, `${path}.directory`) };
+  const replaced = {
+    ...(avatar.appearance === undefined ? {} : { appearance: absolutePath(avatar.appearance, `${path}.appearance`) }),
+    ...(avatar.sdctlParams === undefined ? {} : { sdctlParams: absolutePath(avatar.sdctlParams, `${path}.sdctlParams`) }),
+  };
+  if (avatar.directory !== undefined) return { directory: absolutePath(avatar.directory, `${path}.directory`), ...replaced };
   // Whether it is one of the image's is known only once the image is looked at, when the avatar is read.
   if (typeof avatar.id !== 'string' || !AVATAR_ID.test(avatar.id)) {
     throw new ConfigError(`${path}.id`, 'must be lowercase letters, digits and "-", starting with a letter');
   }
-  return { id: avatar.id };
+  return { id: avatar.id, ...replaced };
 }
 
 function parseSources(value: unknown, path: string): SourcesConfig {

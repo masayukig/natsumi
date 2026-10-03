@@ -340,6 +340,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
       if (approvals) signalStops.push(() => approvals.stop());
       signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, ...(approvals ? { approvals } : {}),
+        workDirectory: join(dataDirectory, WORK_DIRECTORY),
         say: ({ requestId, text }) => {
           const outcome = thinkingLoop.send({ requestId, deviceId: 'signal', text });
           if (outcome.kind !== 'accepted') log(`signal: the owner's message was not taken (${outcome.code})`);
