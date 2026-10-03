@@ -25,8 +25,11 @@ export interface PiSessionOptions {
   file?: string;
   /** The session ID the caller recorded for `file`. */
   expectedSessionId?: string;
-  /** The tool allowlist and its definitions. Without it Pi has no tools at all (ADR 0004). */
-  tools?: { names: string[]; definitions: CreateOptions['customTools'] };
+  /**
+   * The tool allowlist and its definitions. Without it Pi has no tools at all (ADR 0004). `declared`, when given, is the
+   * part of the allowlist the model is shown; the rest is callable from Codemode scripts only (ADR 0066).
+   */
+  tools?: { names: string[]; definitions: CreateOptions['customTools']; declared?: string[] };
   /** How much recent context a compaction keeps unsummarized. Pi's default when omitted. */
   keepRecentTokens?: number;
   /**
@@ -84,6 +87,8 @@ export async function openPiSession(options: PiSessionOptions): Promise<AgentSes
   if (modelFallbackMessage || session.model?.provider !== target.provider || session.model.id !== target.model) {
     session.dispose(); throw new Error('Pi model fallback refused');
   }
+  // Pi declares every tool the allowlist names, whatever its exposure; this takes back the ones scripts alone reach.
+  if (options.tools?.declared) session.setActiveToolsByName(options.tools.declared);
   return session;
 }
 

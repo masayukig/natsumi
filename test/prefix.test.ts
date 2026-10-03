@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
-import { LOOP_DEFAULTS } from '../src/server/config.ts';
+import { DEFAULT_CODEMODE, LOOP_DEFAULTS, type CodemodeConfig } from '../src/server/config.ts';
 import { createLoopTools, type LoopToolHost, type ToolOutcome } from '../src/server/loop-tools.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
@@ -80,8 +80,11 @@ const MEMORY: Record<string, string> = {
  */
 const MANUAL_INDEX = '固定の目次。';
 
-/** Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made. */
-async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: string[] }> {
+/**
+ * Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made. With Codemode
+ * on, the tools are read off the session too: Pi rewrites their descriptions when codemode is among them (ADR 0066).
+ */
+async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CODEMODE): Promise<Prefix & { activeToolNames: string[] }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-prefix-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -97,7 +100,7 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
     runtime: fixtureRuntime, manualIndex: MANUAL_INDEX,
     configureSession: captured => { session = captured; },
-    loop: { ...LOOP_DEFAULTS, ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}) },
+    loop: { ...LOOP_DEFAULTS, codemode, ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}) },
   });
   try {
     assert.ok(session, 'the loop made no session');
@@ -112,7 +115,7 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
       systemPrompt: session.systemPrompt.slice(0, split),
       trailer: session.systemPrompt.slice(split).replaceAll(data, DATA_DIRECTORY),
       activeToolNames: session.getActiveToolNames(),
-      tools: toolShapes(workspace),
+      tools: codemode.enabled ? declaredShapes(session) : toolShapes(workspace),
     };
   } finally {
     await loop.close();
@@ -121,8 +124,15 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
   }
 }
 
-async function check(name: string, workspace: boolean) {
-  const captured = await capture(workspace);
+/** The tools as the session declares them to the model, in its order. */
+function declaredShapes(session: AgentSession): Prefix['tools'] {
+  return session.agent.state.tools.map(tool => ({
+    name: tool.name, description: tool.description, parameters: JSON.parse(JSON.stringify(tool.parameters)) as unknown,
+  }));
+}
+
+async function check(name: string, workspace: boolean, codemode?: CodemodeConfig) {
+  const captured = await capture(workspace, codemode);
   const prefix: Prefix = { systemPrompt: captured.systemPrompt, trailer: captured.trailer, tools: captured.tools };
   // The session really registers the tools the fixture pins, in the same order.
   assert.deepEqual(captured.activeToolNames, prefix.tools.map(tool => tool.name));
@@ -143,4 +153,13 @@ test('the system prompt and the tool definitions are unchanged, with a workspace
 
 test('the system prompt and the tool definitions are unchanged, without a workspace', async () => {
   await check('without-workspace', false);
+});
+
+// ADR 0066: off, the two above are what natsumi has always had; on, the order and the wording are pinned too.
+test('with Codemode on and the workspace tools direct, codemode is declared last and the prefix is pinned', async () => {
+  await check('with-workspace-codemode', true, { ...DEFAULT_CODEMODE, enabled: true });
+});
+
+test('with Codemode on and the workspace tools for scripts only, they are left off the declarations and the prefix is pinned', async () => {
+  await check('with-workspace-codemode-scripts-only', true, { ...DEFAULT_CODEMODE, enabled: true, workspaceTools: 'codemode' });
 });

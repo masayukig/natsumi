@@ -17,6 +17,7 @@ import { ConversationStore, type EventKind, type EventState, type MessageRow,
 import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
+import { CODEMODE_TOOL_NAME, withCodemode, type NestedCallCount } from './codemode.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { gitIdentity } from './git.ts';
 import { compactionInstructions, composeSystemPrompt, curatorSystemPrompt, DEFAULT_SELF, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
@@ -270,6 +271,8 @@ interface Turn {
   startedAt: number; firstOutAt?: number;
   /** Requests the dove turned back in it (ADR 0047). */
   doveRefusals: number;
+  /** Tool calls its Codemode scripts made (ADR 0066). */
+  nestedCalls: number;
   /** The review's rotation, whether it wrote its handoff, and what it said about the night (ADR 0020). */
   rotationId?: string; handoffWritten?: true; changeNote?: string;
 }
@@ -793,14 +796,14 @@ export class ThinkingLoop {
 
   private async sessionOptions(): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
-    const tools = createLoopTools(this.host());
+    const { tools, extensions } = withCodemode(createLoopTools(this.host()), this.options.loop.codemode, () => this.turn);
     return {
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target: this.route!.target,
       systemPrompt: await this.systemPrompt(),
       thinkingLevel: this.thinkingLevel(),
-      tools: { names: tools.map(tool => tool.name), definitions: tools },
+      tools,
       keepRecentTokens: this.options.loop.compactionKeepRecent,
-      extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting })],
+      extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting }), ...extensions],
     };
   }
 
@@ -968,7 +971,8 @@ export class ThinkingLoop {
     const limits = this.options.settings?.turnLimits() ?? this.options.loop;
     const maxCalls = kind === 'review' ? limits.reviewModelCalls : limits.eventModelCalls;
     const timeoutMs = (kind === 'review' ? limits.reviewTimeoutMinutes : limits.eventTimeoutMinutes) * 60_000;
-    const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt: this.now(), doveRefusals: 0 };
+    const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt: this.now(), doveRefusals: 0,
+      nestedCalls: 0 };
     this.turn = turn;
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);
     const before = session.messages.length;
@@ -1304,7 +1308,8 @@ export class ThinkingLoop {
       files, changed, rotated });
 
     let note: string | undefined;
-    const tools = curatorTools({
+    const count: NestedCallCount = { nestedCalls: 0 };
+    const { tools, extensions } = withCodemode(curatorTools({
       runShell: command => this.shell!.run(command),
       capture: command => this.shell!.capture(command),
       writeChangeNote: text => {
@@ -1313,13 +1318,13 @@ export class ThinkingLoop {
         note = text;
         return { ok: true, text: '今夜のコミットメッセージにします。書き直すなら、もう一度呼んでください。' };
       },
-    });
+    }), config.codemode, () => count);
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
     this.curation.begin();
     const session = await createPersistedPiSession({
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: join(sessionDirectory, CURATOR_SESSION_DIRECTORY),
       modelRuntime: this.modelRuntime!, target: route.target, systemPrompt: curatorSystemPrompt(this.self.name), thinkingLevel: this.thinkingLevel(),
-      tools: { names: tools.map(tool => tool.name), definitions: tools },
+      tools, extensions,
     });
     this.curatorSession = session;
     this.options.configureSession?.(session);
@@ -1818,23 +1823,34 @@ interface PlaceMark { file: string; afterEntryId: string | null; offset: number 
 /**
  * The run_shell commands and read paths of the turn (from `start`) that were already used before, in the session's
  * context or earlier in the turn (ADR 0047). A command is compared with its spaces normalized; nothing is parsed.
+ * Codemode's are counted too (ADR 0066): a script the same as one before, and the commands and reads a script made,
+ * as Pi records them beside the script's result.
  */
 function repeatedCalls(messages: AgentSession['messages'], start: number): number {
   const seen = new Set<string>();
   let repeated = 0;
+  const count = (key: string | undefined, index: number) => {
+    if (!key) return;
+    if (index >= start && seen.has(key)) repeated += 1;
+    seen.add(key);
+  };
   messages.forEach((message, index) => {
+    if (message.role === 'toolResult' && message.toolName === CODEMODE_TOOL_NAME) {
+      for (const nested of message.nestedCalls?.calls ?? []) count(callKey(nested.name, nested.arguments ?? {}), index);
+    }
     if (message.role !== 'assistant') return;
     for (const block of message.content) {
-      if (block.type !== 'toolCall') continue;
-      const args = block.arguments as Record<string, unknown>;
-      const key = block.name === 'run_shell' && typeof args.command === 'string' ? `run_shell ${args.command.trim().replace(/\s+/g, ' ')}`
-        : block.name === 'read' && typeof args.path === 'string' ? `read ${args.path.trim()}` : undefined;
-      if (!key) continue;
-      if (index >= start && seen.has(key)) repeated += 1;
-      seen.add(key);
+      if (block.type === 'toolCall') count(callKey(block.name, block.arguments as Record<string, unknown>), index);
     }
   });
   return repeated;
+}
+
+function callKey(name: string, args: Record<string, unknown>): string | undefined {
+  const words = (value: string) => value.trim().replace(/\s+/g, ' ');
+  return name === 'run_shell' && typeof args.command === 'string' ? `run_shell ${words(args.command)}`
+    : name === 'read' && typeof args.path === 'string' ? `read ${args.path.trim()}`
+    : name === CODEMODE_TOOL_NAME && typeof args.code === 'string' ? `codemode ${words(args.code)}` : undefined;
 }
 
 type Reply = { stopReason?: string; usage: { input: number; cacheRead: number; cacheWrite: number; output: number } };
