@@ -18,7 +18,7 @@ natsumi の番号で登録した signal-cli を daemon として動かし、そ�
   知らせと、どのメッセージにも答えていない返事も送る。Signal は本人の私的な場所なので、知らせが Slack と重なってもかまわない。Slack 側の動きは変えない。
   画像は data URI の添付で送り、断られたら本文だけ送り直す。
 - 本人が送った添付ファイル（画像・PDF など、種類は問わない）は、daemon の `getAttachment` で取り出して `/work/signal/<UTC の時刻>-<元の名前>.<拡張子>` に置き、
-  置いた場所・種類・大きさを 1 行ずつ本文の後ろに足して渡す。natsumi は画像なら `view`、ほかは run_shell で読む。PDF のために workspace の image に poppler-utils（`pdftotext`・`pdftoppm`）を足し、PDF の行には使い方を添える。本文の無い添付だけの発言も渡す。
+  置いた場所・種類・大きさを 1 行ずつ本文の後ろに足して渡す。natsumi は画像なら `view`、ほかは run_shell で読む。PDF は workspace の image の poppler-utils（`pdftotext`・`pdftoppm`、ADR 0066）で読み、PDF の行には使い方を添える。本文の無い添付だけの発言も渡す。
   置き方は ADR 0048 の画像と同じで、既にある名前には書かず（`wx`、`-2`・`-3` と付け直す）、`/work` の外へ向いたリンクも辿らない。
   1 通 10 個・1 個 50 MB まで。取れなかったものは、その理由を同じく 1 行で伝える。添付の付いた引用は承認の答えとしては見ない。
   signal-cli が自分の場所（PVC の `signal/attachments`）に置いた元のファイルは消さない（消す手段が JSON-RPC にあるかは確かめていない）。
