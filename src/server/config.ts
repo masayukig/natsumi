@@ -366,9 +366,10 @@ export interface ServerConfig {
 
 /**
  * A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start.
- * `appearance` and `sdctlParams`, the absolute paths of an `appearance.yaml` and an `sdctl-params.yaml`, replace the avatar's own.
+ * `appearance`, `sdctlParams` and `personality`, the absolute paths of an `appearance.yaml`, an `sdctl-params.yaml` and a
+ * `personality.md`, replace the avatar's own.
  */
-export type AvatarConfig = ({ id: string } | { directory: string }) & { appearance?: string; sdctlParams?: string };
+export type AvatarConfig = ({ id: string } | { directory: string }) & { appearance?: string; sdctlParams?: string; personality?: string };
 
 const AVATAR_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -849,7 +850,7 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
 
 function parseAvatar(value: unknown, path: string): AvatarConfig {
   const avatar = object(value, path);
-  onlyKeys(avatar, path, ['id', 'directory', 'appearance', 'sdctlParams']);
+  onlyKeys(avatar, path, ['id', 'directory', 'appearance', 'sdctlParams', 'personality']);
   if (avatar.id !== undefined && avatar.directory !== undefined) throw new ConfigError(path, 'set id or directory, not both');
   if (avatar.id === undefined && avatar.directory === undefined) {
     throw new ConfigError(path, 'set id (a built-in avatar) or directory (an avatar of your own)');
@@ -857,6 +858,7 @@ function parseAvatar(value: unknown, path: string): AvatarConfig {
   const replaced = {
     ...(avatar.appearance === undefined ? {} : { appearance: absolutePath(avatar.appearance, `${path}.appearance`) }),
     ...(avatar.sdctlParams === undefined ? {} : { sdctlParams: absolutePath(avatar.sdctlParams, `${path}.sdctlParams`) }),
+    ...(avatar.personality === undefined ? {} : { personality: absolutePath(avatar.personality, `${path}.personality`) }),
   };
   if (avatar.directory !== undefined) return { directory: absolutePath(avatar.directory, `${path}.directory`), ...replaced };
   // Whether it is one of the image's is known only once the image is looked at, when the avatar is read.

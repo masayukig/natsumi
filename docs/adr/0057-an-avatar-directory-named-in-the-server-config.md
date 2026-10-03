@@ -49,6 +49,11 @@
   置き換えたものが `/manual/avatar/sdctl-params.yaml` に書かれ、`images.md` の既定の行にも使われる。
   アバターの `sdctl-params.yaml` と同じ検査（YAML として読めて mapping であること）をし、無い・壊れていると `ConfigError`（`avatar.sdctlParams`）で止まる。
   ディレクトリの外を指す検査をしないこと、symlink をたどること、版が変わらないことは `avatar.appearance` と同じ。
+- `avatar.personality`（省略可）: `personality.md` の絶対パス。選んだアバターの `personality.md`（無ければ無し）を、混ぜずに丸ごと置き換える。
+  組み込みのアバターを、公開版とは違う性格・話し方の初期値で使うためのもの。`avatar.id` とも `avatar.directory` とも、ほかの上書きとも書ける。
+  意味はアバターの `personality.md` と同じで、記憶に `personality.md` が無いときだけ初期値として写す（[ADR 0060](0060-a-personality-to-start-from-in-the-avatar.md)）。すでにある記憶の性格は上書きしない。
+  アバターの `personality.md` と同じ検査（空白だけでないこと）をし、無い・空・読めないと `ConfigError`（`avatar.personality`）で止まる。
+  ディレクトリの外を指す検査をしないこと、symlink をたどること、版が変わらないことは `avatar.appearance` と同じ。
 - 足すアバターの置き場所の目安は、永続ボリュームの別の場所を読み取り専用でサーバーにだけ見せる形（例 `/var/lib/natsumi-avatars/<id>`）。作業環境には見せない。
 - 組み込みも足すものも、検査とのっぺらぼうの埋め方は同じである。組み込みのアバターが検査に通らないのは image の不具合なので、テストで固定する。
 

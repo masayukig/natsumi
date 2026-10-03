@@ -84,8 +84,9 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
      `appearance`（省略可、絶対パス）に `appearance.yaml` を書くと、そのアバターの姿（自分を描くときのプロンプト）を丸ごと置き換えます。
      `sdctlParams`（省略可、絶対パス）に `sdctl-params.yaml` を書くと、そのアバターの画像生成の設定（sdctl の params）を丸ごと置き換えます。
+     `personality`（省略可、絶対パス）に `personality.md` を書くと、そのアバターの性格・話し方の初期値を丸ごと置き換えます。
      壊れていれば起動せず、素材が足りないだけなら、名無し（`nanashi`）の、のっぺらぼうの素材で埋めて起動します。
-     アバターの `personality.md`（省略可）は、記憶に `personality.md` がまだ無いときだけ、その初期値になります。すでにある性格は上書きしません。
+     アバターの `personality.md`（省略可）も、`personality` で指したものも、記憶に `personality.md` がまだ無いときだけ、その初期値になります。すでにある性格は上書きしません。
      作り方と検査のコマンド `natsumi avatar check <ディレクトリか ID>` は [アバターの作り方](docs/avatar.md)、決めたことは [ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md) にあります。
 4. ビルドして起動します。
 
@@ -121,7 +122,7 @@ natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](doc
 | ファイル | 中身 |
 | --- | --- |
 | `always.md` | 常時記憶。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます |
-| `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます。無ければアバターの `personality.md`（無ければ表示名の入った枠）を置きます（[ADR 0060](docs/adr/0060-a-personality-to-start-from-in-the-avatar.md)） |
+| `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます。無ければ設定の `avatar.personality` のファイル、無ければアバターの `personality.md`（無ければ表示名の入った枠）を置きます（[ADR 0060](docs/adr/0060-a-personality-to-start-from-in-the-avatar.md)） |
 | `handoff.md` | 夜の引き継ぎ。初回起動で、そのときの最新の引き継ぎを写します（引き継ぎ自体を SQLite からこのファイルへ移すのは後続の実装） |
 | `INDEX.md` | 記憶の索引。無ければ雛形を置きます。書くのは記憶の整理係だけで、natsumi のターンで変わっていたら戻します |
 

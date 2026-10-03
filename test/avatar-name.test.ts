@@ -39,6 +39,12 @@ test('the config chooses a built-in avatar by its ID or adds one by its absolute
   assert.deepEqual(parseConfig({ ...base(), avatar: { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml',
     sdctlParams: '/etc/natsumi/sdctl-params.yaml' } }).avatar,
     { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml', sdctlParams: '/etc/natsumi/sdctl-params.yaml' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { id: 'aki', personality: '/etc/natsumi/personality.md' } }).avatar,
+    { id: 'aki', personality: '/etc/natsumi/personality.md' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml',
+    sdctlParams: '/etc/natsumi/sdctl-params.yaml', personality: '/etc/natsumi/personality.md' } }).avatar,
+    { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml', sdctlParams: '/etc/natsumi/sdctl-params.yaml',
+      personality: '/etc/natsumi/personality.md' });
   for (const [avatar, path] of [
     [{ directory: 'avatars/hana' }, 'avatar.directory'],
     [{}, 'avatar'],
@@ -50,6 +56,8 @@ test('the config chooses a built-in avatar by its ID or adds one by its absolute
     [{ appearance: '/a.yaml' }, 'avatar'],
     [{ id: 'iori', sdctlParams: 'sdctl-params.yaml' }, 'avatar.sdctlParams'],
     [{ sdctlParams: '/a.yaml' }, 'avatar'],
+    [{ id: 'iori', personality: 'personality.md' }, 'avatar.personality'],
+    [{ personality: '/a.md' }, 'avatar'],
     ['/a', 'avatar'],
   ] as const) {
     assert.throws(() => parseConfig({ ...base(), avatar }), (error: unknown) => error instanceof ConfigError && error.path === path,

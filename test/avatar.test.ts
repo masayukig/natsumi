@@ -367,6 +367,43 @@ test('the config may replace both the appearance and the sdctl params of one ava
   assert.equal(both.version, iori.version);
 }));
 
+test('a personality.md in the config replaces the avatar\'s own, whole, through a symlink', () => scratch(async root => {
+  const myao = await loadAvatar({ id: 'myao' });
+  const text = '# 性格・話し方\n\n落ち着いていて、丁寧に話す。\n';
+  await mkdir(join(root, '..2026_x'));
+  await writeFile(join(root, '..2026_x', 'personality.md'), text);
+  await symlink('..2026_x', join(root, '..data'));
+  await symlink('..data/personality.md', join(root, 'personality.md'));
+  const replaced = await loadAvatar({ id: 'myao', personality: join(root, 'personality.md') });
+  assert.equal(replaced.personality, text);
+  assert.equal(replaced.version, myao.version);
+  assert.deepEqual(replaced.appearance, myao.appearance);
+  assert.equal(replaced.sdctlParams, myao.sdctlParams);
+  // One that had none of its own no longer starts from the server's template.
+  const hana = await loadAvatar({ directory: await bare(root), personality: join(root, 'personality.md') });
+  assert.equal(hana.personality, text);
+  assert.deepEqual(hana.defaults, ['pet.json', 'appearance.yaml', 'sdctl-params.yaml']);
+  for (const [text, pattern] of [[undefined, /cannot be read/], [' \n\n', /personality\.md: must be text/]] as const) {
+    const path = join(root, `broken-${pattern.source.length}.md`);
+    if (text !== undefined) await writeFile(path, text);
+    await assert.rejects(loadAvatar({ id: 'myao', personality: path }), (error: unknown) => error instanceof ConfigError
+      && error.path === 'avatar.personality' && pattern.test(error.message));
+  }
+}));
+
+test('the config may replace the appearance, the sdctl params and the personality of one avatar together', () => scratch(async root => {
+  const iori = await loadAvatar({ id: 'iori' });
+  await writeFile(join(root, 'appearance.yaml'), 'body: woman, black glasses,\noutfit: black suit,\n');
+  await writeFile(join(root, 'sdctl-params.yaml'), 'steps: 30\n');
+  await writeFile(join(root, 'personality.md'), '# 性格・話し方\n\n無口。\n');
+  const all = await loadAvatar({ id: 'iori', appearance: join(root, 'appearance.yaml'), sdctlParams: join(root, 'sdctl-params.yaml'),
+    personality: join(root, 'personality.md') });
+  assert.equal(all.appearance?.outfit, 'black suit,');
+  assert.equal(all.sdctlParams, 'steps: 30\n');
+  assert.equal(all.personality, '# 性格・話し方\n\n無口。\n');
+  assert.equal(all.version, iori.version);
+}));
+
 test('an ID chooses a built-in avatar, the same as leaving the avatar out for natsumi', async () => {
   const chosen = await loadAvatar({ id: 'natsumi' });
   assert.equal(chosen.version, (await loadAvatar(undefined)).version);

@@ -104,9 +104,9 @@ const APPEARANCE_KEYS = ['lora', 'body', 'outfit', 'outfitName', 'keep', 'exampl
 
 /**
  * The avatar the config names: a built-in one by its ID, or one added by its directory; natsumi when it names none.
- * An unknown ID or a broken avatar stops the start as a config error on the setting that named it. An `appearance.yaml`
- * or an `sdctl-params.yaml` the config names replaces the avatar's own, whole; it is followed through symlinks, as a
- * ConfigMap mounts it. Neither is given to the apps, so neither changes the version.
+ * An unknown ID or a broken avatar stops the start as a config error on the setting that named it. An `appearance.yaml`,
+ * an `sdctl-params.yaml` or a `personality.md` the config names replaces the avatar's own, whole; it is followed through
+ * symlinks, as a ConfigMap mounts it. None is given to the apps, so none changes the version.
  */
 export async function loadAvatar(choice: AvatarConfig | undefined): Promise<Avatar> {
   const chosen = choice ?? { id: DEFAULT_AVATAR_ID };
@@ -129,6 +129,13 @@ export async function loadAvatar(choice: AvatarConfig | undefined): Promise<Avat
     checkSdctlParams(sdctlParams, errors);
     if (errors.length > 0) throw new ConfigError('avatar.sdctlParams', errors.join('; '));
     avatar = { ...avatar, sdctlParams, defaults: avatar.defaults.filter(name => name !== 'sdctl-params.yaml') };
+  }
+  if (chosen.personality !== undefined) {
+    const personality = await replacement(chosen.personality, 'avatar.personality');
+    const errors: string[] = [];
+    checkPersonality(personality, errors);
+    if (errors.length > 0) throw new ConfigError('avatar.personality', errors.join('; '));
+    avatar = { ...avatar, personality, defaults: avatar.defaults.filter(name => name !== 'personality.md') };
   }
   return avatar;
 }
@@ -342,7 +349,7 @@ export async function inspectAvatar(directory: string): Promise<AvatarInspection
   if (character.kind === 'outside') errors.push('personality.md leads outside the directory');
   if (character.kind === 'ok') {
     personality = character.data.toString('utf8');
-    if (personality.trim() === '') errors.push('personality.md: must be text');
+    checkPersonality(personality, errors);
   } else defaults.push('personality.md');
 
   if (errors.length > 0) return failed();
@@ -366,6 +373,11 @@ function checkSdctlParams(text: string, errors: string[]): void {
   let parsed: unknown;
   try { parsed = parse(text); } catch { errors.push('sdctl-params.yaml: not valid YAML'); return; }
   if (!isObject(parsed)) errors.push('sdctl-params.yaml: must be a mapping');
+}
+
+/** `personality.md`, checked: text, not only blanks. Every problem is added to `errors`. */
+function checkPersonality(text: string, errors: string[]): void {
+  if (text.trim() === '') errors.push('personality.md: must be text');
 }
 
 /** `appearance.yaml`, checked; every problem is added to `errors`. The trailing newline of a block is dropped. */

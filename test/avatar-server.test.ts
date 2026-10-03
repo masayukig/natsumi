@@ -18,6 +18,7 @@ const FALLBACK = join(import.meta.dirname, '..', 'assets', 'avatars', 'nanashi')
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'avatar');
 const REPLACED_PARAMS = 'width: 1216\nheight: 832\noverride_settings:\n  sd_model_checkpoint: other-model\n';
 const HANA_PERSONALITY = '# 性格・話し方\n\nのんびりしていて、語尾をのばす。\n';
+const REPLACED_PERSONALITY = '# 性格・話し方\n\n落ち着いていて、丁寧に話す。\n';
 
 async function withServer(fn: (f: Fixture) => Promise<void>, avatar?: (root: string) => Promise<Record<string, unknown>>) {
   const f = await startFixture(avatar ? { avatar } : {});
@@ -139,6 +140,23 @@ test('an avatar the config names gives its name, its faceless fill-ins and its v
   await writeFile(join(dir, 'personality.md'), HANA_PERSONALITY);
   return { directory: dir };
 }));
+
+test('the personality the config names is where her memory\'s personality starts, in place of the avatar\'s', () => withServer(async f => {
+  assert.equal(await readFile(join(f.data, 'memory', 'personality.md'), 'utf8'), REPLACED_PERSONALITY);
+}, async root => {
+  const dir = join(root, 'avatars', 'hana');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'avatar.json'), JSON.stringify({ id: 'hana', name: 'はな' }));
+  await writeFile(join(dir, 'personality.md'), HANA_PERSONALITY);
+  const path = join(root, 'personality.md');
+  await writeFile(path, REPLACED_PERSONALITY);
+  return { directory: dir, personality: path };
+}));
+
+test('a personality the config names that cannot be read stops the start with the setting\'s name', async () => {
+  await assert.rejects(startFixture({ avatar: async root => ({ id: 'natsumi', personality: join(root, 'nowhere.md') }) }),
+    /avatar\.personality: cannot be read/);
+});
 
 test('an avatar directory that is broken stops the start with the setting\'s name', async () => {
   await assert.rejects(startFixture({ avatar: async root => ({ directory: join(root, 'nowhere') }) }),

@@ -187,6 +187,10 @@ natsumi が最初に持つ性格と話し方を決めたいときだけ、`perso
    アバターの `sdctl-params.yaml`（無ければサーバーの既定）を混ぜずに丸ごと置き換え、`/manual/avatar/sdctl-params.yaml` と `images.md` の既定の行に使います。
    モデルや LoRA を、image を作り直さずに替えるときなどに使います。`avatar.appearance` と併せて書けます。
    検査はアバターの `sdctl-params.yaml` と同じで、無い・壊れていると起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
+   性格・話し方の初期値だけを替えたいときは、`avatar.personality` に別の `personality.md` の絶対パスを書きます（例 `/etc/natsumi/personality.md`）。
+   アバターの `personality.md`（無ければ無し）を混ぜずに丸ごと置き換えます。組み込みのアバターを、自分のインスタンスだけ違う性格で使うときなどに使います。
+   意味はアバターの `personality.md` と同じで、記憶に `personality.md` がまだ無いときだけ写し、すでにある性格は上書きしません。ほかの上書きと併せて書けます。
+   検査はアバターの `personality.md` と同じで、無い・空・読めないと起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
 3. サーバーを再起動します。アバターは起動時に 1 度だけ読みます。素材を直したときも、再起動で反映します。
 4. 起動のログに `avatar: <id> (<表示名>), version <版>` と、埋めたものが出ることを確かめます。
 5. アプリは、再接続したときに版が変わったことを知り、新しいアバターを取り直します。
