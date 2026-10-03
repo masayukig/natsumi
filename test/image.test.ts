@@ -90,7 +90,7 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   const text = await dockerfile();
   const stage = text.slice(text.indexOf(' AS sdctl\n'), text.indexOf('\nFROM ', text.indexOf(' AS sdctl\n')));
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
-  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.2\b/);
+  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.3\b/);
   assert.doesNotMatch(stage, /@latest/);
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });
@@ -103,10 +103,10 @@ test('the default params are the server\'s, for Anima, with a negative prompt an
   assert.equal(config.params, '/manual/avatar/sdctl-params.yaml');
   assert.match(await workspaceStage(), /^RUN mkdir -p \/manual\/agents \/manual\/avatar$/m);
   const params = (await loadAvatar(undefined)).sdctlParams;
-  assert.equal(params, await readFile(`${root}assets/avatars/nanashi/sdctl-params.yaml`, 'utf8'));
+  assert.equal(params, await readFile(`${root}assets/avatars/natsumi/sdctl-params.yaml`, 'utf8'));
   assert.match(params, /^negative_prompt: "[^"]+"$/m);
   // The model and its modules go with each request: the relay refuses POST options, so `models set` is no way.
-  assert.match(params, /^override_settings:\n  sd_model_checkpoint: "anima_mignolia_v10"\n  forge_additional_modules:\n    - "qwen_image_vae\.safetensors"\n    - "qwen_3_06b_base\.safetensors"$/m);
+  assert.match(params, /^override_settings:\n  sd_model_checkpoint: "anima_2_9_Anima-2.9B-preview-v1"\n  forge_additional_modules:\n    - "qwen_image_vae\.safetensors"\n    - "qwen_3_06b_base\.safetensors"$/m);
   for (const key of ['steps', 'width', 'height', 'cfg_scale', 'sampler', 'scheduler', 'seed']) assert.match(params, new RegExp(`^${key}: `, 'm'), key);
   assert.doesNotMatch(params, /^prompt:/m, 'the prompt is hers to write');
 });
@@ -127,7 +127,7 @@ test('the workspace image gives sdctl its defaults in a config file that the sdc
   assert.match(config, /^output_dir: \/work\/images$/m);
 });
 
-// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2). The server takes either by its content (ADR 0044, 0045).
+// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2 and later; the image has v0.3.3). The server takes either by its content (ADR 0044, 0045).
 test('sdctl writes JPEG by default in the workspace', async () => {
   const config = parse(await readFile(`${root}docker/sdctl/config.yaml`, 'utf8')) as Record<string, unknown>;
   assert.equal(config.format, 'jpeg');
@@ -277,8 +277,8 @@ test('through the runner, as run_shell runs it, sdctl draws JPEG through the rel
     assert.ok(drawing, 'no txt2img reached the relay');
     assert.equal(drawing.body!.prompt, 'a white cat');
     assert.equal(drawing.body!.negative_prompt, negative);
-    assert.equal(drawing.body!.steps, 30);
-    assert.equal((drawing.body!.override_settings as Record<string, unknown>).sd_model_checkpoint, 'anima_mignolia_v10');
+    assert.equal(drawing.body!.steps, 32);
+    assert.equal((drawing.body!.override_settings as Record<string, unknown>).sd_model_checkpoint, 'anima_2_9_Anima-2.9B-preview-v1');
     // JPEG begins with FF D8 FF.
     const head = await throughRunner(container, `head -c 3 ${saved.trim()} | od -An -tx1`);
     assert.equal(head.stdout.trim(), 'ff d8 ff');

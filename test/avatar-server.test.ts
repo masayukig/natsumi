@@ -16,7 +16,9 @@ import { login, startFixture, type Fixture } from './support/server-fixture.ts';
 const NATSUMI = join(import.meta.dirname, '..', 'assets', 'avatars', 'natsumi');
 const FALLBACK = join(import.meta.dirname, '..', 'assets', 'avatars', 'nanashi');
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'avatar');
+const REPLACED_PARAMS = 'width: 1216\nheight: 832\noverride_settings:\n  sd_model_checkpoint: other-model\n';
 const HANA_PERSONALITY = '# 性格・話し方\n\nのんびりしていて、語尾をのばす。\n';
+const REPLACED_PERSONALITY = '# 性格・話し方\n\n落ち着いていて、丁寧に話す。\n';
 
 async function withServer(fn: (f: Fixture) => Promise<void>, avatar?: (root: string) => Promise<Record<string, unknown>>) {
   const f = await startFixture(avatar ? { avatar } : {});
@@ -95,7 +97,18 @@ test('the snapshot carries the version of the avatar', () => withServer(async f 
 test('the page on drawing and the params are written to the data directory for the workspace', () => withServer(async f => {
   assert.equal(await readFile(join(f.data, 'avatar', 'images.md'), 'utf8'), await readFile(join(FIXTURES, 'natsumi-images.md'), 'utf8'));
   assert.equal(await readFile(join(f.data, 'avatar', 'sdctl-params.yaml'), 'utf8'),
-    await readFile(join(FALLBACK, 'sdctl-params.yaml'), 'utf8'));
+    await readFile(join(NATSUMI, 'sdctl-params.yaml'), 'utf8'));
+}));
+
+test('the sdctl params the config names are written for the workspace and give the page its defaults', () => withServer(async f => {
+  assert.equal((await (await fetch(`${f.base}/v1/avatar`)).json() as { version: string }).version, (await loadAvatar(undefined)).version);
+  assert.equal(await readFile(join(f.data, 'avatar', 'sdctl-params.yaml'), 'utf8'), REPLACED_PARAMS);
+  const page = await readFile(join(f.data, 'avatar', 'images.md'), 'utf8');
+  assert.ok(page.includes('- 既定はモデル `other-model`、1216×832（横長）。縦長は `--width 832 --height 1216`。'), page);
+}, async root => {
+  const path = join(root, 'sdctl-params.yaml');
+  await writeFile(path, REPLACED_PARAMS);
+  return { id: 'natsumi', sdctlParams: path };
 }));
 
 test('an avatar the config names gives its name, its faceless fill-ins and its version everywhere', () => withServer(async f => {
@@ -127,6 +140,23 @@ test('an avatar the config names gives its name, its faceless fill-ins and its v
   await writeFile(join(dir, 'personality.md'), HANA_PERSONALITY);
   return { directory: dir };
 }));
+
+test('the personality the config names is where her memory\'s personality starts, in place of the avatar\'s', () => withServer(async f => {
+  assert.equal(await readFile(join(f.data, 'memory', 'personality.md'), 'utf8'), REPLACED_PERSONALITY);
+}, async root => {
+  const dir = join(root, 'avatars', 'hana');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'avatar.json'), JSON.stringify({ id: 'hana', name: 'はな' }));
+  await writeFile(join(dir, 'personality.md'), HANA_PERSONALITY);
+  const path = join(root, 'personality.md');
+  await writeFile(path, REPLACED_PERSONALITY);
+  return { directory: dir, personality: path };
+}));
+
+test('a personality the config names that cannot be read stops the start with the setting\'s name', async () => {
+  await assert.rejects(startFixture({ avatar: async root => ({ id: 'natsumi', personality: join(root, 'nowhere.md') }) }),
+    /avatar\.personality: cannot be read/);
+});
 
 test('an avatar directory that is broken stops the start with the setting\'s name', async () => {
   await assert.rejects(startFixture({ avatar: async root => ({ directory: join(root, 'nowhere') }) }),
