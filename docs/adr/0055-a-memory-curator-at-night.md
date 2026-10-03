@@ -1,7 +1,7 @@
 # 0055. 記憶の組み直しは、人格を持たない整理係が夜に行う
 
 - Date: 2026-09-27
-- Status: Accepted
+- Status: Accepted（整理係のツールに、設定で on にしたとき `codemode` が加わることは [ADR 0066](0066-codemode-to-keep-raw-output-out-of-the-context.md) で追加）
 
 ## Context
 
