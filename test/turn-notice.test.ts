@@ -8,7 +8,7 @@ import { MIGRATIONS } from '../src/server/migrations.ts';
 import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent, type SendOutcome } from '../src/server/thinking-loop.ts';
-import { CUT_SHORT_NOTICE_INTERVAL_MS, CutShortNotices, cutShortText } from '../src/server/turn-notice.ts';
+import { CUT_SHORT_NOTICE_INTERVAL_MS, CutShortNotices, cutShortText, waitedOnKinds } from '../src/server/turn-notice.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { ScriptedModel } from './support/scripted-model.ts';
 
@@ -104,4 +104,21 @@ test('the notice names the limit and what was waited on, and only events someone
   assert.ok(notices.take(turn, 0));
   assert.equal(notices.take(turn, CUT_SHORT_NOTICE_INTERVAL_MS - 1), undefined);
   assert.ok(notices.take(turn, CUT_SHORT_NOTICE_INTERVAL_MS));
+});
+
+test('a sources update that carries a Slack mention counts as one waited on; one without does not', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-turn-notice-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const db = openStateDatabase(join(root, 'state.sqlite'));
+  t.after(() => db.close());
+  migrate(db, MIGRATIONS);
+  for (const id of ['with', 'without']) {
+    db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+      VALUES (?, 'sources-updated', NULL, 'no-reply', '2026-10-03T00:45:00.000Z', '2026-10-03T00:45:00.000Z')`).run(id);
+  }
+  db.prepare(`INSERT INTO source_attention (source, kind, dir, file, path, images, created_at, event_id)
+    VALUES ('slack', 'mention', 'slack/work/dev', '/sources/slack/work/dev/2026-10-03.jsonl', '.[3]', '[]', '2026-10-03T00:45:00.000Z', 'with')`).run();
+  const kinds = waitedOnKinds(db, ['with', 'without', 'ping'], ['sources-updated', 'sources-updated', 'ping']);
+  assert.deepEqual(kinds, ['slack-mention', 'sources-updated', 'ping']);
+  assert.match(cutShortText({ failure: 'model-call-limit', kinds, maxCalls: 16, timeoutMinutes: 10 })!, /^Slack のメンションへの対応が途中で打ち切られました/);
 });

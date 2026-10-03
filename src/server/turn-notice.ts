@@ -1,3 +1,4 @@
+import type { DatabaseSync } from 'node:sqlite';
 import type { EventKind } from './conversation-store.ts';
 
 /**
@@ -47,4 +48,13 @@ export function cutShortText({ failure, kinds, maxCalls, timeoutMinutes }: CutTu
     : failure === 'model-error' ? '途中で止まりました（モデルの呼び出しが失敗しました）' : undefined;
   if (!how) return undefined;
   return `${what.join('と')}への対応が${how}。返事が届いていなければ、もう一度話しかけてください。`;
+}
+
+/**
+ * The kinds as `cutShortText` reads them: a Slack mention or DM reaches her as a sources update that carries an
+ * attention (ADR 0039, ADR 0050), so a sources update with one is someone waiting, named as a mention.
+ */
+export function waitedOnKinds(db: DatabaseSync, eventIds: string[], kinds: (EventKind | undefined)[]): (EventKind | undefined)[] {
+  const attended = db.prepare('SELECT 1 FROM source_attention WHERE event_id = ? LIMIT 1');
+  return kinds.map((kind, index) => kind === 'sources-updated' && attended.get(eventIds[index]!) ? 'slack-mention' : kind);
 }

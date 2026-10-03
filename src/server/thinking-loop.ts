@@ -35,7 +35,7 @@ import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 import { parseView, viewImage } from './view.ts';
-import { CutShortNotices } from './turn-notice.ts';
+import { CutShortNotices, waitedOnKinds } from './turn-notice.ts';
 
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
 export const DEFAULT_NOTIFY_LIMITS = { perTurn: 3, perHour: 12 };
@@ -1029,7 +1029,7 @@ export class ThinkingLoop {
     }
     // Fork (ADR F05): she cannot say the turn was cut, so the server does, through the path of her notices.
     const cutNotice = failure && kind === 'events' && this.options.tellCutShort === true
-      ? this.cutShortNotices.take({ failure, kinds: this.store.eventKinds(handledIds), maxCalls, timeoutMinutes: timeoutMs / 60_000 }, endedAt)
+      ? this.cutShortNotices.take({ failure, kinds: waitedOnKinds(this.options.db, handledIds, this.store.eventKinds(handledIds)), maxCalls, timeoutMinutes: timeoutMs / 60_000 }, endedAt)
       : undefined;
     if (cutNotice) {
       this.emit('conversation.message', shown(this.store.insertMessage({ role: 'natsumi', kind: 'notice', text: cutNotice, expression: 'worried' })));
