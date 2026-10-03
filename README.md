@@ -762,12 +762,13 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
   それにダッシュボードの「ファイル」でオーナーが開いたもの（読み取り専用）だけです。
 - 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
-  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.2。image の build でソースから入れます）を使い、
+  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.3。image の build でソースから入れます）を使い、
     Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの `/manual/avatar/images.md` にあります。
     サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさを差し込んで書き出します。
   - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。設定の `avatar.sdctlParams` があればそのファイル、無ければアバターの `sdctl-params.yaml`、無ければサーバーの既定
     （名無しの [assets/avatars/nanashi/sdctl-params.yaml](assets/avatars/nanashi/sdctl-params.yaml)）を、サーバーが起動のたびに書き出します。
     サーバーの既定は、Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
+    params には `alwayson_scripts` も書け、txt2img・img2img・hires の要求にそのまま渡ります（ADetailer で顔を描き直すなど。拡張は WebUI 側に要ります）。
   - 接続先・既定の設定・出力の既定の `/work/images` と形式の JPEG は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
     PATH の `sdctl` は、本物（`/usr/libexec/sdctl`）にいつもこのファイルを `--config` で渡すラッパーです。
     runner はコマンドにコンテナの環境変数を渡さないので（下の「環境変数」）、image の環境変数では natsumi のコマンドに届きません。

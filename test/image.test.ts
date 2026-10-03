@@ -90,7 +90,7 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   const text = await dockerfile();
   const stage = text.slice(text.indexOf(' AS sdctl\n'), text.indexOf('\nFROM ', text.indexOf(' AS sdctl\n')));
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
-  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.2\b/);
+  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.3\b/);
   assert.doesNotMatch(stage, /@latest/);
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });
@@ -127,7 +127,7 @@ test('the workspace image gives sdctl its defaults in a config file that the sdc
   assert.match(config, /^output_dir: \/work\/images$/m);
 });
 
-// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2). The server takes either by its content (ADR 0044, 0045).
+// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2 and later; the image has v0.3.3). The server takes either by its content (ADR 0044, 0045).
 test('sdctl writes JPEG by default in the workspace', async () => {
   const config = parse(await readFile(`${root}docker/sdctl/config.yaml`, 'utf8')) as Record<string, unknown>;
   assert.equal(config.format, 'jpeg');
