@@ -62,7 +62,7 @@ test('a valid config becomes a typed server config', () => {
     loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
     sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 },
     curator: { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2, rewriteAllMaxChars: 100000,
-      codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
+      conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
   });
   const { clientSecretEnv: _, ...rest } = github();
   assert.deepEqual(parseConfig({ ...base(), github: { ...rest, clientSecretFile: '/run/secrets/github-client-secret' } }).github.clientSecret,
@@ -727,13 +727,13 @@ test('the list of reactions is gone: a config that still has one is refused, and
 
 test('the memory curator runs every night by default, on natsumi\'s route, with limits of its own (ADR 0055)', () => {
   assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2,
-    rewriteAllMaxChars: 100000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
+    rewriteAllMaxChars: 100000, conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
   const { model: _, ...withoutModel } = pi();
   const withRoutes = { ...base(), pi: { ...withoutModel, routes, defaultRoute: 'local' } };
   assert.deepEqual(parseConfig({ ...withRoutes, curator: { route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 } }).curator,
     { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1, rewriteAllMaxChars: 100000,
-      codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
+      conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   assert.equal(parseConfig({ ...base(), curator: { enabled: false } }).curator.enabled, false);
   rejects({ ...withRoutes, curator: { route: 'elsewhere' } }, 'curator.route', /pi\.routes/);
   rejects({ ...base(), curator: { route: '' } }, 'curator.route');
@@ -750,4 +750,10 @@ test('the curator may rewrite every topic while the topics together are no bigge
   // 0: never all of them, only what changed and the files in turn.
   assert.equal(parseConfig({ ...base(), curator: { rewriteAllMaxChars: 0 } }).curator.rewriteAllMaxChars, 0);
   for (const chars of [-1, 1.5, '100000']) rejects({ ...base(), curator: { rewriteAllMaxChars: chars } }, 'curator.rewriteAllMaxChars');
+});
+
+test('the conversation handed to the curator has a limit of its own, and 0 hands none (ADR 0068)', () => {
+  assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 50000 } }).curator.conversationMaxChars, 50000);
+  assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 0 } }).curator.conversationMaxChars, 0);
+  for (const chars of [-1, 1.5, '30000']) rejects({ ...base(), curator: { conversationMaxChars: chars } }, 'curator.conversationMaxChars');
 });
