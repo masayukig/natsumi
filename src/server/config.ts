@@ -358,12 +358,17 @@ export interface CuratorConfig {
   enabled: boolean;
   /** A name in `pi.routes`; without it the curator runs on the route natsumi is on. */
   route?: string;
-  /** Model calls the curator's one turn may make. */
+  /** Model calls each stage of the curator's night may make, the whole of it for every stage (ADR 0068). */
   modelCalls: number;
-  /** Minutes the curator's one turn may take. */
+  /** Minutes each stage of the curator's night may take, the whole of it for every stage (ADR 0068). */
   timeoutMinutes: number;
   /** Files handed over each night in turn, besides the ones that changed that day, those left longest first. */
   rotateFiles: number;
+  /**
+   * While the topics together are no more characters than this, every topic may be rewritten each night; past it,
+   * only those that changed and those in turn (ADR 0068). 0 for never all of them.
+   */
+  rewriteAllMaxChars: number;
   /** Pi's Codemode in the curator's session, apart from natsumi's (ADR 0066). */
   codemode: CodemodeConfig;
 }
@@ -377,7 +382,7 @@ export interface CuratorConfig {
 export const DEFAULT_CURATOR_CODEMODE: CodemodeConfig = { enabled: false, workspaceTools: 'direct', nestedCalls: 120 };
 
 export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2,
-  codemode: DEFAULT_CURATOR_CODEMODE };
+  rewriteAllMaxChars: 100_000, codemode: DEFAULT_CURATOR_CODEMODE };
 /** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
 const MAX_ROTATE_FILES = 10;
 
@@ -865,7 +870,7 @@ function parseSlack(value: unknown, path: string): SlackConfig {
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
   const curator = object(value, path);
-  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'rotateFiles', 'codemode']);
+  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'rotateFiles', 'rewriteAllMaxChars', 'codemode']);
   const enabled = curator.enabled ?? CURATOR_DEFAULTS.enabled;
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
@@ -877,8 +882,10 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   if (!positiveInteger(files, 0) || (files as number) > MAX_ROTATE_FILES) {
     throw new ConfigError(`${path}.rotateFiles`, `must be an integer from 0 to ${MAX_ROTATE_FILES}`);
   }
+  const rewriteAll = curator.rewriteAllMaxChars ?? CURATOR_DEFAULTS.rewriteAllMaxChars;
+  if (!positiveInteger(rewriteAll, 0)) throw new ConfigError(`${path}.rewriteAllMaxChars`, 'must be an integer of 0 or more');
   return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
-    rotateFiles: files as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
+    rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
 }
 
 function parseCodemode(value: unknown, path: string, defaults: CodemodeConfig): CodemodeConfig {

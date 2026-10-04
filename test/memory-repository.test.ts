@@ -689,7 +689,7 @@ test('the uncommitted changes can be thrown away, and a clean tree says so', asy
   } finally { await f.cleanup(); }
 });
 
-test('the files memory holds are listed with their size and headings, and the files changed since a commit are named', async () => {
+test('the files memory holds are listed with their size and sections, and the files changed since a commit are named', async () => {
   const f = await setup();
   try {
     await mkdir(join(f.directory, '暮らし'));
@@ -699,8 +699,10 @@ test('the files memory holds are listed with their size and headings, and the fi
     const files = await f.repository.listFiles();
     const plans = files.find(file => file.path === '暮らし/予定.md');
     assert.deepEqual(plans, { path: '暮らし/予定.md', chars: [...'# 予定\n\n## 歯医者\n- 金曜\n### 細かい\n## 散髪\n- 土曜\n'].length,
-      headings: ['# 予定', '## 歯医者', '## 散髪'] });
-    assert.deepEqual(files.find(file => file.path === '本人.md')?.headings, []);
+      sections: [{ heading: '# 予定', lines: 0 }, { heading: '## 歯医者', lines: 1 }, { heading: '### 細かい', lines: 0 },
+        { heading: '## 散髪', lines: 1 }] });
+    // Lines before any heading are a section too, with no heading: a file with none is one flat section.
+    assert.deepEqual(files.find(file => file.path === '本人.md')?.sections, [{ heading: '', lines: 1 }]);
     assert.ok(files.some(file => file.path === INDEX_FILE));
     assert.deepEqual(files.map(file => file.path), [...files.map(file => file.path)].sort());
 
@@ -716,5 +718,19 @@ test('the files memory holds are listed with their size and headings, and the fi
     // A base the history does not know is taken as the last day, which here is the whole of it.
     assert.deepEqual((await f.repository.changedSince('0'.repeat(40))).sort(),
       [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE, '新しい.md', '本人.md'].sort());
+  } finally { await f.cleanup(); }
+});
+
+test('each file is dated by the last commit that changed it', async () => {
+  const f = await setup();
+  try {
+    await f.write('予定.md', '# 予定\n\n- 歯医者は金曜\n');
+    await f.repository.initialize(undefined);
+    await f.write('本人.md', '# 本人\n');
+    await f.repository.commit({ event: 'mac_message' });
+    const dates = await f.repository.lastChanged(['予定.md', '本人.md', '無い.md']);
+    assert.equal(dates.get('予定.md'), f.git('log', '-1', '--format=%cI', 'HEAD~1'));
+    assert.equal(dates.get('本人.md'), f.git('log', '-1', '--format=%cI', 'HEAD'));
+    assert.equal(dates.has('無い.md'), false, 'a file the history does not hold has no date');
   } finally { await f.cleanup(); }
 });

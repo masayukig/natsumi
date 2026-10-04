@@ -6,7 +6,7 @@ import test from 'node:test';
 import { loadAvatar } from '../src/server/avatar.ts';
 import { ConfigError, parseConfig } from '../src/server/config.ts';
 import { gitIdentity, runGit } from '../src/server/git.ts';
-import { curationBrief } from '../src/server/memory-curator.ts';
+import { CURATOR_STAGES } from '../src/server/memory-curator.ts';
 import { MemoryRepository } from '../src/server/memory-repository.ts';
 import { compactionInstructions, composeSystemPrompt, curatorSystemPrompt, DEFAULT_SELF } from '../src/server/prompts.ts';
 import { pushAlert } from '../src/server/push.ts';
@@ -84,9 +84,9 @@ test('the curator is told whose memory it keeps by the display name', () => {
   assert.ok(prompt.startsWith('あなたは記憶の整理係です。ある個人秘書（はな）の長期記憶を、夜の間に組み直します。\nあなたははなではありません。'));
   assert.ok(!prompt.includes('なつみ'));
   assert.ok(curatorSystemPrompt('なつみ').includes('あなたはなつみではありません。'));
-  const brief = curationBrief({ name: 'はな', date: '2026-09-28', fileMaxChars: 100,
-    files: [{ path: 'always.md', chars: 3, headings: [] }], changed: [], rotated: [] });
-  assert.match(brief, /always\.md（3 文字・はなのもの、変えない）/);
+  const { text } = CURATOR_STAGES[0]!.brief({ name: 'はな', date: '2026-09-28', timeZone: 'Asia/Tokyo', fileMaxChars: 100, rotateFiles: 0,
+    rewriteAllMaxChars: 0, files: [{ path: 'always.md', chars: 3, sections: [] }], lastChanged: new Map(), curated: new Map(), changed: [] });
+  assert.match(text, /always\.md（3 文字・はなのもの、変えない）/);
 });
 
 test('the lock screen shows the display name', () => {
