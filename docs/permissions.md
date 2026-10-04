@@ -37,11 +37,12 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | ポッポさんの判定（`jev`） | TypeSafe AI の Jev の API キー（任意）。下書きと返信先の周りの発言を送ります。`logprobs` と同時に使え、有効な間は採用していなくても投稿のたびに呼びます（従量課金） | `slack.judge` の Jev の判定（接続先・`apiKeyEnv` / `apiKeyFile`（秘密）・model・しきい値）。書いたときだけ有効です。有効・無効と採用する方は設定 `judgeJev`・`judgeAdopted` でも上書きできます | `api.typesafe.ai`（既定）か、Jev の判定の接続先のホスト | 同上 | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md)、[0059](adr/0059-two-judges-side-by-side-and-fewer-issues.md) |
 | 証明書の取得（ACME） | サーバーが作る ACME のアカウント鍵。CA の利用規約に同意して登録します | `listen.tls.acme.directoryUrl`、`listen.tls.acme.contactEmail`、`listen.tls.acme.httpPort` | `listen.tls.acme.directoryUrl` のホスト（既定 `acme-v02.api.letsencrypt.org`） | `acme` を使わないなら要りません（証明書ファイルか、手前のプロキシで TLS を終端）。取得できるまで HTTPS の待ち受けを開きません | [0007](adr/0007-acme-and-fixed-ipv6.md)、[0033](adr/0033-running-on-kubernetes.md) |
 
-記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち `curator.route` の経路
-（書かなければ、そのときなつみが使っている経路）で動き、同じ credential を使います。毎晩、工程ごとに、記憶の全ファイルの一覧と見出し・節ごとの行数・日付、
-係が読んだファイルの中身がその経路の接続先へ送られます。最初の 2 つの工程（出来事から知識へ・古い記憶）には、その日の会話の本文（マスターの言葉、なつみの返事と知らせ・Slack への投稿、
-なつみが読んだ記憶のパスと探した言葉。`curator.conversationMaxChars` まで）も送られます（[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
-本人のエンドポイントの外の経路を選ぶと、記憶と会話の本文がそこへ出ます。
+記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち、設定 `curatorRoute`（`/settings` で選んだもの）、
+それが無ければ `curator.route` の経路（どちらも無ければ、そのときなつみが使っている経路）で動き、同じ credential を使います（[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+毎晩、工程ごとに、記憶の全ファイルの一覧と見出し・節ごとの行数・日付、係が読んだファイルの中身がその経路の接続先へ送られます。
+最初の 2 つの工程（出来事から知識へ・古い記憶）には、その日の会話の本文（マスターの言葉、なつみの返事と知らせ・Slack への投稿、
+なつみが読んだ記憶のパスと探した言葉。`curator.conversationMaxChars` まで）も送られます。
+本人のエンドポイントの外の経路（ChatGPT Plus など、`compatible` を持たない経路）を選ぶと、記憶と会話の本文がそこへ出ます。`/settings` の画面は、そうした経路に印を付け、次の夜がそこで動くときはそう示します。
 
 サーバーは記憶の git を push しません（push するのは本人です）。Google などほかの外部サービスには、今はつなぎません。
 
