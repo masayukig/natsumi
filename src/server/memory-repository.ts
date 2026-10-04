@@ -106,17 +106,23 @@ export interface CommitOutcome {
   reverted: RevertedFile[];
 }
 
-/** The curator's commit (ADR 0055): all or nothing, so what failed is named and nothing of the night is kept. */
+/** A curator stage's commit (ADR 0055, ADR 0068): all or nothing, so what failed is named and nothing of the stage is kept. */
 export interface CurationOutcome {
   committed: boolean;
   /** The paths the commit carries, empty when nothing was committed. */
   files: string[];
-  /** Every change that failed a check. Any at all, and the whole night was thrown away. */
+  /** Every change that failed a check. Any at all, and the whole stage was thrown away. */
   rejected: RevertedFile[];
 }
 
-/** A file of memory, as the curator is shown it: its size and its headings. */
-export interface MemoryFile { path: string; chars: number; headings: string[] }
+/** A file of memory, as the curator is shown it: its size and its sections. */
+export interface MemoryFile { path: string; chars: number; sections: MemorySection[] }
+
+/**
+ * A heading (`#` to `###`) and the lines under it before the next heading, blank ones not counted (ADR 0068). Lines
+ * before the first heading are a section with an empty heading, so a file with no headings is one flat section.
+ */
+export interface MemorySection { heading: string; lines: number }
 
 /** git's empty tree: what a repository had before its first commit. */
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -195,16 +201,18 @@ export class MemoryRepository {
   }
 
   /**
-   * The curator's night as one commit, under the note it wrote, or under a line the server makes when it wrote none
-   * (ADR 0055). Every change is checked as natsumi's are, and the curator is further kept off her three files and off
-   * the diary. Unlike a turn's commit, one change that fails throws the whole night away: the curator moves and merges
-   * files, and a merge whose result alone went back would leave its sources gone and nothing in their place.
+   * A stage of the curator's night as one commit, under the note it wrote, or under a line the server makes from
+   * `event` when it wrote none (ADR 0055, ADR 0068). Every change is checked as natsumi's are, the curator is further
+   * kept off her three files and off the diary, and `refuse` names what this stage may not change. Unlike a turn's
+   * commit, one change that fails throws the whole stage away: the curator moves and merges files, and a merge whose
+   * result alone went back would leave its sources gone and nothing in their place.
    */
-  async commitCuration(input: { message?: string }): Promise<CurationOutcome> {
+  async commitCuration(input: { message?: string; event?: string; refuse?: (path: string) => string | undefined }): Promise<CurationOutcome> {
     const rejected: RevertedFile[] = [];
     const entries = await this.status();
     for (const entry of entries) {
-      const reason = entry.deleted ? this.inspectRemoval(entry.path, 'curator') : await this.inspect(entry.path, 'curator');
+      const reason = (entry.deleted ? this.inspectRemoval(entry.path, 'curator') : await this.inspect(entry.path, 'curator'))
+        ?? input.refuse?.(entry.path);
       if (reason) rejected.push({ path: entry.path, reason });
     }
     if (rejected.length > 0) {
@@ -215,7 +223,7 @@ export class MemoryRepository {
     const files = entries.map(entry => entry.path);
     if (files.length === 0) return { committed: false, files: [], rejected };
     await this.git(['add', '-A', '--', '.']);
-    await this.commitStaged('memory_curator', files, input.message);
+    await this.commitStaged(input.event ?? 'memory_curator', files, input.message);
     return { committed: true, files, rejected };
   }
 
@@ -231,8 +239,8 @@ export class MemoryRepository {
   }
 
   /**
-   * Every file memory holds, in path order, with its length in characters and its `#` and `##` headings: the map of
-   * memory the curator starts from (ADR 0055). Read straight from the working tree; `.git` is not memory.
+   * Every file memory holds, in path order, with its length in characters and its sections: the map of memory the
+   * curator starts from (ADR 0055, ADR 0068). Read straight from the working tree; `.git` is not memory.
    */
   async listFiles(): Promise<MemoryFile[]> {
     const { stdout } = await this.git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
@@ -241,9 +249,22 @@ export class MemoryRepository {
     for (const path of paths) {
       let text: string;
       try { text = await readFile(join(this.directory, path), 'utf8'); } catch { continue; }
-      files.push({ path, chars: [...text].length, headings: text.split('\n').filter(line => /^#{1,2} /.test(line)).map(line => line.trim()) });
+      files.push({ path, chars: [...text].length, sections: sectionsOf(text) });
     }
     return files;
+  }
+
+  /**
+   * When the last commit that changed each of `paths` was made, as git's ISO time (ADR 0068). A path the history does
+   * not hold has no date.
+   */
+  async lastChanged(paths: readonly string[]): Promise<Map<string, string>> {
+    const dates = new Map<string, string>();
+    for (const path of paths) {
+      const date = (await this.git(['log', '-1', '--format=%cI', '--', path])).stdout.trim();
+      if (date) dates.set(path, date);
+    }
+    return dates;
   }
 
   /**
@@ -419,6 +440,20 @@ export class MemoryRepository {
   }
 
   private log(line: string) { this.options.log?.(line); }
+}
+
+/** A file's sections: every `#` to `###` heading, with the lines under it until the next one. Deeper headings are lines. */
+function sectionsOf(text: string): MemorySection[] {
+  const sections: MemorySection[] = [];
+  let current: MemorySection = { heading: '', lines: 0 };
+  for (const line of text.split('\n')) {
+    if (/^#{1,3} /.test(line)) {
+      if (current.heading !== '' || current.lines > 0) sections.push(current);
+      current = { heading: line.trim(), lines: 0 };
+    } else if (line.trim() !== '') current.lines += 1;
+  }
+  if (current.heading !== '' || current.lines > 0) sections.push(current);
+  return sections;
 }
 
 /** Whether a path is in the diary, or is the diary itself. */

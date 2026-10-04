@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  ASK_AGENT_DESCRIPTION, BASE_INSTRUCTION, compactionInstructions, composeSystemPrompt, CURATOR_RUN_SHELL_DESCRIPTION,
+  ASK_AGENT_DESCRIPTION, BASE_INSTRUCTION, compactionInstructions, composeSystemPrompt, CURATOR_INDEX_INSTRUCTIONS, CURATOR_RUN_SHELL_DESCRIPTION,
+  CURATOR_STRUCTURE_INSTRUCTIONS,
   CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorSystemPrompt, DEFAULT_SELF, LIST_SELF_CHECKS_DESCRIPTION,
   NO_WORKSPACE_SECTION, NOTIFY_OWNER_DESCRIPTION, READ_DESCRIPTION, REFLECTION_REQUEST, REPLY_TO_MAC_DESCRIPTION,
   REVIEW_INSTRUCTIONS, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION, SEARCH_MEMORY_DESCRIPTION,
@@ -39,6 +40,8 @@ const PROMPT_TEXTS: [string, string][] = [
   ['turn memo', REFLECTION_REQUEST],
   ['compaction', compactionInstructions(DEFAULT_SELF)],
   ['curator', curatorSystemPrompt('なつみ')],
+  ['curator structure stage', CURATOR_STRUCTURE_INSTRUCTIONS],
+  ['curator index stage', CURATOR_INDEX_INSTRUCTIONS],
   ['curator run_shell', CURATOR_RUN_SHELL_DESCRIPTION],
   ['curator write_change_note', CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION],
 ];
