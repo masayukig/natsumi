@@ -140,15 +140,15 @@ test('after the review, a curator with no personality reorganizes memory in stag
 
     // Each stage is a session of its own, begun from nothing but its instructions and its brief.
     const firsts = seen.filter(context => context.messages.length === 1);
-    assert.deepEqual(firsts.map(stageOf), ['structure', 'index']);
+    assert.deepEqual(firsts.map(stageOf), ['archive', 'structure', 'index']);
     for (const first of firsts) assert.doesNotMatch(first.systemPrompt ?? '', new RegExp(`${PERSONA}|${HANDOFF}`));
-    const brief = firstUser(firsts[0]!);
+    const brief = firstUser(firsts[1]!);
     assert.match(brief, /^<curation>/);
     assert.match(brief, /- 予定\.md（\d+ 文字・最後に変わった日 \d{4}-\d{2}-\d{2}・まだ整理していない）\n {2}- # 予定（0 行）\n {2}- ## 2026-09-25（1 行）/);
     assert.match(brief, /すべてのトピック/, 'small memory: every topic may be rewritten');
     // The index stage sees what the first stage left.
-    assert.match(firstUser(firsts[1]!), /暮らし\/予定\.md/);
-    assert.doesNotMatch(JSON.stringify(firsts[1]!.messages), new RegExp(NOTE), 'nothing of the stage before reaches it but memory');
+    assert.match(firstUser(firsts[2]!), /暮らし\/予定\.md/);
+    assert.doesNotMatch(JSON.stringify(firsts[2]!.messages), new RegExp(NOTE), 'nothing of the stage before reaches it but memory');
 
     // The review's commit, then one for each stage under its note.
     assert.equal(f.commits(), before + 3);
@@ -165,14 +165,13 @@ test('after the review, a curator with no personality reorganizes memory in stag
 
     // A turn for each stage, of the curator's kind, named by its stage and placed in its own record.
     const curatorTurns = f.turns().filter(turn => turn.kind === 'curator');
-    assert.deepEqual(curatorTurns.map(turn => turn.event_kinds), ['memory_curator:structure', 'memory_curator:index']);
-    assert.deepEqual(curatorTurns.map(turn => turn.outcome), ['ok', 'ok']);
-    for (const turn of curatorTurns) {
-      assert.match(turn.session_file as string, /^curator\/.+\.jsonl$/);
-      assert.ok((turn.model_calls as number) >= 2);
-    }
-    assert.notEqual(curatorTurns[0]!.session_file, curatorTurns[1]!.session_file);
-    assert.equal((await readdir(join(f.sessionDirectory, 'curator'))).length, 2);
+    assert.deepEqual(curatorTurns.map(turn => turn.event_kinds), ['memory_curator:archive', 'memory_curator:structure', 'memory_curator:index']);
+    assert.deepEqual(curatorTurns.map(turn => turn.outcome), ['ok', 'ok', 'ok']);
+    for (const turn of curatorTurns) assert.match(turn.session_file as string, /^curator\/.+\.jsonl$/);
+    // The archiving had nothing to move, and ended at its first call.
+    assert.deepEqual(curatorTurns.map(turn => (turn.model_calls as number) >= 2), [false, true, true]);
+    assert.equal(new Set(curatorTurns.map(turn => turn.session_file)).size, 3);
+    assert.equal((await readdir(join(f.sessionDirectory, 'curator'))).length, 3);
     assert.equal(loop.turnInProgress(), undefined, 'nothing is left shown as in progress');
     // What it handled is dated, and the next night counts from the night's last commit.
     const curated = f.db.prepare('SELECT path FROM memory_curation ORDER BY path').all().map(row => (row as { path: string }).path);
@@ -208,7 +207,7 @@ test('a stage that touches natsumi\'s own file loses its own changes only; the n
     assert.doesNotMatch(await f.read('always.md'), /係が書いた/);
     assert.match(f.git('log', '-1', '--format=%B'), new RegExp(INDEX_NOTE));
     const outcomes = f.turns().filter(turn => turn.kind === 'curator').map(turn => [turn.event_kinds, turn.outcome]);
-    assert.deepEqual(outcomes, [['memory_curator:structure', 'rejected'], ['memory_curator:index', 'ok']]);
+    assert.deepEqual(outcomes, [['memory_curator:archive', 'ok'], ['memory_curator:structure', 'rejected'], ['memory_curator:index', 'ok']]);
     assert.ok(f.logs.some(line => /always\.md/.test(line)), 'the log names what failed');
     const row = f.db.prepare('SELECT base_commit FROM memory_curator').get() as { base_commit: string | null } | undefined;
     assert.equal(row?.base_commit ?? null, null, 'the base does not move while the reorganizing failed');
@@ -231,7 +230,7 @@ test('a stage that fails after one that succeeded leaves the earlier commit in p
     assert.equal(f.git('status', '--porcelain'), '');
     assert.match(await f.read('暮らし/予定.md'), /散髪は土曜/);
     const outcomes = f.turns().filter(turn => turn.kind === 'curator').map(turn => turn.outcome);
-    assert.deepEqual(outcomes, ['ok', 'rejected']);
+    assert.deepEqual(outcomes, ['ok', 'ok', 'rejected']);
     assert.ok(f.logs.some(line => /暮らし\/予定\.md/.test(line)));
     assert.equal((f.db.prepare('SELECT base_commit FROM memory_curator').get() as { base_commit: string }).base_commit, f.git('rev-parse', 'HEAD'));
   } finally { await f.cleanup(); }
@@ -248,7 +247,7 @@ test('the call limit is each stage\'s own: one cut off loses that stage, and the
     assert.equal(f.commits(), before + 1);
     assert.equal(f.git('status', '--porcelain'), '');
     assert.match(await f.read('予定.md'), /歯医者/);
-    assert.deepEqual(f.turns().filter(turn => turn.kind === 'curator').map(turn => turn.outcome), ['model-call-limit', 'ok']);
+    assert.deepEqual(f.turns().filter(turn => turn.kind === 'curator').map(turn => turn.outcome), ['ok', 'model-call-limit', 'ok']);
   } finally { await f.cleanup(); }
 });
 
@@ -337,7 +336,7 @@ test('a curator cut off by a stop keeps nothing of that stage, runs no further s
     await stopping;
     assert.equal(f.git('status', '--porcelain'), '');
     assert.match(await f.read('予定.md'), /歯医者/);
-    assert.deepEqual(f.turns().filter(turn => turn.kind === 'curator').map(turn => turn.outcome), ['stopped']);
+    assert.deepEqual(f.turns().filter(turn => turn.kind === 'curator').map(turn => turn.outcome), ['ok', 'stopped'], 'the archiving had nothing to do');
 
     behave(f, {});
     const second = await f.open();

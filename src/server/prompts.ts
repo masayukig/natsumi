@@ -53,6 +53,7 @@ const WORKSPACE_BULLETS = `## 記憶と作業場
 - トピックのファイルには、そのことが「今どうなっているか」を書きます。事実が変わったら、節を書き足さずに、その箇所を直します。
 - その日に起きたことや経緯は、/memory/diary/ のその日のファイル（YYYY-MM-DD.md）に書きます。
 - ファイルの統合・分割・置き場所の整理と INDEX.md は、夜に記憶の整理係が行います。INDEX.md はあなたには書き換えられません。
+- 古くなった事実は、夜に記憶の整理係が要約して /memory/archive/ に移します。archive/ は読めますが、あなたには書き換えられません。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
 - 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、マスターの目にも触れません。残したいものは必ず /memory に書きます。`;
 
@@ -315,6 +316,7 @@ ${name}のオーナー（持ち主）を、記憶ではマスターと呼びま�
   - always.md（常時記憶）、personality.md（性格・話し方）、handoff.md（引き継ぎ）
   - diary/ の下（日ごとの日記。経緯はここと git に残っています）
 - INDEX.md（記憶の索引）は、あなただけが書くファイルです。${name}は記憶を探すとき、まずここを読みます。最後の工程で書き直します。
+- archive/ の下は、トピックから外した古い事実の要約（古い記憶）です。書くのは古い記憶の工程だけで、ほかの工程では変えません。
 
 ## 書き方
 - 書くときは、${whoToWhom(name)}
@@ -328,6 +330,22 @@ ${name}のオーナー（持ち主）を、記憶ではマスターと呼びま�
 - 最後に write_change_note でこの工程の変更の説明を書き、ツールを呼ばずに終えてください。1 行目は短い要約にします。変えることが無ければ、何も変えずに終えてかまいません。`;
 
 /**
+ * The stage that archives old memory (ADR 0068): what is old is judged by reading it, dates being only a clue, and it
+ * is summarized into this month's file rather than deleted. The file and, on a night that compacts, what to compact
+ * are in its brief.
+ */
+export const CURATOR_ARCHIVE_INSTRUCTIONS = `## この工程: 古い記憶を archive へ移す
+- この工程の仕事は、トピックの中の古くなった事実を見つけ、要約して archive/ の今月のファイルへ移すことです。
+- 古いかどうかは、行に書かれた時点の日付も手がかりにしますが、日付だけでは決めず、中身を読んで判断します。済んだ予定、終わった進行中のこと、新しい事実に置き換わった状態や版は古い事実です。日付が古くても今も正しいこと（名前、好み、続いている習慣など）は残します。
+- マスターの言葉、マスターとの約束、「覚えておいて」と言われたことは、済んだと明らかでない限り移しません。
+- 移すときは、事実を 1〜2 文に要約し、最初に渡す「古い記憶の置き場」のファイルの末尾に足します。項目には、当時のトピック名（ファイルの名前や節の名前）を ## の見出しで付けます。ファイルがまだ無ければ、「# 年-月」の見出しで作ります。
+- 移した事実は、トピックから外します。トピックで変えてよいのは、最初に渡す「中身を書き直してよいファイル」だけです。外すほかには文を書き直さず、ファイルも動かしません。構成と節の組み直しは次の工程で行います。重複は消してかまいません。
+- archive/ のファイルは、今月のファイルの末尾に足すだけです。既にある行を直したり、ほかのファイルを変えたり消したりすると、この工程の変更はすべて捨てられます。
+- 「今夜まとめるもの」が渡された夜だけ、その元のファイルを読んで、まとめた先のファイルに要約し直し、元のファイルをすべて消します。古いものほど細部を落とし、要点だけを残します。まとめた先にも、当時のトピック名の見出しを残します。
+- INDEX.md は最後の工程で書き直します。この工程では変えません。
+- write_change_note には、archive へ移したものを一つずつ、どのトピックから何をなぜ移したかを書きます。まとめた夜は、まとめたファイルも書きます。`;
+
+/**
  * The stage that reorganizes memory (ADR 0068): the files, and the sections inside them. What may be rewritten is in
  * its brief. Renaming files that natsumi's own files point to waits for the server to rewrite those paths.
  */
@@ -335,7 +353,8 @@ export const CURATOR_STRUCTURE_INSTRUCTIONS = `## この工程: 構成と節の�
 - 仕事の中心は、ファイルの構成です。同じことを書いたファイルをまとめる、大きくなったファイルを分ける、分かりやすい名前に変える、関係するファイルをディレクトリにまとめる、の順に考えます。
 - INDEX.md は次の工程で書き直します。この工程では変えません。
 - 中身の書き直しは、最初に渡す「中身を書き直してよいファイル」に限ります。ほかのファイルは、まとめる・分ける・動かすために読むのはよいですが、文を書き直しません。
-- 書き直すときは、トピックのファイルを「今どうなっているか」の形にします。日付の見出しで積み上がった節は、今の状態の説明にまとめます。済んだこと、古くなったこと、重複は消してかまいません。
+- 書き直すときは、トピックのファイルを「今どうなっているか」の形にします。日付の見出しで積み上がった節は、今の状態の説明にまとめます。重複は消してかまいません。
+- 古い事実は、前の工程で archive/ へ移してあります。この工程で古い事実に気づいても、消さずに残します（次の夜の古い記憶の工程で移ります）。
 - ファイルの中は、話題ごとの節にします。
   - 話題ごとに節を立てます。節の名前は、中身の話題にします。
   - 節に合わない行は、合う節か、合うファイルへ移します。
@@ -347,6 +366,18 @@ export const CURATOR_INDEX_INSTRUCTIONS = `## この工程: 索引
 - INDEX.md を、今の記憶の構成に合わせて書き直します。前の工程でファイルが動いていれば、それに合わせます。
 - INDEX.md には、ファイルごとのパスと、何が書いてあるかの 1 行を書きます。ディレクトリごとの README.md は、必要だと思えば作ってかまいません。
 - この工程で変えてよいのは、INDEX.md とディレクトリの中の README.md だけです。ほかのファイルは読むだけにします。`;
+
+/**
+ * What a stage is told when its changes failed the server's check (ADR 0068): which and why, in the same session, once.
+ * Nothing it needs is gone yet, and what it should not have changed can be read back from the last commit.
+ */
+export const curatorRetryRequest = (rejected: readonly { path: string; reason: string }[]) => ['<curation_check>',
+  'この工程の変更は、サーバーの検査に当たりました。このままでは、この工程の変更はすべて捨てられます。',
+  ...rejected.map(file => `- ${file.path}: ${file.reason}`),
+  '当たったところだけを直してください。作ってはいけないファイルは消し、変えてはいけないファイルは元に戻します（元の中身は git show HEAD:<パス> で読めます）。'
+  + '直せるのはこの 1 度だけで、もう一度当たると、この工程の変更はすべて捨てられます。'
+  + '直したら、必要なら write_change_note を書き直し、ツールを呼ばずに終えてください。',
+  '</curation_check>'].join('\n');
 
 /** run_shell for the curator: the same workspace as natsumi's, told in the curator's terms. */
 export const CURATOR_RUN_SHELL_DESCRIPTION = '記憶の作業環境でコマンドを動かす。ネットワークの無い Debian の環境で、コマンドは bash -c で動く。'

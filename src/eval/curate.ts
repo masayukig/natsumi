@@ -39,6 +39,8 @@ export interface StageRecord {
   note?: string;
   /** What failed the server's check, when the stage was thrown away for it. */
   rejected?: { path: string; reason: string }[];
+  /** What failed the check the first time, when the stage was told it and given its one retry. */
+  retried?: { path: string; reason: string }[];
 }
 
 export interface NightRecord {
@@ -188,6 +190,7 @@ export async function curateSnapshot(options: CurateSnapshotOptions): Promise<{ 
     record.stages = night.stages.map(stage => ({ name: stage.stage, outcome: stage.outcome, modelCalls: stage.calls,
       ms: stage.endedAt - stage.startedAt, tokens: stage.usage, toolErrors: stage.toolErrors,
       ...(stage.commit ? { commit: stage.commit } : {}), ...(stage.note ? { note: stage.note } : {}),
+      ...(stage.retried.length > 0 ? { retried: stage.retried.map(file => ({ path: file.path, reason: file.reason })) } : {}),
       ...(stage.rejected.length > 0 ? { rejected: stage.rejected.map(file => ({ path: file.path, reason: file.reason })) } : {}) }));
 
     record.head = (await git(['rev-parse', 'HEAD'])).stdout.trim();
@@ -238,6 +241,7 @@ export function nightMarkdown(night: NightRecord): string {
     const kept = stage.commit ? `コミット ${short(stage.commit)}` : `残したものなし（${stage.outcome}）`;
     const note = stage.note ? `・変更の説明「${stage.note.split('\n')[0]}」` : '';
     lines.push(`- ${stage.name}: ${kept}${note}`);
+    for (const file of stage.retried ?? []) lines.push(`  - 検査に当たってやり直した: ${file.path}: ${file.reason}`);
     for (const file of stage.rejected ?? []) lines.push(`  - 検査に当たった: ${file.path}: ${file.reason}`);
   }
   lines.push('', `## コミット（${night.commits.length} 件）`);

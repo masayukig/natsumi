@@ -67,11 +67,11 @@ test('a night runs every stage from what it is handed, and tells each stage\'s o
     });
 
     assert.deepEqual(night.stages.map(stage => [stage.stage, stage.eventKinds, stage.outcome]),
-      [['structure', 'memory_curator:structure', 'ok'], ['index', 'memory_curator:index', 'ok']]);
-    assert.deepEqual(begun, ['structure', 'index']);
+      [['archive', 'memory_curator:archive', 'ok'], ['structure', 'memory_curator:structure', 'ok'], ['index', 'memory_curator:index', 'ok']]);
+    assert.deepEqual(begun, ['archive', 'structure', 'index']);
     assert.deepEqual(ended, night.stages);
     const git = (...args: string[]) => execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
-    const [structure, index] = night.stages;
+    const [, structure, index] = night.stages;
     assert.equal(structure!.commit, git('rev-parse', 'HEAD~1'));
     assert.equal(structure!.note, '予定を節に分けた');
     assert.deepEqual(structure!.files, ['予定.md']);
@@ -113,4 +113,124 @@ test('a stop before a stage begins runs no stage', async () => {
     db.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+/** A night on a fictional memory, each stage following its steps by the number of model calls it has made. */
+async function aNight(steps: Record<string, ScriptedStep[]>, config: Partial<typeof CURATOR_DEFAULTS> = {}) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-curator-night-')));
+  const data = join(root, 'data');
+  const memory = join(data, 'memory');
+  const sessionDirectory = join(root, 'pi', 'sessions');
+  const agentDirectory = join(root, 'pi', 'agent');
+  for (const directory of [memory, sessionDirectory, agentDirectory]) await mkdir(directory, { recursive: true });
+  await writeFile(join(memory, '予定.md'), '# 予定\n\n- 歯医者は金曜\n- なつみのマスターは 2026-09-10 に健診を受けた\n');
+  const db = openStateDatabase(join(root, 'state.sqlite'));
+  migrate(db, MIGRATIONS);
+  const runner = await startFakeRunner({ dir: memory });
+  const seen: Context[] = [];
+  try {
+    const repository = new MemoryRepository({ directory: memory, dataDirectory: data });
+    await repository.initialize(undefined);
+    const shell = new WorkspaceShell({ socketPath: runner.path, timeoutMs: 10_000, timeZone: 'Asia/Tokyo', memoryChanges: () => repository.changeSummary() });
+    const model = new ScriptedModel();
+    model.auto = context => {
+      seen.push(context);
+      if (context.messages.at(-1)?.role === 'assistant') return { calls: [] };
+      return steps[stageOf(context) ?? '']?.[context.messages.filter(message => message.role === 'assistant').length] ?? { calls: [] };
+    };
+    const now = Date.parse('2026-10-04T19:00:00.000Z');
+    const logs: string[] = [];
+    const night = await runCuratorNight({
+      repository, shell, modelRuntime: await fixtureRuntime(),
+      route: { name: 'default', target: SUBSCRIPTION_TARGET, compatible: false },
+      config: { ...CURATOR_DEFAULTS, ...config }, record: new CurationRecord(db, () => now), now: () => now, log: line => logs.push(line),
+      name: 'なつみ', timeZone: 'Asia/Tokyo', fileMaxChars: 32000,
+      dataDirectory: data, agentDirectory, sessionDirectory, thinking: 'off',
+      configureSession: session => { session.agent.streamFunction = model.streamFunction; },
+    });
+    const git = (...args: string[]) => execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
+    return { night, seen, logs, git, read: (path: string) => readFile(join(memory, path), 'utf8'),
+      stage: (name: string) => night.stages.find(stage => stage.stage === name)!,
+      cleanup: async () => { await runner.close(); db.close(); await rm(root, { recursive: true, force: true }); } };
+  } catch (error) {
+    await runner.close();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+const userTexts = (context: Context) => context.messages.filter(message => message.role === 'user')
+  .map(message => typeof message.content === 'string' ? message.content : message.content.map(part => part.type === 'text' ? part.text : '').join(''));
+
+test('the archiving stage moves an old fact out of its topic into this month\'s archive, and the next stages run on that', async () => {
+  const n = await aNight({
+    archive: [
+      { calls: [call('run_shell', { command: "mkdir -p archive && printf '# 2026-10\\n\\n## 予定\\n- なつみのマスターは 2026-09-10 に健診を受けた\\n' >> archive/2026-10.md && printf '# 予定\\n\\n- 歯医者は金曜\\n' > 予定.md" })] },
+      { calls: [call('write_change_note', { text: '済んだ健診を archive へ\n\n- 予定.md: 健診は済んだので archive/2026-10.md へ' })] },
+    ],
+  });
+  try {
+    assert.deepEqual(n.night.stages.map(stage => [stage.stage, stage.outcome]), [['archive', 'ok'], ['structure', 'ok'], ['index', 'ok']]);
+    assert.deepEqual([...n.stage('archive').files].sort(), ['archive/2026-10.md', '予定.md']);
+    assert.match(await n.read('archive/2026-10.md'), /## 予定\n- なつみのマスターは 2026-09-10 に健診を受けた/);
+    assert.doesNotMatch(await n.read('予定.md'), /健診/);
+    assert.match(n.git('log', '-1', '--format=%s', n.stage('archive').commit!), /^済んだ健診を archive へ$/);
+    // The stage is told tonight's month file.
+    const first = n.seen.find(context => stageOf(context) === 'archive')!;
+    assert.match(userTexts(first)[0]!, /archive\/2026-10\.md/);
+  } finally { await n.cleanup(); }
+});
+
+test('a stage that fails the check is told what and why in the same session, once, and is kept when it puts it right', async () => {
+  const n = await aNight({
+    structure: [
+      { calls: [call('run_shell', { command: "printf '# 予定\\n\\n## 通院\\n- 歯医者は金曜\\n' > 予定.md && printf 'メモ\\n' > メモ.txt" })] },
+      { calls: [] },
+      { calls: [call('run_shell', { command: 'rm メモ.txt' })] },
+    ],
+  });
+  try {
+    const structure = n.stage('structure');
+    assert.equal(structure.outcome, 'ok');
+    assert.deepEqual(structure.retried.map(file => file.path), ['メモ.txt']);
+    assert.deepEqual(structure.rejected, []);
+    assert.deepEqual(structure.files, ['予定.md']);
+    assert.match(await n.read('予定.md'), /## 通院/);
+    const last = n.seen.filter(context => stageOf(context) === 'structure').at(-1)!;
+    const told = userTexts(last);
+    assert.equal(told.length, 2, 'the brief, then the one retry');
+    assert.match(told[1]!, /メモ\.txt: \.md 以外のファイルは記憶に置けません/);
+    assert.equal(n.git('status', '--porcelain'), '');
+  } finally { await n.cleanup(); }
+});
+
+test('a stage that fails the check again after its one retry is thrown away', async () => {
+  const n = await aNight({
+    structure: [{ calls: [call('run_shell', { command: "printf '# 予定\\n\\n- 書き換えた\\n' > 予定.md && printf 'メモ\\n' > メモ.txt" })] }],
+  });
+  try {
+    const structure = n.stage('structure');
+    assert.equal(structure.outcome, 'rejected');
+    assert.deepEqual(structure.retried.map(file => file.path), ['メモ.txt']);
+    assert.deepEqual(structure.rejected.map(file => file.path), ['メモ.txt']);
+    assert.equal(structure.commit, undefined);
+    assert.match(await n.read('予定.md'), /歯医者/);
+    const last = n.seen.filter(context => stageOf(context) === 'structure').at(-1)!;
+    assert.equal(userTexts(last).length, 2, 'one retry, no more');
+    assert.equal(n.git('status', '--porcelain'), '');
+  } finally { await n.cleanup(); }
+});
+
+test('the retry comes out of the stage\'s own limit: a stage that used its calls up is thrown away without one', async () => {
+  const n = await aNight({
+    structure: [{ calls: [call('run_shell', { command: "printf 'メモ\\n' > メモ.txt" })] }, { calls: [] }],
+  }, { modelCalls: 2 });
+  try {
+    const structure = n.stage('structure');
+    assert.equal(structure.outcome, 'rejected');
+    assert.deepEqual(structure.retried, []);
+    const last = n.seen.filter(context => stageOf(context) === 'structure').at(-1)!;
+    assert.equal(userTexts(last).length, 1);
+  } finally { await n.cleanup(); }
 });

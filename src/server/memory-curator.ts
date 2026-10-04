@@ -8,11 +8,12 @@ import { createPersistedPiSession, type PiTarget } from '../pi/session.ts';
 import { withCodemode, type NestedCallCount } from './codemode.ts';
 import type { CuratorConfig } from './config.ts';
 import type { ToolOutcome } from './loop-tools.ts';
-import { DIARY_DIRECTORY, INDEX_FILE, NATSUMI_ONLY_FILES, type MemoryFile, type MemoryRepository, type RevertedFile } from './memory-repository.ts';
+import { ARCHIVE_DIRECTORY, DIARY_DIRECTORY, INDEX_FILE, NATSUMI_ONLY_FILES, type ArchivePlan, type MemoryFile, type MemoryRepository,
+  type RevertedFile } from './memory-repository.ts';
 import { isoAt, localDate } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
-import { CURATOR_INDEX_INSTRUCTIONS, CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_STRUCTURE_INSTRUCTIONS, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION,
-  curatorSystemPrompt } from './prompts.ts';
+import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_STRUCTURE_INSTRUCTIONS,
+  CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorRetryRequest, curatorSystemPrompt } from './prompts.ts';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
@@ -29,20 +30,25 @@ import type { TokenCounts, TurnPlace } from './turn-stats.ts';
 export const CURATOR_SESSION_DIRECTORY = 'curator';
 /** The curator's turns, as `turn_stats` and the machine-made commit message name them, each with its stage after a colon. */
 export const CURATOR_EVENT_KIND = 'memory_curator';
-/** Where archived memory goes (ADR 0068): not a topic, so not counted toward rewriting every topic. */
-const ARCHIVE_DIRECTORY = 'archive';
 /** Sections shown per file in the brief; a log of dated sections would otherwise fill it. */
 export const BRIEF_SECTIONS_PER_FILE = 30;
 /** The longest a heading is shown. */
 const BRIEF_HEADING_CHARS = 80;
 
-/** Whether the curator may rewrite a file's content: a topic file, never natsumi's own, the index or the diary. */
+/**
+ * Whether the curator may rewrite a file's content: a topic file, never natsumi's own, the index, the diary or the
+ * archive, which is only added to (ADR 0068).
+ */
 export function isRewritable(path: string): boolean {
-  return path.endsWith('.md') && !NATSUMI_ONLY_FILES.includes(path) && path !== INDEX_FILE && !inDiary(path);
+  return path.endsWith('.md') && !NATSUMI_ONLY_FILES.includes(path) && path !== INDEX_FILE && !inDiary(path) && !inArchive(path);
 }
 
 function inDiary(path: string): boolean {
   return path.startsWith(`${DIARY_DIRECTORY}/`);
+}
+
+function inArchive(path: string): boolean {
+  return path.startsWith(`${ARCHIVE_DIRECTORY}/`);
 }
 
 /**
@@ -56,9 +62,37 @@ export function chooseRotation(files: readonly string[], curated: ReadonlyMap<st
     .slice(0, count);
 }
 
-/** Whether a file is a topic, whose size counts toward rewriting every topic: rewritable and not archived (ADR 0068). */
-export function isTopic(path: string): boolean {
-  return isRewritable(path) && !path.startsWith(`${ARCHIVE_DIRECTORY}/`);
+/** A month's archive file, `archive/2026-10.md`; a quarter's, `archive/2026-Q3.md`; a year's, `archive/2025.md`. */
+const ARCHIVE_MONTH = /^archive\/(\d{4})-(\d{2})\.md$/;
+const ARCHIVE_QUARTER = /^archive\/(\d{4})-Q([1-4])\.md$/;
+
+/**
+ * What tonight's archiving may do (ADR 0068), from the files memory holds and tonight's local date: add to this
+ * month's file, and compact the older ones, the coarser the older. A quarter's months become its file once three
+ * months have passed since the quarter's last month; a year's months and quarters become its file once a year has
+ * passed since its last quarter. Each is a whole group at once, so a night that fails leaves the group for the next.
+ */
+export function archivePlan(paths: readonly string[], date: string): ArchivePlan {
+  const [year, month] = date.split('-').map(Number) as [number, number];
+  const tonightMonth = year * 12 + month - 1;
+  const tonightQuarter = year * 4 + Math.floor((month - 1) / 3);
+  const yearDone = (of: number) => tonightQuarter - (of * 4 + 3) >= 4;
+  const groups = new Map<string, string[]>();
+  const add = (into: string, path: string) => groups.set(into, [...(groups.get(into) ?? []), path]);
+  for (const path of paths) {
+    const asMonth = ARCHIVE_MONTH.exec(path);
+    const matched = asMonth ?? ARCHIVE_QUARTER.exec(path);
+    if (!matched) continue;
+    const of = Number(matched[1]);
+    if (yearDone(of)) { add(`${ARCHIVE_DIRECTORY}/${of}.md`, path); continue; }
+    if (!asMonth) continue;
+    const quarter = Math.floor((Number(asMonth[2]) - 1) / 3);
+    if (tonightMonth - (of * 12 + quarter * 3 + 2) >= 3) add(`${ARCHIVE_DIRECTORY}/${of}-Q${quarter + 1}.md`, path);
+  }
+  return {
+    append: `${ARCHIVE_DIRECTORY}/${date.slice(0, 7)}.md`,
+    compactions: [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([into, from]) => ({ into, from: from.sort() })),
+  };
 }
 
 /** What a stage is given to make its brief from, read at the moment it begins. */
@@ -79,8 +113,11 @@ export interface StageInput {
   changed: readonly string[];
 }
 
-/** What begins a stage's turn, and the files whose content it was given to rewrite, dated when the night succeeds. */
-export interface StageBrief { text: string; handled: string[] }
+/**
+ * What begins a stage's turn, the files whose content it was given to rewrite, dated when the night succeeds, and for
+ * the archiving stage, what it may do in `archive/`.
+ */
+export interface StageBrief { text: string; handled: string[]; archive?: ArchivePlan }
 
 /**
  * A stage of the night (ADR 0068). Each is a new session with the shared instructions and its own, a brief of its own,
@@ -98,20 +135,41 @@ export interface CuratorStage {
   rewrites: boolean;
 }
 
+/** Why a stage before the index's may not change it. */
+const indexLater = (path: string) => path === INDEX_FILE ? `${path} は最後の工程で書き直すので、この工程では変えられません` : undefined;
+
+/**
+ * The archiving (ADR 0068): old facts out of the topics it may rewrite, summarized into this month's file, and on a
+ * night that compacts, older files summarized into coarser ones. It comes before the reorganizing, so that what is
+ * reorganized is what is still current.
+ */
+export const ARCHIVE_STAGE: CuratorStage = {
+  name: 'archive',
+  instructions: () => CURATOR_ARCHIVE_INSTRUCTIONS,
+  brief: input => {
+    const scope = rewriteScope(input);
+    const plan = archivePlan(input.files.map(file => file.path), input.date);
+    const compacting = plan.compactions.length === 0 ? []
+      : ['', '## 今夜まとめるもの', ...plan.compactions.map(group => `- ${group.into} ← ${group.from.join('、')}`)];
+    return {
+      text: wrap([...memoryMap(input, true), '', ...scopeLines(input, scope), '', '## 古い記憶の置き場',
+        `今夜の古い記憶は ${plan.append} の末尾に足します（まだ無ければ作ります）。`, ...compacting]),
+      handled: scope.handled, archive: plan,
+    };
+  },
+  refuse: indexLater,
+  rewrites: true,
+};
+
 /** The reorganizing: the files, and the sections inside them. Everything but the index, which is the last stage's. */
 export const STRUCTURE_STAGE: CuratorStage = {
   name: 'structure',
   instructions: () => CURATOR_STRUCTURE_INSTRUCTIONS,
   brief: input => {
     const scope = rewriteScope(input);
-    const list = (paths: readonly string[]) => paths.length === 0 ? ['（なし）'] : paths.map(path => `- ${path}`);
-    const part = scope.all
-      ? ['## 中身を書き直してよいファイル',
-        `トピックの合計は ${scope.topicChars} 文字で、${input.rewriteAllMaxChars} 文字以下なので、今夜はすべてのトピックを書き直してかまいません。`]
-      : ['## 中身を書き直してよいファイル', '### 前回の整理から変わったもの', ...list(input.changed), '### 順番が回ってきたもの', ...list(scope.rotated)];
-    return { text: wrap([...memoryMap(input), '', ...part]), handled: scope.handled };
+    return { text: wrap([...memoryMap(input), '', ...scopeLines(input, scope)]), handled: scope.handled };
   },
-  refuse: path => path === INDEX_FILE ? `${path} は最後の工程で書き直すので、この工程では変えられません` : undefined,
+  refuse: indexLater,
   rewrites: true,
 };
 
@@ -127,28 +185,49 @@ export const INDEX_STAGE: CuratorStage = {
 };
 
 /** The night's stages, in order. */
-export const CURATOR_STAGES: readonly CuratorStage[] = [STRUCTURE_STAGE, INDEX_STAGE];
+export const CURATOR_STAGES: readonly CuratorStage[] = [ARCHIVE_STAGE, STRUCTURE_STAGE, INDEX_STAGE];
 
 /**
  * What may be rewritten tonight (ADR 0068): every topic while the topics together are no bigger than the setting,
  * otherwise those changed and those in turn (ADR 0055).
  */
 function rewriteScope(input: StageInput): { all: boolean; topicChars: number; rotated: string[]; handled: string[] } {
-  const topics = input.files.filter(file => isTopic(file.path));
+  const topics = input.files.filter(file => isRewritable(file.path));
   const topicChars = topics.reduce((sum, file) => sum + file.chars, 0);
   if (topicChars <= input.rewriteAllMaxChars) return { all: true, topicChars, rotated: [], handled: topics.map(file => file.path) };
   const rotated = chooseRotation(input.files.map(file => file.path), input.curated, new Set(input.changed), input.rotateFiles);
   return { all: false, topicChars, rotated, handled: [...input.changed, ...rotated] };
 }
 
-/** The map of memory every stage starts from: each file with its size, its dates and its sections' lengths. */
-function memoryMap(input: StageInput): string[] {
+/** The part of a brief that names what may be rewritten tonight. */
+function scopeLines(input: StageInput, scope: ReturnType<typeof rewriteScope>): string[] {
+  const list = (paths: readonly string[]) => paths.length === 0 ? ['（なし）'] : paths.map(path => `- ${path}`);
+  return scope.all
+    ? ['## 中身を書き直してよいファイル',
+      `トピックの合計は ${scope.topicChars} 文字で、${input.rewriteAllMaxChars} 文字以下なので、今夜はすべてのトピックを書き直してかまいません。`]
+    : ['## 中身を書き直してよいファイル', '### 前回の整理から変わったもの', ...list(input.changed), '### 順番が回ってきたもの', ...list(scope.rotated)];
+}
+
+/**
+ * The map of memory every stage starts from: each file with its size, its dates and its sections' lengths. The diary
+ * is one line, and so is the archive, unless the stage is the one that writes it.
+ */
+function memoryMap(input: StageInput, archiving = false): string[] {
   const lines = [`今夜は ${input.date} です。1 ファイルの上限は ${input.fileMaxChars} 文字です。`, '',
     `## 記憶のファイル（${input.files.length} 件）`];
   const day = (iso: string) => localDate(Date.parse(iso), input.timeZone);
   const diary = input.files.filter(file => inDiary(file.path));
+  const archive = input.files.filter(file => inArchive(file.path));
   let diaryShown = false;
+  let archiveShown = false;
   for (const file of input.files) {
+    if (inArchive(file.path)) {
+      if (archiving) { lines.push(`- ${file.path}（${file.chars} 文字）`); continue; }
+      if (archiveShown) continue;
+      archiveShown = true;
+      lines.push(`- ${ARCHIVE_DIRECTORY}/: ${archive.length} ファイル（${archive[0]!.path} 〜 ${archive.at(-1)!.path}・古い記憶、この工程では変えない）`);
+      continue;
+    }
     if (inDiary(file.path)) {
       if (diaryShown) continue;
       diaryShown = true;
@@ -315,6 +394,8 @@ export interface CuratorStageResult {
   files: string[];
   /** What failed the check, when it was rejected. */
   rejected: RevertedFile[];
+  /** What failed the check the first time, when the stage was told it and given its one retry (ADR 0068). */
+  retried: RevertedFile[];
   startedAt: number;
   endedAt: number;
   calls: number;
@@ -381,7 +462,7 @@ export async function recoverCuratorRun(repository: MemoryRepository, record: Cu
 async function runStage(options: CuratorNightOptions, stage: CuratorStage, handled: string[]): Promise<CuratorStageResult> {
   const startedAt = options.now();
   const base = { stage: stage.name, eventKinds: `${CURATOR_EVENT_KIND}:${stage.name}`, turnId: `turn-${randomUUID()}`, startedAt,
-    files: [] as string[], rejected: [] as RevertedFile[], calls: 0, usage: { input: 0, cacheRead: 0, output: 0 }, contextTokens: null, toolErrors: 0 };
+    files: [] as string[], rejected: [] as RevertedFile[], retried: [] as RevertedFile[], calls: 0, usage: { input: 0, cacheRead: 0, output: 0 }, contextTokens: null, toolErrors: 0 };
   const ended = (fields: Partial<CuratorStageResult> & Pick<CuratorStageResult, 'outcome'>): CuratorStageResult =>
     ({ ...base, ...fields, endedAt: options.now() });
   try {
@@ -448,30 +529,43 @@ async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pic
   const stop = () => { void session.abort(); };
   options.signal?.addEventListener('abort', stop, { once: true });
   const timer = setTimeout(() => { timedOut = true; void session.abort(); }, config.timeoutMinutes * 60_000);
+  const replies = () => session.messages.filter(message => message.role === 'assistant') as unknown as Reply[];
+  const cutOff = () => limited ? 'model-call-limit' : timedOut ? 'timeout' : options.signal?.aborted ? 'stopped'
+    : replies().at(-1)?.stopReason !== 'stop' ? 'model-error' : undefined;
+  const prompt = async (text: string) => {
+    try { await session.prompt(text, { expandPromptTemplates: false }); } catch { /* Judged from what Pi recorded. */ }
+  };
+  const checks = { refuse: stage.refuse, ...(brief.archive ? { archive: brief.archive } : {}) };
+  let retried: RevertedFile[] = [];
   try {
-    if (!options.signal?.aborted) await session.prompt(brief.text, { expandPromptTemplates: false });
-  } catch {
-    // Judged below from what Pi recorded.
+    if (!options.signal?.aborted) await prompt(brief.text);
+    // What failed the check is told once, in the same session and under the same limits, before it is thrown away.
+    if (!cutOff()) {
+      const caught = await repository.checkCuration(checks);
+      if (caught.length > 0 && calls < config.modelCalls) {
+        retried = caught;
+        for (const file of caught) options.log(`memory curator: ${stage.name}: ${file.path}: ${file.reason} (told to put it right)`);
+        await prompt(curatorRetryRequest(caught));
+      }
+    }
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', stop);
   }
-  const replies = session.messages.filter(message => message.role === 'assistant') as unknown as Reply[];
-  const last = replies.at(-1);
+  const all = replies();
   const toolErrors = session.messages.filter(message => message.role === 'toolResult' && message.isError).length;
-  const first = replies[0]?.usage;
+  const first = all[0]?.usage;
   const place = await placeSince(session, mark, options.sessionDirectory);
   session.dispose();
-  const counted = { calls, usage: sumUsage(replies), contextTokens: first ? first.input + first.cacheRead + first.cacheWrite : null,
-    toolErrors, ...(place ? { place } : {}), ...(note === undefined ? {} : { note }) };
-  const failure = limited ? 'model-call-limit' : timedOut ? 'timeout' : options.signal?.aborted ? 'stopped'
-    : !last || last.stopReason !== 'stop' ? 'model-error' : undefined;
+  const counted = { calls, usage: sumUsage(all), contextTokens: first ? first.input + first.cacheRead + first.cacheWrite : null,
+    toolErrors, retried, ...(place ? { place } : {}), ...(note === undefined ? {} : { note }) };
+  const failure = cutOff();
   if (failure) {
     await repository.discardChanges();
     record.end();
     return ended({ outcome: failure, ...counted });
   }
-  const outcome = await repository.commitCuration({ ...(note ? { message: note } : {}), event: base.eventKinds, refuse: stage.refuse });
+  const outcome = await repository.commitCuration({ ...(note ? { message: note } : {}), event: base.eventKinds, ...checks });
   if (outcome.rejected.length > 0) {
     for (const file of outcome.rejected) options.log(`memory curator: ${stage.name}: ${file.path}: ${file.reason}`);
     record.end();

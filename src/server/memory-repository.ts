@@ -30,6 +30,21 @@ export const NIGHT_ONLY_FILES: readonly string[] = [ALWAYS_FILE, PERSONALITY_FIL
 export const NATSUMI_ONLY_FILES: readonly string[] = [ALWAYS_FILE, PERSONALITY_FILE, HANDOFF_FILE];
 /** The day by day story, kept as history: the curator reads it and never changes it (ADR 0055). */
 export const DIARY_DIRECTORY = 'diary';
+/**
+ * Old memory (ADR 0068): facts the curator took out of the topics, summarized into a file a month. Only the curator's
+ * archiving stage writes it, and only by adding to this month's file, save on a night that compacts older files.
+ */
+export const ARCHIVE_DIRECTORY = 'archive';
+
+/**
+ * What a night's archiving may do in `archive/` (ADR 0068): add to this month's file, and compact each group's files
+ * into the one it names — removing every file it summarizes and writing the one it becomes, or touching none of them.
+ */
+export interface ArchivePlan {
+  /** This month's file, which may be made or added to. */
+  append: string;
+  compactions: { into: string; from: string[] }[];
+}
 
 /** Who changed the working tree: a turn of the day, the nightly review, or the curator after it. */
 export type Writer = 'day' | 'night' | 'curator';
@@ -113,6 +128,14 @@ export interface CurationOutcome {
   files: string[];
   /** Every change that failed a check. Any at all, and the whole stage was thrown away. */
   rejected: RevertedFile[];
+}
+
+/** What a curator stage's changes are checked against besides every curator commit's checks. */
+export interface CurationChecks {
+  /** Why this stage may not change a path, or undefined when it may. */
+  refuse?: (path: string) => string | undefined;
+  /** What tonight's archiving may do in `archive/`; without it, a stage may not change `archive/` at all. */
+  archive?: ArchivePlan;
 }
 
 /** A file of memory, as the curator is shown it: its size and its sections. */
@@ -207,14 +230,9 @@ export class MemoryRepository {
    * commit, one change that fails throws the whole stage away: the curator moves and merges files, and a merge whose
    * result alone went back would leave its sources gone and nothing in their place.
    */
-  async commitCuration(input: { message?: string; event?: string; refuse?: (path: string) => string | undefined }): Promise<CurationOutcome> {
-    const rejected: RevertedFile[] = [];
+  async commitCuration(input: CurationChecks & { message?: string; event?: string }): Promise<CurationOutcome> {
     const entries = await this.status();
-    for (const entry of entries) {
-      const reason = (entry.deleted ? this.inspectRemoval(entry.path, 'curator') : await this.inspect(entry.path, 'curator'))
-        ?? input.refuse?.(entry.path);
-      if (reason) rejected.push({ path: entry.path, reason });
-    }
+    const rejected = await this.inspectCuration(entries, input);
     if (rejected.length > 0) {
       await this.discardChanges();
       this.log(`memory: the curator's changes were thrown away (${rejected.length} failed the check)`);
@@ -225,6 +243,55 @@ export class MemoryRepository {
     await this.git(['add', '-A', '--', '.']);
     await this.commitStaged(input.event ?? 'memory_curator', files, input.message);
     return { committed: true, files, rejected };
+  }
+
+  /**
+   * What of a curator stage's changes would fail its commit, changing nothing: what the stage is told when it is given
+   * the one chance to put it right before its changes are thrown away (ADR 0068).
+   */
+  async checkCuration(input: CurationChecks): Promise<RevertedFile[]> {
+    return this.inspectCuration(await this.status(), input);
+  }
+
+  private async inspectCuration(entries: StatusEntry[], input: CurationChecks): Promise<RevertedFile[]> {
+    const rejected: RevertedFile[] = [];
+    for (const entry of entries) {
+      const reason = (inArchive(entry.path) ? await this.inspectArchive(entry, entries, input.archive) : undefined)
+        ?? (entry.deleted ? this.inspectRemoval(entry.path, 'curator') : await this.inspect(entry.path, 'curator'))
+        ?? input.refuse?.(entry.path);
+      if (reason) rejected.push({ path: entry.path, reason });
+    }
+    return rejected;
+  }
+
+  /**
+   * Why the curator may not make a change in `archive/`, or undefined when it may (ADR 0068): only a stage with the
+   * night's plan writes there, it adds to this month's file without changing a line already in it, and it removes or
+   * rewrites an older file only to compact a whole group as the plan names it.
+   */
+  private async inspectArchive(entry: StatusEntry, entries: readonly StatusEntry[], plan: ArchivePlan | undefined): Promise<string | undefined> {
+    const { path } = entry;
+    if (!plan) return `${path} は古い記憶（${ARCHIVE_DIRECTORY}/）なので、古い記憶の工程でだけ変えられます`;
+    const group = plan.compactions.find(candidate => candidate.into === path || (entry.deleted && candidate.from.includes(path)));
+    if (group) {
+      const removed = new Set(entries.filter(other => other.deleted).map(other => other.path));
+      const made = !removed.has(group.into) && await this.exists(group.into);
+      if (made && group.from.every(source => removed.has(source))) return undefined;
+      return `まとめる夜は、まとめる元のファイル（${group.from.join('、')}）をすべて消して、まとめた先の ${group.into} を作ります`;
+    }
+    if (path === plan.append && !entry.deleted) {
+      const before = await this.committedText(path);
+      if (before === undefined || (await this.readOrEmpty(path)).startsWith(before)) return undefined;
+      return `${path} の既にある行が変わっています。今月の古い記憶のファイルには、末尾に追記だけができます`;
+    }
+    if (entry.deleted) return `${path} は古い記憶なので消せません（まとめる夜に、まとめる元のファイルだけを消せます）`;
+    return `${path} は変えられません。古い記憶は今月のファイル（${plan.append}）に追記するだけで、ほかのファイルは変えられません`;
+  }
+
+  /** What the last commit holds at a path, or undefined when it holds nothing there. */
+  private async committedText(path: string): Promise<string | undefined> {
+    const shown = await this.git(['show', `HEAD:${path}`], { allowFailure: true });
+    return shown.code === 0 ? shown.stdout : undefined;
   }
 
   /** Throws away whatever the last commit does not hold: changes, removals, and new files and folders alike. */
@@ -394,6 +461,7 @@ export class MemoryRepository {
    * assumes, with nobody told. A rename reaches here as the removal half, and is put back the same way.
    */
   private inspectRemoval(path: string, writer: Writer): string | undefined {
+    if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は消すことも動かすこともできません`;
     if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
     return `${path} はサーバーが名前と置き場所を固定しているファイルなので、消すことも改名することもできません`;
@@ -401,6 +469,7 @@ export class MemoryRepository {
 
   /** Why the changed file may not be committed, or undefined when it may. A removal goes through inspectRemoval. */
   private async inspect(path: string, writer: Writer): Promise<string | undefined> {
+    if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer !== 'curator' && path === INDEX_FILE) {
       return `${path} は記憶の整理係だけが書くファイルなので、あなたは書き換えられません（夜に整理係が書き直します）`;
     }
@@ -455,6 +524,15 @@ function sectionsOf(text: string): MemorySection[] {
   if (current.heading !== '' || current.lines > 0) sections.push(current);
   return sections;
 }
+
+/** Whether a path is in the archive, or is the archive itself. */
+function inArchive(path: string): boolean {
+  return path === ARCHIVE_DIRECTORY || path.startsWith(`${ARCHIVE_DIRECTORY}/`);
+}
+
+/** Why natsumi's change to the archive goes back. */
+const archiveRefusal = (path: string) =>
+  `${path} は古い記憶（${ARCHIVE_DIRECTORY}/）なので、記憶の整理係だけが書きます。あなたは書き換えられません`;
 
 /** Whether a path is in the diary, or is the diary itself. */
 function inDiary(path: string): boolean {

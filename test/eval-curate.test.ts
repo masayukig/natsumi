@@ -55,15 +55,16 @@ test('a curator\'s night runs on a working copy of a snapshot and leaves its mem
     assert.equal(record.error, undefined);
     assert.equal(record.snapshot, snapshot.name);
     assert.equal(record.dryRun, true);
-    // Every stage of the night, in order, with the server's own numbers: the structure stage did the work, and the
-    // index stage, answered with nothing, kept nothing.
-    assert.deepEqual(record.stages.map(stage => [stage.name, stage.outcome]), [['structure', 'ok'], ['index', 'ok']]);
+    // Every stage of the night, in order, with the server's own numbers: the first stage did the work, and the
+    // stages after it, answered with nothing, kept nothing.
+    assert.deepEqual(record.stages.map(stage => [stage.name, stage.outcome]), [['archive', 'ok'], ['structure', 'ok'], ['index', 'ok']]);
     const [stage] = record.stages;
     assert.equal(stage!.modelCalls, 3);
     assert.ok(stage!.ms >= 0);
     assert.equal(stage!.note, 'FIXTURE-NOTE 予定に見出しを付けた');
     assert.equal(stage!.commit, record.head);
     assert.equal(record.stages[1]!.commit, undefined);
+    assert.equal(record.stages[2]!.commit, undefined);
     // What it committed, under the note it wrote, and what that changed.
     assert.equal(record.commits.length, 1);
     assert.match(record.commits[0]!.message, /FIXTURE-NOTE 予定に見出しを付けた/);
@@ -82,9 +83,9 @@ test('a curator\'s night runs on a working copy of a snapshot and leaves its mem
     const summary = await readFile(join(directory, 'summary.md'), 'utf8');
     assert.match(summary, /FIXTURE-NOTE/);
     assert.match(summary, /plans\/2026-09\.md/);
-    assert.match(summary, /\| structure \| ok \| 3 \|/);
+    assert.match(summary, /\| archive \| ok \| 3 \|/);
     // The curator's own session records, one for each stage, are kept for reading.
-    assert.equal((await readdir(join(directory, 'copy', 'pi', 'sessions', 'curator'))).filter(name => name.endsWith('.jsonl')).length, 2);
+    assert.equal((await readdir(join(directory, 'copy', 'pi', 'sessions', 'curator'))).filter(name => name.endsWith('.jsonl')).length, 3);
     // The copy of SQLite was migrated and knows the night; the snapshot did not change at all.
     const copy = new DatabaseSync(join(directory, 'copy', 'data', '.natsumi', 'state.sqlite'), { readOnly: true });
     try {
@@ -101,6 +102,8 @@ test('a night whose change fails the server\'s check keeps nothing, and says so'
       dryRun: [{ calls: [{ tool: 'run_shell', args: { command: 'echo changed > /memory/personality.md' } }] }, { text: '終わり' }] });
     assert.equal(record.stages[0]!.outcome, 'rejected');
     assert.deepEqual(record.stages[0]!.rejected!.map(file => file.path), ['personality.md']);
+    // It was told once what failed, and its retry did not put it right.
+    assert.deepEqual(record.stages[0]!.retried!.map(file => file.path), ['personality.md']);
     assert.equal(record.stages[0]!.commit, undefined);
     assert.deepEqual(record.commits, []);
     assert.deepEqual(record.files, []);
@@ -131,7 +134,7 @@ const NIGHT: NightRecord = {
   stages: [{ name: 'structure', outcome: 'ok', modelCalls: 12, ms: 120_000, tokens: { input: 1000, cacheRead: 500, output: 200 }, toolErrors: 1,
     commit: 'b'.repeat(40), note: '節を組み直した' },
   { name: 'index', outcome: 'rejected', modelCalls: 3, ms: 5_000, tokens: { input: 10, cacheRead: 0, output: 5 }, toolErrors: 0,
-    rejected: [{ path: 'INDEX.md', reason: 'FIXTURE-REASON' }] }],
+    retried: [{ path: 'INDEX.md', reason: 'FIXTURE-FIRST-REASON' }], rejected: [{ path: 'INDEX.md', reason: 'FIXTURE-REASON' }] }],
   commits: [{ hash: 'b'.repeat(40), message: '節を組み直した\n\n- 本人.md の「いま」を話題ごとに分けた' }],
   files: [{ path: '本人.md', change: 'M' }, { path: 'old.md', change: 'D' }],
 };
@@ -144,6 +147,7 @@ test('the summary of a night names each stage\'s outcome, calls and time, the co
   // Each stage's commit and note, and what failed the check of one that kept nothing.
   assert.match(text, /\| index \| rejected \| 3 \|/);
   assert.match(text, /INDEX\.md: FIXTURE-REASON/);
+  assert.match(text, /やり直した: INDEX\.md: FIXTURE-FIRST-REASON/);
   assert.match(text, /節を組み直した/);
   assert.match(text, /本人\.md/);
   assert.match(text, /old\.md/);
@@ -191,7 +195,7 @@ test('`curate` runs a night isolated, keeps it private, and refuses with a token
 
     const compared = await cli(['curate-compare', join(out, 'dry'), join(out, 'dry')]);
     assert.equal(compared.code, 0, compared.stderr);
-    assert.match(compared.stdout, /\| structure \| ok \/ 2 \//);
+    assert.match(compared.stdout, /\| archive \| ok \/ 2 \//);
 
     const named = await cli(['curate', '--dry-run', '--snapshots', store, '--out', join(root, 'never')], { SLACK_BOT_TOKEN: 'fixture-value-never-shown' });
     assert.equal(named.code, 1);
