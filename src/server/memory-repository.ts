@@ -334,6 +334,14 @@ export class MemoryRepository {
     return dates;
   }
 
+  /** When `commit` was made, or undefined when there is none or the history does not hold it. */
+  async commitTime(commit: string | undefined): Promise<number | undefined> {
+    if (!commit) return undefined;
+    const { code, stdout } = await this.git(['log', '-1', '--format=%cI', `${commit}^{commit}`, '--'], { allowFailure: true });
+    const at = Date.parse(stdout.trim());
+    return code === 0 && Number.isFinite(at) ? at : undefined;
+  }
+
   /**
    * The files still in memory that changed between `base` and the last commit, in path order. A base the history
    * does not hold (none yet, or one the owner rewrote away) stands for the last day: the last commit made more than

@@ -57,7 +57,8 @@ test('a curator\'s night runs on a working copy of a snapshot and leaves its mem
     assert.equal(record.dryRun, true);
     // Every stage of the night, in order, with the server's own numbers: the first stage did the work, and the
     // stages after it, answered with nothing, kept nothing.
-    assert.deepEqual(record.stages.map(stage => [stage.name, stage.outcome]), [['archive', 'ok'], ['structure', 'ok'], ['index', 'ok']]);
+    assert.deepEqual(record.stages.map(stage => [stage.name, stage.outcome]), [['knowledge', 'ok'], ['archive', 'ok'], ['structure', 'ok'],
+      ['index', 'ok']]);
     const [stage] = record.stages;
     assert.equal(stage!.modelCalls, 3);
     assert.ok(stage!.ms >= 0);
@@ -65,6 +66,7 @@ test('a curator\'s night runs on a working copy of a snapshot and leaves its mem
     assert.equal(stage!.commit, record.head);
     assert.equal(record.stages[1]!.commit, undefined);
     assert.equal(record.stages[2]!.commit, undefined);
+    assert.equal(record.stages[3]!.commit, undefined);
     // What it committed, under the note it wrote, and what that changed.
     assert.equal(record.commits.length, 1);
     assert.match(record.commits[0]!.message, /FIXTURE-NOTE 予定に見出しを付けた/);
@@ -83,9 +85,9 @@ test('a curator\'s night runs on a working copy of a snapshot and leaves its mem
     const summary = await readFile(join(directory, 'summary.md'), 'utf8');
     assert.match(summary, /FIXTURE-NOTE/);
     assert.match(summary, /plans\/2026-09\.md/);
-    assert.match(summary, /\| archive \| ok \| 3 \|/);
+    assert.match(summary, /\| knowledge \| ok \| 3 \|/);
     // The curator's own session records, one for each stage, are kept for reading.
-    assert.equal((await readdir(join(directory, 'copy', 'pi', 'sessions', 'curator'))).filter(name => name.endsWith('.jsonl')).length, 3);
+    assert.equal((await readdir(join(directory, 'copy', 'pi', 'sessions', 'curator'))).filter(name => name.endsWith('.jsonl')).length, 4);
     // The copy of SQLite was migrated and knows the night; the snapshot did not change at all.
     const copy = new DatabaseSync(join(directory, 'copy', 'data', '.natsumi', 'state.sqlite'), { readOnly: true });
     try {
@@ -195,7 +197,7 @@ test('`curate` runs a night isolated, keeps it private, and refuses with a token
 
     const compared = await cli(['curate-compare', join(out, 'dry'), join(out, 'dry')]);
     assert.equal(compared.code, 0, compared.stderr);
-    assert.match(compared.stdout, /\| archive \| ok \/ 2 \//);
+    assert.match(compared.stdout, /\| knowledge \| ok \/ 2 \//);
 
     const named = await cli(['curate', '--dry-run', '--snapshots', store, '--out', join(root, 'never')], { SLACK_BOT_TOKEN: 'fixture-value-never-shown' });
     assert.equal(named.code, 1);

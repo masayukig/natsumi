@@ -369,6 +369,11 @@ export interface CuratorConfig {
    * only those that changed and those in turn (ADR 0068). 0 for never all of them.
    */
   rewriteAllMaxChars: number;
+  /**
+   * The most characters of the day's conversation handed to the knowledge stage (ADR 0068); past it, the oldest
+   * lines are left out. 0 for none: the stage then works from the diary alone.
+   */
+  conversationMaxChars: number;
   /** Pi's Codemode in the curator's session, apart from natsumi's (ADR 0066). */
   codemode: CodemodeConfig;
 }
@@ -382,7 +387,7 @@ export interface CuratorConfig {
 export const DEFAULT_CURATOR_CODEMODE: CodemodeConfig = { enabled: false, workspaceTools: 'direct', nestedCalls: 120 };
 
 export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2,
-  rewriteAllMaxChars: 100_000, codemode: DEFAULT_CURATOR_CODEMODE };
+  rewriteAllMaxChars: 100_000, conversationMaxChars: 30_000, codemode: DEFAULT_CURATOR_CODEMODE };
 /** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
 const MAX_ROTATE_FILES = 10;
 
@@ -870,7 +875,8 @@ function parseSlack(value: unknown, path: string): SlackConfig {
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
   const curator = object(value, path);
-  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'rotateFiles', 'rewriteAllMaxChars', 'codemode']);
+  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'rotateFiles', 'rewriteAllMaxChars', 'conversationMaxChars',
+    'codemode']);
   const enabled = curator.enabled ?? CURATOR_DEFAULTS.enabled;
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
@@ -884,8 +890,10 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   }
   const rewriteAll = curator.rewriteAllMaxChars ?? CURATOR_DEFAULTS.rewriteAllMaxChars;
   if (!positiveInteger(rewriteAll, 0)) throw new ConfigError(`${path}.rewriteAllMaxChars`, 'must be an integer of 0 or more');
+  const conversation = curator.conversationMaxChars ?? CURATOR_DEFAULTS.conversationMaxChars;
+  if (!positiveInteger(conversation, 0)) throw new ConfigError(`${path}.conversationMaxChars`, 'must be an integer of 0 or more');
   return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
-    rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
+    rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, conversationMaxChars: conversation as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
 }
 
 function parseCodemode(value: unknown, path: string, defaults: CodemodeConfig): CodemodeConfig {

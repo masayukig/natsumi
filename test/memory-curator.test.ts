@@ -56,15 +56,18 @@ function input(overrides: Partial<StageInput> = {}): StageInput {
     lastChanged: new Map([['Slack連携.md', '2026-09-27T21:30:00+09:00'], ['予定.md', '2026-09-20T01:00:00+00:00'], ['本人.md', '2026-09-26T23:30:00Z']]),
     curated: new Map([['Slack連携.md', '2026-09-26T19:00:00.000Z'], ['本人.md', '2026-09-25T00:00:00.000Z']]),
     changed: ['Slack連携.md'],
+    since: Date.parse('2026-09-26T19:30:00.000Z'),
+    conversation: { lines: ['[09-27 09:00] マスター: 歯医者は金曜の 14 時になった', '[09-27 09:01] なつみが記憶を読んだ: 予定.md'], dropped: 0 },
     ...overrides,
   };
 }
 
-test('the night runs in stages, the archiving before the reorganizing and the index last, each with its own instructions', () => {
-  assert.deepEqual(CURATOR_STAGES.map(candidate => candidate.name), ['archive', 'structure', 'index']);
+test('the night runs in stages, knowledge first, the archiving before the reorganizing and the index last, each with its own instructions', () => {
+  assert.deepEqual(CURATOR_STAGES.map(candidate => candidate.name), ['knowledge', 'archive', 'structure', 'index']);
+  assert.equal(stage('knowledge').rewrites, true);
   assert.equal(stage('archive').rewrites, true);
   for (const candidate of CURATOR_STAGES) assert.ok(candidate.instructions('なつみ').length > 0, candidate.name);
-  assert.notEqual(stage('structure').instructions('なつみ'), stage('index').instructions('なつみ'));
+  assert.equal(new Set(CURATOR_STAGES.map(candidate => candidate.instructions('なつみ'))).size, CURATOR_STAGES.length);
   assert.equal(stage('structure').rewrites, true);
   assert.equal(stage('index').rewrites, false);
 });
@@ -180,6 +183,25 @@ test('the curator judges what is old by reading it, and moves it into the archiv
   assert.match(curatorSystemPrompt('なつみ'), /archive\//);
 });
 
+test('the archiving stage is handed the day\'s conversation too, as what was used lately (ADR 0068)', () => {
+  const { text } = stage('archive').brief(input({ date: '2026-10-04' }));
+  assert.match(text, /## 会話の本文\n\[09-27 09:00\] マスター: 歯医者は金曜の 14 時になった\n\[09-27 09:01\] なつみが記憶を読んだ: 予定\.md/);
+  assert.match(stage('archive').brief(input({ conversation: { lines: ['[09-27 23:00] マスター: おやすみ'], dropped: 3 } })).text,
+    /古い 3 件は、長さの上限で省きました。/);
+  assert.match(stage('archive').brief(input({ conversation: { lines: [], dropped: 0 } })).text, /## 会話の本文\n（なし）/);
+  // Only the two stages that read the day are handed it.
+  for (const name of ['structure', 'index']) assert.doesNotMatch(stage(name).brief(input()).text, /## 会話の本文/, name);
+});
+
+test('the archiving keeps what was used or talked about lately, and leans toward keeping it', () => {
+  const told = stage('archive').instructions('なつみ');
+  assert.match(told, /会話の本文/);
+  assert.match(told, /使われた記憶・話題に出た記憶/);
+  assert.match(told, /迷ったら移さずに残します/);
+  assert.match(stage('archive').instructions('はな'), /マスターとはなのやりとりと、はなが記憶を読んだ・探した記録/);
+  assert.doesNotMatch(told, /\$\{/);
+});
+
 test('the index stage is handed the map and told what it writes, and rewrites no topic', () => {
   const { text, handled } = stage('index').brief(input());
   assert.match(text, /- Slack連携\.md（13201 文字/);
@@ -188,7 +210,36 @@ test('the index stage is handed the map and told what it writes, and rewrites no
   assert.deepEqual(handled, []);
 });
 
+test('the knowledge stage is handed the diary and the conversation since the last night that succeeded', () => {
+  const { text, handled } = stage('knowledge').brief(input({ files: [...input().files, { path: 'diary/2026-09-25.md', chars: 300, sections: [] }] }));
+  assert.match(text, /^<curation>\n/);
+  assert.match(text, /- Slack連携\.md（13201 文字/, 'the map of memory comes first');
+  // The window began at 04:30 on the 27th in Tokyo: the diary of that day and after, not before.
+  assert.match(text, /前回の整理（2026-09-27 04:30）から今夜まで/);
+  assert.match(text, /## 日記\n- diary\/2026-09-27\.md\n\n/);
+  assert.doesNotMatch(text, /- diary\/2026-09-2[56]\.md/);
+  assert.match(text, /## 会話の本文\n\[09-27 09:00\] マスター: 歯医者は金曜の 14 時になった\n\[09-27 09:01\] なつみが記憶を読んだ: 予定\.md/);
+  assert.match(text, /<\/curation>$/);
+  assert.deepEqual(handled, []);
+
+  const dropped = stage('knowledge').brief(input({ conversation: { lines: ['[09-27 23:00] マスター: おやすみ'], dropped: 12 } })).text;
+  assert.match(dropped, /古い 12 件は、長さの上限で省きました。/);
+  const quiet = stage('knowledge').brief(input({ conversation: { lines: [], dropped: 0 }, files: input().files.filter(file => !file.path.startsWith('diary/')) })).text;
+  assert.match(quiet, /## 日記\n（なし）/);
+  assert.match(quiet, /## 会話の本文\n（なし）/);
+});
+
+test('the knowledge stage is told to turn what recurs and what is new into topics, and to mend the memory that was used', () => {
+  const told = stage('knowledge').instructions('なつみ');
+  for (const rule of ['繰り返し', '新しい事実', '使われた記憶', 'search_memory', 'diary/']) assert.ok(told.includes(rule), rule);
+  assert.match(told, /INDEX\.md/);
+});
+
 test('each stage keeps to its own files: the reorganizing leaves the index alone, the index stage writes only indexes', () => {
+  assert.equal(stage('knowledge').refuse('予定.md'), undefined);
+  assert.equal(stage('knowledge').refuse('暮らし/予定.md'), undefined);
+  assert.match(stage('knowledge').refuse('INDEX.md') ?? '', /INDEX\.md/);
+  assert.match(stage('knowledge').refuse('archive/2026-09.md') ?? '', /archive/);
   assert.equal(stage('structure').refuse('予定.md'), undefined);
   assert.equal(stage('structure').refuse('暮らし/README.md'), undefined);
   assert.match(stage('structure').refuse('INDEX.md') ?? '', /INDEX\.md/);

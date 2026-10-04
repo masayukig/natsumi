@@ -850,3 +850,14 @@ test('a curator stage\'s changes can be checked without throwing them away', () 
   assert.match(await f.read('予定.md'), /散髪/);
   assert.doesNotMatch(await f.read('予定.md'), /健診/);
 }));
+
+test('a commit is dated by when it was made, and one the history does not hold has no date', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const head = f.git('rev-parse', 'HEAD');
+    assert.equal(await f.repository.commitTime(head), Date.parse(f.git('log', '-1', '--format=%cI', head)));
+    assert.equal(await f.repository.commitTime('0000000000000000000000000000000000000000'), undefined);
+    assert.equal(await f.repository.commitTime(undefined), undefined);
+  } finally { await f.cleanup(); }
+});
