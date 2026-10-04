@@ -204,14 +204,7 @@ export async function loadScene(dir: string): Promise<Scene> {
     ...(follow ? { follow } : {}),
     actors,
     ...(scene.setup === undefined ? {} : { setup: text(scene.setup, at('setup')) }),
-    dryRun: list(scene.dryRun ?? [], at('dryRun')).map((answer, index) => {
-      const path = at(`dryRun[${index}]`);
-      const fields = object(answer, path);
-      onlyKeys(fields, path, ['thinking', 'text', 'calls']);
-      return { ...(fields.thinking === undefined ? {} : { thinking: text(fields.thinking, `${path}.thinking`) }),
-        ...(fields.text === undefined ? {} : { text: text(fields.text, `${path}.text`) }),
-        calls: steps(fields.calls ?? [], `${path}.calls`) };
-    }),
+    dryRun: parseScript(scene.dryRun ?? [], at('dryRun')),
     ...(module ? { module } : {}),
     base: { event: base.event!, files: base.files ?? {}, copies: base.copies ?? {}, edits: base.edits ?? [], prompt: base.prompt ?? [],
       checks: base.checks ?? [] },
@@ -371,6 +364,18 @@ function event(raw: unknown, where: string): SceneEvent {
   const line = object(fields.line, `${where}.line`);
   text(line.type, `${where}.line.type`);
   return { kind: 'line', line };
+}
+
+/** The answers a scripted model gives in turn, as a scene's `dryRun` writes them; also the curator's script (ADR 0068). */
+export function parseScript(raw: unknown, where: string): ScriptedAnswer[] {
+  return list(raw, where).map((answer, index) => {
+    const path = `${where}[${index}]`;
+    const fields = object(answer, path);
+    onlyKeys(fields, path, ['thinking', 'text', 'calls']);
+    return { ...(fields.thinking === undefined ? {} : { thinking: text(fields.thinking, `${path}.thinking`) }),
+      ...(fields.text === undefined ? {} : { text: text(fields.text, `${path}.text`) }),
+      calls: steps(fields.calls ?? [], `${path}.calls`) };
+  });
 }
 
 function steps(raw: unknown, where: string): ToolStep[] {
