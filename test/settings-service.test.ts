@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { CURATOR_DEFAULTS } from '../src/server/config.ts';
 import { STATE_DIRECTORY } from '../src/server/data-directory.ts';
 import type { Fold } from '../src/shared/protocol/settings.ts';
 import { RuntimeSettings, type RouteControl, type SettingsDefaults } from '../src/server/settings/service.ts';
@@ -308,4 +309,12 @@ test('the limits of each stage of the curator\'s night are overridden like a tur
   assert.deepEqual((await readOverrides(data)).values, { curatorModelCalls: 90, curatorTimeoutMinutes: 45 });
   await settings.reset({ key: 'curatorModelCalls', deviceId: 'd' });
   assert.deepEqual(settings.curator(), { route: null, modelCalls: 60, timeoutMinutes: 45 });
+}));
+
+test('the curator\'s limits may be set at the config\'s defaults, an hour and 100 calls, and above (ADR 0068)', () => withSettings(async ({ settings }) => {
+  for (const [key, value] of [['curatorModelCalls', CURATOR_DEFAULTS.modelCalls], ['curatorTimeoutMinutes', CURATOR_DEFAULTS.timeoutMinutes],
+    ['curatorModelCalls', 200], ['curatorTimeoutMinutes', 120]] as const) {
+    assert.equal((await settings.set({ key, value, deviceId: 'd' })).kind, 'accepted', `${key} ${value}`);
+  }
+  assert.deepEqual([CURATOR_DEFAULTS.modelCalls, CURATOR_DEFAULTS.timeoutMinutes], [100, 60]);
 }));

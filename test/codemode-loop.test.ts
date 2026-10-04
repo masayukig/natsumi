@@ -62,7 +62,8 @@ async function setup() {
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime,
         loop: { ...LOOP_DEFAULTS, timeZone: 'Asia/Tokyo', ...(workspace ? { workspaceSocket: runner.path } : {}), ...settings },
-        curator: { ...CURATOR_DEFAULTS, ...curator },
+        // The tests run at the wall clock's time: the morning deadline is only where a test names one.
+        curator: { ...CURATOR_DEFAULTS, stopStartingAt: false, ...curator },
         configureSession: session => { session.agent.streamFunction = model.streamFunction; sessions.push(session); },
         ...options,
       });

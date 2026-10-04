@@ -121,7 +121,7 @@ const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
   judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs',
   judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.5, return: 0.9 },
-  curatorRoute: null, curatorModelCalls: 60, curatorTimeoutMinutes: 30,
+  curatorRoute: null, curatorModelCalls: 100, curatorTimeoutMinutes: 60,
 };
 /** The made-up routes reached through an outside service rather than the owner's own endpoint (ADR 0068). */
 const OUTSIDE_ROUTES = ['plus'];

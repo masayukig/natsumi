@@ -118,7 +118,8 @@ test('a stop before a stage begins runs no stage', async () => {
 });
 
 /** A night on a fictional memory, each stage following its steps by the number of model calls it has made. */
-async function aNight(steps: Record<string, ScriptedStep[]>, config: Partial<typeof CURATOR_DEFAULTS> = {}) {
+async function aNight(steps: Record<string, ScriptedStep[]>, config: Partial<typeof CURATOR_DEFAULTS> = {},
+  timing: { deadline?: number; onCall?: (stage: string, clock: { at: number }) => void } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-curator-night-')));
   const data = join(root, 'data');
   const memory = join(data, 'memory');
@@ -135,23 +136,29 @@ async function aNight(steps: Record<string, ScriptedStep[]>, config: Partial<typ
     await repository.initialize(undefined);
     const shell = new WorkspaceShell({ socketPath: runner.path, timeoutMs: 10_000, timeZone: 'Asia/Tokyo', memoryChanges: () => repository.changeSummary() });
     const model = new ScriptedModel();
+    const clock = { at: Date.parse('2026-10-04T19:00:00.000Z') };
     model.auto = context => {
       seen.push(context);
+      timing.onCall?.(stageOf(context) ?? '', clock);
       if (context.messages.at(-1)?.role === 'assistant') return { calls: [] };
       return steps[stageOf(context) ?? '']?.[context.messages.filter(message => message.role === 'assistant').length] ?? { calls: [] };
     };
-    const now = Date.parse('2026-10-04T19:00:00.000Z');
     const logs: string[] = [];
+    const begun: string[] = [];
+    const ended: CuratorStageResult[] = [];
+    const record = new CurationRecord(db, () => clock.at);
     const night = await runCuratorNight({
       repository, shell, modelRuntime: await fixtureRuntime(),
       route: { name: 'default', target: SUBSCRIPTION_TARGET, compatible: false },
-      config: { ...CURATOR_DEFAULTS, ...config }, record: new CurationRecord(db, () => now), now: () => now, log: line => logs.push(line),
+      config: { ...CURATOR_DEFAULTS, ...config }, record, now: () => clock.at, log: line => logs.push(line),
       name: 'なつみ', timeZone: 'Asia/Tokyo', fileMaxChars: 32000,
       dataDirectory: data, agentDirectory, sessionDirectory, thinking: 'off',
       configureSession: session => { session.agent.streamFunction = model.streamFunction; },
+      ...(timing.deadline === undefined ? {} : { deadline: timing.deadline }),
+      onStageBegin: stage => { begun.push(stage.stage); }, onStageEnd: stage => { ended.push(stage); },
     });
     const git = (...args: string[]) => execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
-    return { night, seen, logs, git, read: (path: string) => readFile(join(memory, path), 'utf8'),
+    return { night, seen, logs, git, record, begun, ended, read: (path: string) => readFile(join(memory, path), 'utf8'),
       stage: (name: string) => night.stages.find(stage => stage.stage === name)!,
       cleanup: async () => { await runner.close(); db.close(); await rm(root, { recursive: true, force: true }); } };
   } catch (error) {
@@ -369,4 +376,50 @@ test('a stage that moves and merges files is followed by the server\'s commit pu
     db.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('past the morning deadline no further stage begins: the one under way runs to its own limit, and the rest wait for the next night', async () => {
+  const deadline = Date.parse('2026-10-04T20:30:00.000Z');
+  // The knowledge stage begins before the deadline, and its model is still working when the deadline passes.
+  const n = await aNight({
+    knowledge: [
+      { calls: [call('run_shell', { command: "printf '# 予定\\n\\n- 歯医者は金曜 14 時\\n' > 予定.md" })] },
+      { calls: [call('write_change_note', { text: '歯医者の時刻を直した' })] },
+    ],
+  }, {}, { deadline, onCall: (stage, clock) => { if (stage === 'knowledge') clock.at += 60 * 60_000; } });
+  try {
+    assert.deepEqual(n.night.stages.map(stage => [stage.stage, stage.outcome]),
+      [['knowledge', 'ok'], ['archive', 'skipped-deadline'], ['structure', 'skipped-deadline'], ['index', 'skipped-deadline']]);
+    assert.match(await n.read('予定.md'), /14 時/, 'the stage under way was not cut off');
+    // A stage not begun has no session, no calls and no commit, but is told as its own result.
+    assert.deepEqual(n.begun, ['knowledge']);
+    assert.deepEqual(n.ended.map(stage => stage.stage), ['knowledge', 'archive', 'structure', 'index']);
+    for (const name of ['archive', 'structure', 'index']) {
+      const stage = n.stage(name);
+      assert.equal(stage.calls, 0);
+      assert.equal(stage.commit, undefined);
+      assert.equal(stage.place, undefined);
+      assert.equal(stage.eventKinds, `memory_curator:${name}`);
+      assert.equal(stage.startedAt, stage.endedAt);
+    }
+    assert.ok(n.logs.some(line => /memory curator: archive: not begun, past the morning deadline \(2026-10-05 05:30\)/.test(line)), n.logs.join('\n'));
+    // The stages that rewrite topics did not all run: the base stays, and the next night counts the day's changes from it.
+    assert.equal(n.record.base(), undefined);
+    assert.equal(n.record.curatedAt().size, 0);
+  } finally { await n.cleanup(); }
+});
+
+test('a night before its deadline runs every stage, and a night begun past it runs none', async () => {
+  const before = await aNight({}, {}, { deadline: Date.parse('2026-10-04T20:30:00.000Z') });
+  try {
+    assert.deepEqual(before.night.stages.map(stage => stage.outcome), ['ok', 'ok', 'ok', 'ok']);
+    assert.notEqual(before.record.base(), undefined);
+  } finally { await before.cleanup(); }
+  const after = await aNight({}, {}, { deadline: Date.parse('2026-10-04T19:00:00.000Z') });
+  try {
+    assert.deepEqual(after.night.stages.map(stage => stage.outcome), ['skipped-deadline', 'skipped-deadline', 'skipped-deadline', 'skipped-deadline']);
+    assert.deepEqual(after.begun, []);
+    assert.equal(after.seen.length, 0, 'no model is called');
+    assert.equal(after.record.base(), undefined);
+  } finally { await after.cleanup(); }
 });

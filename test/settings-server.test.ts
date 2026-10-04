@@ -80,7 +80,8 @@ test('the curator\'s route is listed with the config\'s, where the next night ru
   const c = await client(f);
   const settings = (await c.sync()).payload.settings;
   assert.deepEqual(settings.curatorRoute, { value: 'spare', config: 'spare', overridden: false, night: 'spare', outside: ['main', 'spare'] });
-  assert.deepEqual(settings.curatorModelCalls, { value: 60, config: 60, overridden: false });
+  // The config's default, 100 (ADR 0068), unless the config names one.
+  assert.deepEqual(settings.curatorModelCalls, { value: 100, config: 100, overridden: false });
   assert.deepEqual(settings.curatorTimeoutMinutes, { value: 20, config: 20, overridden: false });
   assert.equal((await c.request('settings.set', { key: 'curatorRoute', value: 'nowhere' })).payload.code, 'unknown-route');
   const set = await c.request('settings.set', { key: 'curatorRoute', value: null });

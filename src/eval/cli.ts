@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import { routeReady } from '../pi/auth.ts';
+import { TIME_OF_DAY } from '../server/nightly.ts';
 import { isWithin } from '../server/paths.ts';
 import { DEFAULT_ACTOR, PiActor, type ActorModel } from './actors.ts';
 import { refuseOnSecrets, SECRET_PLACES } from './guard.ts';
@@ -33,7 +34,7 @@ import type { Judge } from './checks.ts';
  *   pull [--context C] [--namespace N] [--cronjob J] [--backup <stamp>|latest] [--snapshots <dir>] [--keep N] [--kubectl <path>]
  *   snapshots [--snapshots <dir>]
  *   curate --model <file> [--snapshot <name>|latest] [--snapshots <dir>] [--label L] [--out <dir>] [--max-calls N] [--minutes N]
- *       [--rotate-files N] [--at <ISO time>] [--time-zone <zone>] [--dry-run [--script <file>]]
+ *       [--rotate-files N] [--at <ISO time>] [--stop-starting-at HH:MM] [--time-zone <zone>] [--dry-run [--script <file>]]
  *   curate-compare <night directory a> <night directory b>
  *
  * A run with a scene that starts from a snapshot (ADR 0052) checks for secrets first, runs isolated from the network
@@ -188,6 +189,7 @@ async function curate(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: {
     model: { type: 'string' }, snapshot: { type: 'string' }, snapshots: { type: 'string' }, label: { type: 'string' }, out: { type: 'string' },
     'max-calls': { type: 'string' }, minutes: { type: 'string' }, 'rotate-files': { type: 'string' }, at: { type: 'string' },
+    'stop-starting-at': { type: 'string' },
     'time-zone': { type: 'string' }, workspace: { type: 'string' }, 'dry-run': { type: 'boolean' }, script: { type: 'string' },
   } });
   const dryRun = values['dry-run'] === true;
@@ -209,6 +211,8 @@ async function curate(argv: string[]): Promise<number> {
     ...(values['rotate-files'] ? { rotateFiles: number(values['rotate-files'], 'rotate-files')! } : {}) };
   const at = values.at === undefined ? undefined : Date.parse(values.at);
   if (at !== undefined && Number.isNaN(at)) throw new Error('--at must be a time such as 2026-10-01T23:00:00+09:00');
+  const stopStartingAt = values['stop-starting-at'];
+  if (stopStartingAt !== undefined && !TIME_OF_DAY.test(stopStartingAt)) throw new Error('--stop-starting-at must be a 24-hour HH:MM time');
   const script = dryRun ? values.script ? parseScript(parseYaml(await readFile(resolve(values.script), 'utf8')), 'script')
     : [{ text: '変えることはありません' }] : undefined;
   const label = values.label ?? `${new Date().toISOString().replace(/[:.]/g, '-')}-curator-${file?.shown.id ?? 'dry-run'}`;
@@ -236,6 +240,7 @@ async function curate(argv: string[]): Promise<number> {
   const { record, directory } = await curateSnapshot({ snapshot, out, label, repository: REPOSITORY, runner, sandbox: sandbox as Sandbox,
     ...(file ? { model: { file, runtime: (root: string) => modelRuntime(file, root, process.env) } } : {}),
     ...(script ? { dryRun: script } : {}), curator, ...(at === undefined ? {} : { at }),
+    ...(stopStartingAt === undefined ? {} : { stopStartingAt }),
     ...(values['time-zone'] ? { timeZone: values['time-zone'] } : {}),
     log: line => process.stderr.write(`${line}\n`) });
   process.stdout.write(nightMarkdown(record));

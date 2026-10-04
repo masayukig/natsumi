@@ -160,6 +160,29 @@ test('the summary of a night names each stage\'s outcome, calls and time, the co
   assert.ok(!text.includes('undefined'));
 });
 
+test('the summary tells the morning deadline, and the stages not begun because of it (ADR 0068)', () => {
+  // By default the evaluation runs every stage: a snapshot's time is not a night's.
+  assert.match(nightMarkdown(NIGHT), /朝の締め切り: なし/);
+  const late: NightRecord = { ...NIGHT, deadline: '2026-10-01T20:30:00.000Z',
+    stages: [NIGHT.stages[0]!, { name: 'index', outcome: 'skipped-deadline', modelCalls: 0, ms: 0, tokens: { input: 0, cacheRead: 0, output: 0 }, toolErrors: 0 }] };
+  const text = nightMarkdown(late);
+  assert.match(text, /朝の締め切り: 2026-10-01T20:30:00\.000Z/);
+  assert.match(text, /\| index \| skipped-deadline \| 0 \|/);
+  assert.match(text, /- index: 始めなかった（朝の締め切りを過ぎた）/);
+});
+
+test('a night told a morning deadline counts it from the night it is told it is', { skip }, async () => {
+  await withSnapshot(async ({ root, snapshot, runner }) => {
+    const at = Date.parse('2026-10-05T06:00:00+09:00');
+    const { record } = await curateSnapshot({ snapshot, out: join(root, 'results'), label: 'late', repository: REPOSITORY,
+      runner, dryRun: TIDY, at, timeZone: 'Asia/Tokyo', stopStartingAt: '05:30' });
+    assert.equal(record.error, undefined);
+    // The night begins at --at: the first 05:30 after 06:00 is the next morning's, so every stage runs.
+    assert.equal(record.deadline, '2026-10-05T20:30:00.000Z');
+    assert.deepEqual(record.stages.map(stage => stage.outcome), ['ok', 'ok', 'ok', 'ok']);
+  });
+});
+
 test('two nights on one snapshot are put side by side', () => {
   const other: NightRecord = { ...NIGHT, label: 'plus', model: { provider: 'openai-codex', id: 'fixture-plus' },
     stages: [{ ...NIGHT.stages[0]!, outcome: 'timeout', modelCalls: 40 }], commits: [], files: [] };

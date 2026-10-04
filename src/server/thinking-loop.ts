@@ -26,7 +26,7 @@ import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
 import { TurnStats, type Confusion, type TokenCounts, type TurnKind, type TurnPlace } from './turn-stats.ts';
 import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
-import { CurationRecord, recoverCuratorRun, runCuratorNight, type CuratorStageResult } from './memory-curator.ts';
+import { CurationRecord, curatorDeadline, recoverCuratorRun, runCuratorNight, type CuratorStageResult } from './memory-curator.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
@@ -196,7 +196,8 @@ export interface LoopOptions {
   /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
-   * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
+   * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone, but for the night
+   * the curator's morning deadline is counted from (ADR 0068).
    */
   loop: LoopConfig;
   /**
@@ -1252,13 +1253,15 @@ export class ThinkingLoop {
     const route = chosen ?? this.route!;
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
     this.curatorStop = new AbortController();
+    const { nightlyRotationAt, timeZone } = this.options.loop;
+    const deadline = curatorDeadline(this.now(), nightlyRotationAt, config.stopStartingAt, timeZone);
     try {
       await runCuratorNight({
         repository: this.memoryRepository, shell: this.shell, modelRuntime: this.modelRuntime!, route, config, record: this.curation,
         now: this.now, log: line => this.log(line), name: this.self.name, timeZone: this.options.loop.timeZone,
         fileMaxChars: this.options.loop.memoryFileMaxChars, dataDirectory, agentDirectory, sessionDirectory, thinking: this.thinkingLevel(),
         ...(this.options.configureSession ? { configureSession: this.options.configureSession } : {}),
-        signal: this.curatorStop.signal,
+        signal: this.curatorStop.signal, ...(deadline === undefined ? {} : { deadline }),
         onStageBegin: begun => {
           this.working = { turnId: begun.turnId, startedAt: isoAt(begun.startedAt), eventKinds: begun.eventKinds, phase: 'turn' };
           this.workingPlace = { kind: 'curator', mark: begun.mark, eventIds: [] };
