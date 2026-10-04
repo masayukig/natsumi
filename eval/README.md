@@ -353,7 +353,7 @@ npm run eval -- curate-compare ~/.local/share/natsumi-eval/results/curator-qwen 
 
 | ファイル | 中身 |
 | --- | --- |
-| `summary.md` | 写し・モデル・時間、工程ごとの結果・呼び出しの回数・時間・token・ツールの失敗・コミット・変更の説明・検査に当たったもの、コミットのメッセージ、変わったファイル、サーバーのログ（記憶と係の行だけ） |
+| `summary.md` | 写し・モデル・時間、工程ごとの結果・呼び出しの回数・時間・token・ツールの失敗・コミット・変更の説明・検査に当たったもの（やり直す前に当たったものも）、コミットのメッセージ、変わったファイル、サーバーのログ（記憶と係の行だけ） |
 | `night.json` | 同じものを JSON で。`curate-compare` はこれを読みます |
 | `memory.diff` | 夜の前のコミットから夜の後までの `git diff` |
 | `copy/data/memory/` | 夜の後の記憶。git の履歴ごとなので、`git log`・`git show`・`git diff <夜の前>` で読めます |

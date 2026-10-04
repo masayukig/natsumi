@@ -99,7 +99,8 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 なつみのツールのうち作業環境に届くのは `run_shell`・`read`・`search_memory` の 3 つで、どれもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)、[ADR 0055](adr/0055-a-memory-curator-at-night.md)）。
 `read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
 `search_memory` は `rg` を決まったオプションで `/memory` の下にだけ掛けます。検索語とパスはオプションとして解釈されない形で渡し、パスは `/memory` の外を指せません。
-夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、1 つでも当たればその工程の変更をすべて捨てます（前の工程のコミットは残ります。[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、当たれば理由を伝えて 1 度だけ直させ、それでも当たればその工程の変更をすべて捨てます（前の工程のコミットは残ります。[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+`/memory/archive/` を書けるのは係の古い記憶の工程だけで、今月のファイルへの追記と、サーバーがその夜に決めたまとめ直しのほかは検査で拒みます。なつみのターンで変わっていれば戻します。
 サーバーのコンテナのファイル（ログインのファイルや secret）は、どちらからも見えません。Pi の組み込みの bash・edit・write・grep・find・ls は有効にしません。
 
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
