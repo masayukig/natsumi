@@ -172,11 +172,12 @@ function conversationLines(input: StageInput): string[] {
 /**
  * The archiving (ADR 0068): old facts out of the topics it may rewrite, summarized into this month's file, and on a
  * night that compacts, older files summarized into coarser ones. It comes before the reorganizing, so that what is
- * reorganized is what is still current.
+ * reorganized is what is still current. It is handed the day's conversation too: what was used or talked about lately
+ * is not what is old.
  */
 export const ARCHIVE_STAGE: CuratorStage = {
   name: 'archive',
-  instructions: () => CURATOR_ARCHIVE_INSTRUCTIONS,
+  instructions: name => CURATOR_ARCHIVE_INSTRUCTIONS(name),
   brief: input => {
     const scope = rewriteScope(input);
     const plan = archivePlan(input.files.map(file => file.path), input.date);
@@ -184,7 +185,7 @@ export const ARCHIVE_STAGE: CuratorStage = {
       : ['', '## 今夜まとめるもの', ...plan.compactions.map(group => `- ${group.into} ← ${group.from.join('、')}`)];
     return {
       text: wrap([...memoryMap(input, true), '', ...scopeLines(input, scope), '', '## 古い記憶の置き場',
-        `今夜の古い記憶は ${plan.append} の末尾に足します（まだ無ければ作ります）。`, ...compacting]),
+        `今夜の古い記憶は ${plan.append} の末尾に足します（まだ無ければ作ります）。`, ...compacting, '', ...conversationLines(input)]),
       handled: scope.handled, archive: plan,
     };
   },

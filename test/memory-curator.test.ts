@@ -183,6 +183,25 @@ test('the curator judges what is old by reading it, and moves it into the archiv
   assert.match(curatorSystemPrompt('なつみ'), /archive\//);
 });
 
+test('the archiving stage is handed the day\'s conversation too, as what was used lately (ADR 0068)', () => {
+  const { text } = stage('archive').brief(input({ date: '2026-10-04' }));
+  assert.match(text, /## 会話の本文\n\[09-27 09:00\] マスター: 歯医者は金曜の 14 時になった\n\[09-27 09:01\] なつみが記憶を読んだ: 予定\.md/);
+  assert.match(stage('archive').brief(input({ conversation: { lines: ['[09-27 23:00] マスター: おやすみ'], dropped: 3 } })).text,
+    /古い 3 件は、長さの上限で省きました。/);
+  assert.match(stage('archive').brief(input({ conversation: { lines: [], dropped: 0 } })).text, /## 会話の本文\n（なし）/);
+  // Only the two stages that read the day are handed it.
+  for (const name of ['structure', 'index']) assert.doesNotMatch(stage(name).brief(input()).text, /## 会話の本文/, name);
+});
+
+test('the archiving keeps what was used or talked about lately, and leans toward keeping it', () => {
+  const told = stage('archive').instructions('なつみ');
+  assert.match(told, /会話の本文/);
+  assert.match(told, /使われた記憶・話題に出た記憶/);
+  assert.match(told, /迷ったら移さずに残します/);
+  assert.match(stage('archive').instructions('はな'), /マスターとはなのやりとりと、はなが記憶を読んだ・探した記録/);
+  assert.doesNotMatch(told, /\$\{/);
+});
+
 test('the index stage is handed the map and told what it writes, and rewrites no topic', () => {
   const { text, handled } = stage('index').brief(input());
   assert.match(text, /- Slack連携\.md（13201 文字/);
