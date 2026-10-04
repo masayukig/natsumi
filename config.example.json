@@ -54,6 +54,7 @@
     "modelCalls": 60,
     "timeoutMinutes": 30,
     "rotateFiles": 2,
+    "rewriteAllMaxChars": 100000,
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 120 }
   },
   "avatar": { "id": "natsumi" }
