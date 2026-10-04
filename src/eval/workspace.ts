@@ -40,7 +40,9 @@ const RUNNER_NAME = 'natsumi-workspace-runner';
 const SOCKET_NAME = 'runner.sock';
 /** Only what a command needs of /etc: no hosts, no resolver, nothing about the machine it runs on. */
 const ETC = ['alternatives', 'ld.so.cache', 'ld.so.conf', 'ld.so.conf.d', 'localtime', 'ssl', 'ca-certificates', 'passwd', 'group',
-  'nsswitch.conf', 'bash.bashrc', 'inputrc', 'profile', 'mime.types', 'magic', 'gitconfig'];
+  'nsswitch.conf', 'bash.bashrc', 'inputrc', 'profile', 'mime.types', 'magic'];
+/** The image's system git config, in place of the host's: it trusts /memory and nothing else. */
+const GITCONFIG = 'docker/workspace/gitconfig';
 /** The image copies these into /usr/local/bin; the list is read from the Dockerfile so that it follows the image. */
 const LOCAL_BIN = /^COPY\s+(?:--chmod=\S+\s+)?(docker\/\S+)\s+\/usr\/local\/bin\/([A-Za-z0-9._-]+)\s*$/;
 
@@ -76,8 +78,9 @@ export interface WorkspaceStarter {
 export class WorkspaceRunner implements WorkspaceStarter {
   private readonly binary: string;
   private readonly tools: string;
+  private readonly gitconfig: string;
 
-  private constructor(binary: string, tools: string) { this.binary = binary; this.tools = tools; }
+  private constructor(binary: string, tools: string, gitconfig: string) { this.binary = binary; this.tools = tools; this.gitconfig = gitconfig; }
 
   /** Builds the runner from the repository's source and gathers the image's /usr/local/bin scripts into `cache`. */
   static async prepare(options: { repository: string; cache: string }): Promise<WorkspaceRunner> {
@@ -101,7 +104,7 @@ export class WorkspaceRunner implements WorkspaceStarter {
         await chmod(join(tools, match[2]!), 0o755);
       } catch { /* a script the branch does not have yet */ }
     }
-    return new WorkspaceRunner(binary, tools);
+    return new WorkspaceRunner(binary, tools, join(options.repository, GITCONFIG));
   }
 
   async start(options: StartOptions): Promise<RunningWorkspace> {
@@ -164,6 +167,7 @@ export class WorkspaceRunner implements WorkspaceStarter {
     for (const name of ETC) {
       try { await lstat(`/etc/${name}`); args.push('--ro-bind', `/etc/${name}`, `/etc/${name}`); } catch { /* not on this host */ }
     }
+    try { await lstat(this.gitconfig); args.push('--ro-bind', this.gitconfig, '/etc/gitconfig'); } catch { /* a branch before it */ }
     args.push(...(pid ? ['--proc', '/proc'] : ['--ro-bind', '/proc', '/proc']), '--dev', '/dev', '--tmpfs', '/tmp',
       '--ro-bind', this.tools, '/usr/local/bin',
       '--ro-bind', this.binary, '/run/natsumi-runner/natsumi-workspace-runner',

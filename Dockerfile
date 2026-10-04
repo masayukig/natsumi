@@ -53,6 +53,8 @@ COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-
 COPY --from=sdctl /out/sdctl /usr/libexec/sdctl
 COPY --chmod=755 docker/sdctl/sdctl /usr/local/bin/sdctl
 COPY docker/sdctl/config.yaml /etc/sdctl/config.yaml
+# git reads the memory's history in /memory, which the server owns (ADR 0018, 0033); see the file for why it is trusted.
+COPY docker/workspace/gitconfig /etc/gitconfig
 # sources-diff (ADR 0050): what changed under /sources, read from the history the server keeps in /sources.git, which
 # is mounted read-only. The runner gives it none of the image's environment, so the script knows the place itself.
 COPY --chmod=755 docker/sources-diff/sources-diff /usr/local/bin/sources-diff
