@@ -1,7 +1,7 @@
 # 0055. 記憶の組み直しは、人格を持たない整理係が夜に行う
 
 - Date: 2026-09-27
-- Status: Accepted（整理係のツールに、設定で on にしたとき `codemode` が加わることは [ADR 0066](0066-codemode-to-keep-raw-output-out-of-the-context.md) で追加）
+- Status: Accepted（整理係のツールに、設定で on にしたとき `codemode` が加わることは [ADR 0066](0066-codemode-to-keep-raw-output-out-of-the-context.md) で追加。古くなったものを消さずに要約して `archive/` へ移すこと、古いパスをサーバーが置き換えること、トピックの合計が設定の大きさ以下なら全部を書き直してよいこと、一晩 1 コミット・全部か無しか・1 session 1 ターンを工程ごとに分けること、日中のトピックに書くものは [ADR 0068](0068-a-curator-that-remembers-like-a-person.md) で置き換え。会話の本文を係に渡すこと、リンクと「関連」の節、話題ごとの節、見取り図の節ごとの行数と日付は同 ADR で追加）
 
 ## Context
 
