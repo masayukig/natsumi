@@ -337,6 +337,7 @@ npm run eval -- curate-compare ~/.local/share/natsumi-eval/results/curator-qwen 
 | `--label L`・`--out <dir>` | 結果の置き場は `<out>/<label>/`。`--out` の既定は `~/.local/share/natsumi-eval/results` |
 | `--max-calls N`・`--minutes N`・`--rotate-files N` | 係の上限と順番の本数（設定の `curator.modelCalls`・`timeoutMinutes`・`rotateFiles`）。省くと設定の既定値 |
 | `--at <時刻>` | 係に伝える「今夜」。既定は写しを取った時刻 |
+| `--stop-starting-at HH:MM` | 朝の締め切り（設定の `curator.stopStartingAt`）。`--at` の後で最初に来るこの時刻を過ぎたら、次の工程を始めません。既定は無しで、写しを取った時刻に関わらず全工程を回します。要約に締め切りと、始めなかった工程（`skipped-deadline`）が出ます |
 | `--time-zone <zone>` | 日付を決めるタイムゾーン。既定は手元のもの |
 | `--dry-run` | 偽のモデルで流れを確かめます。key は読みません。偽のモデルの答えは `--script <file>` で書けます（場面の `dryRun` と同じ形の YAML のリスト）。省くと「変えることはありません」と答えて終わります |
 
