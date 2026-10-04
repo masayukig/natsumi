@@ -295,7 +295,7 @@ return outcomes.join(',');`)] },
     await loop.idle();
     assert.equal((await loop.rotate()).result, 'switched');
     const session = f.sessions.find(candidate => candidate.systemPrompt.startsWith(curatorSystemPrompt('なつみ')))!;
-    assert.deepEqual(session.getActiveToolNames(), ['write_change_note', 'codemode']);
+    assert.deepEqual(session.getActiveToolNames(), ['write_change_note', 'map_old_path', 'codemode']);
     assert.deepEqual(session.getCallableToolNames().sort(), [...WORKSPACE_TOOLS].sort());
     const [result] = scriptResults(f.model.contexts.filter(isCurator));
     assert.match(result!, /note refused/);

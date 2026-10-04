@@ -329,6 +329,9 @@ ${name}のオーナー（持ち主）を、記憶ではマスターと呼びま�
   - diary/ の下（日ごとの日記。経緯はここと git に残っています）
 - INDEX.md（記憶の索引）は、あなただけが書くファイルです。${name}は記憶を探すとき、まずここを読みます。最後の工程で書き直します。
 - archive/ の下は、トピックから外した古い事実の要約（古い記憶）です。書くのは古い記憶の工程だけで、ほかの工程では変えません。
+- それ以外のトピックのファイルの名前と場所は変えてかまいません（上に挙げたもの、INDEX.md、archive/ の下は動かしません）。always.md・handoff.md・personality.md の中の古いパスと、すべてのファイルのリンクは、この工程の後にサーバーが新しいパスに直します。
+  - mv で動かしたファイルの行き先は、サーバーが git から読み取ります。
+  - ファイルをほかのファイルにまとめて消したときや、動かしたうえで中身を大きく書き直したときは、map_old_path で、元のパスと行き先のパスを伝えてください。伝えないと、古いパスがそのまま残ります。
 
 ## 書き方
 - 書くときは、${whoToWhom(name)}
@@ -376,8 +379,8 @@ export const CURATOR_ARCHIVE_INSTRUCTIONS = (name: string) => `## この工程: 
 - write_change_note には、archive へ移したものを一つずつ、どのトピックから何をなぜ移したかを書きます。まとめた夜は、まとめたファイルも書きます。`;
 
 /**
- * The stage that reorganizes memory (ADR 0068): the files, and the sections inside them. What may be rewritten is in
- * its brief. Renaming files that natsumi's own files point to waits for the server to rewrite those paths.
+ * The stage that reorganizes memory (ADR 0068): the files, the sections inside them, and the links between them. What
+ * may be rewritten is in its brief. It may rename and move freely: the server puts the old paths right after it.
  */
 export const CURATOR_STRUCTURE_INSTRUCTIONS = `## この工程: 構成と節の組み直し
 - 仕事の中心は、ファイルの構成です。同じことを書いたファイルをまとめる、大きくなったファイルを分ける、分かりやすい名前に変える、関係するファイルをディレクトリにまとめる、の順に考えます。
@@ -389,7 +392,13 @@ export const CURATOR_STRUCTURE_INSTRUCTIONS = `## この工程: 構成と節の�
   - 話題ごとに節を立てます。節の名前は、中身の話題にします。
   - 節に合わない行は、合う節か、合うファイルへ移します。
   - 長い節は ### で分けます。見取り図の行数が多い節（目安は 20 行を超えるもの）や、見出しの前に長く続く行は、分けられないか考えます。
-  - 各節は、要点から書きます。`;
+  - 各節は、要点から書きます。
+- ファイルの名前と場所を変えることをためらわないでください。古いパスはサーバーが直します。
+- ディレクトリにまとめる目安: 同じ主題のファイルが 3 つ以上あるとき、または 1 ファイルが上限の半分を超えたときは、ディレクトリを作り、その中で話題ごとのファイルに分けます。
+- 関係する記憶同士を、リンクでつなぎます。
+  - 本文の中で別のトピックに触れたら、そこに Markdown のリンクを張ります。リンク先は、そのファイルからの相対パスで書きます（[予定](予定.md)、[予定](../暮らし/予定.md) のように）。
+  - 各トピックの末尾に「## 関連」の節を置き、関係するトピックへのリンクを 1 行に 1 つずつ並べます。
+  - リンクを張るのも、中身を書き直してよいファイルの中だけです。`;
 
 /** The last stage (ADR 0068): the index, written against memory as the stages before left it. */
 export const CURATOR_INDEX_INSTRUCTIONS = `## この工程: 索引
@@ -414,6 +423,12 @@ export const CURATOR_RUN_SHELL_DESCRIPTION = '記憶の作業環境でコマン�
   + '作業ディレクトリは /work。記憶は /memory にある。mkdir、mv、cp、rm、sed、awk、リダイレクトでファイルを動かし、書き換える。\n'
   + '/memory の .git は読み取り専用。git log や git diff で履歴を読めるが、コミットするのはサーバー。\n'
   + 'コマンドの長さは 8000 文字まで。時間と出力の大きさにも上限があり、当たったときは結果の文で知らせる。';
+
+/** Where a file the stage took away went, for the server to put old paths right (ADR 0068). Fixed like every description. */
+export const CURATOR_MAP_OLD_PATH_DESCRIPTION = 'ファイルをほかのファイルにまとめて消したとき、元のパス（from）と、まとめた先のパス（to）をサーバーに伝える。'
+  + 'この工程の後、サーバーが always.md・handoff.md・personality.md・INDEX.md の中の from と、すべてのファイルの from へのリンクを、to に置き換える。'
+  + 'mv で動かしただけのファイルは git から読み取れるので要らない。動かしたうえで中身を大きく書き直したときは伝える。'
+  + 'まとめて消したファイルごとに 1 回呼ぶ。同じ from でもう一度呼ぶと、最後のものが使われる。';
 
 export const CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION = 'この工程の記憶の組み直しを説明する。この文がそのままこの工程のコミットメッセージになる。'
   + '1 行目は短い要約にし、その後に、動かした・まとめた・分けたファイルと、消したものを一つずつ、何をなぜ消したかを書く。'

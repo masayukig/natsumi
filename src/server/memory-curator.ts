@@ -9,12 +9,14 @@ import { withCodemode, type NestedCallCount } from './codemode.ts';
 import type { CuratorConfig } from './config.ts';
 import { readConversation, type Conversation } from './curator-conversation.ts';
 import type { ToolOutcome } from './loop-tools.ts';
+import { memoryPath, rewriteMovedPaths, type PathRewrite } from './memory-paths.ts';
 import { ARCHIVE_DIRECTORY, DIARY_DIRECTORY, INDEX_FILE, NATSUMI_ONLY_FILES, type ArchivePlan, type MemoryFile, type MemoryRepository,
   type RevertedFile } from './memory-repository.ts';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
-import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWLEDGE_INSTRUCTIONS, CURATOR_RUN_SHELL_DESCRIPTION,
-  CURATOR_STRUCTURE_INSTRUCTIONS, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorRetryRequest, curatorSystemPrompt } from './prompts.ts';
+import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWLEDGE_INSTRUCTIONS, CURATOR_MAP_OLD_PATH_DESCRIPTION,
+  CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_STRUCTURE_INSTRUCTIONS, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorRetryRequest,
+  curatorSystemPrompt } from './prompts.ts';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
@@ -295,9 +297,27 @@ export interface CuratorToolHost {
   runShell(command: string): Promise<ToolOutcome>;
   capture: RunnerCapture;
   writeChangeNote(text: string): ToolOutcome;
+  /** Where a file the stage took away went, for what git cannot tell (ADR 0068). */
+  mapOldPath(from: string, to: string): ToolOutcome;
 }
 
-/** The curator's tools: the workspace, reading and searching memory, and its own change note. Nothing that speaks. */
+/**
+ * Takes a row of the curator's table of merged paths into `merged`, when both are Markdown paths inside memory that the
+ * curator may arrange (never natsumi's files, the index or the diary). Whether `from` is gone and `to` is there is
+ * known only once the stage ends, and is judged then.
+ */
+export function acceptOldPath(merged: Map<string, string>, rawFrom: string, rawTo: string): ToolOutcome {
+  const from = memoryPath(rawFrom);
+  const to = memoryPath(rawTo);
+  if (!from || !to || !isRewritable(from) || !isRewritable(to)) {
+    return { ok: false, text: 'from と to は、/memory の中のトピックの .md のパスにしてください（always.md・personality.md・handoff.md・INDEX.md・diary/ は使えません）。' };
+  }
+  if (from === to) return { ok: false, text: 'from と to が同じパスです。' };
+  merged.set(from, to);
+  return { ok: true, text: `この工程の後、always.md などに書かれた ${from} とリンクを、${to} に置き換えます。` };
+}
+
+/** The curator's tools: the workspace, reading and searching memory, its own change note, and where merged files went. Nothing that speaks. */
 export function curatorTools(host: CuratorToolHost) {
   const result = (settled: ToolOutcome) => {
     if (!settled.ok) throw new Error(settled.text);
@@ -315,6 +335,11 @@ export function curatorTools(host: CuratorToolHost) {
       name: 'write_change_note', label: 'Write the change note', description: CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION,
       parameters: Type.Object({ text: Type.String() }),
       execute: async (_id, params) => result(host.writeChangeNote(params.text)),
+    }),
+    defineTool({
+      name: 'map_old_path', label: 'Tell where a merged file went', description: CURATOR_MAP_OLD_PATH_DESCRIPTION,
+      parameters: Type.Object({ from: Type.String(), to: Type.String() }),
+      execute: async (_id, params) => result(host.mapOldPath(params.from, params.to)),
     }),
   ];
 }
@@ -428,6 +453,8 @@ export interface CuratorStageResult {
   rejected: RevertedFile[];
   /** What failed the check the first time, when the stage was told it and given its one retry (ADR 0068). */
   retried: RevertedFile[];
+  /** The paths the server put right after the stage's commit, when the stage took any away (ADR 0068). */
+  paths?: PathRewrite;
   startedAt: number;
   endedAt: number;
   calls: number;
@@ -529,6 +556,7 @@ async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pic
   const { repository, config, route, record } = options;
   // Everything a stage changes is thrown away on a failure, so it starts only where that throws away nothing else.
   if (!(await repository.isClean())) return ended({ outcome: 'memory-not-clean' });
+  const before = await repository.head();
   let ready = false;
   try { ready = Boolean(options.modelRuntime.getModel(route.target.provider, route.target.model)) && await routeReady(options.modelRuntime, route.target, route.compatible); }
   catch { ready = false; }
@@ -544,6 +572,7 @@ async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pic
   });
 
   let note: string | undefined;
+  const merged = new Map<string, string>();
   const count: NestedCallCount = { nestedCalls: 0 };
   const { tools, extensions } = withCodemode(curatorTools({
     runShell: command => options.shell.run(command),
@@ -554,6 +583,7 @@ async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pic
       note = text;
       return { ok: true, text: 'この工程のコミットメッセージにします。書き直すなら、もう一度呼んでください。' };
     },
+    mapOldPath: (from, to) => acceptOldPath(merged, from, to),
   }), config.codemode, () => count);
   record.begin();
   const session = await createPersistedPiSession({
@@ -621,9 +651,33 @@ async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pic
     record.end();
     return ended({ outcome: 'rejected', ...counted, rejected: outcome.rejected });
   }
+  const commit = outcome.committed ? await repository.head() : undefined;
+  const rewrite = commit ? await putPathsRight(options, stage, before, merged) : undefined;
   record.end();
   handled.push(...brief.handled, ...(stage.rewrites ? outcome.files : []));
-  return ended({ outcome: 'ok', ...counted, files: outcome.files, ...(outcome.committed ? { commit: await repository.head() } : {}) });
+  return ended({ outcome: 'ok', ...counted, files: outcome.files, ...(commit ? { commit } : {}), ...(rewrite ? { paths: rewrite } : {}) });
+}
+
+/**
+ * After a stage's commit, the paths it took away put right in a commit of the server's own (ADR 0068). The stage's
+ * commit stands whatever becomes of this: a rewrite that fails is thrown away, and natsumi's files keep the old paths.
+ */
+async function putPathsRight(options: CuratorNightOptions, stage: CuratorStage, before: string, merged: ReadonlyMap<string, string>):
+Promise<PathRewrite | undefined> {
+  const { repository, log } = options;
+  try {
+    const paths = await rewriteMovedPaths(repository, { before, merged, event: `${CURATOR_EVENT_KIND}:${stage.name}:paths` });
+    if (!paths) return undefined;
+    for (const row of paths.ignored) log(`memory curator: ${stage.name}: map_old_path ${row.from} → ${row.to} was not a merge: ${row.reason}`);
+    for (const file of paths.reverted) log(`memory curator: ${stage.name}: ${file.path} keeps its old paths: ${file.reason}`);
+    log(`memory curator: ${stage.name}: put the moved paths right in ${paths.files.length} file(s) (${
+      paths.moves.map(move => `${move.from} → ${move.to}`).join(', ')})`);
+    return paths;
+  } catch {
+    log(`memory curator: ${stage.name}: the moved paths could not be put right`);
+    try { await repository.discardChanges(); } catch { /* the next start throws it away */ }
+    return undefined;
+  }
 }
 
 type Reply = { stopReason?: string; usage: { input: number; cacheRead: number; cacheWrite: number; output: number } };

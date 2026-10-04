@@ -41,6 +41,8 @@ export interface StageRecord {
   rejected?: { path: string; reason: string }[];
   /** What failed the check the first time, when the stage was told it and given its one retry. */
   retried?: { path: string; reason: string }[];
+  /** The paths the server put right after the stage's commit (ADR 0068), and the curator's table rows it did not take. */
+  paths?: { commit?: string; moves: { from: string; to: string }[]; files: string[]; ignored: { from: string; to: string; reason: string }[] };
 }
 
 export interface NightRecord {
@@ -191,7 +193,9 @@ export async function curateSnapshot(options: CurateSnapshotOptions): Promise<{ 
       ms: stage.endedAt - stage.startedAt, tokens: stage.usage, toolErrors: stage.toolErrors,
       ...(stage.commit ? { commit: stage.commit } : {}), ...(stage.note ? { note: stage.note } : {}),
       ...(stage.retried.length > 0 ? { retried: stage.retried.map(file => ({ path: file.path, reason: file.reason })) } : {}),
-      ...(stage.rejected.length > 0 ? { rejected: stage.rejected.map(file => ({ path: file.path, reason: file.reason })) } : {}) }));
+      ...(stage.rejected.length > 0 ? { rejected: stage.rejected.map(file => ({ path: file.path, reason: file.reason })) } : {}),
+      ...(stage.paths ? { paths: { ...(stage.paths.commit ? { commit: stage.paths.commit } : {}), moves: stage.paths.moves, files: stage.paths.files,
+        ignored: stage.paths.ignored } } : {}) }));
 
     record.head = (await git(['rev-parse', 'HEAD'])).stdout.trim();
     if (record.head !== record.base) {
@@ -243,6 +247,11 @@ export function nightMarkdown(night: NightRecord): string {
     lines.push(`- ${stage.name}: ${kept}${note}`);
     for (const file of stage.retried ?? []) lines.push(`  - 検査に当たってやり直した: ${file.path}: ${file.reason}`);
     for (const file of stage.rejected ?? []) lines.push(`  - 検査に当たった: ${file.path}: ${file.reason}`);
+    if (stage.paths) {
+      lines.push(`  - パスの置き換え: ${stage.paths.commit ? `コミット ${short(stage.paths.commit)}` : 'コミットなし'}（${
+        stage.paths.moves.map(move => `${move.from} → ${move.to}`).join('、')}）`);
+      for (const row of stage.paths.ignored) lines.push(`  - 置き換えなかった対応表の行: ${row.from} → ${row.to}: ${row.reason}`);
+    }
   }
   lines.push('', `## コミット（${night.commits.length} 件）`);
   for (const commit of night.commits) lines.push('', `### ${short(commit.hash)}`, '', ...commit.message.split('\n').map(line => `> ${line}`.trimEnd()));

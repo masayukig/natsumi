@@ -306,3 +306,67 @@ test('the knowledge stage begins from the conversation since the last night that
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('a stage that moves and merges files is followed by the server\'s commit putting the old paths right', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-curator-night-')));
+  const data = join(root, 'data');
+  const memory = join(data, 'memory');
+  const sessionDirectory = join(root, 'pi', 'sessions');
+  const agentDirectory = join(root, 'pi', 'agent');
+  for (const directory of [memory, sessionDirectory, agentDirectory]) await mkdir(directory, { recursive: true });
+  await writeFile(join(memory, '予定.md'), '# 予定\n\n- 歯医者は金曜\n- 会議は月曜\n- 書類の締め切りは水曜\n\n## 関連\n- [旅行メモ](旅行メモ.md)\n');
+  await writeFile(join(memory, '旅行.md'), '# 旅行\n\n- 春に京都\n');
+  await writeFile(join(memory, '旅行メモ.md'), '# 旅行メモ\n\n- 宿は駅の近く\n');
+  await writeFile(join(memory, 'always.md'), '# 常時記憶\n\n- 予定は 予定.md、旅行は 旅行メモ.md\n');
+  const db = openStateDatabase(join(root, 'state.sqlite'));
+  migrate(db, MIGRATIONS);
+  const runner = await startFakeRunner({ dir: memory });
+  try {
+    const repository = new MemoryRepository({ directory: memory, dataDirectory: data });
+    await repository.initialize(undefined);
+    const shell = new WorkspaceShell({ socketPath: runner.path, timeoutMs: 10_000, timeZone: 'Asia/Tokyo', memoryChanges: () => repository.changeSummary() });
+    const model = new ScriptedModel();
+    const steps: Record<string, ScriptedStep[]> = {
+      structure: [
+        { calls: [call('run_shell', { command: "mkdir -p 暮らし && mv 予定.md 暮らし/予定.md && printf '# 旅行\\n\\n- 春に京都\\n- 宿は駅の近く\\n' > 旅行.md && rm 旅行メモ.md" })] },
+        { calls: [call('map_old_path', { from: '/memory/旅行メモ.md', to: '/memory/旅行.md' })] },
+        { calls: [call('write_change_note', { text: '予定を 暮らし/ に移し、旅行メモを旅行にまとめた' })] },
+      ],
+    };
+    model.auto = context => {
+      if (context.messages.at(-1)?.role === 'assistant') return { calls: [] };
+      return steps[stageOf(context) ?? '']?.[context.messages.filter(message => message.role === 'assistant').length] ?? { calls: [] };
+    };
+    const now = Date.parse('2026-10-04T19:00:00.000Z');
+    const logs: string[] = [];
+
+    const night = await runCuratorNight({
+      repository, shell, modelRuntime: await fixtureRuntime(),
+      route: { name: 'default', target: SUBSCRIPTION_TARGET, compatible: false },
+      config: CURATOR_DEFAULTS, record: new CurationRecord(db, () => now), now: () => now, log: line => logs.push(line),
+      name: 'なつみ', timeZone: 'Asia/Tokyo', fileMaxChars: 32000,
+      dataDirectory: data, agentDirectory, sessionDirectory, thinking: 'off',
+      configureSession: session => { session.agent.streamFunction = model.streamFunction; },
+    });
+
+    const git = (...args: string[]) => execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
+    const structure = night.stages.find(stage => stage.stage === 'structure');
+    assert.deepEqual(night.stages.map(stage => [stage.stage, stage.outcome]), [['knowledge', 'ok'], ['archive', 'ok'], ['structure', 'ok'], ['index', 'ok']]);
+    assert.equal(structure!.outcome, 'ok');
+    assert.deepEqual(structure!.paths?.moves, [{ from: '予定.md', to: '暮らし/予定.md' }, { from: '旅行メモ.md', to: '旅行.md' }]);
+    assert.deepEqual(structure!.paths?.files, ['always.md', '暮らし/予定.md']);
+    assert.equal(await readFile(join(memory, 'always.md'), 'utf8'), '# 常時記憶\n\n- 予定は 暮らし/予定.md、旅行は 旅行.md\n');
+    assert.match(await readFile(join(memory, '暮らし/予定.md'), 'utf8'), /- \[旅行メモ\]\(\.\.\/旅行\.md\)\n$/);
+    // The curator's commit, then the server's; the index stage changed nothing, nor did the stages before.
+    const subjects = git('log', '-2', '--format=%s').split('\n');
+    assert.match(subjects[1]!, /^予定を 暮らし\/ に移し/);
+    assert.match(subjects[0]!, /^memory_curator:structure:paths: /);
+    assert.equal(structure!.commit, git('rev-parse', 'HEAD~1'));
+    assert.equal(structure!.paths?.commit, git('rev-parse', 'HEAD'));
+    assert.ok(logs.some(line => /memory curator: structure: put the moved paths right in 2 file\(s\)/.test(line)), logs.join('\n'));
+  } finally {
+    await runner.close();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
