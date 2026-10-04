@@ -1,7 +1,7 @@
 # 0067. 本人が ssh で記憶を自分でコミットする
 
 - Date: 2026-10-04
-- Status: Accepted
+- Status: Accepted（整理係のコミットが失敗したときに捨てる範囲が一晩から工程ごとになることは [ADR 0068](0068-a-curator-that-remembers-like-a-person.md) で改める）
 
 ## Context
 
