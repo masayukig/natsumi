@@ -5,9 +5,10 @@ import { checkSetting, ROUTE_NAME, SETTING_KEYS } from '../src/shared/protocol/s
 
 /** The settings the owner may change while natsumi runs (ADR 0058), and the rules their values keep: the config's. */
 
-test('the settings are the route, the fold, the four limits of a turn, the awake hours, the ping interval and the dove\'s judges', () => {
+test('the settings are the route, the fold, the four limits of a turn, the awake hours, the ping interval, the dove\'s judges and the curator\'s route and limits', () => {
   assert.deepEqual([...SETTING_KEYS], ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls',
-    'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds']);
+    'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds',
+    'curatorRoute', 'curatorModelCalls', 'curatorTimeoutMinutes']);
 });
 
 test('each of the dove\'s judges is on or off, and the one adopted is logprobs or jev (ADR 0059)', () => {
@@ -27,8 +28,8 @@ test('a name that is not one of them is an unknown setting, whatever its value',
   }
 });
 
-test('the limits of a turn are positive integers', () => {
-  for (const key of ['eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes']) {
+test('the limits of a turn, and of each stage of the curator\'s night, are positive integers', () => {
+  for (const key of ['eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes', 'curatorModelCalls', 'curatorTimeoutMinutes']) {
     assert.deepEqual(checkSetting(key, 1), { ok: true, key, value: 1 });
     assert.deepEqual(checkSetting(key, 120), { ok: true, key, value: 120 });
     for (const value of [0, -1, 1.5, '8', null, true, Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -70,24 +71,34 @@ test('a route is checked for the shape of a name here; whether the config has it
   assert.ok(ROUTE_NAME.test('local-2'));
 });
 
+test('the curator\'s route is a route\'s name, or null for the route natsumi is on (ADR 0068)', () => {
+  assert.deepEqual(checkSetting('curatorRoute', 'plus'), { ok: true, key: 'curatorRoute', value: 'plus' });
+  assert.deepEqual(checkSetting('curatorRoute', null), { ok: true, key: 'curatorRoute', value: null });
+  for (const value of ['', 'Plus', '-plus', 'a'.repeat(33), 3, false, undefined]) {
+    assert.deepEqual(checkSetting('curatorRoute', value), { ok: false, code: 'invalid-value' }, String(value));
+  }
+});
+
 test('the config keeps the same rules: what the settings refuse, the config refuses too', () => {
-  const config = (loop: Record<string, unknown>) => ({
+  const config = (loop: Record<string, unknown>, curator: Record<string, unknown> = {}) => ({
     publicOrigin: 'https://natsumi.example.test',
     listen: { host: '::', port: 8443, tls: { certFile: '/run/secrets/natsumi-tls-cert', keyFile: '/run/secrets/natsumi-tls-key' } },
     github: { clientId: 'Iv1.fixtureclient', clientSecretEnv: 'NATSUMI_GITHUB_CLIENT_SECRET',
       callbackUrl: 'https://natsumi.example.test/auth/github/callback', allowedUserId: 4242001 },
     pi: { agentDirectory: '/srv/natsumi-pi/agent', sessionDirectory: '/srv/natsumi-pi/sessions', authPath: '/srv/natsumi-pi/agent/auth.json',
       model: { provider: 'openai-codex', id: 'gpt-5.5' }, voiceEnabled: false },
-    loop,
+    loop, curator,
   });
-  const refused = (loop: Record<string, unknown>, path: string) =>
-    assert.throws(() => parseConfig(config(loop)), (error: unknown) => error instanceof ConfigError && error.path === path);
+  const refused = (loop: Record<string, unknown>, path: string, curator: Record<string, unknown> = {}) =>
+    assert.throws(() => parseConfig(config(loop, curator)), (error: unknown) => error instanceof ConfigError && error.path === path);
   refused({ eventModelCalls: 0 }, 'loop.eventModelCalls');
   refused({ reviewTimeoutMinutes: 1.5 }, 'loop.reviewTimeoutMinutes');
   refused({ pingIntervalMinutes: 4 }, 'loop.pingIntervalMinutes');
   refused({ awakeHours: { start: '07:00', end: '07:00' } }, 'loop.awakeHours.end');
   refused({ awakeHours: { start: '7:00', end: '23:00' } }, 'loop.awakeHours.start');
   refused({ turnFold: 'ON' }, 'loop.turnFold');
+  refused({}, 'curator.modelCalls', { modelCalls: 0 });
+  refused({}, 'curator.timeoutMinutes', { timeoutMinutes: 2.5 });
   const parsed = parseConfig(config({ pingIntervalMinutes: false, awakeHours: { start: '22:00', end: '02:00' } }));
   assert.equal(parsed.loop.pingIntervalMinutes, false);
 });

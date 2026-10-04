@@ -246,7 +246,14 @@ const LABELS: Record<SettingKey, { label: string; help: string; unit?: string }>
   judgeLogprobsThresholds: { label: 'logprobs のしきい値', help: 'この点数以上で本人へ回し、もう一方以上で突き返します。0 より大きく 1 以下。次の下書きから。' },
   judgeJevThresholds: { label: 'Jev のしきい値', help: 'この点数以上で本人へ回し、もう一方以上で突き返します。0 より大きく 1 以下。次の下書きから。' },
   judgeAdopted: { label: 'ポッポさんの採用する判定', help: 'この判定で決めます。答えが無ければもう一方で、両方だめなら本人に回します。次の下書きから。' },
+  curatorRoute: { label: '記憶の整理係の経路', help: '夜に記憶を組み直す係が使うモデル。係は毎晩、記憶とその日の会話の本文をこの経路の接続先へ送ります。'
+    + 'ChatGPT Plus など外のサービスの経路を選ぶと、それらが毎晩外に出ます。次の夜から。' },
+  curatorModelCalls: { label: '整理係の呼び出しの上限', help: '係の夜の工程ごとにモデルを呼べる回数。工程ごとにまるごと使えます。次の夜から。', unit: '回' },
+  curatorTimeoutMinutes: { label: '整理係の時間の上限', help: '係の夜の工程ごとにかけられる時間。工程ごとにまるごと使えます。次の夜から。', unit: '分' },
 };
+
+/** What the curator's route is shown as when it has none of its own (ADR 0068). */
+const NATSUMI_ROUTE = 'なつみと同じ経路';
 
 function valueText(key: SettingKey, value: unknown, view: SettingsView): string {
   if (key === 'awakeHours') {
@@ -258,6 +265,7 @@ function valueText(key: SettingKey, value: unknown, view: SettingsView): string 
     const thresholds = value as { owner: number; return: number };
     return `本人へ ${thresholds.owner}・突き返す ${thresholds.return}`;
   }
+  if (key === 'curatorRoute') return value === null ? NATSUMI_ROUTE : String(value);
   if (isLimitKey(key)) return `${String(value)} ${LABELS[key].unit}`;
   return String(value);
 }
@@ -267,6 +275,12 @@ function controlOf(key: SettingKey, view: SettingsView): ControlProps {
     case 'modelRoute':
       return { kind: 'select', selected: view.modelRoute.value, options: view.modelRoute.routes.map(route => ({
         value: route.name, label: `${route.name}（${route.model}）${route.ready ? '' : ' — 使えません'}`, disabled: !route.ready })) };
+    case 'curatorRoute': {
+      const { value, outside } = view.curatorRoute;
+      return { kind: 'select', selected: value ?? '', options: [{ value: '', label: NATSUMI_ROUTE, disabled: false },
+        ...view.modelRoute.routes.map(route => ({ value: route.name, disabled: !route.ready,
+          label: `${route.name}（${route.model}）${outside.includes(route.name) ? ' — 外のサービス' : ''}${route.ready ? '' : ' — 使えません'}` }))] };
+    }
     case 'turnFold':
       return { kind: 'select', selected: view.turnFold.value, options: [{ value: 'on', label: 'on', disabled: false }, { value: 'off', label: 'off', disabled: false }] };
     case 'judgeLogprobs': case 'judgeJev': {
@@ -294,6 +308,10 @@ function noteOf(key: SettingKey, view: SettingsView): string | undefined {
   }
   if (key === 'turnFold' && view.turnFold.inUse !== view.turnFold.value) return `次のターンから（いまは ${view.turnFold.inUse}）`;
   if ((key === 'judgeLogprobs' || key === 'judgeJev') && !view[key].available) return 'config に接続先がありません。on にはできません。';
+  if (key === 'curatorRoute') {
+    const { night, outside } = view.curatorRoute;
+    return `次の夜は ${night} で動きます。${outside.includes(night) ? '外のサービスの経路なので、記憶とその日の会話の本文がそこへ送られます。' : ''}`;
+  }
   return undefined;
 }
 

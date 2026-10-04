@@ -121,7 +121,10 @@ const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
   judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs',
   judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.5, return: 0.9 },
+  curatorRoute: null, curatorModelCalls: 60, curatorTimeoutMinutes: 30,
 };
+/** The made-up routes reached through an outside service rather than the owner's own endpoint (ADR 0068). */
+const OUTSIDE_ROUTES = ['plus'];
 /** Which of the dove's judges the made-up config has an endpoint for: Jev has none, so it cannot be turned on (ADR 0059). */
 const JUDGE_AVAILABLE = { judgeLogprobs: true, judgeJev: false };
 
@@ -258,7 +261,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
   /** The settings as the server lists them: the value in force, the config's, and whether it is overridden. */
   function settingsView() {
     const item = <K extends keyof typeof SETTING_DEFAULTS>(key: K) =>
-      ({ value: overrides[key] ?? SETTING_DEFAULTS[key], config: SETTING_DEFAULTS[key], overridden: overrides[key] !== undefined });
+      ({ value: overrides[key] !== undefined ? overrides[key] : SETTING_DEFAULTS[key], config: SETTING_DEFAULTS[key], overridden: overrides[key] !== undefined });
+    const curatorRoute = item('curatorRoute');
     return {
       modelRoute: { value: chosenRoute, config: 'local', overridden: routeChosen, inUse: currentRoute, routes: ROUTES },
       turnFold: { ...item('turnFold'), inUse: overrides.turnFold ?? SETTING_DEFAULTS.turnFold },
@@ -268,6 +272,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       judgeLogprobs: { ...item('judgeLogprobs'), available: JUDGE_AVAILABLE.judgeLogprobs },
       judgeJev: { ...item('judgeJev'), available: JUDGE_AVAILABLE.judgeJev }, judgeAdopted: item('judgeAdopted'),
       judgeLogprobsThresholds: item('judgeLogprobsThresholds'), judgeJevThresholds: item('judgeJevThresholds'),
+      curatorRoute: { ...curatorRoute, night: curatorRoute.value ?? chosenRoute, outside: OUTSIDE_ROUTES },
+      curatorModelCalls: item('curatorModelCalls'), curatorTimeoutMinutes: item('curatorTimeoutMinutes'),
     };
   }
 
@@ -380,6 +386,11 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       if (!checked.ok) return reject(checked.code);
       if ((checked.key === 'judgeLogprobs' || checked.key === 'judgeJev') && checked.value === 'on' && !JUDGE_AVAILABLE[checked.key]) {
         return reject('judge-unavailable');
+      }
+      if (checked.key === 'curatorRoute' && checked.value !== null) {
+        const route = ROUTES.find((r) => r.name === checked.value);
+        if (!route) return reject('unknown-route');
+        if (!route.ready) return reject('route-unavailable');
       }
       if (checked.key === 'modelRoute') {
         const route = ROUTES.find((r) => r.name === checked.value);

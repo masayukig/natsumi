@@ -196,7 +196,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       judgeLogprobs: judges?.logprobs?.enabled ? 'on' : 'off', judgeJev: judges?.jev?.enabled ? 'on' : 'off',
       judgeAdopted: judges?.adopted ?? JUDGE_DEFAULTS.adopted,
       judgeLogprobsThresholds: judges?.logprobs?.thresholds ?? JUDGE_DEFAULTS.thresholds,
-      judgeJevThresholds: judges?.jev?.thresholds ?? JUDGE_DEFAULTS.jev.thresholds, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined } } });
+      judgeJevThresholds: judges?.jev?.thresholds ?? JUDGE_DEFAULTS.jev.thresholds, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined },
+      // The curator's night (ADR 0068). A route without the owner's own endpoint reaches an outside service, such as Plus.
+      curatorRoute: config.curator.route ?? null, curatorModelCalls: config.curator.modelCalls, curatorTimeoutMinutes: config.curator.timeoutMinutes,
+      outsideRoutes: config.pi.routes.filter(route => route.compatible === undefined).map(route => route.name) } });
     // The page on drawing and the sdctl params, for the workspace to read as /manual/avatar (ADR 0057).
     await writeAvatarManual(join(dataDirectory, AVATAR_MANUAL_DIRECTORY), avatar);
     // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).
@@ -262,7 +265,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
       ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
-      settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours() },
+      settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,

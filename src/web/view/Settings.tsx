@@ -23,6 +23,7 @@ function inputOf(row: SettingRowProps, form: HTMLFormElement): SettingInput {
   const field = (name: string) => String(data.get(name) ?? '');
   switch (row.key) {
     case 'modelRoute': return { key: 'modelRoute', route: field('value') };
+    case 'curatorRoute': return { key: 'curatorRoute', route: field('value') };
     case 'turnFold': return { key: 'turnFold', fold: field('value') };
     case 'awakeHours': return { key: 'awakeHours', start: field('start'), end: field('end') };
     case 'pingIntervalMinutes': return { key: 'pingIntervalMinutes', text: field('value'), off: data.get('off') === 'on' };

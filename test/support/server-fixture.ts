@@ -101,6 +101,8 @@ export interface FixtureOptions {
   pi?: Record<string, unknown>;
   /** Overlaid on the loop section. */
   loop?: Record<string, unknown>;
+  /** The curator section (ADR 0055). */
+  curator?: Record<string, unknown>;
   /** Writes an avatar under the fixture's root and gives the `avatar` section naming it (ADR 0057). */
   avatar?: (root: string) => Promise<Record<string, unknown>>;
   /** Fills the data directory before the first start, as one a previous version left behind. */
@@ -133,7 +135,7 @@ export async function startFixture(options: FixtureOptions = {}) {
     }
     const avatar = options.avatar ? await options.avatar(root) : undefined;
     await writeFile(configFile, JSON.stringify({ ...config, ...(slack ? { slack: slack.section } : {}),
-      ...(options.loop ? { loop: options.loop } : {}), ...(avatar ? { avatar } : {}) }));
+      ...(options.loop ? { loop: options.loop } : {}), ...(options.curator ? { curator: options.curator } : {}), ...(avatar ? { avatar } : {}) }));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),
