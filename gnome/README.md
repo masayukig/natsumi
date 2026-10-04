@@ -4,6 +4,12 @@ A GNOME Shell extension (GNOME 50, Wayland) that puts natsumi on the desktop the
 the avatar stays above every window and can be dragged around. Her latest unread reply shows in a balloon,
 and her notices show as cards. Clicking her, or pressing Ctrl+Alt+N, opens a box to talk to her.
 
+The face icon's menu has a switch "ペットを出す" (setting `hidden`). Turn it off and she and her balloon and notice
+column are hidden; talking to her again (the menu's "話しかける" or the shortcut) shows her.
+When she has not been used for a while she fades: if `fade-seconds` seconds (0 = off, default 300) pass without the
+pointer on her, a word to her or a server event, she and the column turn translucent
+(「しばらく使わないと半透明にする」). `fade-opacity` (percent, 10–100, default 40) sets how opaque she is while faded.
+
 It is an extension rather than an app because on GNOME's Wayland an app cannot keep itself on top or choose
 where it stands. Only the shell can.
 
