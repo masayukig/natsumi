@@ -7,13 +7,14 @@ import { routeReady } from '../pi/auth.ts';
 import { createPersistedPiSession, type PiTarget } from '../pi/session.ts';
 import { withCodemode, type NestedCallCount } from './codemode.ts';
 import type { CuratorConfig } from './config.ts';
+import { readConversation, type Conversation } from './curator-conversation.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { ARCHIVE_DIRECTORY, DIARY_DIRECTORY, INDEX_FILE, NATSUMI_ONLY_FILES, type ArchivePlan, type MemoryFile, type MemoryRepository,
   type RevertedFile } from './memory-repository.ts';
-import { isoAt, localDate } from './nightly.ts';
+import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
-import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_STRUCTURE_INSTRUCTIONS,
-  CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorRetryRequest, curatorSystemPrompt } from './prompts.ts';
+import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWLEDGE_INSTRUCTIONS, CURATOR_RUN_SHELL_DESCRIPTION,
+  CURATOR_STRUCTURE_INSTRUCTIONS, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorRetryRequest, curatorSystemPrompt } from './prompts.ts';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
@@ -30,6 +31,8 @@ import type { TokenCounts, TurnPlace } from './turn-stats.ts';
 export const CURATOR_SESSION_DIRECTORY = 'curator';
 /** The curator's turns, as `turn_stats` and the machine-made commit message name them, each with its stage after a colon. */
 export const CURATOR_EVENT_KIND = 'memory_curator';
+/** Without a night that succeeded, the conversation handed over begins this long before tonight: the last day. */
+export const CONVERSATION_FALLBACK_MS = 24 * 60 * 60 * 1000;
 /** Sections shown per file in the brief; a log of dated sections would otherwise fill it. */
 export const BRIEF_SECTIONS_PER_FILE = 30;
 /** The longest a heading is shown. */
@@ -111,6 +114,10 @@ export interface StageInput {
   curated: ReadonlyMap<string, string>;
   /** The rewritable files changed since the last night the reorganizing succeeded. */
   changed: readonly string[];
+  /** When that night ended (its last commit), or a day before tonight without one: where the day's diary and conversation begin. */
+  since: number;
+  /** The conversation since then (ADR 0068), read once for the night. */
+  conversation: Conversation;
 }
 
 /**
@@ -137,6 +144,30 @@ export interface CuratorStage {
 
 /** Why a stage before the index's may not change it. */
 const indexLater = (path: string) => path === INDEX_FILE ? `${path} は最後の工程で書き直すので、この工程では変えられません` : undefined;
+
+/**
+ * From what happened to what is known (ADR 0068), first: the diary and the conversation since the last night that
+ * succeeded, written into topics before the stages after it archive and reorganize them. Any topic may be written;
+ * the index and the archive are the later stages'.
+ */
+export const KNOWLEDGE_STAGE: CuratorStage = {
+  name: 'knowledge',
+  instructions: name => CURATOR_KNOWLEDGE_INSTRUCTIONS(name),
+  brief: input => {
+    const from = localDate(input.since, input.timeZone);
+    const diary = input.files.filter(file => inDiary(file.path) && file.path.slice(DIARY_DIRECTORY.length + 1) >= from).map(file => `- ${file.path}`);
+    return { text: wrap([...memoryMap(input), '', `前回の整理（${localDateTime(input.since, input.timeZone)}）から今夜までの日記と会話です。`, '',
+      '## 日記', ...(diary.length === 0 ? ['（なし）'] : diary), '', ...conversationLines(input)]), handled: [] };
+  },
+  refuse: path => indexLater(path) ?? (inArchive(path) ? `${path} は ${ARCHIVE_DIRECTORY}/ の中なので、この工程では変えられません` : undefined),
+  rewrites: true,
+};
+
+/** The day's conversation as a brief shows it, under its own heading. */
+function conversationLines(input: StageInput): string[] {
+  const { lines, dropped } = input.conversation;
+  return ['## 会話の本文', ...(dropped > 0 ? [`古い ${dropped} 件は、長さの上限で省きました。`] : []), ...(lines.length === 0 ? ['（なし）'] : lines)];
+}
 
 /**
  * The archiving (ADR 0068): old facts out of the topics it may rewrite, summarized into this month's file, and on a
@@ -185,7 +216,7 @@ export const INDEX_STAGE: CuratorStage = {
 };
 
 /** The night's stages, in order. */
-export const CURATOR_STAGES: readonly CuratorStage[] = [ARCHIVE_STAGE, STRUCTURE_STAGE, INDEX_STAGE];
+export const CURATOR_STAGES: readonly CuratorStage[] = [KNOWLEDGE_STAGE, ARCHIVE_STAGE, STRUCTURE_STAGE, INDEX_STAGE];
 
 /**
  * What may be rewritten tonight (ADR 0068): every topic while the topics together are no bigger than the setting,
@@ -418,9 +449,10 @@ export async function runCuratorNight(options: CuratorNightOptions): Promise<Cur
   const stages: CuratorStageResult[] = [];
   const handled: string[] = [];
   let rewritten = true;
+  const day = await dayOf(options);
   for (const stage of CURATOR_STAGES) {
     if (options.signal?.aborted) break;
-    const result = await runStage(options, stage, handled);
+    const result = await runStage(options, stage, handled, day);
     stages.push(result);
     if (stage.rewrites && result.outcome !== 'ok') rewritten = false;
     options.log(result.outcome === 'ok' ? `memory curator: ${stage.name}: done` : `memory curator: ${stage.name}: nothing was kept (${result.outcome})`);
@@ -438,6 +470,21 @@ export async function runCuratorNight(options: CuratorNightOptions): Promise<Cur
     }
   }
   return { stages };
+}
+
+/** The day the night looks back on: from the end of the last night that succeeded to now, and what was said in it. */
+async function dayOf(options: CuratorNightOptions): Promise<Pick<StageInput, 'since' | 'conversation'>> {
+  const until = options.now();
+  let since = until - CONVERSATION_FALLBACK_MS;
+  try { since = (await options.repository.commitTime(options.record.base())) ?? since; } catch { /* the last day */ }
+  if (options.config.conversationMaxChars === 0) return { since, conversation: { lines: [], dropped: 0 } };
+  try {
+    return { since, conversation: await readConversation({ sessionDirectory: options.sessionDirectory, since, until, timeZone: options.timeZone,
+      name: options.name, maxChars: options.config.conversationMaxChars }) };
+  } catch {
+    options.log('memory curator: the day\'s conversation could not be read');
+    return { since, conversation: { lines: [], dropped: 0 } };
+  }
 }
 
 /**
@@ -459,14 +506,15 @@ export async function recoverCuratorRun(repository: MemoryRepository, record: Cu
 }
 
 /** One stage: never throws, and leaves the tree as the last commit whatever becomes of it. */
-async function runStage(options: CuratorNightOptions, stage: CuratorStage, handled: string[]): Promise<CuratorStageResult> {
+async function runStage(options: CuratorNightOptions, stage: CuratorStage, handled: string[],
+  day: Pick<StageInput, 'since' | 'conversation'>): Promise<CuratorStageResult> {
   const startedAt = options.now();
   const base = { stage: stage.name, eventKinds: `${CURATOR_EVENT_KIND}:${stage.name}`, turnId: `turn-${randomUUID()}`, startedAt,
     files: [] as string[], rejected: [] as RevertedFile[], retried: [] as RevertedFile[], calls: 0, usage: { input: 0, cacheRead: 0, output: 0 }, contextTokens: null, toolErrors: 0 };
   const ended = (fields: Partial<CuratorStageResult> & Pick<CuratorStageResult, 'outcome'>): CuratorStageResult =>
     ({ ...base, ...fields, endedAt: options.now() });
   try {
-    return await turn(options, stage, base, ended, handled);
+    return await turn(options, stage, base, ended, handled, day);
   } catch {
     options.log(`memory curator: ${stage.name}: the run failed`);
     try { await options.repository.discardChanges(); options.record.end(); } catch { /* the next start throws it away */ }
@@ -475,7 +523,8 @@ async function runStage(options: CuratorNightOptions, stage: CuratorStage, handl
 }
 
 async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pick<CuratorStageResult, 'eventKinds' | 'turnId' | 'startedAt'>,
-  ended: (fields: Partial<CuratorStageResult> & Pick<CuratorStageResult, 'outcome'>) => CuratorStageResult, handled: string[]): Promise<CuratorStageResult> {
+  ended: (fields: Partial<CuratorStageResult> & Pick<CuratorStageResult, 'outcome'>) => CuratorStageResult, handled: string[],
+  day: Pick<StageInput, 'since' | 'conversation'>): Promise<CuratorStageResult> {
   const { repository, config, route, record } = options;
   // Everything a stage changes is thrown away on a failure, so it starts only where that throws away nothing else.
   if (!(await repository.isClean())) return ended({ outcome: 'memory-not-clean' });
@@ -490,7 +539,7 @@ async function turn(options: CuratorNightOptions, stage: CuratorStage, base: Pic
     name: options.name, date: localDate(options.now(), options.timeZone), timeZone: options.timeZone, fileMaxChars: options.fileMaxChars,
     rotateFiles: config.rotateFiles, rewriteAllMaxChars: config.rewriteAllMaxChars, files,
     lastChanged: await repository.lastChanged(paths.filter(path => !inDiary(path))), curated: record.curatedAt(),
-    changed: (await repository.changedSince(record.base())).filter(isRewritable),
+    changed: (await repository.changedSince(record.base())).filter(isRewritable), ...day,
   });
 
   let note: string | undefined;

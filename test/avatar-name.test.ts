@@ -85,7 +85,8 @@ test('the curator is told whose memory it keeps by the display name', () => {
   assert.ok(!prompt.includes('なつみ'));
   assert.ok(curatorSystemPrompt('なつみ').includes('あなたはなつみではありません。'));
   const { text } = CURATOR_STAGES[0]!.brief({ name: 'はな', date: '2026-09-28', timeZone: 'Asia/Tokyo', fileMaxChars: 100, rotateFiles: 0,
-    rewriteAllMaxChars: 0, files: [{ path: 'always.md', chars: 3, sections: [] }], lastChanged: new Map(), curated: new Map(), changed: [] });
+    rewriteAllMaxChars: 0, files: [{ path: 'always.md', chars: 3, sections: [] }], lastChanged: new Map(), curated: new Map(), changed: [],
+    since: 0, conversation: { lines: [], dropped: 0 } });
   assert.match(text, /always\.md（3 文字・はなのもの、変えない）/);
 });
 

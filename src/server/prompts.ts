@@ -36,6 +36,14 @@ const whoToWhom = (her: string) => `「自分」「本人」「あの人」は�
 const WHO_TO_WHOM = whoToWhom('あなたの名前');
 
 /**
+ * How anything read back later is written (ADR 0068), by natsumi and the curator alike: every sentence with its
+ * subject, which "自分" and "本人" being gone did not bring back by itself, and a fact that may change with the date it
+ * held, so that whoever reads it later can tell how old it is. A plan is dated by itself; a lasting fact needs no date.
+ */
+const SUBJECT_AND_TIME = '文ごとに主語（誰が）を書き、省きません。状態・版・進行中のことのように変わりうる事実には、行の終わりに「（YYYY-MM-DD 時点）」を付けます。'
+  + '予定は日付が時点なので付けません。名前や好みのように変わらない事実にも付けません。';
+
+/**
  * Memory and the workspace, as natsumi reads them (ADR 0019). Two fixed alternatives rather than one text built from
  * the configuration: the system prompt is made once per session and must stay on the prefix cache. The one part not
  * written here is the manual's index (ADR 0056), which `manual/INDEX.md` holds: a file of the code, read when the
@@ -46,12 +54,13 @@ const WORKSPACE_BULLETS = `## 記憶と作業場
 - 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、マスターのことや以前の約束が関係しそうなら、探して読みます。
 - 記憶を探すときは、まず /memory/INDEX.md（記憶の索引）を読みます。言葉で探すときは search_memory を使います。見つけたファイルは read で読みます。
 - /manual と /memory のファイルを読むときは read を使います。read で読んだものは後のターンにも残るので、同じファイルを読み直さずに済みます。書き換えは run_shell で行います。
-- マスターに「覚えておいて」と言われたこと、マスターについて今後も役立つこと、マスターとの約束は、/memory のファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
+- マスターに「覚えておいて」と言われたことと、マスターとの約束は、/memory のトピックのファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
 - 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
 - 記憶・日記・一行メモは、${WHO_TO_WHOM}
+- 記憶・日記・一行メモ・引き継ぎは、${SUBJECT_AND_TIME}
 - マスターだと分かっている人は、Slack などでの名前ではなく「マスター」と書きます。どの名前がマスターかは、記憶に書いておきます。
 - トピックのファイルには、そのことが「今どうなっているか」を書きます。事実が変わったら、節を書き足さずに、その箇所を直します。
-- その日に起きたことや経緯は、/memory/diary/ のその日のファイル（YYYY-MM-DD.md）に書きます。
+- その日に起きたことや経緯は、/memory/diary/ のその日のファイル（YYYY-MM-DD.md）に書きます。夜に記憶の整理係が、日記と会話からトピックに書き起こします。
 - ファイルの統合・分割・置き場所の整理と INDEX.md は、夜に記憶の整理係が行います。INDEX.md はあなたには書き換えられません。
 - 古くなった事実は、夜に記憶の整理係が要約して /memory/archive/ に移します。archive/ は読めますが、あなたには書き換えられません。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
@@ -247,14 +256,17 @@ export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理�
  * that must never be dropped, the handoff, would be at the end. Only the handoff is required; what else is worth
  * doing tonight is natsumi's to choose, having actually looked at memory and at the workspace. Rebuilding memory is
  * not on the menu: the curator does it after her, so the two never rewrite the same files the same night (ADR 0055).
+ * Nor is adding what the day left out of memory: the curator turns the day's diary and conversation into topics, so
+ * the two would write the same things twice (ADR 0068).
  */
 export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思考の記録は新しくなり、今日の細かいやりとりは見えなくなります。'
   + '必ずやることは 1 つだけです。'
   + 'write_handoff_note で、明日の自分への引き継ぎを書くこと。対応中のこと、マスターの返事を待っていること、マスターの最近の様子など、記憶に書くほどではないが明日知っておきたいことを短くまとめます。'
+  + '引き継ぎも、' + SUBJECT_AND_TIME
   + 'マスターへの返事や知らせは送りません。'
-  + '記憶のファイルの統合・分割・改名・フォルダの整理、重複や古くなったところの手直し、INDEX.md は、この後に記憶の整理係が行います。あなたはやりません。'
+  + '今日の出来事をトピックに書き起こすのは、この後の記憶の整理係です。整理係は、日記と今日の会話を読んで書きます。'
+  + '記憶のファイルの統合・分割・改名・フォルダの整理、重複や古くなったところの手直し、INDEX.md も、記憶の整理係が行います。あなたはやりません。'
   + 'ほかにやれることは候補として挙げておきます。今夜の記憶と作業場を実際に見て、価値のあるものをあなたが選んでください。順番も決まっていません。'
-  + '・今日の出来事を振り返り、マスターに覚えておいてと言われたこと、マスターについて今後も役立つこと、マスターとの約束で、まだ記憶にないものを /memory に書き足す（先に search_memory で探すと、同じことを二度書かずに済みます。トピックには今どうなっているかを、経緯は diary に書きます）。'
   + '・always.md（常時記憶）を見直す。毎回思い出したいことだけを残し、長くなっていれば削ります。'
   + '・personality.md（性格・話し方）を見直す。'
   + '・write_change_note で、今夜の変更の説明を書く。'
@@ -278,7 +290,7 @@ export const REFLECTION_REQUEST = '<turn_memo>\n'
   + 'このターンとは、前のメモ（前の <turn_memo> への答えか、「（このターンの振り返り）」の行）より後に届いた出来事と、それに対してしたことです。\n'
   + '書くのは、このターンで調べて分かった事実（予定・数字・名前・ファイルの場所など）か、試してうまくいかなかったこと（何を試して、なぜだめだったか）です。'
   + '前のメモに書いたことは繰り返しません。このターンで確かめていないことを、確かめたように書きません。判断の理由に前のことを使ったなら、短く添えるのは構いません。'
-  + 'マスターに言ったことの繰り返しは要りません。' + WHO_TO_WHOM + '前置きや見出しは付けず、メモの文だけを書きます。\n'
+  + 'マスターに言ったことの繰り返しは要りません。' + WHO_TO_WHOM + SUBJECT_AND_TIME + '前置きや見出しは付けず、メモの文だけを書きます。\n'
   + 'このターンで新しく分かったこと・うまくいかなかったことがなければ、「なし」と一語だけ書いてください。何もせずに終えたターンは「なし」です。\n'
   + '長く考えずに書いてください。ツールは使えません。このメモはマスターには届きません。\n'
   + '</turn_memo>';
@@ -320,6 +332,8 @@ ${name}のオーナー（持ち主）を、記憶ではマスターと呼びま�
 
 ## 書き方
 - 書くときは、${whoToWhom(name)}
+- ${SUBJECT_AND_TIME}
+- 書き直すファイルに主語の抜けた文があれば、会話の本文や diary/ から分かる範囲で補います。分からなければそのままにします。
 - マスターの言葉、マスターとの約束、「覚えておいて」と言われたことは、済んだと明らかでない限り消しません。
 - 消したものは一つずつ、何をなぜ消したかを、write_change_note に書きます。
 
@@ -328,6 +342,21 @@ ${name}のオーナー（持ち主）を、記憶ではマスターと呼びま�
 - 回数と時間にも上限があり、途中で打ち切られたときも、この工程の変更はすべて捨てられます。大きな組み替えは、この工程でやりきれる分に絞り、残りは次の夜に回してください。
 - /work や /home/natsumi には何も残しません。
 - 最後に write_change_note でこの工程の変更の説明を書き、ツールを呼ばずに終えてください。1 行目は短い要約にします。変えることが無ければ、何も変えずに終えてかまいません。`;
+
+/**
+ * The first stage (ADR 0068): from what happened to what is known. natsumi writes only what she was told to remember
+ * and her promises into topics by day, and the day itself into the diary; this stage reads the diary and the day's
+ * conversation, and writes what recurs, what is new and what the memory she used got wrong into the topics.
+ */
+export const CURATOR_KNOWLEDGE_INSTRUCTIONS = (name: string) => `## この工程: 出来事から知識へ
+- 最初に渡す「日記」と「会話の本文」は、前回の整理から今夜までの分です。会話の本文は、マスターと${name}のやりとりと、${name}が記憶を読んだ・探した記録だけで、${name}の考えやツールの結果は入っていません。
+- これを読んで、トピックのファイルに書き起こします。
+  - 繰り返し出てくること（同じ話題・習慣・好み・頼まれごと）は、マスターの傾向や知識として、合うトピックに書きます。
+  - 新しい事実（予定・状態・人・決まったこと）は、合うトピックに書きます。合うトピックが無ければ、新しいファイルを作ります。
+  - 使われた記憶（${name}が読んだ・探した記憶や、会話で話題に出た記憶）は、会話の中身と食い違っていれば直します。変わりうる事実なら、時点も会話の日に合わせます。
+- 書く前に search_memory と read で、同じことが既に書いてないか確かめます。あれば書き足さずに、その箇所を直します。
+- トピックには、そのことが「今どうなっているか」を要点で書きます。会話の写しや、その日の経緯は書きません。経緯は diary/ に残っています。一度きりで、この先に役に立たない出来事も書きません。
+- 古い事実を archive/ へ移すこと、構成と節の組み直し、INDEX.md は、後の工程で行います。この工程では、書き起こすことと直すことだけをします。INDEX.md と archive/ は変えません。`;
 
 /**
  * The stage that archives old memory (ADR 0068): what is old is judged by reading it, dates being only a clue, and it
