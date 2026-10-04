@@ -134,7 +134,8 @@ const NIGHT: NightRecord = {
   at: '2026-10-01T12:41:02.000Z', startedAt: '2026-10-04T00:00:00.000Z', ms: 125_000, base: 'a'.repeat(40), head: 'b'.repeat(40),
   uncommitted: [],
   stages: [{ name: 'structure', outcome: 'ok', modelCalls: 12, ms: 120_000, tokens: { input: 1000, cacheRead: 500, output: 200 }, toolErrors: 1,
-    commit: 'b'.repeat(40), note: '節を組み直した' },
+    commit: 'b'.repeat(40), note: '節を組み直した',
+    paths: { commit: 'c'.repeat(40), moves: [{ from: '旅行メモ.md', to: '旅/旅行.md' }], files: ['always.md'], ignored: [{ from: '無い.md', to: '旅/旅行.md', reason: 'FIXTURE-IGNORED' }] } },
   { name: 'index', outcome: 'rejected', modelCalls: 3, ms: 5_000, tokens: { input: 10, cacheRead: 0, output: 5 }, toolErrors: 0,
     retried: [{ path: 'INDEX.md', reason: 'FIXTURE-FIRST-REASON' }], rejected: [{ path: 'INDEX.md', reason: 'FIXTURE-REASON' }] }],
   commits: [{ hash: 'b'.repeat(40), message: '節を組み直した\n\n- 本人.md の「いま」を話題ごとに分けた' }],
@@ -150,6 +151,9 @@ test('the summary of a night names each stage\'s outcome, calls and time, the co
   assert.match(text, /\| index \| rejected \| 3 \|/);
   assert.match(text, /INDEX\.md: FIXTURE-REASON/);
   assert.match(text, /やり直した: INDEX\.md: FIXTURE-FIRST-REASON/);
+  // The paths the server put right after a stage, and the curator's table rows it did not take.
+  assert.match(text, /パスの置き換え: コミット ccccccc（旅行メモ\.md → 旅\/旅行\.md）/);
+  assert.match(text, /無い\.md → 旅\/旅行\.md: FIXTURE-IGNORED/);
   assert.match(text, /節を組み直した/);
   assert.match(text, /本人\.md/);
   assert.match(text, /old\.md/);

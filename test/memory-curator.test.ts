@@ -3,9 +3,10 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { archivePlan, chooseRotation, CURATOR_STAGES, CurationRecord, curatorTools, isRewritable, type StageInput } from '../src/server/memory-curator.ts';
+import { acceptOldPath, archivePlan, chooseRotation, CURATOR_STAGES, CurationRecord, curatorTools, isRewritable, type StageInput } from '../src/server/memory-curator.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorSystemPrompt, SEARCH_MEMORY_DESCRIPTION } from '../src/server/prompts.ts';
+import { CURATOR_MAP_OLD_PATH_DESCRIPTION, CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorSystemPrompt,
+  SEARCH_MEMORY_DESCRIPTION } from '../src/server/prompts.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 
 // The memory curator's pieces (ADR 0055): what it is handed, what it may rewrite, and what is kept of its nights.
@@ -271,17 +272,48 @@ test('a night that succeeded moves the base and dates the files it had in hand; 
   assert.deepEqual([...record.curatedAt()], [['b.md', '2026-09-27T19:00:00.000Z'], ['c.md', '2026-09-28T19:00:00.000Z']]);
 }));
 
-test('the curator has run_shell, read, search_memory and its own change note, and nothing that speaks to anyone', async () => {
+test('the curator has run_shell, read, search_memory, its own change note and where merged paths went, and nothing that speaks to anyone', async () => {
   let note: string | undefined;
+  const mapped: [string, string][] = [];
   const tools = curatorTools({
     runShell: async () => ({ ok: true, text: 'ran' }),
     capture: async () => ({ ok: true, exitCode: 1, stdout: '', stdoutTruncated: false }),
     writeChangeNote: text => { note = text; return { ok: true, text: 'kept' }; },
+    mapOldPath: (from, to) => { mapped.push([from, to]); return { ok: true, text: 'mapped' }; },
   });
-  assert.deepEqual(tools.map(tool => tool.name), ['run_shell', 'read', 'search_memory', 'write_change_note']);
+  assert.deepEqual(tools.map(tool => tool.name), ['run_shell', 'read', 'search_memory', 'write_change_note', 'map_old_path']);
   assert.equal(tools[0]!.description, CURATOR_RUN_SHELL_DESCRIPTION);
   assert.equal(tools[2]!.description, SEARCH_MEMORY_DESCRIPTION);
   assert.equal(tools[3]!.description, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION);
+  assert.equal(tools[4]!.description, CURATOR_MAP_OLD_PATH_DESCRIPTION);
   await tools[3]!.execute('call-1', { text: '整理した' } as never, undefined, undefined, undefined as never);
   assert.equal(note, '整理した');
+  await tools[4]!.execute('call-2', { from: '旅行メモ.md', to: '旅行.md' } as never, undefined, undefined, undefined as never);
+  assert.deepEqual(mapped, [['旅行メモ.md', '旅行.md']]);
+});
+
+test('the curator is told it may rename and move files, the server puts the old paths right, and how to tell where merged ones went', () => {
+  const told = curatorSystemPrompt('なつみ');
+  assert.match(told, /ファイルの名前と場所は変えてかまいません/);
+  assert.match(told, /always\.md・handoff\.md・personality\.md の中の古いパスと、すべてのファイルのリンクは、この工程の後にサーバーが新しいパスに直します/);
+  assert.match(told, /map_old_path/);
+  const structure = stage('structure').instructions('なつみ');
+  // When to gather files into a directory, and the links and the related section the curator keeps.
+  assert.match(structure, /同じ主題のファイルが 3 つ以上/);
+  assert.match(structure, /上限の半分を超えた/);
+  assert.match(structure, /Markdown のリンク/);
+  assert.match(structure, /そのファイルからの相対パス/);
+  assert.match(structure, /末尾に「## 関連」の節/);
+});
+
+test('map_old_path takes only a Markdown path inside memory, never one of her files, the index, the diary or the archive', () => {
+  const merged = new Map<string, string>();
+  const accept = (from: string, to: string) => acceptOldPath(merged, from, to);
+  assert.equal(accept('/memory/旅行メモ.md', '旅行.md').ok, true);
+  assert.deepEqual([...merged], [['旅行メモ.md', '旅行.md']]);
+  for (const [from, to] of [['always.md', '旅行.md'], ['旅行メモ.md', 'INDEX.md'], ['diary/2026-10-01.md', '旅行.md'], ['../外.md', '旅行.md'],
+    ['旅行メモ.txt', '旅行.md'], ['旅行メモ.md', '旅行メモ.md'], ['archive/2026-09.md', '旅行.md']] as const) {
+    assert.equal(accept(from, to).ok, false, `${from} → ${to}`);
+  }
+  assert.equal(merged.size, 1);
 });

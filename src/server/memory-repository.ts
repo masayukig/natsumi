@@ -294,6 +294,46 @@ export class MemoryRepository {
     return shown.code === 0 ? shown.stdout : undefined;
   }
 
+  /**
+   * The server's own commit of what it rewrote in the working tree: the paths a curator stage moved, put right after
+   * it (ADR 0068). No writer's rules apply — the server may change natsumi's files, the index, the diary and the
+   * archive — but every file still passes the checks on its contents, and one that fails goes back to the last commit.
+   * The subject is made from `event` and the files, and `body` follows it.
+   */
+  async commitRewrite(event: string, body: string): Promise<CommitOutcome> {
+    const reverted: RevertedFile[] = [];
+    for (const entry of await this.status()) {
+      const reason = entry.deleted ? 'サーバーの置き換えはファイルを消しません' : await this.inspectContent(entry.path);
+      if (!reason) continue;
+      await this.restore(entry.path);
+      reverted.push({ path: entry.path, reason });
+    }
+    for (const file of reverted) this.log(`memory: ${file.path} was left as it was: ${file.reason}`);
+    const files = (await this.status()).map(entry => entry.path);
+    if (files.length === 0) return { committed: false, files: [], reverted };
+    await this.git(['add', '-A', '--', '.']);
+    await this.commitStaged(event, files, `${subject(event, files)}\n\n${body}`);
+    return { committed: true, files, reverted };
+  }
+
+  /** Every file a commit holds, in path order. */
+  async filesAt(commit: string): Promise<string[]> {
+    const { stdout } = await this.git(['ls-tree', '-r', '-z', '--name-only', commit]);
+    return stdout.split('\0').filter(Boolean).sort();
+  }
+
+  /** The files git sees renamed between `base` and the last commit (ADR 0068), each from its old path to its new one. */
+  async renamesSince(base: string): Promise<{ from: string; to: string }[]> {
+    const { stdout } = await this.git(['diff', '-M', '--name-status', '-z', '--diff-filter=R', base, 'HEAD']);
+    const fields = stdout.split('\0');
+    const renames: { from: string; to: string }[] = [];
+    for (let i = 0; i + 2 < fields.length; i += 3) {
+      if (!fields[i]!.startsWith('R')) break;
+      renames.push({ from: fields[i + 1]!, to: fields[i + 2]! });
+    }
+    return renames;
+  }
+
   /** Throws away whatever the last commit does not hold: changes, removals, and new files and folders alike. */
   async discardChanges(): Promise<void> {
     await this.git(['reset', '--hard', '--quiet', 'HEAD']);
@@ -486,6 +526,11 @@ export class MemoryRepository {
     }
     if (writer === 'curator' && NATSUMI_ONLY_FILES.includes(path)) return `${path} は${this.options.identity?.name ?? DEFAULT_SELF.name}自身のファイルなので、整理係は変えられません`;
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は変えられません`;
+    return this.inspectContent(path);
+  }
+
+  /** Why a changed file's contents may not be committed, whoever wrote it, or undefined when they may. */
+  private async inspectContent(path: string): Promise<string | undefined> {
     let info;
     try { info = await lstat(join(this.directory, path)); } catch { return undefined; }
     if (info.isSymbolicLink()) return 'symlink は記憶に置けません';
