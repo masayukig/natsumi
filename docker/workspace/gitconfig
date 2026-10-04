@@ -1,0 +1,9 @@
+# The workspace's system git config (ADR 0019, 0033), at /etc/gitconfig: git reads it whatever the environment, and the
+# runner gives a command none of the image's.
+#
+# The memory repository is the server's. Where the workspace runs as another UID (Kubernetes), git would refuse it as
+# of dubious ownership, and natsumi could not read its history. That check guards against config and hooks someone
+# else could have put in a repository; /memory/.git is mounted read-only here and only the server writes it, so
+# trusting /memory gives her nothing of her own to plant. Only /memory: never '*'.
+[safe]
+	directory = /memory
