@@ -689,7 +689,7 @@ test('the uncommitted changes can be thrown away, and a clean tree says so', asy
   } finally { await f.cleanup(); }
 });
 
-test('the files memory holds are listed with their size and headings, and the files changed since a commit are named', async () => {
+test('the files memory holds are listed with their size and sections, and the files changed since a commit are named', async () => {
   const f = await setup();
   try {
     await mkdir(join(f.directory, '暮らし'));
@@ -699,8 +699,10 @@ test('the files memory holds are listed with their size and headings, and the fi
     const files = await f.repository.listFiles();
     const plans = files.find(file => file.path === '暮らし/予定.md');
     assert.deepEqual(plans, { path: '暮らし/予定.md', chars: [...'# 予定\n\n## 歯医者\n- 金曜\n### 細かい\n## 散髪\n- 土曜\n'].length,
-      headings: ['# 予定', '## 歯医者', '## 散髪'] });
-    assert.deepEqual(files.find(file => file.path === '本人.md')?.headings, []);
+      sections: [{ heading: '# 予定', lines: 0 }, { heading: '## 歯医者', lines: 1 }, { heading: '### 細かい', lines: 0 },
+        { heading: '## 散髪', lines: 1 }] });
+    // Lines before any heading are a section too, with no heading: a file with none is one flat section.
+    assert.deepEqual(files.find(file => file.path === '本人.md')?.sections, [{ heading: '', lines: 1 }]);
     assert.ok(files.some(file => file.path === INDEX_FILE));
     assert.deepEqual(files.map(file => file.path), [...files.map(file => file.path)].sort());
 
@@ -718,3 +720,133 @@ test('the files memory holds are listed with their size and headings, and the fi
       [ALWAYS_FILE, HANDOFF_FILE, INDEX_FILE, PERSONALITY_FILE, '新しい.md', '本人.md'].sort());
   } finally { await f.cleanup(); }
 });
+
+test('each file is dated by the last commit that changed it', async () => {
+  const f = await setup();
+  try {
+    await f.write('予定.md', '# 予定\n\n- 歯医者は金曜\n');
+    await f.repository.initialize(undefined);
+    await f.write('本人.md', '# 本人\n');
+    await f.repository.commit({ event: 'mac_message' });
+    const dates = await f.repository.lastChanged(['予定.md', '本人.md', '無い.md']);
+    assert.equal(dates.get('予定.md'), f.git('log', '-1', '--format=%cI', 'HEAD~1'));
+    assert.equal(dates.get('本人.md'), f.git('log', '-1', '--format=%cI', 'HEAD'));
+    assert.equal(dates.has('無い.md'), false, 'a file the history does not hold has no date');
+  } finally { await f.cleanup(); }
+});
+
+// archive/ (ADR 0068): the curator's alone, added to and never put right.
+
+const MONTH = 'archive/2026-10.md';
+const PLAN = { append: MONTH, compactions: [] };
+
+async function withArchive(body: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
+  const f = await setup();
+  try {
+    await mkdir(join(f.directory, 'archive'));
+    await f.write(MONTH, '# 2026-10\n\n## 予定\n- 2026-09 の歯医者は済んだ\n');
+    await f.write('archive/2026-09.md', '# 2026-09\n\n## 暮らし\n- 引っ越しの準備をしていた\n');
+    await f.write('予定.md', '# 予定\n\n- 散髪は土曜\n- 健診は 2026-09-10 に受けた\n');
+    await f.repository.initialize(undefined);
+    await body(f);
+  } finally { await f.cleanup(); }
+}
+
+test('archive/ is the curator\'s: natsumi\'s change to it goes back by day and by night, a new file and a removal alike', () => withArchive(async f => {
+  const month = await f.read(MONTH);
+  await f.write(MONTH, `${month}- 昼に足した\n`);
+  await f.write('archive/メモ.md', '# メモ\n\n- 昼に作った\n');
+  await f.write('予定.md', '# 予定\n\n- 散髪は土曜\n');
+  const day = await f.repository.commit({ event: 'mac_message' });
+  assert.deepEqual(day.reverted.map(file => file.path).sort(), [MONTH, 'archive/メモ.md'].sort());
+  for (const file of day.reverted) assert.match(file.reason, /整理係/);
+  assert.equal(await f.read(MONTH), month);
+  await assert.rejects(stat(join(f.directory, 'archive', 'メモ.md')));
+  assert.equal(day.committed, true);
+
+  await rm(join(f.directory, 'archive', '2026-09.md'));
+  const night = await f.repository.commit({ event: 'nightly_review', night: true });
+  assert.deepEqual(night.reverted.map(file => file.path), ['archive/2026-09.md']);
+  assert.match(await f.read('archive/2026-09.md'), /引っ越し/);
+  assert.equal(f.clean(), true);
+}));
+
+test('the curator adds to this month\'s archive and takes the fact out of the topic, in one commit', () => withArchive(async f => {
+  await f.write(MONTH, `${await f.read(MONTH)}\n## 予定\n- なつみのマスターは 2026-09-10 に健診を受けた\n`);
+  await f.write('予定.md', '# 予定\n\n- 散髪は土曜\n');
+  const outcome = await f.repository.commitCuration({ message: '健診を archive へ', archive: PLAN });
+  assert.deepEqual(outcome.rejected, []);
+  assert.equal(outcome.committed, true);
+  assert.deepEqual([...outcome.files].sort(), [MONTH, '予定.md'].sort());
+
+  // A month's first archive is a new file.
+  await rm(join(f.directory, MONTH));
+  await f.repository.commitCuration({ archive: { append: 'archive/2026-11.md', compactions: [] } });
+}));
+
+test('the curator may only add to this month\'s archive: a changed line, another file, a removal or a stage without the plan is caught', async () => {
+  const cases: [string, (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, string, RegExp, typeof PLAN | undefined][] = [
+    ['a line put right', f => f.write(MONTH, '# 2026-10\n\n## 予定\n- 歯医者は済んだ\n'), MONTH, /追記/, PLAN],
+    ['a past month changed', async f => f.write('archive/2026-09.md', `${await f.read('archive/2026-09.md')}- 足した\n`), 'archive/2026-09.md', /今月/, PLAN],
+    ['another file made', f => f.write('archive/予定.md', '# 予定\n\n- 古い予定\n'), 'archive/予定.md', /今月/, PLAN],
+    ['a past month removed', f => rm(join(f.directory, 'archive', '2026-09.md')), 'archive/2026-09.md', /消せません/, PLAN],
+    ['a stage that does not archive', async f => f.write(MONTH, `${await f.read(MONTH)}- 足した\n`), MONTH, /古い記憶の工程/, undefined],
+  ];
+  for (const [label, act, path, reason, archive] of cases) {
+    await withArchive(async f => {
+      const head = f.git('rev-parse', 'HEAD');
+      await f.write('予定.md', '# 予定\n\n- 散髪は土曜\n');
+      await act(f);
+      const outcome = await f.repository.commitCuration({ ...(archive ? { archive } : {}) });
+      assert.equal(outcome.committed, false, label);
+      const caught = outcome.rejected.find(file => file.path === path);
+      assert.ok(caught, `${label}: ${JSON.stringify(outcome.rejected)}`);
+      assert.match(caught.reason, reason, label);
+      assert.equal(f.git('rev-parse', 'HEAD'), head, label);
+      assert.equal(f.clean(), true, label);
+    });
+  }
+});
+
+test('on a night of compacting, the curator removes the months it summarizes and makes the quarter, and nothing else', async () => {
+  const compacting = { append: 'archive/2026-12.md', compactions: [{ into: 'archive/2026-Q3.md', from: ['archive/2026-07.md', 'archive/2026-08.md', 'archive/2026-09.md'] }] };
+  const prepare = async (f: Awaited<ReturnType<typeof setup>>) => {
+    for (const month of ['07', '08']) await f.write(`archive/2026-${month}.md`, `# 2026-${month}\n\n## 暮らし\n- ${month} 月のこと\n`);
+    await f.git('add', '-A');
+    await f.git('-c', 'user.name=owner', '-c', 'user.email=owner@example.net', 'commit', '-q', '-m', 'months');
+  };
+  await withArchive(async f => {
+    await prepare(f);
+    for (const month of ['07', '08', '09']) await rm(join(f.directory, 'archive', `2026-${month}.md`));
+    await f.write('archive/2026-Q3.md', '# 2026-Q3\n\n## 暮らし\n- 夏に引っ越しの準備をしていた\n');
+    const outcome = await f.repository.commitCuration({ archive: compacting });
+    assert.deepEqual(outcome.rejected, []);
+    assert.equal(outcome.committed, true);
+  });
+  // Half a compaction leaves the months summarized twice, or not at all: caught.
+  await withArchive(async f => {
+    await prepare(f);
+    await rm(join(f.directory, 'archive', '2026-07.md'));
+    await f.write('archive/2026-Q3.md', '# 2026-Q3\n\n## 暮らし\n- 夏のこと\n');
+    const outcome = await f.repository.commitCuration({ archive: compacting });
+    assert.equal(outcome.committed, false);
+    assert.ok(outcome.rejected.some(file => file.path === 'archive/2026-Q3.md' && /すべて消して/.test(file.reason)), JSON.stringify(outcome.rejected));
+  });
+  // A month the night does not compact is still not the curator's to remove.
+  await withArchive(async f => {
+    await prepare(f);
+    await rm(join(f.directory, MONTH));
+    const outcome = await f.repository.commitCuration({ archive: compacting });
+    assert.ok(outcome.rejected.some(file => file.path === MONTH), JSON.stringify(outcome.rejected));
+  });
+});
+
+test('a curator stage\'s changes can be checked without throwing them away', () => withArchive(async f => {
+  await f.write(ALWAYS_FILE, '# 常時記憶\n\n係が書いた\n');
+  await f.write('予定.md', '# 予定\n\n- 散髪は土曜\n');
+  const rejected = await f.repository.checkCuration({});
+  assert.deepEqual(rejected.map(file => file.path), [ALWAYS_FILE]);
+  assert.equal(f.clean(), false);
+  assert.match(await f.read('予定.md'), /散髪/);
+  assert.doesNotMatch(await f.read('予定.md'), /健診/);
+}));

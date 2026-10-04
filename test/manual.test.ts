@@ -90,7 +90,7 @@ test('the Slack page reads a sources_updated: its kinds, the lines by jq -s, the
 // ADR 0044, ADR 0057: the page on drawing names the defaults, and natsumi's own look as the owner wrote it.
 test('the page on images says how to draw with the default params, where to put the result, and how she looks', async () => {
   const page = await imagesPage();
-  for (const word of ['sdctl txt2img --prompt ', '/work/images', 'view ', '画像:', 'anima_mignolia_v10', 'kutara_aki_anima.v3', '-o ']) {
+  for (const word of ['sdctl txt2img --prompt ', '/work/images', 'view ', '画像:', 'anima_2_9_Anima-2.9B-preview-v1', 'kutara_anima.v1', '-o ']) {
     assert.ok(page.includes(word), word);
   }
   // The defaults come from the image's sdctl config file: no flag for them, and nothing to throw away.
@@ -99,9 +99,9 @@ test('the page on images says how to draw with the default params, where to put 
   assert.match(await read('docker/sdctl/config.yaml'), /^output_dir: \/work\/images$/m);
   // Her own look, as the owner wrote it, line breaks and all.
   assert.ok(page.includes([
-    '<lora:kutara_aki_anima.v3:1> ,',
+    '<lora:kutara_anima.v1:1> ,',
     'masterpiece, newest,',
-    'woman, low ponytail, freckles, large sagging breasts,',
+    'kutara natsumi, low ponytail, freckles, large breasts,',
     '',
     'black glasses,',
     'black business suit,  collared white shirt,',
@@ -114,15 +114,15 @@ test('the page on images says her body lines go into every picture of her, whate
   const self = page.slice(page.indexOf('## あなた自身の姿'));
   assert.ok(self.startsWith('## あなた自身の姿'));
   // Which lines are her body and which are her clothes, and that the body is kept even when written as a scene.
-  for (const word of ['体の行', '服の行', '自撮りでなくても', 'freckles', 'large sagging breasts']) assert.ok(self.includes(word), word);
+  for (const word of ['体の行', '服の行', '自撮りでなくても', 'freckles', 'large breasts']) assert.ok(self.includes(word), word);
   // A check to run on the prompt before drawing.
   assert.match(self, /grep -q .*\/work\/prompts\//);
   // Examples in other clothes and of a mood, and every prompt of her in them keeps her body lines as the owner wrote them.
   const blocks = [...self.matchAll(/```\n([\s\S]*?)```/g)].map(match => match[1]!);
-  const prompts = blocks.filter(block => block.includes('<lora:kutara_aki_anima.v3:1>'));
+  const prompts = blocks.filter(block => block.includes('<lora:kutara_anima.v1:1>'));
   assert.ok(prompts.length >= 3, `${prompts.length} prompts of her`);
   for (const prompt of prompts) {
-    for (const line of ['woman, low ponytail, freckles, large sagging breasts,', 'black glasses,']) assert.ok(prompt.includes(line), `${line}\n${prompt}`);
+    for (const line of ['kutara natsumi, low ponytail, freckles, large breasts,', 'black glasses,']) assert.ok(prompt.includes(line), `${line}\n${prompt}`);
   }
   assert.ok(prompts.some(prompt => !prompt.includes('business suit')), 'no example in other clothes');
   assert.ok(prompts.some(prompt => /mood|feeling/i.test(prompt) || !/looking at viewer/.test(prompt)), 'no example that is not a selfie');

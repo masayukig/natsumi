@@ -3,9 +3,9 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { chooseRotation, CurationRecord, curationBrief, curatorTools, isRewritable } from '../src/server/memory-curator.ts';
+import { archivePlan, chooseRotation, CURATOR_STAGES, CurationRecord, curatorTools, isRewritable, type StageInput } from '../src/server/memory-curator.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, SEARCH_MEMORY_DESCRIPTION } from '../src/server/prompts.ts';
+import { CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorSystemPrompt, SEARCH_MEMORY_DESCRIPTION } from '../src/server/prompts.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 
 // The memory curator's pieces (ADR 0055): what it is handed, what it may rewrite, and what is kept of its nights.
@@ -18,9 +18,9 @@ async function withDb(body: (db: ReturnType<typeof openStateDatabase>, now: { at
   try { await body(db, now); } finally { db.close(); await rm(root, { recursive: true, force: true }); }
 }
 
-test('only topic files are rewritten: never her three files, the index, the diary or what is not Markdown', () => {
+test('only topic files are rewritten: never her three files, the index, the diary, the archive or what is not Markdown', () => {
   for (const path of ['予定.md', '暮らし/予定.md', 'README.md', '暮らし/README.md']) assert.equal(isRewritable(path), true, path);
-  for (const path of ['always.md', 'personality.md', 'handoff.md', 'INDEX.md', 'diary/2026-09-27.md', 'メモ.txt']) {
+  for (const path of ['always.md', 'personality.md', 'handoff.md', 'INDEX.md', 'diary/2026-09-27.md', 'archive/2026-09.md', 'メモ.txt']) {
     assert.equal(isRewritable(path), false, path);
   }
 });
@@ -34,40 +34,168 @@ test('the files in turn are those left longest, never curated first, leaving out
   assert.deepEqual(chooseRotation(['always.md'], curated, new Set(), 2), []);
 });
 
-test('the brief maps all of memory with sizes and headings, marks what is not to be changed, and names what may be rewritten', () => {
-  const headings = Array.from({ length: 35 }, (_, i) => `## 2026-09-${String(i).padStart(2, '0')}: 出来事`);
-  const brief = curationBrief({
-    name: 'なつみ', date: '2026-09-28', fileMaxChars: 32000,
-    files: [
-      { path: 'INDEX.md', chars: 50, headings: ['# 記憶の索引'] },
-      { path: 'always.md', chars: 300, headings: ['# 常時記憶'] },
-      { path: 'diary/2026-09-26.md', chars: 400, headings: ['# 2026-09-26'] },
-      { path: 'diary/2026-09-27.md', chars: 500, headings: ['# 2026-09-27'] },
-      { path: 'handoff.md', chars: 100, headings: [] },
-      { path: 'personality.md', chars: 200, headings: [] },
-      { path: 'Slack連携.md', chars: 13201, headings: ['# Slack連携', ...headings] },
-      { path: '予定.md', chars: 80, headings: ['# 予定', `## ${'長'.repeat(200)}`] },
-    ],
-    changed: ['Slack連携.md'], rotated: ['予定.md'],
-  });
-  assert.match(brief, /^<curation>\n/);
-  assert.match(brief, /2026-09-28/);
-  assert.match(brief, /32000 文字/);
-  assert.match(brief, /- Slack連携\.md（13201 文字）\n {2}- # Slack連携\n {2}- ## 2026-09-00: 出来事/);
-  assert.match(brief, /ほか 6 件の見出し/);
-  assert.doesNotMatch(brief, /2026-09-34/);
-  assert.doesNotMatch(brief, /長{100}/, 'a heading is cut short');
-  for (const fixed of ['always.md', 'handoff.md', 'personality.md']) assert.match(brief, new RegExp(`- ${fixed}（[^\\n]*変えない`));
-  assert.match(brief, /- INDEX\.md（50 文字・あなたが書く索引）/);
-  assert.match(brief, /- diary\/: 2 ファイル（diary\/2026-09-26\.md 〜 diary\/2026-09-27\.md・日記、変えない）/);
-  assert.doesNotMatch(brief, /- # 2026-09-26$/m, 'the diary is not listed file by file');
-  const rewritable = brief.slice(brief.indexOf('## 中身を書き直してよいファイル'));
-  assert.match(rewritable, /前回の整理から変わったもの\n- Slack連携\.md/);
-  assert.match(rewritable, /順番が回ってきたもの\n- 予定\.md/);
-  assert.match(brief, /<\/curation>$/);
+const sections = (...pairs: [string, number][]) => pairs.map(([heading, lines]) => ({ heading, lines }));
+const stage = (name: string) => CURATOR_STAGES.find(candidate => candidate.name === name)!;
 
-  const quiet = curationBrief({ name: 'なつみ', date: '2026-09-28', fileMaxChars: 32000, files: [], changed: [], rotated: [] });
-  assert.match(quiet, /前回の整理から変わったもの\n（なし）/);
+/** What a stage is given: a fictional memory, dated and curated as a night would find it. */
+function input(overrides: Partial<StageInput> = {}): StageInput {
+  const many = Array.from({ length: 35 }, (_, i) => [`## 2026-09-${String(i).padStart(2, '0')}: 出来事`, 2] as [string, number]);
+  return {
+    name: 'なつみ', date: '2026-09-28', timeZone: 'Asia/Tokyo', fileMaxChars: 32000, rotateFiles: 1, rewriteAllMaxChars: 10000,
+    files: [
+      { path: 'INDEX.md', chars: 50, sections: sections(['# 記憶の索引', 3]) },
+      { path: 'always.md', chars: 300, sections: sections(['# 常時記憶', 4]) },
+      { path: 'diary/2026-09-26.md', chars: 400, sections: sections(['# 2026-09-26', 5]) },
+      { path: 'diary/2026-09-27.md', chars: 500, sections: sections(['# 2026-09-27', 5]) },
+      { path: 'handoff.md', chars: 100, sections: [] },
+      { path: 'personality.md', chars: 200, sections: [] },
+      { path: 'Slack連携.md', chars: 13201, sections: sections(['# Slack連携', 1], ...many) },
+      { path: '予定.md', chars: 80, sections: sections(['# 予定', 0], [`## ${'長'.repeat(200)}`, 42]) },
+      { path: '本人.md', chars: 60, sections: sections(['', 7]) },
+    ],
+    lastChanged: new Map([['Slack連携.md', '2026-09-27T21:30:00+09:00'], ['予定.md', '2026-09-20T01:00:00+00:00'], ['本人.md', '2026-09-26T23:30:00Z']]),
+    curated: new Map([['Slack連携.md', '2026-09-26T19:00:00.000Z'], ['本人.md', '2026-09-25T00:00:00.000Z']]),
+    changed: ['Slack連携.md'],
+    ...overrides,
+  };
+}
+
+test('the night runs in stages, the archiving before the reorganizing and the index last, each with its own instructions', () => {
+  assert.deepEqual(CURATOR_STAGES.map(candidate => candidate.name), ['archive', 'structure', 'index']);
+  assert.equal(stage('archive').rewrites, true);
+  for (const candidate of CURATOR_STAGES) assert.ok(candidate.instructions('なつみ').length > 0, candidate.name);
+  assert.notEqual(stage('structure').instructions('なつみ'), stage('index').instructions('なつみ'));
+  assert.equal(stage('structure').rewrites, true);
+  assert.equal(stage('index').rewrites, false);
+});
+
+test('the reorganizing is told to keep a file in sections by topic, split long ones, and lead each with its point', () => {
+  const told = stage('structure').instructions('なつみ');
+  for (const rule of ['話題ごとに節を立て', '合う節か、合うファイルへ移し', '長い節は ### で分け', '要点から書き']) assert.ok(told.includes(rule), rule);
+  assert.match(told, /INDEX\.md は次の工程/);
+  assert.match(stage('index').instructions('なつみ'), /INDEX\.md を、今の記憶の構成に合わせて書き直し/);
+  // What is thrown away is the stage's, not the night's.
+  assert.match(curatorSystemPrompt('なつみ'), /この工程のあなたの変更はすべて捨てられます。前の工程のコミットは残ります。/);
+  assert.doesNotMatch(curatorSystemPrompt('なつみ'), /今夜のあなたの変更はすべて/);
+});
+
+test('the map of memory shows each file\'s size, when it last changed and was last curated, and its sections\' lengths', () => {
+  const { text } = stage('structure').brief(input());
+  assert.match(text, /^<curation>\n/);
+  assert.match(text, /2026-09-28/);
+  assert.match(text, /32000 文字/);
+  // Dates are local dates: 21:30 in Tokyo is still the 27th, 23:30 UTC is the 27th in Tokyo.
+  assert.match(text, /- Slack連携\.md（13201 文字・最後に変わった日 2026-09-27・最後に整理した日 2026-09-27）\n {2}- # Slack連携（1 行）\n {2}- ## 2026-09-00: 出来事（2 行）/);
+  assert.match(text, /- 予定\.md（80 文字・最後に変わった日 2026-09-20・まだ整理していない）/);
+  assert.match(text, /- 本人\.md（60 文字・最後に変わった日 2026-09-27・最後に整理した日 2026-09-25）\n {2}- （見出しの前）（7 行）/);
+  assert.match(text, /ほか 6 件の節/);
+  assert.doesNotMatch(text, /2026-09-34/);
+  assert.doesNotMatch(text, /長{100}/, 'a heading is cut short');
+  assert.match(text, /長…（42 行）/);
+  for (const fixed of ['always.md', 'handoff.md', 'personality.md']) assert.match(text, new RegExp(`- ${fixed}（[^\\n]*変えない`));
+  assert.match(text, /- INDEX\.md（50 文字・索引、最後の工程で書き直す）/);
+  assert.match(text, /- diary\/: 2 ファイル（diary\/2026-09-26\.md 〜 diary\/2026-09-27\.md・日記、変えない）/);
+  assert.doesNotMatch(text, /- # 2026-09-26/, 'the diary is not listed file by file');
+  assert.match(text, /<\/curation>$/);
+});
+
+test('while the topics are small, every topic may be rewritten; past the size, only what changed and the files in turn', () => {
+  const all = stage('structure').brief(input({ rewriteAllMaxChars: 13341 }));
+  const allPart = all.text.slice(all.text.indexOf('## 中身を書き直してよいファイル'));
+  assert.match(allPart, /トピックの合計は 13341 文字で/);
+  assert.match(allPart, /すべてのトピック/);
+  assert.deepEqual([...all.handled].sort(), ['Slack連携.md', '予定.md', '本人.md'].sort());
+
+  const some = stage('structure').brief(input({ rewriteAllMaxChars: 13340 }));
+  const somePart = some.text.slice(some.text.indexOf('## 中身を書き直してよいファイル'));
+  assert.match(somePart, /前回の整理から変わったもの\n- Slack連携\.md/);
+  assert.match(somePart, /順番が回ってきたもの\n- 予定\.md/, 'never curated comes first');
+  assert.deepEqual(some.handled, ['Slack連携.md', '予定.md']);
+
+  // archive/ is not a topic, and is not counted.
+  const archived = stage('structure').brief(input({ rewriteAllMaxChars: 13341, files: [...input().files,
+    { path: 'archive/2026-09.md', chars: 5000, sections: [] }] }));
+  assert.match(archived.text, /トピックの合計は 13341 文字で/);
+  assert.equal(archived.handled.includes('archive/2026-09.md'), false);
+
+  const quiet = stage('structure').brief(input({ rewriteAllMaxChars: 0, changed: [], rotateFiles: 0 }));
+  assert.match(quiet.text, /前回の整理から変わったもの\n（なし）/);
+});
+
+const ARCHIVED = [
+  { path: 'archive/2025-11.md', chars: 300, sections: sections(['# 2025-11', 0], ['## 予定', 3]) },
+  { path: 'archive/2026-09.md', chars: 400, sections: sections(['# 2026-09', 0], ['## 暮らし', 4]) },
+];
+
+test('the other stages see the archive as one line, and leave it alone', () => {
+  for (const name of ['structure', 'index']) {
+    const { text } = stage(name).brief(input({ files: [...input().files, ...ARCHIVED] }));
+    assert.match(text, /- archive\/: 2 ファイル（[^\n]*古い記憶、この工程では変えない）/, name);
+    assert.doesNotMatch(text, /- archive\/2026-09\.md/, name);
+  }
+});
+
+test('which archive files a night compacts: a quarter three months after it ended, a year once its last quarter is a year old', () => {
+  const paths = ['archive/2025-11.md', 'archive/2025-Q3.md', 'archive/2026-06.md', 'archive/2026-07.md', 'archive/2026-08.md',
+    'archive/2026-09.md', 'archive/2026-10.md', 'archive/メモ.md', '予定.md'];
+  assert.deepEqual(archivePlan(paths, '2026-09-28'), { append: 'archive/2026-09.md', compactions: [
+    { into: 'archive/2025-Q4.md', from: ['archive/2025-11.md'] },
+    { into: 'archive/2026-Q2.md', from: ['archive/2026-06.md'] },
+  ] });
+  assert.deepEqual(archivePlan(paths, '2026-10-04').compactions, [
+    { into: 'archive/2025.md', from: ['archive/2025-11.md', 'archive/2025-Q3.md'] },
+    { into: 'archive/2026-Q2.md', from: ['archive/2026-06.md'] },
+  ]);
+  assert.deepEqual(archivePlan(paths, '2026-12-01').compactions.find(group => group.into === 'archive/2026-Q3.md'),
+    { into: 'archive/2026-Q3.md', from: ['archive/2026-07.md', 'archive/2026-08.md', 'archive/2026-09.md'] });
+  // A year whose last quarter is not yet a year old waits, its quarters with it.
+  assert.deepEqual(archivePlan(['archive/2025-Q4.md', 'archive/2025-Q3.md'], '2026-09-30').compactions, []);
+  assert.deepEqual(archivePlan([], '2026-10-04'), { append: 'archive/2026-10.md', compactions: [] });
+});
+
+test('the archiving stage is handed the topics it may rewrite, this month\'s file, and on a night of compacting what to compact', () => {
+  const quiet = stage('archive').brief(input({ files: [...input().files, ...ARCHIVED], rewriteAllMaxChars: 100000, date: '2026-10-04' }));
+  assert.match(quiet.text, /- Slack連携\.md（13201 文字/);
+  assert.match(quiet.text, /- archive\/2026-09\.md（400 文字）/);
+  assert.match(quiet.text, /archive\/2026-10\.md/);
+  assert.match(quiet.text, /すべてのトピック/);
+  assert.deepEqual([...quiet.handled].sort(), ['Slack連携.md', '予定.md', '本人.md'].sort());
+  assert.deepEqual(quiet.archive, archivePlan([...input().files, ...ARCHIVED].map(file => file.path), '2026-10-04'));
+  assert.match(quiet.text, /## 今夜まとめるもの\n- archive\/2025\.md ← archive\/2025-11\.md/);
+
+  const none = stage('archive').brief(input({ date: '2026-10-04' }));
+  assert.doesNotMatch(none.text, /今夜まとめるもの/);
+  assert.equal(stage('archive').refuse('予定.md'), undefined);
+  assert.match(stage('archive').refuse('INDEX.md') ?? '', /INDEX\.md/);
+});
+
+test('the curator judges what is old by reading it, and moves it into the archive rather than deleting it', () => {
+  const told = stage('archive').instructions('なつみ');
+  for (const rule of ['中身', '時点', '当時のトピック名', '要約', 'write_change_note']) assert.ok(told.includes(rule), rule);
+  assert.match(told, /マスターの言葉/);
+  // The reorganizing still drops duplicates, and no longer drops what is old.
+  const structure = stage('structure').instructions('なつみ');
+  assert.match(structure, /重複は消してかまいません/);
+  assert.doesNotMatch(structure, /古くなったこと/);
+  assert.match(curatorSystemPrompt('なつみ'), /archive\//);
+});
+
+test('the index stage is handed the map and told what it writes, and rewrites no topic', () => {
+  const { text, handled } = stage('index').brief(input());
+  assert.match(text, /- Slack連携\.md（13201 文字/);
+  assert.doesNotMatch(text, /中身を書き直してよいファイル/);
+  assert.match(text, /INDEX\.md/);
+  assert.deepEqual(handled, []);
+});
+
+test('each stage keeps to its own files: the reorganizing leaves the index alone, the index stage writes only indexes', () => {
+  assert.equal(stage('structure').refuse('予定.md'), undefined);
+  assert.equal(stage('structure').refuse('暮らし/README.md'), undefined);
+  assert.match(stage('structure').refuse('INDEX.md') ?? '', /INDEX\.md/);
+  assert.equal(stage('index').refuse('INDEX.md'), undefined);
+  assert.equal(stage('index').refuse('暮らし/README.md'), undefined);
+  assert.match(stage('index').refuse('予定.md') ?? '', /予定\.md/);
+  assert.match(stage('index').refuse('README.md') ?? '', /README\.md/, 'a README at the top is a topic, not a folder\'s index');
 });
 
 test('a night that succeeded moves the base and dates the files it had in hand; one cut off is known at the next start', () => withDb((db, now) => {

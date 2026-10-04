@@ -466,8 +466,8 @@ export class Sources {
   private git(args: string[], options: { allowFailure?: boolean; env?: Record<string, string> } = {}): Promise<GitResult> {
     const { directory, gitDirectory, now } = this.options;
     const date = `@${Math.floor(now() / 1000)} +0000`;
-    return runGit(directory, [`--git-dir=${gitDirectory}`, `--work-tree=${directory}`, '-c', `safe.directory=${gitDirectory}`, ...args],
-      { ...options, env: { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, ...options.env } });
+    return runGit(directory, [`--work-tree=${directory}`, '-c', `safe.directory=${gitDirectory}`, ...args],
+      { ...options, gitDirectory, env: { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, ...options.env } });
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {

@@ -29,6 +29,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
 プロンプトやソースの変更でなつみが期待どおりに動くかは、`npm run eval` で確かめます。本物の思考ループで 1 ターンを回し、
 場面ごとの成功率を出して、版どうしで比べます（[使い方と場面の書き方](eval/README.md)）。`npm test` はこれを偽のモデルで回します
 （Go と bubblewrap がなければ、その試験だけ skip するか、閉じ込めずに回します）。
+記憶の整理係の変更は、本番の写しの記憶で係の一晩を回し、結果の記憶を読んでから本番に入れます（`npm run eval -- curate`、[使い方](eval/README.md#係の一晩を写しで回す)）。
 
 ## サーバーの起動
 
@@ -72,19 +73,25 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      作業環境の runner のソケット `workspaceSocket`（絶対パス。これがあるときだけ `run_shell` が使えます）、
      runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
+     Pi の Codemode `codemode`（既定 off。下記「Codemode で作業環境の出力を絞る」）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
-   - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)）。
+   - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
-     係のターンの上限 `modelCalls`（既定 60 回）と `timeoutMinutes`（既定 30 分）、一晩に順番で回すファイルの数 `rotateFiles`
-     （既定 2、0〜10）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
+     係のターンの上限 `modelCalls`（既定 60 回）と `timeoutMinutes`（既定 30 分）。一晩は工程に分かれ、上限は工程ごとにまるごと使えます
+     （一晩の合計ではありません）。トピックの合計の文字数がこれ以下なら毎晩すべてのトピックを書き直してよい大きさ `rewriteAllMaxChars`
+     （既定 100000。`archive/`・`diary/`・固定のファイル・`INDEX.md` は数えません。0 なら常に次の `rotateFiles` の形）、
+     超えたときに一晩に順番で回すファイルの数 `rotateFiles`（既定 2、0〜10）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
+     係の Pi の Codemode `codemode`（既定 off。`loop.codemode` とは別に入り切りします。下記「Codemode で作業環境の出力を絞る」）。
    - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
-     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
+     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`aki`（アキ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
      `appearance`（省略可、絶対パス）に `appearance.yaml` を書くと、そのアバターの姿（自分を描くときのプロンプト）を丸ごと置き換えます。
+     `sdctlParams`（省略可、絶対パス）に `sdctl-params.yaml` を書くと、そのアバターの画像生成の設定（sdctl の params）を丸ごと置き換えます。
+     `personality`（省略可、絶対パス）に `personality.md` を書くと、そのアバターの性格・話し方の初期値を丸ごと置き換えます。
      壊れていれば起動せず、素材が足りないだけなら、名無し（`nanashi`）の、のっぺらぼうの素材で埋めて起動します。
-     アバターの `personality.md`（省略可）は、記憶に `personality.md` がまだ無いときだけ、その初期値になります。すでにある性格は上書きしません。
+     アバターの `personality.md`（省略可）も、`personality` で指したものも、記憶に `personality.md` がまだ無いときだけ、その初期値になります。すでにある性格は上書きしません。
      作り方と検査のコマンド `natsumi avatar check <ディレクトリか ID>` は [アバターの作り方](docs/avatar.md)、決めたことは [ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md) にあります。
 4. ビルドして起動します。
 
@@ -111,6 +118,7 @@ Pi の session ファイルが消えた・壊れた場合は新しい session �
 （ブランチは `main`）。すでにあった Markdown は、名前も中身も変えずに最初のコミットに入ります。
 記憶そのものは、トピックごとの Markdown ファイルです。トピックには「今どうなっているか」を書き、その日の出来事と経緯は
 `diary/` の日ごとのファイルに書くよう、natsumi に指示しています（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)）。
+トピックから外した古い事実は、記憶の整理係が要約して `archive/` の月ごとのファイルに残します（[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
 natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](docs/adr/0019-a-workspace-not-a-memory-tool.md)）、
 `INDEX.md` から、または `search_memory`（`rg` を決まったオプションで `/memory` に掛けるツール）で探します。
 手で読んで直すこともできますし、直下に手で置いた `.md` ファイルも natsumi が探す対象になります。
@@ -120,7 +128,7 @@ natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](doc
 | ファイル | 中身 |
 | --- | --- |
 | `always.md` | 常時記憶。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます |
-| `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます。無ければアバターの `personality.md`（無ければ表示名の入った枠）を置きます（[ADR 0060](docs/adr/0060-a-personality-to-start-from-in-the-avatar.md)） |
+| `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます。無ければ設定の `avatar.personality` のファイル、無ければアバターの `personality.md`（無ければ表示名の入った枠）を置きます（[ADR 0060](docs/adr/0060-a-personality-to-start-from-in-the-avatar.md)） |
 | `handoff.md` | 夜の引き継ぎ。初回起動で、そのときの最新の引き継ぎを写します（引き継ぎ自体を SQLite からこのファイルへ移すのは後続の実装） |
 | `INDEX.md` | 記憶の索引。無ければ雛形を置きます。書くのは記憶の整理係だけで、natsumi のターンで変わっていたら戻します |
 
@@ -128,12 +136,17 @@ natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](doc
 検査 → 当たったものを直前のコミットの状態に戻す（新しいファイルは消す）→ 残りをコミット、です。ターンがモデル呼び出しの
 上限や時間切れで終わったときも同じように検査してコミットします。検査は `.md` 以外・symlink・空・
 `loop.memoryFileMaxChars`（既定 32000 文字）超過・テンプレートの制御文字列・制御文字・日本語以外の文字と、
-日中のターンでの `always.md`・`personality.md` の変更と、natsumi のターンでの `INDEX.md` の変更です。`always.md` にはこれに加えて
+日中のターンでの `always.md`・`personality.md` の変更と、natsumi のターンでの `INDEX.md` と `archive/` の変更です。`always.md` にはこれに加えて
 `loop.alwaysMemoryMaxChars`（既定 2000 文字）の上限が掛かります。戻した理由は次のターンで natsumi に伝わります。
 
 上限を掛けるのは書くときだけです（[ADR 0020](docs/adr/0020-limits-at-write-time-and-a-nightly-menu.md)）。
 プロンプトを組む側は長さを見ないので、オーナーが自分で git に直接コミットした長い `always.md` は、そのまま
 プロンプトに入ります。サーバーが書いたものは必ず上限の中にあります。
+
+オーナーが自分の git でコミットした変更は検査しません（[ADR 0067](docs/adr/0067-the-owner-commits-memory-over-ssh.md)）。
+Kubernetes の構成でも、ssh の口では記憶の `.git` を書けるようにして、オーナーが自分でコミットします（natsumi の作業環境は今までどおり読み取り専用です）。
+そのときは ssh の口で `.git` を独立したマウントにし、`.git/config` を読み取り専用で重ねてください。サーバーの git は `GIT_DIR`・`GIT_COMMON_DIR` を明示して呼ぶので、`.git/commondir` を置かれても別の config を読みません。
+自分が直したファイルだけをコミットしてください。作業ツリー全体を取り込むと、まだ検査していない natsumi の書き込みも検査なしで履歴に入ります。
 
 natsumi が作ったファイルは、削除も改名も検査しません。全部消しても履歴から戻せます。上の 4 つだけは別で、
 消すことも改名することもできません（戻したうえで理由を伝えます）。サーバーはこの 4 つが直下にある前提で動くので、
@@ -150,19 +163,36 @@ author と committer はサーバーが固定し、リポジトリに置かれ�
 その夜のコミットメッセージは natsumi 自身の説明で、書かれなかった夜はサーバーが機械的に付けます。
 
 記憶の組み直し（ファイルの統合・分割・改名・ディレクトリの整理、重複や古いところの手直し、`INDEX.md`）は、振り返りの後、
-新しい session に切り替える前に、記憶の整理係が行います（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)）。
+新しい session に切り替える前に、記憶の整理係が行います（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
 
-- 係は natsumi の人格を持たない、別の Pi の session です。毎晩新しく作り、記録は `pi.sessionDirectory` の `curator/` に残ります。
+- 係は natsumi の人格を持たない、別の Pi の session です。記録は `pi.sessionDirectory` の `curator/` に残ります。
   使えるツールは `run_shell`・`read`・`search_memory` と、係の変更の説明を書くツールだけです。
-- 係には、全ファイルの一覧と見出し、前回の整理から変わったファイル、最後に手が入ってから日が経ったファイル（`curator.rotateFiles` 件）を渡します。
-  中身まで書き直すのは後の 2 つだけで、ほかのファイルは構成の組み替えのために読むだけです。
-- 係は `always.md`・`personality.md`・`handoff.md` と `diary/` を変えられません。古いもの・重複は消してよく、消したものは理由とともに
+- 一晩は工程に分かれます。今は「古い記憶を `archive/` へ移す」→「構成と節の組み直し」→「索引（`INDEX.md`）」の順です。工程ごとに新しい session を作り、1 ターンで終え、
+  1 コミットにします。呼び出しと時間の上限（`curator.modelCalls`・`curator.timeoutMinutes`）は、工程ごとにまるごと使えます（下のやり直しも含みます）。
+- 係には、全ファイルの一覧を渡します。ファイルごとに大きさ、最後に変わった日（git）、最後に係の手が入った日、節（`#`〜`###`）ごとの行数を添えます。
+  トピックの合計が `curator.rewriteAllMaxChars` 以下なら、すべてのトピックを書き直してよいとします。超えたら、前回の整理から変わったファイルと、
+  最後に手が入ってから日が経ったファイル（`curator.rotateFiles` 件）だけを書き直し、ほかのファイルは構成の組み替えのために読むだけです。
+- 書き直すファイルは、話題ごとの節にし、合わない行を合う節やファイルへ移し、長い節は `###` で分け、各節を要点から書くよう指示します。
+- 係は `always.md`・`personality.md`・`handoff.md` と `diary/` を変えられません。重複は消してよく、消したものは理由とともに
   コミットメッセージに残ります。本人の言葉・約束・「覚えておいて」と言われたことは、済んだと明らかでない限り残します。
-- 係の変更は 1 コミットか、無しかです。検査に 1 つでも当たったとき、上限で打ち切られたとき、モデルの呼び出しが失敗したときは、
-  その夜の係の変更をすべて捨てます。それでも夜の切り替えは止めません。捨てた夜は、ダッシュボードの「失敗と待ち」に出ます。
+- 古くなった事実は消さずに、古い記憶の工程が `archive/` へ移します。古いかどうかは、行に書かれた時点の日付も見ますが、中身を読んで判断します。
+  移した事実は 1〜2 文に要約し、当時のトピック名の見出しを付けて、今月のファイル（`archive/2026-10.md` のような、なつみのタイムゾーンでの年月）の末尾に足します。
+  移したものは、その工程のコミットメッセージに残ります。
+- `archive/` は古いほど粗くまとめます。四半期の最後の月から 3 か月経った夜に、その四半期の月のファイルを `archive/2026-Q3.md` のような四半期のファイルへ、
+  年の最後の四半期から 1 年経った夜（翌年の 10 月以降）に、その年のファイルを `archive/2025.md` へ要約し直し、元のファイルを消します。
+  どの夜に何をまとめるかは、サーバーがその夜の日付と `archive/` のファイルから決めて係に渡します。まとめる前の細部は git の履歴に残ります。
+- `archive/` を書けるのは古い記憶の工程だけで、今月のファイルの末尾に足すことしかできません。既にある行を変える、ほかのファイルを変える・消す、
+  ほかの工程が `archive/` に触る、はどれも検査に当たります。例外は、その夜にまとめると決めたファイルを、まとめた先のファイルと一緒に丸ごと入れ替えることだけです。
+  `archive/` はトピックではないので、書き直す対象にも `curator.rewriteAllMaxChars` の合計にも入りません。
+- 係の変更が検査に当たったときは、捨てる前に、当たったファイルと理由を同じ session で係に伝えて、1 度だけ直させます。
+  直した後にもう一度検査し、まだ当たっていれば捨てます。工程の呼び出しの上限を使い切っていたら、やり直しはしません。
+- 係の変更は工程ごとに 1 コミットか、無しかです。やり直しの後も検査に当たったとき、上限で打ち切られたとき、モデルの呼び出しが失敗したときは、
+  その工程の係の変更をすべて捨てます。前の工程のコミットは残り、次の工程は続けて動きます。それでも夜の切り替えは止めません。
+  工程ごとに、ダッシュボードのターンの一覧に `memory_curator:<工程>` として並び、捨てた工程は「失敗と待ち」に出ます。
+  構成と節の組み直しの工程では `INDEX.md` を、索引の工程では `INDEX.md` とディレクトリの中の `README.md` 以外を変えられません。
 - 係が動いている間、natsumi は寝ています。届いたメッセージは、切り替えの後に新しい session が扱います。
 - 係の結果も説明も、翌朝の natsumi には渡しません。本人は git の履歴か、ダッシュボードの係のターンで確かめます。
-- 係の途中でサーバーが止まったときは、次の起動で、係がコミットしなかった変更を捨てます。
+- 係の途中でサーバーが止まったときは、次の起動で、その工程の係がコミットしなかった変更を捨てます。前の工程のコミットは残ります。
 古い session ファイルは消さずに残るので、Pi の session 領域は日ごとに増えます。日中に context が `loop.compactionThreshold` を超えると、
 イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
@@ -282,6 +312,31 @@ node dist/src/server/main.js stats --memos 20 --config <config file>   # 直近�
 - `stats` が数えるのは普通のターンだけです。夜の振り返りと記憶の整理係のターンは、あれば件数だけを最後に出します。
 - `--since` と `--until` は `YYYY-MM-DD`（UTC の 0 時）か、`Z` 付きの時刻です。`--until` の時刻は含みません。
 - `--memos` は `pi.sessionDirectory` を読むために設定ファイルを読みます（既定は `config.local.json`）。
+
+### Codemode で作業環境の出力を絞る
+
+Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScript を書き、スクリプトの中から作業環境のツールを呼べます
+（[ADR 0066](docs/adr/0066-codemode-to-keep-raw-output-out-of-the-context.md)）。
+モデルに返るのはスクリプトが出力したものだけなので、長い `rg` や `ls` の出力をスクリプトの中で絞り、生の出力を文脈に入れずに済みます。
+なつみの session（`loop.codemode`）と記憶の整理係の session（`curator.codemode`）で、別々に設定します。どちらも既定は off です。
+
+```json
+"loop": { "codemode": { "enabled": true, "workspaceTools": "direct", "nestedCalls": 40 } },
+"curator": { "codemode": { "enabled": true, "workspaceTools": "direct", "nestedCalls": 120 } }
+```
+
+- `enabled`（既定 `false`）: off のときは、ツールも system prompt も Codemode を入れる前と一字一句同じです。
+- `workspaceTools`（既定 `"direct"`）: 作業環境の 3 つのツール（`run_shell`・`read`・`search_memory`）の見え方です。
+  `"direct"` はモデルが直接も、スクリプトからも呼べます。`"codemode"` はモデルからは見えず、スクリプトからだけ呼べます。
+- `nestedCalls`（既定: なつみ 40 回、整理係 120 回）: 1 ターンのスクリプトの中で呼べるツールの回数です。ターンの中のスクリプトすべてで数えます。
+  超えた呼び出しは断り、スクリプトにはエラーとして返ります。モデルの呼び出しの回数と時間の上限は、これまでどおりです。
+- スクリプトから呼べるのは、作業環境の 3 つだけです。返事・知らせ・表情・夜のメモ・`ask_agent`・自分で予約する確認は、
+  モデルが直接呼ぶものとしてだけ見えます。Pi の `models`（分類器と画像生成）はスクリプトに渡しません。
+- 作業環境（`loop.workspaceSocket`）が無いときは、スクリプトから呼べるものが無いので、`enabled` でも何も足しません。
+- 設定はプロセスの起動時に読みます。変えるには再起動します。入り切りと見え方の切り替えは、ツールの定義を変えるので、
+  切り替えた後の session は prefix cache が一度外れます。モデルの経路ごとには変えません。
+- スクリプトの中で呼んだツールは、session の記録に toolCall としては残らず、codemode の結果に名前・引数・状態の一覧だけが残ります。
+  `stats` の読み直しの数には、その一覧の `run_shell`・`read` と、前と同じ本文のスクリプトも数えます。
 
 ### ブラウザで話す・設定を変える
 
@@ -761,12 +816,13 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
   それにダッシュボードの「ファイル」でオーナーが開いたもの（読み取り専用）だけです。
 - 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
-  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.2。image の build でソースから入れます）を使い、
+  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.3。image の build でソースから入れます）を使い、
     Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの `/manual/avatar/images.md` にあります。
     サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさを差し込んで書き出します。
-  - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。アバターの `sdctl-params.yaml`、無ければサーバーの既定
+  - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。設定の `avatar.sdctlParams` があればそのファイル、無ければアバターの `sdctl-params.yaml`、無ければサーバーの既定
     （名無しの [assets/avatars/nanashi/sdctl-params.yaml](assets/avatars/nanashi/sdctl-params.yaml)）を、サーバーが起動のたびに書き出します。
     サーバーの既定は、Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
+    params には `alwayson_scripts` も書け、txt2img・img2img・hires の要求にそのまま渡ります（ADetailer で顔を描き直すなど。拡張は WebUI 側に要ります）。
   - 接続先・既定の設定・出力の既定の `/work/images` と形式の JPEG は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
     PATH の `sdctl` は、本物（`/usr/libexec/sdctl`）にいつもこのファイルを `--config` で渡すラッパーです。
     runner はコマンドにコンテナの環境変数を渡さないので（下の「環境変数」）、image の環境変数では natsumi のコマンドに届きません。
@@ -812,6 +868,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     相手の一覧の `agents/` も同じ作り方で、一覧のファイルはグループが読める 0640 で書きます（作業環境からは読むだけです）。
   - サーバーだけが使うもの（`.natsumi/` の SQLite と証明書、Pi の状態領域）は 0700 のディレクトリに置かれ、グループからも見えません。
   - サーバーの git は、持ち主の違う記憶のリポジトリを `safe.directory` で扱い、そのままコミットします。
+  - 作業環境の image も、システムの git の設定で `/memory` だけを `safe.directory` にしています。別の UID で動かしても、なつみは記憶の履歴を読めます。
   - 既にあるディレクトリの持ち主と権限は変えません。既存のデータを移すときは、3 つの場所の中身のグループを共有のグループにし、
     グループの書き込みと、ディレクトリの setgid を付けてください。umask か setgid が外れると、サーバーが記憶をコミットできなくなります。
   - runner は `-socket` のディレクトリが無ければ作ります。持ち主の違う volume（Pod の `emptyDir` など）では、

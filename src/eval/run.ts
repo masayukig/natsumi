@@ -392,7 +392,7 @@ function redactor(file: ModelFile | undefined): (text: string) => string {
  * an event, so that only the scene's event is handled. The events it had queued count as failed, and the tasks it was
  * waiting on as given up.
  */
-async function openSnapshot(db: ReturnType<typeof openStateDatabase>, snapshot: string, sessionDirectory: string, now: () => number): Promise<void> {
+export async function openSnapshot(db: ReturnType<typeof openStateDatabase>, snapshot: string, sessionDirectory: string, now: () => number): Promise<void> {
   const at = new Date(now()).toISOString();
   db.prepare(`UPDATE loop_events SET state = 'failed', reason = 'left in the snapshot', updated_at = ? WHERE state IN ('queued', 'processing')`).run(at);
   db.prepare(`UPDATE agent_tasks SET state = 'gave-up', updated_at = ? WHERE state = 'waiting'`).run(at);
