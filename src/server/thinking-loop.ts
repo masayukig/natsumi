@@ -236,6 +236,11 @@ export interface LoopOptions {
 export interface LoopSettings {
   turnLimits(): Pick<LoopConfig, 'eventModelCalls' | 'eventTimeoutMinutes' | 'reviewModelCalls' | 'reviewTimeoutMinutes'>;
   awakeHours(): LoopConfig['awakeHours'];
+  /**
+   * The curator's route and the limits of each stage, read when the night starts (ADR 0068): the route null for the one
+   * natsumi is on. Without it the `curator` section's are used.
+   */
+  curator?(): { route: string | null; modelCalls: number; timeoutMinutes: number };
 }
 
 /** The side of the sources the loop reads a `sources_updated` event from (ADR 0050). */
@@ -1236,9 +1241,15 @@ export class ThinkingLoop {
    * throws, and never holds up the switch it runs inside.
    */
   private async curate(): Promise<void> {
-    const config = this.options.curator;
-    if (!config?.enabled || !this.shell) return;
-    const route = this.routes.list.find(candidate => candidate.name === config.route) ?? this.route!;
+    const configured = this.options.curator;
+    if (!configured?.enabled || !this.shell) return;
+    // The owner's choice from the settings (ADR 0068), else the config's; a route that is not there is natsumi's.
+    const night = this.options.settings?.curator?.() ?? { route: configured.route ?? null, modelCalls: configured.modelCalls,
+      timeoutMinutes: configured.timeoutMinutes };
+    const config = { ...configured, modelCalls: night.modelCalls, timeoutMinutes: night.timeoutMinutes };
+    const chosen = night.route === null ? undefined : this.routes.list.find(candidate => candidate.name === night.route);
+    if (night.route !== null && !chosen) this.log(`memory curator: the route ${night.route} is not in the config; the night runs on ${this.route!.name}`);
+    const route = chosen ?? this.route!;
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
     this.curatorStop = new AbortController();
     try {

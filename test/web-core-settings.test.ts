@@ -19,7 +19,7 @@ test('every runtime setting is listed with the config’s value and the one in f
   const rows = settingsProps(driver.state).rows;
   assert.deepEqual(rows.map(item => item.key), ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes',
     'reviewModelCalls', 'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted',
-    'judgeLogprobsThresholds', 'judgeJevThresholds']);
+    'judgeLogprobsThresholds', 'judgeJevThresholds', 'curatorRoute', 'curatorModelCalls', 'curatorTimeoutMinutes']);
   assert.deepEqual([row(driver, 'eventModelCalls').valueText, row(driver, 'eventModelCalls').configText], ['12 回', '8 回']);
   assert.equal(row(driver, 'eventModelCalls').overridden, true);
   assert.equal(row(driver, 'eventModelCalls').canReset, true);
@@ -144,4 +144,44 @@ test('each judge\'s thresholds are shown and changed as two numbers, checked by 
   }
   const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'judgeLogprobsThresholds', owner: '0.4', return: '0.8' } }));
   assert.deepEqual([set?.type, set?.payload], ['settings.set', { key: 'judgeLogprobsThresholds', value: { owner: 0.4, return: 0.8 } }]);
+});
+
+// ADR 0068: the curator's route and the limits of each stage of its night.
+test('the curator\'s route is natsumi\'s or one of the routes, and the routes of outside services are marked', () => {
+  const driver = onSettings();
+  assert.deepEqual([row(driver, 'curatorRoute').valueText, row(driver, 'curatorRoute').configText], ['なつみと同じ経路', 'なつみと同じ経路']);
+  const control = row(driver, 'curatorRoute').control;
+  assert.deepEqual(control.kind === 'select' && control.options.map(option => [option.value, option.disabled]),
+    [['', false], ['local', false], ['plus', false], ['spare', true]]);
+  assert.equal(control.kind === 'select' && control.selected, '');
+  assert.match(control.kind === 'select' ? control.options.find(option => option.value === 'plus')!.label : '', /外のサービス/);
+  assert.doesNotMatch(control.kind === 'select' ? control.options.find(option => option.value === 'local')!.label : '', /外のサービス/);
+  assert.match(row(driver, 'curatorRoute').help, /記憶とその日の会話の本文/);
+  assert.match(row(driver, 'curatorRoute').help, /外/);
+  assert.equal(row(driver, 'curatorRoute').note, '次の夜は local で動きます。');
+  assert.deepEqual(parseSettingInput({ key: 'curatorRoute', route: '' }), { ok: true, key: 'curatorRoute', value: null });
+  assert.deepEqual(parseSettingInput({ key: 'curatorRoute', route: 'plus' }), { ok: true, key: 'curatorRoute', value: 'plus' });
+  const [set] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'curatorRoute', route: 'plus' } }));
+  assert.deepEqual([set?.type, set?.payload], ['settings.set', { key: 'curatorRoute', value: 'plus' }]);
+  const [none] = Driver.sent(driver.dispatch({ type: 'setting-submit', input: { key: 'curatorRoute', route: '' } }));
+  assert.deepEqual(none?.payload, { key: 'curatorRoute', value: null });
+});
+
+test('a night that will run on an outside service says that memory and the day\'s conversation leave for it', () => {
+  const driver = onSettings(settingsView({ curatorRoute: { value: 'plus', config: null, overridden: true, night: 'plus', outside: ['plus'] } }));
+  assert.equal(row(driver, 'curatorRoute').valueText, 'plus');
+  assert.match(row(driver, 'curatorRoute').note ?? '', /次の夜は plus で動きます。/);
+  assert.match(row(driver, 'curatorRoute').note ?? '', /外のサービス.*記憶とその日の会話の本文/);
+  const following = onSettings(settingsView({ curatorRoute: { value: null, config: null, overridden: false, night: 'plus', outside: ['plus'] } }));
+  assert.match(row(following, 'curatorRoute').note ?? '', /外のサービス/, 'natsumi\'s route is an outside one, and the curator follows it');
+});
+
+test('the curator\'s limits are a stage\'s, as whole numbers', () => {
+  const driver = onSettings(settingsView({ curatorTimeoutMinutes: { value: 45, config: 30, overridden: true } }));
+  assert.deepEqual([row(driver, 'curatorTimeoutMinutes').valueText, row(driver, 'curatorTimeoutMinutes').configText], ['45 分', '30 分']);
+  assert.equal(row(driver, 'curatorModelCalls').valueText, '60 回');
+  assert.match(row(driver, 'curatorModelCalls').help, /工程/);
+  assert.deepEqual(row(driver, 'curatorModelCalls').control, { kind: 'number', value: '60', min: 1, unit: '回' });
+  assert.deepEqual(parseSettingInput({ key: 'curatorModelCalls', text: '90' }), { ok: true, key: 'curatorModelCalls', value: 90 });
+  assert.equal(parseSettingInput({ key: 'curatorTimeoutMinutes', text: '0' }).ok, false);
 });

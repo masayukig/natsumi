@@ -365,3 +365,39 @@ test('what a curator left when the process died is thrown away at the next start
     assert.ok(f.logs.some(line => /memory curator: a run was cut off/.test(line)));
   } finally { await f.cleanup(); }
 });
+
+// ADR 0068: the curator's route and the limits of a stage, as the settings give them for the night.
+test('the night runs on the route and with the limits the settings give, and each stage\'s turn names that route', async () => {
+  const f = await setup();
+  try {
+    const FIRST = { provider: 'openai-codex', model: 'gpt-5.5' };
+    const SECOND = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
+    const routes = { defaultRoute: 'main', list: [{ name: 'main', target: FIRST, compactionThreshold: 60_000, compatible: false },
+      { name: 'spare', target: SECOND, compactionThreshold: 60_000, compatible: false }] };
+    const night = { route: 'spare' as string | null, modelCalls: 1, timeoutMinutes: 30 };
+    const { loop } = await f.open({ routes, curator: { route: 'main', modelCalls: 60 },
+      settings: { turnLimits: () => LOOP_DEFAULTS, awakeHours: () => LOOP_DEFAULTS.awakeHours, curator: () => night } });
+    behave(f, { structure: MERGE, index: [{ calls: [] }] });
+    await aDay(f, loop);
+    assert.equal((await loop.rotate()).result, 'switched');
+    const curatorTurns = () => f.turns().filter(turn => turn.kind === 'curator');
+    assert.deepEqual(curatorTurns().map(turn => [turn.route, turn.outcome]),
+      [['spare', 'ok'], ['spare', 'ok'], ['spare', 'model-call-limit'], ['spare', 'ok']],
+      'the settings\' route and call limit, not the config\'s; the knowledge and the archiving had nothing to do');
+    assert.ok(f.turns().filter(turn => turn.kind !== 'curator').every(turn => turn.route === 'main'), 'natsumi stays on her route');
+
+    // None of its own: the curator follows the route natsumi is on.
+    night.route = null;
+    night.modelCalls = 60;
+    await aDay(f, loop);
+    assert.equal((await loop.rotate()).result, 'switched');
+    assert.deepEqual(curatorTurns().slice(4).map(turn => turn.route), ['main', 'main', 'main', 'main']);
+
+    // A route the config no longer has is not tried: natsumi's is used, and the log says so.
+    night.route = 'gone';
+    await aDay(f, loop);
+    assert.equal((await loop.rotate()).result, 'switched');
+    assert.deepEqual(curatorTurns().slice(8).map(turn => turn.route), ['main', 'main', 'main', 'main']);
+    assert.ok(f.logs.some(line => line.includes('gone')), f.logs.join('\n'));
+  } finally { await f.cleanup(); }
+});

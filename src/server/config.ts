@@ -881,9 +881,10 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
   const calls = curator.modelCalls ?? CURATOR_DEFAULTS.modelCalls;
-  if (!positiveInteger(calls, 1)) throw new ConfigError(`${path}.modelCalls`, 'must be a positive integer');
+  // The settings may override these two, by the same rule (ADR 0068).
+  if (!isTurnLimit(calls)) throw new ConfigError(`${path}.modelCalls`, 'must be a positive integer');
   const minutes = curator.timeoutMinutes ?? CURATOR_DEFAULTS.timeoutMinutes;
-  if (!positiveInteger(minutes, 1)) throw new ConfigError(`${path}.timeoutMinutes`, 'must be a positive integer');
+  if (!isTurnLimit(minutes)) throw new ConfigError(`${path}.timeoutMinutes`, 'must be a positive integer');
   const files = curator.rotateFiles ?? CURATOR_DEFAULTS.rotateFiles;
   if (!positiveInteger(files, 0) || (files as number) > MAX_ROTATE_FILES) {
     throw new ConfigError(`${path}.rotateFiles`, `must be an integer from 0 to ${MAX_ROTATE_FILES}`);

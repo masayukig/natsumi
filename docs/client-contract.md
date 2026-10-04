@@ -225,6 +225,9 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `judgeAdopted` | 採用する判定。`"logprobs"` / `"jev"`。採用する方が答えなければもう一方で決める | 次の下書きから |
 | `judgeLogprobsThresholds` | logprobs の判定のしきい値 `{"owner":0.5,"return":0.9}`。どちらも 0 より大きく 1 以下、owner ≦ return。owner 以上で本人へ回し、return 以上で突き返す | 次の下書きから |
 | `judgeJevThresholds` | Jev の判定のしきい値。形と規則は `judgeLogprobsThresholds` と同じ | 次の下書きから |
+| `curatorRoute` | 記憶の整理係の経路（[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。経路の名前（config にあり、使える状態のもの）、または `null`（そのときなつみが使っている経路）。config の値は `curator.route`（無ければ `null`） | 次の係の夜から |
+| `curatorModelCalls` | 係の夜の工程ごとのモデルの呼び出しの上限。1 以上の整数。工程ごとにまるごと使える | 次の係の夜から |
+| `curatorTimeoutMinutes` | 係の夜の工程ごとの時間の上限（分）。1 以上の整数。工程ごとにまるごと使える | 次の係の夜から |
 
 一覧（`settings`: `session.snapshot` の欄、`settings.list`・`settings.set`・`settings.reset` の答え、`settings.changed` の payload）は、key ごとに次の欄を持つオブジェクトである。
 
@@ -237,9 +240,11 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `routes` | `modelRoute` だけ。経路の一覧（上記「モデルの経路」の `routes` と同じ形） |
 | `timeZone` | `awakeHours` だけ。時間帯の IANA タイムゾーン（config の値。端末からは変えない） |
 | `available` | `judgeLogprobs` と `judgeJev` だけ。config にその判定の接続先があるか。false なら `"on"` にできない |
+| `night` | `curatorRoute` だけ。次の係の夜が動く経路の名前。`value` が `null` なら、なつみが選んでいる経路（`modelRoute` の `value`） |
+| `outside` | `curatorRoute` だけ。外のサービスにつながる経路（本人のエンドポイントでない経路。ChatGPT Plus など）の名前の一覧。係はその経路の接続先へ、毎晩、記憶とその日の会話の本文を送る |
 
 ```json
-{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false},"judgeLogprobsThresholds":{"value":{"owner":0.5,"return":0.9},"config":{"owner":0.5,"return":0.9},"overridden":false},"judgeJevThresholds":{"value":{"owner":0.6,"return":0.95},"config":{"owner":0.5,"return":0.9},"overridden":true}}
+{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false},"judgeLogprobsThresholds":{"value":{"owner":0.5,"return":0.9},"config":{"owner":0.5,"return":0.9},"overridden":false},"judgeJevThresholds":{"value":{"owner":0.6,"return":0.95},"config":{"owner":0.5,"return":0.9},"overridden":true},"curatorRoute":{"value":null,"config":null,"overridden":false,"night":"plus","outside":["plus"]},"curatorModelCalls":{"value":60,"config":60,"overridden":false},"curatorTimeoutMinutes":{"value":45,"config":30,"overridden":true}}
 ```
 
 - `settings.set`（payload `{"key":"eventModelCalls","value":12}`）は、値を config と同じ規則で確かめてから上書きを書き、変えた後の一覧を `command.accepted` で返す。
@@ -247,6 +252,8 @@ natsumi が動いている最中に変えられる設定を、端末から読み
   - 知らない key は `unknown-setting`、規則に合わない値は `invalid-value`、key が文字列でない・空・64 文字を超える、または value が無いと `invalid-request`。
   - `modelRoute` は `model.use` と同じ処理を通る。config に無い経路は `unknown-route`、使える状態にない経路は `route-unavailable`。
   - `judgeLogprobs`・`judgeJev` を `"on"` にするとき、config にその判定の接続先が無ければ `judge-unavailable`。`"off"` はいつでも受け付ける。
+  - `curatorRoute` は、なつみの経路を動かさない。config に無い経路は `unknown-route`、使える状態にない経路は `route-unavailable`。`null` はいつでも受け付ける。
+    上書きした経路が後で config から消えたら、config の値（それも無ければなつみの経路）で動く。
 - `settings.reset`（payload `{"key":"eventModelCalls"}`）は上書きを消し、戻した後の一覧を返す。上書きが無くても受け付ける（何も変わらなければ `settings.changed` は届かない）。
   `modelRoute` を戻すと、既定の経路へ次のターンの前に移る。
 - 2 つの端末から同時に変えても、1 つずつ順に書かれ、どちらも失われない。

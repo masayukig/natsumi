@@ -332,6 +332,10 @@ test('settings.list answers every setting; settings.set changes one, which every
   assert.deepEqual(snapshot.payload.settings.judgeAdopted, { value: 'logprobs', config: 'logprobs', overridden: false });
   assert.deepEqual(snapshot.payload.settings.judgeLogprobsThresholds, { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false });
   assert.deepEqual(snapshot.payload.settings.judgeJevThresholds.config, { owner: 0.5, return: 0.9 });
+  // The curator's route and limits (ADR 0068): on natsumi's route, `plus` an outside service.
+  assert.deepEqual(snapshot.payload.settings.curatorRoute, { value: null, config: null, overridden: false, night: 'local', outside: ['plus'] });
+  assert.deepEqual(snapshot.payload.settings.curatorModelCalls, { value: 60, config: 60, overridden: false });
+  assert.equal((await client.request('settings.set', { key: 'curatorRoute', value: 'spare' })).payload.code, 'route-unavailable');
   const listed = await client.request('settings.list', {});
   assert.equal(listed.type, 'command.accepted');
   assert.deepEqual(listed.payload.settings, snapshot.payload.settings);

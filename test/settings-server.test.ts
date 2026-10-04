@@ -76,6 +76,21 @@ test('the snapshot and settings.list carry every setting with the config’s val
   c.close();
 }, { loop: CONFIG_LOOP }));
 
+test('the curator\'s route is listed with the config\'s, where the next night runs and which routes are outside services (ADR 0068)', () => withFixture(async f => {
+  const c = await client(f);
+  const settings = (await c.sync()).payload.settings;
+  assert.deepEqual(settings.curatorRoute, { value: 'spare', config: 'spare', overridden: false, night: 'spare', outside: ['main', 'spare'] });
+  assert.deepEqual(settings.curatorModelCalls, { value: 60, config: 60, overridden: false });
+  assert.deepEqual(settings.curatorTimeoutMinutes, { value: 20, config: 20, overridden: false });
+  assert.equal((await c.request('settings.set', { key: 'curatorRoute', value: 'nowhere' })).payload.code, 'unknown-route');
+  const set = await c.request('settings.set', { key: 'curatorRoute', value: null });
+  assert.equal(set.type, 'command.accepted');
+  assert.deepEqual(set.payload.settings.curatorRoute, { value: null, config: 'spare', overridden: true, night: 'main', outside: ['main', 'spare'] });
+  const file = JSON.parse(await readFile(join(f.data, STATE_DIRECTORY, RUNTIME_SETTINGS_FILE), 'utf8'));
+  assert.deepEqual(file.overrides, { curatorRoute: null });
+  c.close();
+}, { curator: { route: 'spare', timeoutMinutes: 20 } }));
+
 test('settings.set writes an override that every device hears of, and settings.reset takes it back', () => withFixture(async f => {
   const a = await client(f);
   const b = await client(f);

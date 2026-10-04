@@ -20,6 +20,7 @@ const DEFAULTS: SettingsDefaults = {
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180, timeZone: 'Asia/Tokyo',
   judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs', judgeAvailable: { logprobs: true, jev: true },
   judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.6, return: 0.95 },
+  curatorRoute: null, curatorModelCalls: 60, curatorTimeoutMinutes: 30, outsideRoutes: ['plus'],
 };
 
 /** The loop's side of the routes and the fold, as a stand-in: what it chose, where it is, and what is ready. */
@@ -247,4 +248,64 @@ test('each judge\'s thresholds are the config\'s until overridden, and are read 
   assert.deepEqual(await settings.set({ key: 'judgeJevThresholds', value: { owner: 0.99, return: 0.7 }, deviceId: 'd' }), { kind: 'rejected', code: 'invalid-value' });
   await settings.reset({ key: 'judgeJevThresholds', deviceId: 'd' });
   assert.deepEqual(settings.judges().thresholds.jev, { owner: 0.6, return: 0.95 });
+}));
+
+// ADR 0068: the curator's route and the limits of each stage of its night.
+test('the curator runs on natsumi\'s route and the config\'s limits until either is overridden, and the list says where the next night runs', () => withSettings(async ({ settings }) => {
+  assert.deepEqual(settings.view().curatorRoute, { value: null, config: null, overridden: false, night: 'local', outside: ['plus'] });
+  assert.deepEqual(settings.view().curatorModelCalls, { value: 60, config: 60, overridden: false });
+  assert.deepEqual(settings.view().curatorTimeoutMinutes, { value: 30, config: 30, overridden: false });
+  assert.deepEqual(settings.curator(), { route: null, modelCalls: 60, timeoutMinutes: 30 });
+}));
+
+test('the curator\'s route is one of the config\'s routes that is ready, and is read by the next night', () => withSettings(async ({ settings, routes, data, events }) => {
+  assert.deepEqual(await settings.set({ key: 'curatorRoute', value: 'nowhere', deviceId: 'd' }), { kind: 'rejected', code: 'unknown-route' });
+  assert.deepEqual(await settings.set({ key: 'curatorRoute', value: 'spare', deviceId: 'd' }), { kind: 'rejected', code: 'route-unavailable' });
+  assert.deepEqual(await settings.set({ key: 'curatorRoute', value: 'Plus!', deviceId: 'd' }), { kind: 'rejected', code: 'invalid-value' });
+  assert.equal(events.length, 0);
+  const outcome = await settings.set({ key: 'curatorRoute', value: 'plus', deviceId: 'd' });
+  assert.equal(outcome.kind, 'accepted');
+  assert.deepEqual(outcome.kind === 'accepted' && outcome.settings.curatorRoute,
+    { value: 'plus', config: null, overridden: true, night: 'plus', outside: ['plus'] });
+  assert.deepEqual(routes.chosenBy, [], 'natsumi\'s own route is left as it is');
+  assert.equal(settings.curator().route, 'plus');
+  assert.deepEqual((await readOverrides(data)).values, { curatorRoute: 'plus' });
+  assert.equal(events.length, 1);
+  await settings.reset({ key: 'curatorRoute', deviceId: 'd' });
+  assert.equal(settings.curator().route, null);
+  assert.equal(settings.view().curatorRoute.night, 'local');
+}));
+
+test('with no route of its own, the next night follows the route natsumi has chosen', () => withSettings(async ({ settings, routes }) => {
+  await settings.set({ key: 'modelRoute', value: 'plus', deviceId: 'd' });
+  assert.equal(settings.view().curatorRoute.night, 'plus');
+  assert.equal(routes.current, 'local');
+}));
+
+test('null overrides the config\'s route with natsumi\'s; resetting puts the config\'s back', () => withSettings(async ({ settings }) => {
+  assert.deepEqual(settings.view().curatorRoute, { value: 'local', config: 'local', overridden: false, night: 'local', outside: ['plus'] });
+  assert.equal(settings.curator().route, 'local');
+  await settings.set({ key: 'curatorRoute', value: null, deviceId: 'd' });
+  assert.deepEqual(settings.view().curatorRoute, { value: null, config: 'local', overridden: true, night: 'local', outside: ['plus'] });
+  assert.equal(settings.curator().route, null);
+  await settings.reset({ key: 'curatorRoute', deviceId: 'd' });
+  assert.equal(settings.curator().route, 'local');
+}, undefined, { ...DEFAULTS, curatorRoute: 'local' }));
+
+test('a curator\'s route on file that the config no longer has is left for the config\'s', () => withSettings(async ({ settings }) => {
+  assert.deepEqual(settings.view().curatorRoute, { value: null, config: null, overridden: true, night: 'local', outside: ['plus'] });
+  assert.equal(settings.curator().route, null);
+}, async state => {
+  await writeFile(join(state, RUNTIME_SETTINGS_FILE), JSON.stringify({ overrides: { curatorRoute: 'gone' } }));
+}));
+
+test('the limits of each stage of the curator\'s night are overridden like a turn\'s, and read by the next night', () => withSettings(async ({ settings, data }) => {
+  assert.deepEqual(await settings.set({ key: 'curatorModelCalls', value: 0, deviceId: 'd' }), { kind: 'rejected', code: 'invalid-value' });
+  await settings.set({ key: 'curatorModelCalls', value: 90, deviceId: 'd' });
+  await settings.set({ key: 'curatorTimeoutMinutes', value: 45, deviceId: 'd' });
+  assert.deepEqual(settings.curator(), { route: null, modelCalls: 90, timeoutMinutes: 45 });
+  assert.deepEqual(settings.view().curatorTimeoutMinutes, { value: 45, config: 30, overridden: true });
+  assert.deepEqual((await readOverrides(data)).values, { curatorModelCalls: 90, curatorTimeoutMinutes: 45 });
+  await settings.reset({ key: 'curatorModelCalls', deviceId: 'd' });
+  assert.deepEqual(settings.curator(), { route: null, modelCalls: 60, timeoutMinutes: 45 });
 }));
