@@ -381,8 +381,9 @@ test('the night runs on the route and with the limits the settings give, and eac
     await aDay(f, loop);
     assert.equal((await loop.rotate()).result, 'switched');
     const curatorTurns = () => f.turns().filter(turn => turn.kind === 'curator');
-    assert.deepEqual(curatorTurns().map(turn => [turn.route, turn.outcome]), [['spare', 'model-call-limit'], ['spare', 'ok']],
-      'the settings\' route and call limit, not the config\'s');
+    assert.deepEqual(curatorTurns().map(turn => [turn.route, turn.outcome]),
+      [['spare', 'ok'], ['spare', 'ok'], ['spare', 'model-call-limit'], ['spare', 'ok']],
+      'the settings\' route and call limit, not the config\'s; the knowledge and the archiving had nothing to do');
     assert.ok(f.turns().filter(turn => turn.kind !== 'curator').every(turn => turn.route === 'main'), 'natsumi stays on her route');
 
     // None of its own: the curator follows the route natsumi is on.
@@ -390,13 +391,13 @@ test('the night runs on the route and with the limits the settings give, and eac
     night.modelCalls = 60;
     await aDay(f, loop);
     assert.equal((await loop.rotate()).result, 'switched');
-    assert.deepEqual(curatorTurns().slice(2).map(turn => turn.route), ['main', 'main']);
+    assert.deepEqual(curatorTurns().slice(4).map(turn => turn.route), ['main', 'main', 'main', 'main']);
 
     // A route the config no longer has is not tried: natsumi's is used, and the log says so.
     night.route = 'gone';
     await aDay(f, loop);
     assert.equal((await loop.rotate()).result, 'switched');
-    assert.deepEqual(curatorTurns().slice(4).map(turn => turn.route), ['main', 'main']);
+    assert.deepEqual(curatorTurns().slice(8).map(turn => turn.route), ['main', 'main', 'main', 'main']);
     assert.ok(f.logs.some(line => line.includes('gone')), f.logs.join('\n'));
   } finally { await f.cleanup(); }
 });
