@@ -8,6 +8,7 @@ import { initializeDataDirectory, STATE_DIRECTORY } from '../server/data-directo
 import { gitIdentity, runGit } from '../server/git.ts';
 import { CurationRecord, recoverCuratorRun, runCuratorNight } from '../server/memory-curator.ts';
 import { MemoryRepository } from '../server/memory-repository.ts';
+import { nextOccurrence } from '../server/nightly.ts';
 import { MIGRATIONS } from '../server/migrations.ts';
 import { DEFAULT_SELF } from '../server/prompts.ts';
 import { migrate, openStateDatabase } from '../server/state-db.ts';
@@ -52,6 +53,8 @@ export interface NightRecord {
   dryRun: boolean;
   /** The night the curator was told it is: by default when the snapshot was taken. */
   at: string;
+  /** The morning deadline the night was given, the first `stopStartingAt` after `at`; none by default (ADR 0068). */
+  deadline?: string;
   startedAt: string;
   /** The whole night, wall clock. */
   ms: number;
@@ -85,6 +88,11 @@ export interface CurateSnapshotOptions {
   curator?: Partial<Pick<CuratorConfig, 'modelCalls' | 'timeoutMinutes' | 'rotateFiles'>>;
   /** The night it is, in milliseconds; by default when the snapshot was taken. */
   at?: number;
+  /**
+   * `HH:MM` in the time zone: no stage begins past the first such time after `at`, as the server's morning deadline
+   * (ADR 0068). By default none: a snapshot's time is not a night's, and the night is run whole to be measured.
+   */
+  stopStartingAt?: string;
   timeZone?: string;
   sandbox?: Sandbox;
   log?: (line: string) => void;
@@ -105,11 +113,12 @@ export async function curateSnapshot(options: CurateSnapshotOptions): Promise<{ 
   const manual = join(copy, 'manual');
   const at = options.at ?? Date.parse(options.snapshot.takenAt);
   const timeZone = options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const deadline = options.stopStartingAt === undefined ? undefined : nextOccurrence(at, options.stopStartingAt, timeZone);
   const started = Date.now();
   const record: NightRecord = {
     label: options.label, snapshot: options.snapshot.name,
     model: options.model?.file.shown ?? { provider: DRY_TARGET.provider, id: DRY_TARGET.model }, dryRun: options.dryRun !== undefined,
-    at: new Date(at).toISOString(), startedAt: new Date(started).toISOString(), ms: 0, base: '', head: '', uncommitted: [],
+    at: new Date(at).toISOString(), ...(deadline === undefined ? {} : { deadline: new Date(deadline).toISOString() }), startedAt: new Date(started).toISOString(), ms: 0, base: '', head: '', uncommitted: [],
     stages: [], commits: [], files: [], log: [],
   };
   const git = (args: string[]) => runGit(memory, args, { identity: gitIdentity(DEFAULT_SELF) });
@@ -187,7 +196,7 @@ export async function curateSnapshot(options: CurateSnapshotOptions): Promise<{ 
       repository, shell, modelRuntime: runtime, route: { name: 'eval', target, compatible: real ? real.file.compatible : true },
       config: { ...CURATOR_DEFAULTS, ...options.curator }, record: curation, now, log, name: DEFAULT_SELF.name, timeZone,
       fileMaxChars: LOOP_DEFAULTS.memoryFileMaxChars, dataDirectory: data, agentDirectory, sessionDirectory,
-      thinking: (real?.file.thinking ?? 'on') === 'on' ? 'medium' : 'off', configureSession,
+      thinking: (real?.file.thinking ?? 'on') === 'on' ? 'medium' : 'off', configureSession, ...(deadline === undefined ? {} : { deadline }),
     });
     record.stages = night.stages.map(stage => ({ name: stage.stage, outcome: stage.outcome, modelCalls: stage.calls,
       ms: stage.endedAt - stage.startedAt, tokens: stage.usage, toolErrors: stage.toolErrors,
@@ -231,6 +240,7 @@ export function nightMarkdown(night: NightRecord): string {
     `- 写し: ${night.snapshot}（${night.at} の夜として）`,
     `- モデル: ${night.model.provider}/${night.model.id}${night.dryRun ? '（ドライラン）' : ''}`,
     `- 始めた時刻: ${night.startedAt}・全体の時間: ${seconds(night.ms)}`,
+    `- 朝の締め切り: ${night.deadline ?? 'なし（--stop-starting-at で指定したときだけ）'}`,
     `- 記憶: ${short(night.base)} → ${short(night.head)}（\`copy/data/memory\` で \`git log\`・\`git diff ${short(night.base)}\`）`];
   if (night.uncommitted.length > 0) lines.push(`- 写しにコミットされずに残っていた変更（夜の前に別にコミットした）: ${night.uncommitted.join('、')}`);
   if (night.error) lines.push(`- 失敗: ${night.error}`);
@@ -242,7 +252,8 @@ export function nightMarkdown(night: NightRecord): string {
   // What each stage kept, under the note it wrote, or why nothing of it was kept.
   if (night.stages.length > 0) lines.push('');
   for (const stage of night.stages) {
-    const kept = stage.commit ? `コミット ${short(stage.commit)}` : `残したものなし（${stage.outcome}）`;
+    const kept = stage.commit ? `コミット ${short(stage.commit)}` : stage.outcome === 'skipped-deadline' ? '始めなかった（朝の締め切りを過ぎた）'
+      : `残したものなし（${stage.outcome}）`;
     const note = stage.note ? `・変更の説明「${stage.note.split('\n')[0]}」` : '';
     lines.push(`- ${stage.name}: ${kept}${note}`);
     for (const file of stage.retried ?? []) lines.push(`  - 検査に当たってやり直した: ${file.path}: ${file.reason}`);

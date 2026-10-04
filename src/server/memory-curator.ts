@@ -12,7 +12,7 @@ import type { ToolOutcome } from './loop-tools.ts';
 import { memoryPath, rewriteMovedPaths, type PathRewrite } from './memory-paths.ts';
 import { ARCHIVE_DIRECTORY, DIARY_DIRECTORY, INDEX_FILE, NATSUMI_ONLY_FILES, type ArchivePlan, type MemoryFile, type MemoryRepository,
   type RevertedFile } from './memory-repository.ts';
-import { isoAt, localDate, localDateTime } from './nightly.ts';
+import { isoAt, localDate, localDateTime, nextOccurrence, previousOccurrence } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWLEDGE_INSTRUCTIONS, CURATOR_MAP_OLD_PATH_DESCRIPTION,
   CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_STRUCTURE_INSTRUCTIONS, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorRetryRequest,
@@ -432,8 +432,10 @@ export interface CuratorNightOptions {
   signal?: AbortSignal;
   /** A stage's session was made and its turn begins: where its record begins, for a turn in progress to be shown. */
   onStageBegin?: (begun: { stage: string; eventKinds: string; turnId: string; startedAt: number; mark: PlaceMark | undefined }) => void;
-  /** A stage ended, kept or not. */
+  /** A stage ended, kept or not, or was not begun. */
   onStageEnd?: (result: CuratorStageResult) => void;
+  /** The morning deadline (`curatorDeadline`): past it, no further stage begins. None when left out. */
+  deadline?: number;
 }
 
 /** How a stage went, and what it cost. */
@@ -442,7 +444,8 @@ export interface CuratorStageResult {
   /** `memory_curator:<stage>`. */
   eventKinds: string;
   turnId: string;
-  outcome: 'ok' | 'memory-not-clean' | 'route-unavailable' | 'model-call-limit' | 'timeout' | 'stopped' | 'model-error' | 'rejected' | 'failed';
+  outcome: 'ok' | 'memory-not-clean' | 'route-unavailable' | 'model-call-limit' | 'timeout' | 'stopped' | 'model-error' | 'rejected' | 'failed'
+    | 'skipped-deadline';
   /** The stage's commit, when it kept something. */
   commit?: string;
   /** The change note it wrote, kept or not. */
@@ -467,11 +470,26 @@ export interface CuratorStageResult {
 export interface CuratorNightResult { stages: CuratorStageResult[] }
 
 /**
+ * The morning deadline of the night the curator runs in (ADR 0068): the first `stopStartingAt` after the night's
+ * switching time, the latest `nightlyRotationAt` at or before now — the same morning for a night begun after midnight,
+ * the next for one begun before. A switch made late, at a start after a night natsumi was stopped through, belongs to
+ * that night, and its deadline has passed. Without a switching time the night is counted from now; without a deadline,
+ * there is none.
+ */
+export function curatorDeadline(now: number, nightlyRotationAt: string | false, stopStartingAt: string | false, timeZone: string): number | undefined {
+  if (stopStartingAt === false) return undefined;
+  const night = nightlyRotationAt === false ? now : previousOccurrence(now, nightlyRotationAt, timeZone);
+  return nextOccurrence(night, stopStartingAt, timeZone);
+}
+
+/**
  * The curator's night (ADR 0068): the stages in order, each a session of its own with one turn under the whole of the
  * limits, checked and committed on its own. A stage that fails throws away its own changes only; the next stage
  * still runs on what the earlier ones committed. Each stage begins only on a clean tree, and is marked as running
- * while it runs, so a start after a crash throws away what it left (`recoverCuratorRun`). The night's base moves, and
- * the files handed over are dated, when every stage that rewrites topics succeeded. Never throws.
+ * while it runs, so a start after a crash throws away what it left (`recoverCuratorRun`). Past the morning deadline no
+ * further stage begins, and the one under way runs to its own limits. The night's base moves, and the files handed over
+ * are dated, when every stage that rewrites topics succeeded: a stage not begun leaves the day's changes for the next
+ * night. Never throws.
  */
 export async function runCuratorNight(options: CuratorNightOptions): Promise<CuratorNightResult> {
   const stages: CuratorStageResult[] = [];
@@ -480,10 +498,13 @@ export async function runCuratorNight(options: CuratorNightOptions): Promise<Cur
   const day = await dayOf(options);
   for (const stage of CURATOR_STAGES) {
     if (options.signal?.aborted) break;
-    const result = await runStage(options, stage, handled, day);
+    const late = options.deadline !== undefined && options.now() >= options.deadline;
+    const result = late ? notBegun(options, stage) : await runStage(options, stage, handled, day);
     stages.push(result);
     if (stage.rewrites && result.outcome !== 'ok') rewritten = false;
-    options.log(result.outcome === 'ok' ? `memory curator: ${stage.name}: done` : `memory curator: ${stage.name}: nothing was kept (${result.outcome})`);
+    options.log(result.outcome === 'ok' ? `memory curator: ${stage.name}: done`
+      : late ? `memory curator: ${stage.name}: not begun, past the morning deadline (${localDateTime(options.deadline!, options.timeZone)})`
+        : `memory curator: ${stage.name}: nothing was kept (${result.outcome})`);
     options.onStageEnd?.(result);
     if (result.outcome === 'stopped') break;
   }
@@ -531,6 +552,14 @@ export async function recoverCuratorRun(repository: MemoryRepository, record: Cu
   } catch {
     log('memory curator: the changes of a run cut off by a stop could not be thrown away');
   }
+}
+
+/** A stage the morning deadline kept from beginning: no session, no calls, nothing kept; the next night runs it (ADR 0068). */
+function notBegun(options: CuratorNightOptions, stage: CuratorStage): CuratorStageResult {
+  const at = options.now();
+  return { stage: stage.name, eventKinds: `${CURATOR_EVENT_KIND}:${stage.name}`, turnId: `turn-${randomUUID()}`, outcome: 'skipped-deadline',
+    files: [], rejected: [], retried: [], startedAt: at, endedAt: at, calls: 0, usage: { input: 0, cacheRead: 0, output: 0 }, contextTokens: null,
+    toolErrors: 0 };
 }
 
 /** One stage: never throws, and leaves the tree as the last commit whatever becomes of it. */

@@ -3,7 +3,8 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { acceptOldPath, archivePlan, chooseRotation, CURATOR_STAGES, CurationRecord, curatorTools, isRewritable, type StageInput } from '../src/server/memory-curator.ts';
+import { acceptOldPath, archivePlan, chooseRotation, CURATOR_STAGES, CurationRecord, curatorDeadline, curatorTools, isRewritable,
+  type StageInput } from '../src/server/memory-curator.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { CURATOR_MAP_OLD_PATH_DESCRIPTION, CURATOR_RUN_SHELL_DESCRIPTION, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION, curatorSystemPrompt,
   SEARCH_MEMORY_DESCRIPTION } from '../src/server/prompts.ts';
@@ -316,4 +317,22 @@ test('map_old_path takes only a Markdown path inside memory, never one of her fi
     assert.equal(accept(from, to).ok, false, `${from} → ${to}`);
   }
   assert.equal(merged.size, 1);
+});
+
+test('the morning deadline is the first stopStartingAt after the night\'s switching time, the same morning or the next (ADR 0068)', () => {
+  const jst = (iso: string) => Date.parse(`${iso}+09:00`);
+  const deadline = (now: string, rotation: string | false, stop: string | false) => curatorDeadline(jst(now), rotation, stop, 'Asia/Tokyo');
+  // A night that begins after midnight ends the same morning.
+  assert.equal(deadline('2026-10-05T04:10:00', '04:00', '05:30'), jst('2026-10-05T05:30:00'));
+  assert.equal(deadline('2026-10-05T02:20:00', '02:00', '05:30'), jst('2026-10-05T05:30:00'));
+  // A night that begins before midnight ends the next morning, whether the curator starts before midnight or after.
+  assert.equal(deadline('2026-10-04T23:10:00', '23:00', '05:30'), jst('2026-10-05T05:30:00'));
+  assert.equal(deadline('2026-10-05T01:00:00', '23:00', '05:30'), jst('2026-10-05T05:30:00'));
+  // Across the end of a month and a year.
+  assert.equal(deadline('2026-12-31T23:30:00', '23:00', '05:30'), jst('2027-01-01T05:30:00'));
+  // A switch made late, at a start after a night natsumi was stopped through, belongs to that night: its deadline has passed.
+  assert.equal(deadline('2026-10-05T14:00:00', '02:00', '05:30'), jst('2026-10-05T05:30:00'));
+  // Without a deadline, none; without a switching time, the night is counted from now.
+  assert.equal(deadline('2026-10-05T02:20:00', '02:00', false), undefined);
+  assert.equal(deadline('2026-10-05T14:00:00', false, '05:30'), jst('2026-10-06T05:30:00'));
 });

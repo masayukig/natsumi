@@ -52,7 +52,8 @@ async function setup() {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, timeZone: 'Asia/Tokyo', workspaceSocket: runner.path, ...settings },
-        ...(curator === false ? {} : { curator: { ...CURATOR_DEFAULTS, ...curator } }),
+        // The tests run at the wall clock's time: the morning deadline is only where a test names one.
+        ...(curator === false ? {} : { curator: { ...CURATOR_DEFAULTS, stopStartingAt: false, ...curator } }),
         configureSession: session => { session.agent.streamFunction = model.streamFunction; },
         log: line => logs.push(line), ...options,
       });
@@ -399,5 +400,40 @@ test('the night runs on the route and with the limits the settings give, and eac
     assert.equal((await loop.rotate()).result, 'switched');
     assert.deepEqual(curatorTurns().slice(8).map(turn => turn.route), ['main', 'main', 'main', 'main']);
     assert.ok(f.logs.some(line => line.includes('gone')), f.logs.join('\n'));
+  } finally { await f.cleanup(); }
+});
+
+test('the switch made past the morning deadline begins no stage of the curator, and each shows as a turn not begun (ADR 0068)', async () => {
+  const f = await setup();
+  try {
+    // natsumi was stopped through the night, and switches at a start at 06:00: the night's deadline, 05:30, has passed.
+    const clock = { at: Date.parse('2026-10-05T06:00:00+09:00') };
+    const { loop } = await f.open({ now: () => clock.at, loop: { nightlyRotationAt: '02:00' }, curator: { stopStartingAt: '05:30' } });
+    const seen = behave(f, NIGHT);
+    await aDay(f, loop);
+
+    assert.equal((await loop.rotate()).result, 'switched');
+
+    assert.equal(seen.length, 0, 'the curator is never called');
+    const curatorTurns = f.turns().filter(turn => turn.kind === 'curator');
+    assert.deepEqual(curatorTurns.map(turn => [turn.event_kinds, turn.outcome, turn.model_calls]), [
+      ['memory_curator:knowledge', 'skipped-deadline', 0], ['memory_curator:archive', 'skipped-deadline', 0],
+      ['memory_curator:structure', 'skipped-deadline', 0], ['memory_curator:index', 'skipped-deadline', 0]]);
+    assert.equal(f.db.prepare('SELECT base_commit FROM memory_curator').get(), undefined);
+    assert.ok(f.logs.some(line => /memory curator: knowledge: not begun, past the morning deadline \(2026-10-05 05:30\)/.test(line)), f.logs.join('\n'));
+  } finally { await f.cleanup(); }
+});
+
+test('a switch made in the night, before the deadline, runs the curator\'s stages as before', async () => {
+  const f = await setup();
+  try {
+    const clock = { at: Date.parse('2026-10-05T02:05:00+09:00') };
+    const { loop } = await f.open({ now: () => clock.at, loop: { nightlyRotationAt: '02:00' }, curator: { stopStartingAt: '05:30' } });
+    behave(f, NIGHT);
+    await aDay(f, loop);
+
+    assert.equal((await loop.rotate()).result, 'switched');
+
+    assert.deepEqual(f.turns().filter(turn => turn.kind === 'curator').map(turn => turn.outcome), ['ok', 'ok', 'ok', 'ok']);
   } finally { await f.cleanup(); }
 });
