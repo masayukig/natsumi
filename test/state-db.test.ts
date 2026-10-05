@@ -586,3 +586,12 @@ test('schema 25 keeps every self-check as a one-off, keeps which event carried e
     /constraint/i, 'a delivery names an event');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
 }));
+
+/** Schema 26 gives an attention the source's own fields (ADR 0069); one recorded before has none, and no jq path is needed. */
+test('schema 26 keeps the attentions waiting, each with no fields of its own', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 25));
+  db.prepare(`INSERT INTO source_attention (source, kind, dir, file, path, images, created_at)
+    VALUES ('slack', 'dm', 'slack/work/dm', '/sources/slack/work/dm/a.jsonl', '.[0]', '[]', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 26)).applied, [26]);
+  assert.deepEqual(plainRows(db.prepare('SELECT path, details FROM source_attention').all()), [{ path: '.[0]', details: '{}' }]);
+}));

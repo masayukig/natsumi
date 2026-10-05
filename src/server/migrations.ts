@@ -851,4 +851,13 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX self_checks_by_due ON self_checks (state, due_at);
     `,
   },
+  {
+    version: 26,
+    name: 'the fields of an attention',
+    sql: `
+      -- A source's own fields of an attention (ADR 0069), as a JSON object shown beside where it is: an outside agent's
+      -- reply carries the agent, its state and a summary. An attention with no jq path keeps path empty.
+      ALTER TABLE source_attention ADD COLUMN details TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ];

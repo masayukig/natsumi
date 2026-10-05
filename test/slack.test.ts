@@ -167,7 +167,7 @@ test('a mention in a thread points at its own line, which names the thread\'s pa
   f.slack.emit(message({ user: 'U2', text: '<@UBOT> どう思う？', ts: tsAt(AT), thread_ts: parent }));
   await f.workspace.idle();
   const lines = await f.lines('work/dev/2026-09-25.jsonl');
-  const line = at(lines, f.told[0]!.path);
+  const line = at(lines, f.told[0]!.path!);
   assert.equal(line.text, '@natsumi どう思う？');
   assert.equal(lines[line.reply_to as number]!.text, 'スレッドの親');
 });
@@ -212,8 +212,8 @@ test('a reply without a mention in a thread she spoke in is told once as a threa
   await f.workspace.idle();
   assert.deepEqual(f.told.map(told => told.kind), ['thread-reply', 'thread-reply']);
   const lines = await f.lines('work/dev/2026-09-25.jsonl');
-  assert.equal(at(lines, f.told[0]!.path).text, 'ありがとう、見てみる');
-  assert.equal(at(lines, f.told[1]!.path).text, '助かる');
+  assert.equal(at(lines, f.told[0]!.path!).text, 'ありがとう、見てみる');
+  assert.equal(at(lines, f.told[1]!.path!).text, '助かる');
   assert.equal(f.told[0]!.file, '/sources/slack/work/dev/2026-09-25.jsonl');
   // The eyes say a mention or a DM was received; a reply in her thread may be people talking among themselves.
   assert.deepEqual(f.slack.reactions, []);
