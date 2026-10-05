@@ -1,7 +1,7 @@
 # 0048. 外のエージェントが返事に付けた画像を、サーバーが /work に取り込む
 
 - Date: 2026-09-26
-- Status: Accepted
+- Status: Accepted（取った画像の置き場所と、`agent_reply` の出来事の `images`・`images_not_taken` は [ADR 0069](0069-agent-replies-as-files-in-sources.md) で置き換え（返事のディレクトリ `/sources/agents/<相手>/<返事>/images/` に置き、出来事はなくなる））
 
 ## Context
 
