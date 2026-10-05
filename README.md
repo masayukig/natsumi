@@ -364,7 +364,9 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 `<publicOrigin>/settings` では、動いている最中に変えられる設定を変えます（[ADR 0058](docs/adr/0058-settings-and-chat-in-the-browser.md)）。
 
 - ログインはダッシュボードと同じ GitHub ログインで、開いたページに戻ります。cookie もダッシュボードと共通です。
-- ブラウザは開いている間だけの端末です。通知は受けません。ブラウザを開いていても、iPhone への通知は止まりません。
+- 設定の画面の「通知を受け取る」で、ブラウザを閉じている間の返事・知らせ・承認待ちを Web Push で受け取れます（[ADR 0070](docs/adr/0070-web-push-to-the-browser.md)）。
+  Android や Linux のブラウザ向けです。設定は要りません。VAPID の鍵はサーバーが初めての起動で `.natsumi/web-push-key.pem` に作ります。
+  タブを開いてつながっている間は送りません。ブラウザを開いていても、iPhone への通知は止まりません。
 - 変えられる設定は、モデルの経路、畳み込み、ターンの上限（出来事ごとと夜の振り返りの、呼び出しの回数と時間）、起きている時間帯、合図の間隔、
   ポッポさんの判定、記憶の整理係の経路と工程ごとの上限（`curatorRoute`・`curatorModelCalls`・`curatorTimeoutMinutes`。[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）です。
   サーバーの設定ファイル（config）の値が既定で、画面で変えた値は上書きとして data directory に残ります（経路と畳み込みは上の節のファイル、ほかは `.natsumi/runtime-settings.json`）。

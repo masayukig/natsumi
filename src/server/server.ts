@@ -38,6 +38,7 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
+import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
@@ -71,6 +72,8 @@ export interface StartOptions {
   streamBufferSize?: number;
   /** Replaces the APNs hosts and the waits between tries. Tests point them at a local stand-in. */
   apns?: { origins?: Record<ApnsEnvironment, string>; retryDelaysMs?: number[] };
+  /** Replaces the posting of a Web Push (ADR 0070). Tests stand in for the push services. */
+  webPush?: { send?: (request: WebPushRequest) => Promise<number> };
   /** Replaces `a2a.pollIntervalSeconds`, whose floor is too long for a test. */
   a2a?: { pollIntervalMs?: number };
   /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
@@ -149,6 +152,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let db: DatabaseSync | undefined;
   let hub: ConnectionHub | undefined;
   let notifier: PushNotifier | undefined;
+  let webNotifier: WebPushNotifier | undefined;
   let apns: ApnsClient | undefined;
   let loop: ThinkingLoop | undefined;
   let listener: Listener | undefined;
@@ -165,6 +169,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
+    webNotifier?.close();
     apns?.close();
     await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
     try {
@@ -330,6 +335,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
     const registrations = new PushRegistrations(db, now);
+    const subscriptions = new WebPushSubscriptions(db, now);
+    const vapid = await loadVapidKey(join(dataDirectory, STATE_DIRECTORY, VAPID_KEY_FILE));
     // The browser's cookie (ADR 0058): the dashboard, the chat and the settings, the images, and /v1/ws with our Origin.
     const browser = new BrowserSessions({ sessions, allowedUserId, publicOrigin: config.publicOrigin, now });
     const connections = hub = new ConnectionHub({
@@ -354,6 +361,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       renew: sessionId => sessions.renew(sessionId),
       push: {
         register: (deviceId, payload) => {
+          // The hub lets a subscription in from a browser only (ADR 0070).
+          if ('subscription' in payload) {
+            const subscription = parseSubscription(payload.subscription);
+            if (!subscription) return { kind: 'rejected', code: 'invalid-request' };
+            subscriptions.save(deviceId, subscription);
+            return { kind: 'accepted' };
+          }
           const registration = parseRegistration(payload);
           if (!registration) return { kind: 'rejected', code: 'invalid-request' };
           registrations.save(deviceId, registration);
@@ -374,6 +388,12 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     } else {
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
+    // Pushes to the browsers that are away (ADR 0070): the VAPID key is the server's own, so this needs no config.
+    webNotifier = new WebPushNotifier({
+      loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), subscriptions, vapid, subject: config.publicOrigin, allowedUserId,
+      isConnected: deviceId => connections.isConnected(deviceId), log, now, name: avatar.name, iconOrigin: config.publicOrigin,
+      ...(options.webPush?.send ? { send: options.webPush.send } : {}),
+    });
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, browser, login, loop: thinkingLoop, dataDirectory,
       name: avatar.name, avatarId: avatar.id,
@@ -382,7 +402,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
-        webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory }),
+        webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
+          pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

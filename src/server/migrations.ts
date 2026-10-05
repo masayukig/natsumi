@@ -868,4 +868,21 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE agent_contexts ADD COLUMN place TEXT;
     `,
   },
+  {
+    version: 27,
+    name: 'web-push-subscriptions',
+    sql: `
+      -- Where to push a browser that is not connected (ADR 0070): its push service's endpoint, and the P-256 key and
+      -- auth secret its pushes are encrypted to. One per device, overwritten on every push.register; an endpoint
+      -- belongs to one device at a time. As with push_registrations, whether it may be sent to follows the session.
+      CREATE TABLE web_push_subscriptions (
+        device_id TEXT PRIMARY KEY REFERENCES devices (device_id),
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh BLOB NOT NULL CHECK (length(p256dh) = 65),
+        auth BLOB NOT NULL CHECK (length(auth) = 16),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];
