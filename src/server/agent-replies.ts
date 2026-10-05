@@ -50,24 +50,78 @@ const STATE_WORDS: Record<ReplyState, string> = {
   gave_up: '待っても返事が来ないので、サーバーが待つのをやめた',
 };
 
+/** Which shape a reply was put from: the agent's DataPart, or its text cut into the shape. */
+export type ReplyForm = 'data' | 'text';
+
 /**
- * A DataPart's content in the shared shape, or undefined when it is not: then the reply is read as text. A source is
- * taken only with an http(s) URL. What else the object holds is kept in result.json and read no further.
+ * The limits of the reply extension's JSON Schema (fraction-agents `docs/extensions/reply/v1/reply.schema.json`).
+ * Lengths are in characters (code points), as JSON Schema counts them.
  */
+const DATA_LIMITS = {
+  summary: 500, summaryLines: 3, sections: 50, sectionTitle: 200, sectionBody: 50_000, sources: 100, sourceTitle: 300, url: 2000,
+};
+const ONE_LINE = /^[^\r\n]+$/;
+const WEB_URL = /^https?:\/\/\S+$/;
+
+/**
+ * What is wrong with a DataPart's content against the reply extension's JSON Schema, or undefined when nothing is.
+ * Checked as strictly as the schema says, fields outside the shape included: an agent that names the extension and
+ * does not keep it has its reply read as text.
+ */
+export function checkReplyData(value: unknown): string | undefined {
+  if (!isRecord(value)) return 'the reply is not an object';
+  const extra = Object.keys(value).filter(key => !['summary', 'sections', 'sources'].includes(key));
+  if (extra.length > 0) return `the reply has fields outside the shape: ${extra.join(', ')}`;
+  const { summary, sections, sources } = value;
+  if (typeof summary !== 'string') return 'summary is not a string';
+  const summaryError = checkLength('summary', summary, DATA_LIMITS.summary);
+  if (summaryError) return summaryError;
+  if (summary.split('\n').length > DATA_LIMITS.summaryLines) return `summary is longer than ${DATA_LIMITS.summaryLines} lines`;
+  if (!Array.isArray(sections)) return 'sections is not a list';
+  if (sections.length > DATA_LIMITS.sections) return `more than ${DATA_LIMITS.sections} sections`;
+  for (const [index, section] of sections.entries()) {
+    const error = checkEntry(`sections[${index}]`, section, 'body', DATA_LIMITS.sectionTitle,
+      body => checkLength('body', body, DATA_LIMITS.sectionBody));
+    if (error) return error;
+  }
+  if (!Array.isArray(sources)) return 'sources is not a list';
+  if (sources.length > DATA_LIMITS.sources) return `more than ${DATA_LIMITS.sources} sources`;
+  for (const [index, source] of sources.entries()) {
+    const error = checkEntry(`sources[${index}]`, source, 'url', DATA_LIMITS.sourceTitle, url => [...url].length > DATA_LIMITS.url
+      ? `url is longer than ${DATA_LIMITS.url} characters` : WEB_URL.test(url) ? undefined : 'url is not an http or https URL');
+    if (error) return error;
+  }
+  return undefined;
+}
+
+/** A DataPart's content in the shared shape, or undefined when it is not (`checkReplyData`): then the reply is read as text. */
 export function parseReplyData(value: unknown): ReplyData | undefined {
-  if (!isRecord(value) || typeof value.summary !== 'string') return undefined;
-  if (!Array.isArray(value.sections) || !Array.isArray(value.sources)) return undefined;
-  const sections: ReplySection[] = [];
-  for (const section of value.sections) {
-    if (!isRecord(section) || typeof section.title !== 'string' || typeof section.body !== 'string') return undefined;
-    sections.push({ title: section.title, body: section.body });
-  }
-  const sources: ReplySource[] = [];
-  for (const source of value.sources) {
-    if (!isRecord(source) || typeof source.title !== 'string' || typeof source.url !== 'string' || !isWebUrl(source.url)) return undefined;
-    sources.push({ title: source.title, url: source.url });
-  }
-  return { summary: value.summary, sections, sources };
+  if (checkReplyData(value) !== undefined) return undefined;
+  const data = value as unknown as ReplyData;
+  return { summary: data.summary, sections: data.sections.map(({ title, body }) => ({ title, body })),
+    sources: data.sources.map(({ title, url }) => ({ title, url })) };
+}
+
+/** A section or a source: an object of a one-line `title` and one field more, and nothing else. */
+function checkEntry(where: string, value: unknown, field: string, titleLimit: number, checkField: (text: string) => string | undefined):
+  string | undefined {
+  if (!isRecord(value)) return `${where} is not an object`;
+  const extra = Object.keys(value).filter(key => key !== 'title' && key !== field);
+  if (extra.length > 0) return `${where} has fields outside the shape: ${extra.join(', ')}`;
+  const { title } = value;
+  const content = value[field];
+  if (typeof title !== 'string') return `${where}.title is not a string`;
+  const titleError = checkLength('title', title, titleLimit) ?? (ONE_LINE.test(title) ? undefined : 'title is not one line');
+  if (titleError) return `${where}.${titleError}`;
+  if (typeof content !== 'string') return `${where}.${field} is not a string`;
+  const error = checkField(content);
+  return error ? `${where}.${error}` : undefined;
+}
+
+function checkLength(name: string, text: string, limit: number): string | undefined {
+  const length = [...text].length;
+  if (length === 0) return `${name} is empty`;
+  return length > limit ? `${name} is longer than ${limit} characters` : undefined;
 }
 
 /**
@@ -210,8 +264,10 @@ export interface WriteReplyOptions {
   /** When the reply was taken, which names its directory when its request has none. */
   at: number;
   reply: ReplyData;
-  /** What was received, kept as it came in result.json. The reply itself when omitted. */
-  received?: unknown;
+  /** Which shape the reply was put from, for result.json. `text` when omitted. */
+  form?: ReplyForm;
+  /** The content of the agent's DataPart as it came, whether it fitted or not, for result.json. */
+  data?: unknown;
   bring?: BringImages;
   /** The request's directory. Without it (a request made before they were kept) the reply gets one of its own. */
   place?: RequestPlace;
@@ -262,7 +318,9 @@ export async function writeAgentReply(options: WriteReplyOptions): Promise<Writt
     }
     for (const { name: file, section } of files) await put(join(here, file), `# ${section.title}\n\n${section.body}\n`);
     await put(join(here, 'sources.json'), `${JSON.stringify(reply.sources, null, 2)}\n`);
-    await put(join(here, 'result.json'), `${JSON.stringify(options.received ?? reply, null, 2)}\n`);
+    // Which shape it was put from is for the owner to look into, not for her: the README does not say.
+    const result = { form: options.form ?? 'text', reply, ...(options.data !== undefined ? { data: options.data } : {}) };
+    await put(join(here, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
     await put(join(here, 'README.md'), readme({ agent, state, reply, files, images, notTaken, path: target.path, request: options.request }));
     return { path: target.path, directory: here, readme: `${target.path}/README.md`, created, images, notTaken };
   } catch (error) {
@@ -406,13 +464,6 @@ function oneLine(text: string): string { return text.replace(/\s+/g, ' ').trim()
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isWebUrl(text: string): boolean {
-  try {
-    const { protocol } = new URL(text);
-    return protocol === 'https:' || protocol === 'http:';
-  } catch { return false; }
 }
 
 /** The time in UTC as `20260924T030000Z`. */

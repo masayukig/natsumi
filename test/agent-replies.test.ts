@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  clampSummary, firstLine, MAX_SUMMARY_CHARS, parseReplyData, replyFromText, sectionFileName, writeAgentReply, writeAgentRequest,
+  checkReplyData, clampSummary, firstLine, MAX_SUMMARY_CHARS, parseReplyData, replyFromText, sectionFileName, writeAgentReply, writeAgentRequest,
 } from '../src/server/agent-replies.ts';
 
 /**
@@ -87,13 +87,44 @@ test('a section is named by its number and its title, with what a file name cann
   assert.equal([...sectionFileName(4, 'あ'.repeat(100))].length, '05-'.length + 40 + '.md'.length);
 });
 
-test('a DataPart in the shared shape is taken, and anything else is not', () => {
+// The reply extension's JSON Schema (fraction-agents docs/extensions/reply/v1/reply.schema.json), kept as it says.
+test('a DataPart is taken only as the reply extension\'s schema has it, and anything else is not', () => {
   const good = { summary: '要約', sections: [{ title: '結論', body: '本文' }], sources: [{ title: '出典', url: 'https://example.com/' }] };
   assert.deepEqual(parseReplyData(good), good);
-  assert.equal(parseReplyData({ ...good, summary: 3 }), undefined);
-  assert.equal(parseReplyData({ ...good, sections: [{ title: '結論' }] }), undefined);
-  assert.equal(parseReplyData({ ...good, sources: [{ title: '出典', url: 'javascript:alert(1)' }] }), undefined);
-  assert.equal(parseReplyData('text'), undefined);
+  assert.deepEqual(parseReplyData({ summary: '一\n二\n三', sections: [], sources: [] }), { summary: '一\n二\n三', sections: [], sources: [] });
+  assert.deepEqual(parseReplyData({ ...good, summary: 'あ'.repeat(500) }), { ...good, summary: 'あ'.repeat(500) }, 'counted in characters');
+  const section = (fields: Record<string, unknown>) => ({ ...good, sections: [{ title: '結論', body: '本文', ...fields }] });
+  const source = (fields: Record<string, unknown>) => ({ ...good, sources: [{ title: '出典', url: 'https://example.com/', ...fields }] });
+  const bad: [string, unknown][] = [
+    ['not an object', 'text'],
+    ['an array', [good]],
+    ['a summary that is not a string', { ...good, summary: 3 }],
+    ['an empty summary', { ...good, summary: '' }],
+    ['a summary of four lines', { ...good, summary: '一\n二\n三\n四' }],
+    ['a summary over 500 characters', { ...good, summary: 'あ'.repeat(501) }],
+    ['a field outside the shape', { ...good, extra: true }],
+    ['no sources', { summary: good.summary, sections: good.sections }],
+    ['sections that are not a list', { ...good, sections: {} }],
+    ['over 50 sections', { ...good, sections: Array.from({ length: 51 }, () => good.sections[0]) }],
+    ['a section without a body', { ...good, sections: [{ title: '結論' }] }],
+    ['an empty title', section({ title: '' })],
+    ['a title of two lines', section({ title: '結\n論' })],
+    ['a title with a carriage return', section({ title: '結\r論' })],
+    ['a title over 200 characters', section({ title: 'あ'.repeat(201) })],
+    ['an empty body', section({ body: '' })],
+    ['a body over 50000 characters', section({ body: 'あ'.repeat(50_001) })],
+    ['a field outside a section', section({ note: 'x' })],
+    ['over 100 sources', { ...good, sources: Array.from({ length: 101 }, () => good.sources[0]) }],
+    ['a URL that is not http(s)', source({ url: 'javascript:alert(1)' })],
+    ['a URL with a space', source({ url: 'https://example.com/a b' })],
+    ['a URL over 2000 characters', source({ url: `https://example.com/${'a'.repeat(2000)}` })],
+    ['an empty source title', source({ title: '' })],
+    ['a source title over 300 characters', source({ title: 'あ'.repeat(301) })],
+    ['a field outside a source', source({ note: 'x' })],
+  ];
+  for (const [why, value] of bad) assert.equal(parseReplyData(value), undefined, why);
+  assert.equal(checkReplyData(good), undefined);
+  assert.match(checkReplyData({ ...good, extra: true })!, /extra/, 'what is wrong is said, for the log');
 });
 
 test('a reply is put in a directory of its own, named by the time and a short mark, with every file the ADR names', async t => {
@@ -106,7 +137,7 @@ test('a reply is put in a directory of its own, named by the time and a short ma
   assert.deepEqual((await readdir(here)).sort(), ['01-はじめに.md', '02-結論.md', '03-詳細.md', 'README.md', 'result.json', 'sources.json']);
   assert.equal(await readFile(join(here, '02-結論.md'), 'utf8'), '# 結論\n\n液体です。\n');
   assert.deepEqual(JSON.parse(await readFile(join(here, 'sources.json'), 'utf8')), []);
-  assert.deepEqual(JSON.parse(await readFile(join(here, 'result.json'), 'utf8')), reply);
+  assert.deepEqual(JSON.parse(await readFile(join(here, 'result.json'), 'utf8')), { form: 'text', reply });
   const readme = await readFile(join(here, 'README.md'), 'utf8');
   assert.match(readme, /wiki/);
   assert.match(readme, /completed/);
@@ -116,16 +147,22 @@ test('a reply is put in a directory of its own, named by the time and a short ma
   assert.deepEqual(await readdir(join(f.directory, 'wiki')), [written.path.split('/').at(-1)]);
 });
 
-test('what was received is kept as it came, and a reply with no section says so', async t => {
+// ADR 0069: which shape a reply was put from is kept for the owner and Claude, not shown to natsumi in the README.
+test('result.json keeps which shape the reply was put from and the data as it came, and a reply with no section says so', async t => {
   const f = await setup(t);
-  const received = { summary: '要約', sections: [], sources: [{ title: '出典', url: 'https://example.com/' }], extra: true };
-  const written = await writeAgentReply({ directory: f.directory, agent: 'web', state: 'gave_up', at: AT,
-    reply: { summary: '待つのをやめました。', sections: [], sources: received.sources }, received });
+  const data = { summary: '要約', sections: [], sources: [{ title: '出典', url: 'https://example.com/' }] };
+  const written = await writeAgentReply({ directory: f.directory, agent: 'web', state: 'completed', at: AT, reply: data, form: 'data', data });
   const here = join(f.directory, 'web', written.path.split('/').at(-1)!);
-  assert.deepEqual(JSON.parse(await readFile(join(here, 'result.json'), 'utf8')), received);
-  assert.deepEqual(JSON.parse(await readFile(join(here, 'sources.json'), 'utf8')), received.sources);
+  assert.deepEqual(JSON.parse(await readFile(join(here, 'result.json'), 'utf8')), { form: 'data', reply: data, data });
+  const misfit = { ...data, extra: true };
+  const fallen = await writeAgentReply({ directory: f.directory, agent: 'web', state: 'completed', at: AT,
+    reply: replyFromText('要約'), form: 'text', data: misfit });
+  assert.deepEqual(JSON.parse(await readFile(join(fallen.directory, 'result.json'), 'utf8')),
+    { form: 'text', reply: replyFromText('要約'), data: misfit }, 'data that did not fit is kept as it came');
+  assert.deepEqual(JSON.parse(await readFile(join(here, 'sources.json'), 'utf8')), data.sources);
   const readme = await readFile(join(here, 'README.md'), 'utf8');
-  assert.match(readme, /gave_up/);
+  assert.doesNotMatch(readme, /form|DataPart/);
+  assert.match(readme, /completed/);
   assert.match(readme, /節はありません/);
   assert.match(readme, /1 件/);
 });

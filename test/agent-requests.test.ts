@@ -7,6 +7,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import type { Context } from '@earendil-works/pi-ai';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
+import { REPLY_EXTENSION_URI } from '../src/server/a2a-client.ts';
 import { AGENTS_REGISTRATION, MAX_SUMMARY_CHARS, replyPlaceOf } from '../src/server/agent-replies.ts';
 import { LOOP_DEFAULTS, type A2AConfig } from '../src/server/config.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
@@ -25,7 +26,7 @@ const HOUR = 3_600_000;
  * /sources/agents as files and reaches her as an attention of a `sources_updated` event (ADR 0069). The agent here is
  * a fake one speaking the real protocol; the model is scripted.
  */
-async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean } = {}) {
+async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[] } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-agents-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -35,7 +36,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   await mkdir(agentDirectory, { recursive: true });
   const tokenFile = join(root, 'a2a-token');
   await writeFile(tokenFile, 'fake-agent-token\n');
-  const agent = await FakeAgent.start();
+  const agent = await FakeAgent.start(options.extensions ? { extensions: options.extensions } : {});
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
@@ -45,8 +46,9 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   };
   const sourcesDirectory = join(data, 'sources');
   const opened: ThinkingLoop[] = [];
+  const logs: string[] = [];
   const f = {
-    agent, model, clock, db, tokenFile, root, work: join(data, 'work'), replies: join(sourcesDirectory, 'agents'),
+    agent, model, logs, clock, db, tokenFile, root, work: join(data, 'work'), replies: join(sourcesDirectory, 'agents'),
     gitDirectory: join(data, 'sources.git'),
     async open() {
       const sources = new Sources({ db, directory: sourcesDirectory, gitDirectory: join(data, 'sources.git'), timeZone: 'Asia/Tokyo',
@@ -57,7 +59,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 6, timeZone: 'Asia/Tokyo' }, now: () => clock.now,
         configureSession: session => { session.agent.streamFunction = model.streamFunction; },
-        ...(a2a ? { a2a } : {}), sources,
+        ...(a2a ? { a2a } : {}), sources, log: line => { logs.push(line); },
         ...(options.place === false ? {} : { agentReplies: replyPlaceOf(sources, sourcesDirectory) }),
       });
       sources.connect(() => { loop.raiseSourcesUpdated(); });
@@ -120,6 +122,74 @@ async function turn(f: Awaited<ReturnType<typeof setup>>, loop: ThinkingLoop, te
   assert.equal(outcome.kind, 'accepted');
   await loop.idle();
 }
+
+// ADR 0069: an agent that names the reply extension is asked for its reply as data, which is put as it is when it fits.
+const DATA = {
+  summary: 'ねこは液体です。\n容器に合わせて形を変えます。',
+  sections: [{ title: '結論', body: '液体のようにふるまいます。\n\n## 細かいこと\n\n見出しがあっても節は切れません。' },
+    { title: '根拠', body: '容器に合わせて形を変えます。' }],
+  sources: [{ title: 'ねこの研究', url: 'https://example.com/cats' }],
+};
+/** The text fraction-agents writes out of the same reply, which an agent without the extension would be read by. */
+const DATA_TEXT = 'ねこは液体です。\n容器に合わせて形を変えます。\n\n## 結論\n\n液体のようにふるまいます。\n\n## 細かいこと\n\n'
+  + '見出しがあっても節は切れません。\n\n## 根拠\n\n容器に合わせて形を変えます。\n\n## Sources\n\n- [ねこの研究](https://example.com/cats)';
+
+async function askAndSettle(f: Awaited<ReturnType<typeof setup>>, data?: unknown) {
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'ねこについて調べて', false));
+  await turn(f, loop);
+  f.agent.settle(f.agent.lastTask().id, 'completed', DATA_TEXT, data === undefined ? {} : { data });
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const [reply] = replies(f.model);
+  assert.ok(reply, 'the reply reached her');
+  return { reply, result: JSON.parse(await f.read(`${dirOf(reply)}/result.json`)) as Record<string, unknown> };
+}
+
+test('a reply as data from an agent that names the extension is put as it came, its sections and sources as they are', async t => {
+  const f = await setup(t, { extensions: [REPLY_EXTENSION_URI] });
+  const { reply, result } = await askAndSettle(f, DATA);
+  assert.equal(f.agent.calls.find(call => call.method === 'SendMessage')!.extensions, REPLY_EXTENSION_URI);
+  assert.equal(reply.summary, DATA.summary);
+  assert.deepEqual((await f.list(dirOf(reply))).sort(), ['01-結論.md', '02-根拠.md', 'README.md', 'request.md', 'result.json', 'sources.json']);
+  assert.equal(await f.read(`${dirOf(reply)}/01-結論.md`), `# 結論\n\n${DATA.sections[0]!.body}\n`);
+  assert.deepEqual(JSON.parse(await f.read(`${dirOf(reply)}/sources.json`)), DATA.sources);
+  assert.deepEqual(result, { form: 'data', reply: DATA, data: DATA });
+  const readme = await f.read(reply.file);
+  assert.match(readme, /1 件（sources\.json）/);
+  assert.doesNotMatch(readme, /DataPart|form/, 'which shape it came in is not hers to see');
+});
+
+test('a reply as data that does not fit the schema is read as text, and kept as it came beside it', async t => {
+  const f = await setup(t, { extensions: [REPLY_EXTENSION_URI] });
+  const misfit = { ...DATA, sections: [{ title: '結論', body: '' }] };
+  const { reply, result } = await askAndSettle(f, misfit);
+  assert.equal(reply.summary, DATA.summary);
+  assert.deepEqual((await f.list(dirOf(reply))).sort(),
+    ['01-はじめに.md', '02-結論.md', '03-細かいこと.md', '04-根拠.md', '05-Sources.md', 'README.md', 'request.md', 'result.json', 'sources.json']);
+  assert.equal(result.form, 'text');
+  assert.deepEqual(result.data, misfit);
+  assert.ok(f.logs.some(line => /a2a: the reply data of wiki did not fit \(sections\[0\]\.body is empty\); read as text/.test(line)), f.logs.join('\n'));
+  assert.equal(f.logs.some(line => line.includes('ねこ')), false, 'nothing of the reply goes to the log');
+});
+
+test('an agent that names the extension and answers without data is read as text', async t => {
+  const f = await setup(t, { extensions: [REPLY_EXTENSION_URI] });
+  const { result } = await askAndSettle(f);
+  assert.equal(result.form, 'text');
+  assert.equal('data' in result, false);
+});
+
+test('an agent that does not name the extension is not asked for data, and its text is cut into sections', async t => {
+  const f = await setup(t);
+  const { reply, result } = await askAndSettle(f, DATA);
+  assert.equal(f.agent.calls.find(call => call.method === 'SendMessage')!.extensions, undefined);
+  assert.equal(reply.summary, DATA.summary);
+  assert.equal(result.form, 'text');
+  assert.equal('data' in result, false);
+  assert.ok((await f.list(dirOf(reply))).includes('03-細かいこと.md'));
+});
 
 test('ask_agent sends the message to the named agent and only says the answer will come later, as an attention', async t => {
   const f = await setup(t);

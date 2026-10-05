@@ -4,8 +4,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { A2ACallError, type A2AClient, type AgentFile, type AgentTaskState, type SendResult } from './a2a-client.ts';
 import { bringAgentImages, discardBrought, type BroughtImages } from './agent-files.ts';
 import {
-  AGENTS_PATH, AGENTS_SOURCE, clampSummary, firstLine, replyFromText, undoReply, writeAgentReply, writeAgentRequest, type ReplyData,
-  type ReplyPlace, type ReplyState, type RequestKind, type RequestPlace, type WrittenReply,
+  AGENTS_PATH, AGENTS_SOURCE, checkReplyData, clampSummary, firstLine, parseReplyData, replyFromText, undoReply, writeAgentReply,
+  writeAgentRequest, type ReplyData, type ReplyForm, type ReplyPlace, type ReplyState, type RequestKind, type RequestPlace, type WrittenReply,
 } from './agent-replies.ts';
 import type { A2AConfig } from './config.ts';
 import type { ImageStore } from './images.ts';
@@ -36,6 +36,9 @@ interface ContextRow { agent: string; context_id: string; task_id: string | null
 
 /** A request as it was made: where it was put, what it said, and when. */
 interface MadeRequest { place: RequestPlace; text: string; at: number }
+
+/** A reply to put, which shape it was put from, and the agent's data as it came when it sent some. */
+interface Reply { reply: ReplyData; form: ReplyForm; data?: unknown }
 
 export interface AgentRequestsOptions {
   db: DatabaseSync;
@@ -177,25 +180,26 @@ export class AgentRequests {
       if (this.closed) return;
       if (this.options.now() - Date.parse(task.sent_at) >= limitMs) {
         this.log(`a2a: gave up waiting for ${task.agent}`);
-        await this.settle(task, 'gave_up', serverReply(`${config.giveUpAfterHours} 時間待っても返事が来なかったので、サーバーが待つのをやめました。`));
+        await this.settle(task, 'gave_up', { reply: serverReply(`${config.giveUpAfterHours} 時間待っても返事が来なかったので、サーバーが待つのをやめました。`), form: 'text' });
         continue;
       }
       const target = config.agents[task.agent];
       // An agent taken out of the config cannot be asked any more; what it was doing is lost to her.
       if (!target) {
-        await this.settle(task, 'failed', serverReply('この相手は頼める相手から外されたので、返事を受け取れなくなりました。'));
+        await this.settle(task, 'failed', { reply: serverReply('この相手は頼める相手から外されたので、返事を受け取れなくなりました。'), form: 'text' });
         continue;
       }
       let state: AgentTaskState;
       let text: string;
       let files: AgentFile[] | undefined;
+      let data: unknown;
       try {
-        ({ state, text, files } = await client.getTask(target.url, task.task_id));
+        ({ state, text, files, data } = await client.getTask(target.url, task.task_id));
       } catch (error) {
         const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
         if (kind === 'not-found') {
           this.log(`a2a: ${task.agent} no longer knows a task`);
-          await this.settle(task, 'failed', serverReply('相手がこの頼みごとを覚えていませんでした。頼み直すなら continue を false にします。'));
+          await this.settle(task, 'failed', { reply: serverReply('相手がこの頼みごとを覚えていませんでした。頼み直すなら continue を false にします。'), form: 'text' });
           continue;
         }
         if (!this.failing.has(task.agent)) this.log(`a2a: fetching from ${task.agent} failed (${kind}); trying again each round`);
@@ -205,7 +209,8 @@ export class AgentRequests {
       if (this.failing.delete(task.agent)) this.log(`a2a: ${task.agent} answers again`);
       if (state === 'waiting') continue;
       const replyState: ReplyState = state === 'input-required' ? 'input_required' : state;
-      await this.settle(task, replyState, textReply(replyState, text), state === 'completed' ? { url: target.url, files } : undefined);
+      const reply = state === 'completed' && data !== undefined ? this.dataReply(task.agent, text, data) : fromText(replyState, text);
+      await this.settle(task, replyState, reply, state === 'completed' ? { url: target.url, files } : undefined);
     }
   }
 
@@ -214,7 +219,7 @@ export class AgentRequests {
    * state and the attention that tells her are written together. A reply that cannot be put is left for the next
    * round, which fetches the task again.
    */
-  private async settle(task: TaskRow, state: ReplyState, reply: ReplyData, handed?: { url: string; files: AgentFile[] | undefined }):
+  private async settle(task: TaskRow, state: ReplyState, reply: Reply, handed?: { url: string; files: AgentFile[] | undefined }):
     Promise<void> {
     const place = task.place ? this.placeOf(task.place) : undefined;
     const made = place && task.request !== null ? { place, text: task.request, at: Date.parse(task.sent_at) } : undefined;
@@ -229,7 +234,7 @@ export class AgentRequests {
    * Puts a reply under /sources/agents, then records the caller's rows, the images' copies and the attention in one
    * transaction, and asks for the event. Whatever fails leaves nothing behind: no files, no copies, no rows.
    */
-  private async deliver(agent: string, state: ReplyState, reply: ReplyData, handed: { url: string; files: AgentFile[] | undefined } | undefined,
+  private async deliver(agent: string, state: ReplyState, { reply, form, data }: Reply, handed: { url: string; files: AgentFile[] | undefined } | undefined,
     made: MadeRequest | undefined, rows: () => void): Promise<boolean> {
     const place = this.options.replies;
     if (!place || this.closed) return false;
@@ -238,7 +243,8 @@ export class AgentRequests {
     const files = handed?.files ?? [];
     let written: WrittenReply;
     try {
-      written = await writeAgentReply({ directory: place.directory, agent, state, at: this.options.now(), reply,
+      written = await writeAgentReply({ directory: place.directory, agent, state, at: this.options.now(), reply, form,
+        ...(data !== undefined ? { data } : {}),
         ...(made ? { place: made.place, request: { text: made.text, askedAt: this.localTime(made.at) } } : {}),
         ...(files.length > 0 && client && images && handed ? {
           bring: async (directory: string, path: string) => {
@@ -286,7 +292,7 @@ export class AgentRequests {
         .run(agent, sent.contextId, sent.kind === 'task' ? sent.taskId : null, made.place.path, now);
     };
     if (sent.kind === 'message') {
-      if (!await this.deliver(agent, 'completed', textReply('completed', sent.text), undefined, made, remember)) {
+      if (!await this.deliver(agent, 'completed', fromText('completed', sent.text), undefined, made, remember)) {
         // The answer is lost, and the exchange is still remembered, so she can go on with it.
         this.log(`a2a: the reply of ${agent} could not be put in /sources`);
         remember();
@@ -308,6 +314,17 @@ export class AgentRequests {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  /**
+   * A finished task's reply from its data, put as it is when it keeps the reply extension's schema (ADR 0069). Data
+   * that does not is kept as it came, and the text is read instead; the log says why, and never what.
+   */
+  private dataReply(agent: string, text: string, data: unknown): Reply {
+    const reply = parseReplyData(data);
+    if (reply) return { reply, form: 'data', data };
+    this.log(`a2a: the reply data of ${agent} did not fit (${checkReplyData(data)}); read as text`);
+    return { ...fromText('completed', text), data };
   }
 
   private lastContext(agent: string): ContextRow | undefined {
@@ -333,6 +350,11 @@ export class AgentRequests {
   }
 
   private log(line: string) { this.options.log?.(line); }
+}
+
+/** The agent's text as a reply to put. */
+function fromText(state: ReplyState, text: string): Reply {
+  return { reply: textReply(state, text), form: 'text' };
 }
 
 /** A reply in the server's own words, when the agent said nothing: no section, and the reason as the summary. */
