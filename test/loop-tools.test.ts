@@ -186,7 +186,7 @@ test('ask_agent is always registered last, with a fixed description and a requir
   assert.deepEqual([...schema.required].sort(), ['agent', 'continue', 'message']);
   // Where the list is, how the reply comes (ADR 0069) and the states it carries; no agent's name, no number.
   for (const phrase of ['/manual/agents/INDEX.md', 'sources_updated', 'attention', 'agent_reply', 'summary', 'README.md',
-    '/manual/ask-agent.md', 'completed', 'failed', 'input_required', 'gave_up', 'continue']) {
+    '/manual/ask-agent.md', 'request.md', 'request', 'asked_at', 'completed', 'failed', 'input_required', 'gave_up', 'continue']) {
     assert.ok(ASK_AGENT_DESCRIPTION.includes(phrase), phrase);
   }
   assert.doesNotMatch(ASK_AGENT_DESCRIPTION, /text が答え/);

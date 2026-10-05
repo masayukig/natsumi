@@ -40,7 +40,8 @@ test('every page of the manual that the prompt, the tool and the manual itself n
 test('the manual speaks of the same states and the same argument as the tool, and of the reply under /sources', async () => {
   const page = await read('manual/ask-agent.md');
   for (const word of ['completed', 'failed', 'input_required', 'gave_up', 'continue: true', 'continue: false', 'agent_reply',
-    'sources_updated', 'attention', 'summary', 'state', '/sources/agents/', 'README.md', 'images/', 'reply_to_mac']) {
+    'sources_updated', 'attention', 'summary', 'state', '/sources/agents/', 'README.md', 'images/', 'reply_to_mac',
+    'request.md', 'request', 'asked_at', '頼んだこと']) {
     assert.ok(page.includes(word), word);
   }
   // ADR 0069: no reply comes as an agent_reply event with its text, nor puts images in /work any more.
