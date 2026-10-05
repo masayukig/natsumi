@@ -37,11 +37,14 @@ test('every page of the manual that the prompt, the tool and the manual itself n
   assert.ok(index.includes(IMAGES));
 });
 
-test('the manual speaks of the same statuses and the same argument as the tool', async () => {
+test('the manual speaks of the same states and the same argument as the tool, and of the reply under /sources', async () => {
   const page = await read('manual/ask-agent.md');
-  for (const word of ['completed', 'failed', 'input_required', 'gave_up', 'continue: true', 'continue: false', 'agent_reply']) {
+  for (const word of ['completed', 'failed', 'input_required', 'gave_up', 'continue: true', 'continue: false', 'agent_reply',
+    'sources_updated', 'attention', 'summary', 'state', '/sources/agents/', 'README.md', 'images/', 'reply_to_mac']) {
     assert.ok(page.includes(word), word);
   }
+  // ADR 0069: no reply comes as an agent_reply event with its text, nor puts images in /work any more.
+  assert.doesNotMatch(page, /\/work\/agents|images_not_taken|text が答え/);
 });
 
 test('the workspace image holds the manual, and compose shows it the list of agents and the avatar\'s pages read-only', async () => {
@@ -143,8 +146,8 @@ test('the page on images says how to show the owner a picture with reply_to_mac'
 // ADR 0048: an image an agent hands back is in /work/agents; she looks at it with view and shows it with reply_to_mac.
 test('the page on asking agents says where an image in a reply is and how to look at it and show it', async () => {
   const page = await read('manual/ask-agent.md');
-  for (const word of ['/work/agents/', 'images_not_taken', 'description', 'view', 'reply_to_mac', IMAGES]) {
+  for (const word of ['/sources/agents/', 'images/', '取れなかった画像', '説明', 'view', 'reply_to_mac', IMAGES]) {
     assert.ok(page.includes(word), word);
   }
-  assert.ok((await imagesPage()).includes('/work/agents/'));
+  assert.ok((await imagesPage()).includes('/sources/agents/'));
 });

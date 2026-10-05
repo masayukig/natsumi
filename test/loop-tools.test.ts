@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, READ_TOOL_NAME, RUN_SHELL_TOOL_NAME, SEARCH_MEMORY_TOOL_NAME,
   type LoopToolHost } from '../src/server/loop-tools.ts';
-import { ASK_AGENT_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION,
+import { ASK_AGENT_DESCRIPTION, BASE_INSTRUCTION, LIST_SELF_CHECKS_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION,
   SCHEDULE_SELF_CHECK_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
@@ -158,6 +158,7 @@ test('reply_to_mac takes an optional list of paths under images, and notify_owne
   assert.deepEqual(handed, [['/work/images/cat.png', '/work/images/dog.png'], undefined]);
   assert.match(REPLY_TO_MAC_DESCRIPTION, /images/);
   assert.match(REPLY_TO_MAC_DESCRIPTION, /\/work/);
+  assert.match(REPLY_TO_MAC_DESCRIPTION, /\/sources\/agents/);
   assert.doesNotMatch(NOTIFY_OWNER_DESCRIPTION, /images/);
 });
 
@@ -183,11 +184,21 @@ test('ask_agent is always registered last, with a fixed description and a requir
   assert.deepEqual(Object.fromEntries(Object.entries(schema.properties).map(([name, value]) => [name, value.type])),
     { agent: 'string', message: 'string', continue: 'boolean' });
   assert.deepEqual([...schema.required].sort(), ['agent', 'continue', 'message']);
-  // Where the list is, and the statuses the event carries; no agent's name, no number.
-  for (const phrase of ['/manual/agents/INDEX.md', 'agent_reply', 'completed', 'failed', 'input_required', 'gave_up', 'continue']) {
+  // Where the list is, how the reply comes (ADR 0069) and the states it carries; no agent's name, no number.
+  for (const phrase of ['/manual/agents/INDEX.md', 'sources_updated', 'attention', 'agent_reply', 'summary', 'README.md',
+    '/manual/ask-agent.md', 'completed', 'failed', 'input_required', 'gave_up', 'continue']) {
     assert.ok(ASK_AGENT_DESCRIPTION.includes(phrase), phrase);
   }
+  assert.doesNotMatch(ASK_AGENT_DESCRIPTION, /text が答え/);
   assert.equal(/\d/.test(ASK_AGENT_DESCRIPTION), false);
+});
+
+// ADR 0069: an outside agent's reply is an attention of a sources_updated event, and the event's description says where
+// its kind is read about; an attention may carry no jq path.
+test('the description of sources_updated points at the manual of the agents\' replies, and the jq path is not always there', () => {
+  const line = BASE_INSTRUCTION('').split('\n').find(text => text.startsWith('- sources_updated:'))!;
+  for (const phrase of ['agent_reply', '/manual/ask-agent.md', '/manual/slack.md', 'summary', 'jq -s']) assert.ok(line.includes(phrase), phrase);
+  assert.match(line, /path があれば/);
 });
 
 // ADR 0063: a booking may repeat by a cron expression, and the limits and the folding of the same reason are gone.
