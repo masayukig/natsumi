@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { AgentCard, Role, TaskState, type Message, type Task } from '@a2a-js/sdk';
 import { RequestMalformedError, TaskNotFoundError, UnsupportedOperationError } from '@a2a-js/sdk/errors';
 import { defaultServerCallContextBuilder, JsonRpcTransportHandler, type A2ARequestHandler } from '@a2a-js/sdk/server';
+import { REPLY_EXTENSION_URI } from '../../src/server/a2a-client.ts';
 
 /** A message the agent received, as it arrived: who sent it, and where it was meant to go. */
 export interface Received {
@@ -33,6 +34,8 @@ export interface FakeAgentOptions {
   skills?: { id: string; name: string; description: string; examples?: string[] }[];
   /** Answer with a message instead of a task, as an agent that replies at once may. */
   replyWithMessage?: string;
+  /** The URIs of the extensions the card names in `capabilities.extensions`. */
+  extensions?: string[];
 }
 
 /**
@@ -60,6 +63,8 @@ export class FakeAgent {
   readonly cardRequests: (string | undefined)[] = [];
   /** GetTask calls, by task ID. */
   readonly polls: string[] = [];
+  /** Every JSON-RPC call by its method, and the `A2A-Extensions` header it carried. */
+  readonly calls: { method: string; extensions: string | undefined }[] = [];
   /** While set, every JSON-RPC call gets this HTTP status instead of an answer. */
   failWith: number | undefined;
   /** Requests for the files of artifacts, by ID, and the Authorization header each carried. */
@@ -76,6 +81,10 @@ export class FakeAgent {
   private port = 0;
   /** The Authorization header of the call being handled. */
   private authorization: string | undefined;
+  /** The `A2A-Extensions` header of the call being handled. */
+  private extensionsHeader: string | undefined;
+  /** Tasks a request of which activated the reply extension, as the real host remembers it for the task. */
+  private readonly structured = new Set<string>();
 
   private constructor(options: FakeAgentOptions) {
     this.options = options;
@@ -109,6 +118,8 @@ export class FakeAgent {
         }
         const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
         this.authorization = request.headers.authorization;
+        this.extensionsHeader = header(request, 'a2a-extensions');
+        this.calls.push({ method: typeof body.method === 'string' ? body.method : '', extensions: this.extensionsHeader });
         const context = defaultServerCallContextBuilder({ extensions: undefined, user: undefined, headers: request.headers,
           requestedVersion: header(request, 'a2a-version') });
         let answer: unknown;
@@ -138,15 +149,18 @@ export class FakeAgent {
 
   /**
    * Moves a task on, as the agent's work would. `text` is the answer, the failure, or the question. A finished task
-   * also hands back `files`, each as an artifact of its own after the text.
+   * also hands back `files`, each as an artifact of its own after the text, and `data`, as a DataPart beside the text
+   * marked with the reply extension, when a request of the task activated it (fraction-agents ADR 0015).
    */
-  settle(taskId: string, state: FakeTaskState, text = '', options: { files?: FakeFile[] } = {}): void {
+  settle(taskId: string, state: FakeTaskState, text = '', options: { files?: FakeFile[]; data?: unknown } = {}): void {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`no task ${taskId}`);
     const message = text && state !== 'completed' ? agentMessage(text, task) : undefined;
     task.status = { state: STATES[state], message, timestamp: new Date().toISOString() };
     if (state === 'completed' && text) {
-      task.artifacts = [{ artifactId: randomUUID(), name: 'response', description: '', parts: [textPart(text)], metadata: undefined, extensions: [] }];
+      const data = options.data !== undefined && this.structured.has(taskId);
+      task.artifacts = [{ artifactId: randomUUID(), name: 'response', description: '', metadata: undefined,
+        parts: [textPart(text), ...data ? [dataPart(options.data)] : []], extensions: data ? [REPLY_EXTENSION_URI] : [] }];
     }
     if (state === 'completed') {
       for (const file of options.files ?? []) {
@@ -199,7 +213,8 @@ export class FakeAgent {
       version: '0.0.0',
       supportedInterfaces: [{ url: this.url, protocolBinding: 'JSONRPC', protocolVersion: '1.0', tenant: '' }],
       provider: undefined,
-      capabilities: { streaming: false, pushNotifications: false, extendedAgentCard: false, extensions: [] },
+      capabilities: { streaming: false, pushNotifications: false, extendedAgentCard: false,
+        extensions: (this.options.extensions ?? []).map(uri => ({ uri, description: '', required: false, params: undefined })) },
       securitySchemes: {},
       securityRequirements: [],
       defaultInputModes: ['text/plain'],
@@ -236,6 +251,9 @@ export class FakeAgent {
   private sendMessage(message: Message, returnImmediately: boolean): Message | Task {
     const text = message.parts.map(part => part.content?.$case === 'text' ? part.content.value : '').join('');
     this.received.push({ authorization: this.authorization, text, contextId: message.contextId, taskId: message.taskId, returnImmediately });
+    // The SDK drops what the card does not name before the host sees it.
+    const activates = (this.options.extensions ?? []).includes(REPLY_EXTENSION_URI)
+      && (this.extensionsHeader ?? '').split(',').map(uri => uri.trim()).includes(REPLY_EXTENSION_URI);
     if (message.contextId && !this.contexts.has(message.contextId)) throw new RequestMalformedError(`unknown context ${message.contextId}`);
     if (message.taskId) {
       const waiting = this.tasks.get(message.taskId);
@@ -243,6 +261,7 @@ export class FakeAgent {
         throw new RequestMalformedError(`task ${message.taskId} is not waiting for input`);
       }
       waiting.status = { state: TaskState.TASK_STATE_WORKING, message: undefined, timestamp: new Date().toISOString() };
+      if (activates) this.structured.add(waiting.id);
       return structuredClone(waiting);
     }
     const contextId = message.contextId || randomUUID();
@@ -254,12 +273,17 @@ export class FakeAgent {
       state: busy ? TaskState.TASK_STATE_REJECTED : TaskState.TASK_STATE_WORKING, message: undefined, timestamp: new Date().toISOString(),
     }, artifacts: [], history: [message], metadata: undefined };
     this.tasks.set(task.id, task);
+    if (activates) this.structured.add(task.id);
     return structuredClone(task);
   }
 }
 
 function textPart(text: string) {
   return { content: { $case: 'text' as const, value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' };
+}
+
+function dataPart(value: unknown) {
+  return { content: { $case: 'data' as const, value }, metadata: undefined, filename: '', mediaType: 'application/json' };
 }
 
 function agentMessage(text: string, task: { id: string; contextId: string }): Message {
