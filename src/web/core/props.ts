@@ -108,7 +108,7 @@ export interface SettingsProps {
   status: StatusProps;
   reconnect?: { label: string };
   rows: SettingRowProps[];
-  /** This browser's notifications (ADR 0065). */
+  /** This browser's notifications (ADR 0070). */
   notifications: { status: 'unsupported' | 'off' | 'busy' | 'on'; error?: string };
 }
 

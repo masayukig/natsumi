@@ -32,7 +32,7 @@ export type Admission = { session: VerifiedSession; via: 'bearer' | 'cookie' } |
 
 interface Connection {
   session: VerifiedSession;
-  /** A browser (cookie) registers a Web Push subscription, an app an APNs token (ADR 0065). */
+  /** A browser (cookie) registers a Web Push subscription, an app an APNs token (ADR 0070). */
   via: 'bearer' | 'cookie';
   /** The session's end as this connection last heard it; renewals move it (ADR 0030). */
   expiresAt: string;
@@ -76,7 +76,7 @@ export interface HubLoop {
   chooseRoute(input: { route: string; deviceId: string }): Promise<RelayedOutcome>;
 }
 
-/** Where a device asks to be pushed while it is away (ADR 0029, ADR 0065). Kept whether or not APNs is configured. */
+/** Where a device asks to be pushed while it is away (ADR 0029, ADR 0070). Kept whether or not APNs is configured. */
 export interface HubPush {
   register(deviceId: string, payload: Record<string, unknown>): { kind: 'accepted'; environment?: string } | { kind: 'rejected'; code: string };
 }
@@ -304,7 +304,7 @@ export class ConnectionHub {
         return;
       }
       case 'push.register':
-        // A browser registers a Web Push subscription and nothing else, an app never one (ADR 0065).
+        // A browser registers a Web Push subscription and nothing else, an app never one (ADR 0070).
         if ((connection.via === 'cookie') !== ('subscription' in payload)) return reject('invalid-request');
         // Independent of the loop: a device registers even while natsumi cannot talk.
         return answer(stream!, this.options.push.register(connection.deviceId!, payload), id);

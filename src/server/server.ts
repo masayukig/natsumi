@@ -72,7 +72,7 @@ export interface StartOptions {
   streamBufferSize?: number;
   /** Replaces the APNs hosts and the waits between tries. Tests point them at a local stand-in. */
   apns?: { origins?: Record<ApnsEnvironment, string>; retryDelaysMs?: number[] };
-  /** Replaces the posting of a Web Push (ADR 0065). Tests stand in for the push services. */
+  /** Replaces the posting of a Web Push (ADR 0070). Tests stand in for the push services. */
   webPush?: { send?: (request: WebPushRequest) => Promise<number> };
   /** Replaces `a2a.pollIntervalSeconds`, whose floor is too long for a test. */
   a2a?: { pollIntervalMs?: number };
@@ -361,7 +361,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       renew: sessionId => sessions.renew(sessionId),
       push: {
         register: (deviceId, payload) => {
-          // The hub lets a subscription in from a browser only (ADR 0065).
+          // The hub lets a subscription in from a browser only (ADR 0070).
           if ('subscription' in payload) {
             const subscription = parseSubscription(payload.subscription);
             if (!subscription) return { kind: 'rejected', code: 'invalid-request' };
@@ -388,7 +388,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     } else {
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
-    // Pushes to the browsers that are away (ADR 0065): the VAPID key is the server's own, so this needs no config.
+    // Pushes to the browsers that are away (ADR 0070): the VAPID key is the server's own, so this needs no config.
     webNotifier = new WebPushNotifier({
       loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), subscriptions, vapid, subject: config.publicOrigin, allowedUserId,
       isConnected: deviceId => connections.isConnected(deviceId), log, now, name: avatar.name, iconOrigin: config.publicOrigin,

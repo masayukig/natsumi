@@ -19,7 +19,7 @@ export const WEB_APP_PAGES: readonly BrowserReturn[] = ['/', '/settings'];
 export const BUNDLE_PATH = '/app/';
 export const BUNDLE_SCRIPT = 'app.js';
 export const BUNDLE_STYLE = 'app.css';
-/** The service worker that shows Web Push (ADR 0065). Served under `/app/` and allowed the scope `/`. */
+/** The service worker that shows Web Push (ADR 0070). Served under `/app/` and allowed the scope `/`. */
 export const SERVICE_WORKER = 'sw.js';
 /** The Web App Manifest, made from the avatar rather than read from the bundle. */
 export const MANIFEST = 'manifest.webmanifest';
@@ -45,7 +45,7 @@ export interface WebAppOptions {
   name: string;
   /** Where the bundle is read from; by default the first of BUNDLE_DIRECTORIES that has the script. */
   bundleDirectory?: string;
-  /** The VAPID public key, base64url, which the page hands the browser to subscribe with (ADR 0065). */
+  /** The VAPID public key, base64url, which the page hands the browser to subscribe with (ADR 0070). */
   pushKey?: string;
   /** Her neutral face as a PNG (the Slack icon at `/avatar/neutral.png`), the manifest's icon. */
   icon?: Buffer;

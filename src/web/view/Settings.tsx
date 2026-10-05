@@ -19,7 +19,7 @@ export function Settings({ props, dispatch }: { props: SettingsProps; dispatch: 
   );
 }
 
-/** This browser's notifications (ADR 0065): asked of the browser here, and kept by the browser, not the server's config. */
+/** This browser's notifications (ADR 0070): asked of the browser here, and kept by the browser, not the server's config. */
 function Notifications({ notifications, dispatch }: { notifications: SettingsProps['notifications']; dispatch: Dispatch }) {
   const { status, error } = notifications;
   return (

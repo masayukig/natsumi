@@ -1,4 +1,4 @@
-# 0065. ブラウザにも Web Push で通知を届ける
+# 0070. ブラウザにも Web Push で通知を届ける
 
 - Date: 2026-10-01
 - Status: Accepted

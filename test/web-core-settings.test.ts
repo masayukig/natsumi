@@ -146,7 +146,7 @@ test('each judge\'s thresholds are shown and changed as two numbers, checked by 
   assert.deepEqual([set?.type, set?.payload], ['settings.set', { key: 'judgeLogprobsThresholds', value: { owner: 0.4, return: 0.8 } }]);
 });
 
-test('this browser’s notifications are turned on and off here, and the subscription is registered on every sync (ADR 0065)', () => {
+test('this browser’s notifications are turned on and off here, and the subscription is registered on every sync (ADR 0070)', () => {
   const driver = onSettings();
   const notifications = () => settingsProps(driver.state).notifications;
   assert.deepEqual(notifications(), { status: 'unsupported' }, 'until the browser has been looked at');

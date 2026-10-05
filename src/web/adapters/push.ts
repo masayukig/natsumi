@@ -2,7 +2,7 @@ import type { WebPushSubscription } from '../../shared/protocol/envelope.ts';
 import type { AppEvent } from '../core/events.ts';
 
 /**
- * This browser's Web Push subscription (ADR 0065): the service worker at `/app/sw.js` with the scope `/`, and the
+ * This browser's Web Push subscription (ADR 0070): the service worker at `/app/sw.js` with the scope `/`, and the
  * subscription made with the server's VAPID key, which the page carries. Without the key the server sends none.
  */
 const KEY = document.querySelector<HTMLMetaElement>('meta[name="natsumi-push-key"]')?.content;

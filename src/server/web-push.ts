@@ -8,7 +8,7 @@ import { pushAlert, type PushEvent } from './push.ts';
 import { PUSH_TEXT_MAX_CHARS, pushPlaintext } from './push-crypto.ts';
 
 /**
- * Web Push to the browsers that are away (ADR 0065): the alerts the iPhone gets (ADR 0029), encrypted to the browser's
+ * Web Push to the browsers that are away (ADR 0070): the alerts the iPhone gets (ADR 0029), encrypted to the browser's
  * subscription with aes128gcm (RFC 8291) and sent with a VAPID token (RFC 8292). Like APNs, it is written here with
  * node:crypto rather than taken as a dependency.
  */
@@ -163,7 +163,7 @@ export interface WebPushNotifierOptions {
 
 /**
  * Sends the iPhone's alerts (a reply, a notice, an approval waiting) to the browsers that subscribed and are not
- * connected (ADR 0065). Background pushes are not sent: a browser must show every push it gets. A push is sent once;
+ * connected (ADR 0070). Background pushes are not sent: a browser must show every push it gets. A push is sent once;
  * a 404 or 410 drops the subscription, anything else is logged.
  */
 export class WebPushNotifier {

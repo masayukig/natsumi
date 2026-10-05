@@ -36,7 +36,7 @@ export type ApprovalFlow =
 export interface SettingEntry { pending?: string; error?: string }
 
 /**
- * This browser's notifications (ADR 0065): not offered by the browser or the server, off, being asked of the browser,
+ * This browser's notifications (ADR 0070): not offered by the browser or the server, off, being asked of the browser,
  * or on with the subscription registered on every sync. `error` is the words for why the last try did not go through.
  */
 export interface PushState { status: 'unsupported' | 'off' | 'busy' | 'on'; subscription?: WebPushSubscription; error?: string }

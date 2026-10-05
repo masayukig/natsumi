@@ -13,7 +13,7 @@ import {
   WebPushSubscriptions, type WebPushRequest,
 } from '../src/server/web-push.ts';
 
-/** Web Push to the browsers that are away (ADR 0065): the VAPID key and token, aes128gcm, and who is sent what. */
+/** Web Push to the browsers that are away (ADR 0070): the VAPID key and token, aes128gcm, and who is sent what. */
 
 const OWNER = 4242001;
 const NOW = Date.parse('2026-01-01T00:00:00Z');

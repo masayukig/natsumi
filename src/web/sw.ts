@@ -1,5 +1,5 @@
 /**
- * The service worker (ADR 0065): shows each Web Push as a notification, and on a click brings the app forward, or
+ * The service worker (ADR 0070): shows each Web Push as a notification, and on a click brings the app forward, or
  * opens `/`. The push is `{ title, tag, text, icon }` (docs/client-contract.md, ブラウザへの通知).
  */
 

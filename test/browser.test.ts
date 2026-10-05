@@ -222,7 +222,7 @@ test('with a bundle the page loads it, and the bundle is served to anyone, by it
   await writeFile(join(bundle, '.hidden.js'), 'not served\n');
 }, webBundle: root => join(root, 'bundle') }));
 
-test('the page names the manifest and the VAPID key; the service worker may take / as its scope (ADR 0065)', () => withFixture(async f => {
+test('the page names the manifest and the VAPID key; the service worker may take / as its scope (ADR 0070)', () => withFixture(async f => {
   const cookie = await browserLogin(f);
   const page = await f.fetch('/', withCookie(`${COOKIE}=${cookie}`));
   assert.match(page.text, /<link rel="manifest" href="\/app\/manifest\.webmanifest">/);
@@ -295,7 +295,7 @@ test('an image of the conversation is fetched with the cookie, as with the appâ€
   assert.equal((await f.fetch('/auth/logout', withCookie(`${COOKIE}=${cookie}`, { method: 'POST' }))).status, 401, 'the appâ€™s logout takes the bearer only');
 }));
 
-test('a browser registers a Web Push subscription, and is pushed to while it is away only (ADR 0065)', async () => {
+test('a browser registers a Web Push subscription, and is pushed to while it is away only (ADR 0070)', async () => {
   const sent: WebPushRequest[] = [];
   let status = 201;
   await withFixture(async f => {

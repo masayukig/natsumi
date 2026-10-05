@@ -21,7 +21,7 @@
  * `/` and `/settings` without the cookie go to `/fake-login`, which sets `natsumi_session=fake-session` (FAKE_SESSION_COOKIE,
  * which a test may also set itself) and goes back. With it they serve the server's own page, which loads the bundle
  * (`--bundle <dir>`, by default where the build puts it) from `/app/`. `/v1/ws` refuses the cookie from an Origin other
- * than its own, and such a connection registers a Web Push subscription only (ADR 0065); the images take the cookie too. A POST to
+ * than its own, and such a connection registers a Web Push subscription only (ADR 0070); the images take the cookie too. A POST to
  * `/dashboard/logout` from its own origin clears the cookie.
  */
 import { readFileSync } from 'node:fs';
@@ -313,7 +313,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         converse(String(payload.text), requestId);
         return;
       case 'push.register':
-        // A browser registers a Web Push subscription and nothing else, an app never one (ADR 0065).
+        // A browser registers a Web Push subscription and nothing else, an app never one (ADR 0070).
         if (browser !== ('subscription' in payload)) { broadcast('command.rejected', { code: 'invalid-request' }, requestId); return; }
         // Nothing is sent from here: the simulator's pushes are not the server's to make.
         broadcast('command.accepted', browser ? {} : { environment: payload.environment }, requestId);

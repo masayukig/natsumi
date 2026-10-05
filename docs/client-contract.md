@@ -502,7 +502,7 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 
 ## ブラウザへの通知
 
-ブラウザは、閉じている間の返事・知らせ・承認待ちを Web Push で受けられる（[ADR 0065](adr/0065-web-push-to-the-browser.md)）。
+ブラウザは、閉じている間の返事・知らせ・承認待ちを Web Push で受けられる（[ADR 0070](adr/0070-web-push-to-the-browser.md)）。
 送り先を決める規則は iPhone と同じで、購読があり、その端末のセッションが生きていて、**いま接続していない**端末に送る。
 
 ### 登録
@@ -630,7 +630,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 ## ブラウザ
 
 ブラウザは、`/` でなつみと話し、`/settings` で実行中の設定を変える、もう 1 台の端末である（[ADR 0058](adr/0058-settings-and-chat-in-the-browser.md)）。
-閉じている間の返事と知らせは、Web Push で受けられる（下記「ブラウザへの通知」、[ADR 0065](adr/0065-web-push-to-the-browser.md)）。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
+閉じている間の返事と知らせは、Web Push で受けられる（下記「ブラウザへの通知」、[ADR 0070](adr/0070-web-push-to-the-browser.md)）。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
 
 ### ログインと cookie
 

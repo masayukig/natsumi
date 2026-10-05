@@ -1,6 +1,6 @@
 /**
  * Builds the browser's app (ADR 0058) into dist/web/: src/web/main.ts bundled into one ES module, app.js, with its
- * source map, src/web/app.css beside it, and the service worker that shows Web Push, sw.js (ADR 0065). The server serves
+ * source map, src/web/app.css beside it, and the service worker that shows Web Push, sw.js (ADR 0070). The server serves
  * these under /app/ by name.
  *
  *   node scripts/build-web.ts [--out <dir>]

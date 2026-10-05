@@ -110,7 +110,7 @@ export interface FixtureOptions {
   prepare?: (data: string) => Promise<void>;
   /** Where the browser's bundle is read from (ADR 0058), under the fixture's root. None by default, so none is found. */
   webBundle?: (root: string) => string;
-  /** Stands in for the push services of Web Push (ADR 0065). */
+  /** Stands in for the push services of Web Push (ADR 0070). */
   webPush?: { send: (request: WebPushRequest) => Promise<number> };
 }
 
