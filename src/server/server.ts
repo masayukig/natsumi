@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { SdkA2AClient } from './a2a-client.ts';
 import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
+import { AGENTS_REGISTRATION, replyPlaceOf } from './agent-replies.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { loadAvatar } from './avatar.ts';
 import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from './avatar-manual.ts';
@@ -219,12 +220,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
       timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
-    // The core that tells her what changed in them (ADR 0050), when there is anything to read. A history that cannot be
-    // kept leaves her the files and no events; the server still starts.
-    let sources: Sources | undefined = archive ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
+    // the outside agents (ADR 0069). A history that cannot be kept leaves her the files and no events, and no agent can
+    // be asked; the server still starts.
+    let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
-    sources?.register(SLACK_REGISTRATION);
+    if (archive) sources?.register(SLACK_REGISTRATION);
+    if (config.a2a) sources?.register(AGENTS_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -268,6 +271,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
+      ...(config.a2a && sources ? { agentReplies: replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
     });
     raiseInto = thinkingLoop;

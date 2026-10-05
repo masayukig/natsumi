@@ -69,11 +69,16 @@ test('a followed scene hands the actors\' replies back as events, turn after tur
     assert.equal(record.outcome, 'ok', record.error);
     // The ask, the keeper's answer, and the dove's.
     assert.equal(record.turns, 3);
-    assert.deepEqual(record.events.map(event => [event.type, event.agent ?? event.text]), [
-      ['mac_message', 'デプロイっていつだっけ？'], ['agent_reply', 'wiki-keeper'], ['agent_reply', 'poppo']]);
-    const keeper = record.events[1]!;
-    assert.equal(keeper.status, 'completed');
-    assert.match(String(keeper.text), /FIXTURE-KEEPER-REPLY/);
+    // The keeper's answer is put under /sources and told by its attention (ADR 0069); the dove's is still an agent_reply.
+    const attentionOf = (event: Record<string, unknown>) =>
+      (event.changed as { attention?: Record<string, unknown>[] }[] | undefined)?.flatMap(entry => entry.attention ?? [])[0];
+    assert.deepEqual(record.events.map(event => [event.type, event.agent ?? attentionOf(event)?.agent ?? event.text]), [
+      ['mac_message', 'デプロイっていつだっけ？'], ['sources_updated', 'wiki-keeper'], ['agent_reply', 'poppo']]);
+    const keeper = attentionOf(record.events[1]!)!;
+    assert.equal(keeper.kind, 'agent_reply');
+    assert.equal(keeper.state, 'completed');
+    assert.match(String(keeper.summary), /FIXTURE-KEEPER-REPLY/);
+    assert.match(String(keeper.file), /^\/sources\/agents\/wiki-keeper\/.*\/README\.md$/);
     const dove = record.events[2]!;
     assert.equal(dove.result, 'returned');
     assert.equal(dove.reply_to, 'work/#dev 2026-09-27 14:32:05 田中');
