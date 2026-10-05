@@ -1,7 +1,7 @@
 # 0045. なつみは reply_to_mac の返事に画像を添えて、本人に見せる
 
 - Date: 2026-09-26
-- Status: Accepted
+- Status: Accepted（`reply_to_mac` の `images` に `/sources/agents/` の下のパスも並べられることを [ADR 0069](0069-agent-replies-as-files-in-sources.md) で追加）
 
 ## Context
 
