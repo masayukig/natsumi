@@ -3,16 +3,18 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { A2ACallError, AgentFileError, SdkA2AClient } from '../src/server/a2a-client.ts';
+import { A2ACallError, AgentFileError, REPLY_EXTENSION_URI, SdkA2AClient } from '../src/server/a2a-client.ts';
 import { FakeAgent } from './support/fake-agent.ts';
 import { PNG } from './support/fake-slack.ts';
 
-async function setup(t: test.TestContext, options: ConstructorParameters<typeof SdkA2AClient>[0] extends infer O ? Partial<O> : never = {}) {
+async function setup(t: test.TestContext, options: ConstructorParameters<typeof SdkA2AClient>[0] extends infer O ? Partial<O> : never = {},
+  extensions?: string[]) {
   const directory = await mkdtemp(join(tmpdir(), 'natsumi-a2a-'));
   const tokenFile = join(directory, 'token');
   await writeFile(tokenFile, 'first-token\n');
   const agent = await FakeAgent.start({ token: 'first-token', name: 'Fake Wiki Keeper', description: 'Keeps a wiki.',
-    skills: [{ id: 'query', name: '問い合わせ', description: 'Wiki の内容に答える', examples: ['〜について教えて'] }] });
+    skills: [{ id: 'query', name: '問い合わせ', description: 'Wiki の内容に答える', examples: ['〜について教えて'] }],
+    ...(extensions ? { extensions } : {}) });
   t.after(async () => { await agent.close(); await rm(directory, { recursive: true, force: true }); });
   const client = new SdkA2AClient({ tokenFile, ...options });
   return { agent, client, tokenFile };
@@ -198,4 +200,67 @@ test('a file is refused before any request when it is elsewhere, and its failure
   const url = agent.url;
   await agent.close();
   assert.equal(await kind(client.fetchFile(url, small!.uri, 1024)), 'unavailable');
+});
+
+// ADR 0069: the reply extension of fraction-agents (ADR 0015 there) is asked for only of an agent whose card names it.
+const REPLY = { summary: '要約です。', sections: [{ title: '結論', body: '本文' }], sources: [{ title: '出典', url: 'https://example.com/' }] };
+
+test('an agent whose card names the reply extension is sent requests that activate it, and its reply data is read back', async t => {
+  const { agent, client } = await setup(t, {}, ['https://example.com/another-extension', REPLY_EXTENSION_URI]);
+  const sent = await client.send(agent.url, { text: '調べて' });
+  assert.equal(sent.kind, 'task');
+  assert.deepEqual(agent.calls.at(-1), { method: 'SendMessage', extensions: REPLY_EXTENSION_URI });
+  agent.settle(sent.taskId, 'completed', '要約です。\n\n## 結論\n\n本文', { data: REPLY });
+  const view = await client.getTask(agent.url, sent.taskId);
+  assert.deepEqual(view, { state: 'completed', text: '要約です。\n\n## 結論\n\n本文', data: REPLY });
+  // The task keeps what its request activated: a fetch needs no header of its own.
+  assert.deepEqual(agent.calls.at(-1), { method: 'GetTask', extensions: undefined });
+
+  agent.settle(sent.taskId, 'input-required', 'どちらですか？');
+  await client.send(agent.url, { text: 'こちら', contextId: sent.contextId, taskId: sent.taskId });
+  assert.deepEqual(agent.calls.at(-1), { method: 'SendMessage', extensions: REPLY_EXTENSION_URI }, 'an answer activates it too');
+  assert.deepEqual(agent.cardRequests, [undefined], 'the card is fetched once, without the token');
+});
+
+test('an agent whose card does not name the reply extension is sent plain requests, and gives back text only', async t => {
+  const { agent, client } = await setup(t);
+  const sent = await client.send(agent.url, { text: '調べて' });
+  assert.equal(sent.kind, 'task');
+  assert.deepEqual(agent.calls.at(-1), { method: 'SendMessage', extensions: undefined });
+  agent.settle(sent.taskId, 'completed', '要約です。', { data: REPLY });
+  assert.deepEqual(await client.getTask(agent.url, sent.taskId), { state: 'completed', text: '要約です。' });
+});
+
+test('the card read for the list of agents tells the sends too, and one that cannot be had is asked for again', async t => {
+  const { agent, client } = await setup(t, {}, [REPLY_EXTENSION_URI]);
+  await client.card(agent.url);
+  await client.send(agent.url, { text: '一つ目' });
+  assert.equal(agent.cardRequests.length, 1, 'the card of the list is reused');
+  assert.equal(agent.calls.at(-1)!.extensions, REPLY_EXTENSION_URI);
+
+  const directory = await mkdtemp(join(tmpdir(), 'natsumi-a2a-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const tokenFile = join(directory, 'token');
+  await writeFile(tokenFile, 'first-token');
+  let cardDown = true;
+  const flaky = new SdkA2AClient({ tokenFile, fetch: (input, init) => cardDown && String(input).endsWith('agent-card.json')
+    ? Promise.resolve(new Response('', { status: 503 })) : fetch(input, init) });
+  await flaky.send(agent.url, { text: '二つ目' });
+  assert.equal(agent.calls.at(-1)!.extensions, undefined, 'without the card it is sent all the same, plain');
+  cardDown = false;
+  await flaky.send(agent.url, { text: '三つ目' });
+  assert.equal(agent.calls.at(-1)!.extensions, REPLY_EXTENSION_URI);
+});
+
+test('data is read only from a JSON DataPart of an artifact marked with the reply extension', async t => {
+  const { agent, client } = await setup(t, {}, [REPLY_EXTENSION_URI]);
+  const sent = await client.send(agent.url, { text: '調べて' });
+  assert.equal(sent.kind, 'task');
+  agent.settle(sent.taskId, 'completed', '要約です。', { data: REPLY });
+  const [artifact] = agent.tasks.get(sent.taskId)!.artifacts;
+  artifact!.extensions = [];
+  assert.deepEqual(await client.getTask(agent.url, sent.taskId), { state: 'completed', text: '要約です。' }, 'not marked');
+  artifact!.extensions = [REPLY_EXTENSION_URI];
+  artifact!.parts[1]!.mediaType = 'text/csv';
+  assert.deepEqual(await client.getTask(agent.url, sent.taskId), { state: 'completed', text: '要約です。' }, 'not JSON');
 });

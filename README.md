@@ -609,8 +609,14 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   `request.md`（頼んだ時刻・相手・新規か続きか・続きなら前の依頼のディレクトリ・文面の全文）を置きます。`ask_agent` の結果でその場所を伝えます。
   頼むたびに（聞き返しへの答えも）新しいディレクトリになります。依頼を置いたことは知らせません。
   返事の本文は出来事に載せません。依頼の ID も natsumi に見せません。相手の聞き返しには、natsumi が同じ相手との直近のやり取りに続けて答えます。
-- 返事は、頼んだことと要約と節の一覧の `README.md`、節ごとの `01-<題>.md`…、出典の `sources.json`、受け取ったものの `result.json`、
+- 返事は、頼んだことと要約と節の一覧の `README.md`、節ごとの `01-<題>.md`…、出典の `sources.json`、サーバーの記録の `result.json`、
   画像の `images/` として置きます。文章だけの返事は、Markdown の見出しで節に切り、先頭の段落を要約にします。依頼も返事も消しません。
+- Agent Card の `capabilities.extensions` に fraction-agents の返事の拡張（`https://github.com/yuanying/fraction-agents/tree/main/docs/extensions/reply/v1`）を
+  名乗る相手には、依頼（聞き返しへの答えも）に `A2A-Extensions` ヘッダでその URI を付け、返事を構造のある形（DataPart）でも求めます。
+  Agent Card は起動時に頼める相手の一覧を書くときに読んだものを使い、読めなかった相手は頼むときに読み直します（読めなければヘッダなしで頼みます）。
+  済んだ返事の artifact に拡張の印のある DataPart があり、拡張の JSON Schema どおりなら、要約・節・出典をそのまま置きます。
+  合わなければ文章の返事として節に切り、理由（欄の名前など。返事の中身は書きません）をログに出します。
+  どちらで置いたか（`form` が `data` か `text`）と、届いた DataPart の中身そのまま（`data`）は `result.json` に残します。natsumi の読む `README.md` には書きません。
   `sources.git` の履歴に入れるのは `request.md` と `README.md` だけで、返事の本文は差分に出ません。
 - 待っている依頼と、相手ごとの直近のやり取りは `.natsumi/state.sqlite`（migration 12）に残るので、再起動しても取りに行き直します。
   返事を置けなかったとき（ディスクがいっぱいなど）は、次の回に取りに行き直します。

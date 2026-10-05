@@ -70,7 +70,7 @@ A2A の DataPart は中身のスキーマを決めていない。相手が構造
 | `README.md` | 要約、節の一覧（パスと字数）、出典の数 |
 | `01-<節の題>.md`、`02-<節の題>.md` … | 節の本文。1 節 1 ファイル |
 | `sources.json` | 出典の並び |
-| `result.json` | 受け取った DataPart そのまま |
+| `result.json` | サーバーの記録: どちらの形で置いたか、置いた返事、受け取った DataPart そのまま（作業単位 4 で決めた） |
 | `images/` | 相手が返した画像（次の節） |
 
 - なつみは `read` で節を 1 つ丸ごと読める。要約で足りなければ `README.md` を読み、必要な節だけを読む。Codemode は要らない。
@@ -189,6 +189,36 @@ A2A の DataPart は中身のスキーマを決めていない。相手が構造
   - `continue` の依頼の `request.md` には、続けた前の依頼のディレクトリを書く。サーバーが相手ごとの直近のやり取りから分かる。分からないとき（この版より前のやり取り）は、分からないと書く。
   - `ask_agent` の結果で、依頼のディレクトリの場所を伝える。ADR 0024 は、なつみがツールの引数に写す ID を出来事に載せないという決定である。この場所は、なつみが読むファイルの場所である。どのツールの引数にも写さず、サーバーが付けた日時と短い印でできていて、Task や context の ID を含まない。そのため ADR 0024 には当たらない。
 
+### 作業単位 4 で決めたこと（DataPart を求め、検証して置く）
+
+- 拡張の URI は `https://github.com/yuanying/fraction-agents/tree/main/docs/extensions/reply/v1`（fraction-agents の ADR 0015）。
+  natsumi のコードの定数にし、設定にはしない。URI が名指す形が、natsumi の読む形そのものだからである。
+- 拡張を名乗るかどうかは、相手の Agent Card の `capabilities.extensions` で見る。
+  - 起動時に頼める相手の一覧を書くために読んだ Agent Card（[ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md)）を、そのまま使う。依頼のたびには読まない。
+  - 起動時に読めなかった相手は、頼むときに読み直す。それでも読めなければ、ヘッダを付けずに頼む。依頼そのものは止めない。
+  - 起動した後に相手が拡張を名乗り始めても、再起動までは知らない。一覧と同じ扱いである。
+- 求め方は、SendMessage に service parameter `A2A-Extensions: <URI>` を付ける（JSON-RPC では HTTP ヘッダ）。
+  `@a2a-js/sdk` の `RequestOptions.serviceParameters` と `withA2AExtensions` で付けられた。fetch の差し替えは要らなかった。
+  - 聞き返しへの答えにも付ける。fraction-agents は、Task を始めた要求か答えのどちらかで有効になっていれば返事に付ける。
+  - `acceptedOutputModes` には `application/json` も足す。有効にするのは URI であり、これは添えるだけである。
+- GetTask にはヘッダを付けない。返事の artifact は Task が済んだときに作られて Task に残り、GetTask はそれを返す。
+  fraction-agents のコードと、実物のホスト（fake pi）に natsumi のクライアントで頼んで確かめた。
+- 読むのは、済んだ Task の artifact のうち `extensions` に URI のあるものの、`mediaType` が `application/json` の DataPart だけである。
+  ほかの DataPart は今までどおり読まない。
+- 検証は JSON Schema（`reply.schema.json`）のとおりに厳しくする。欄の外の欄、空の文字列、文字数と行数と件数の上限、題の改行、
+  `http`・`https` 以外の URL を断る。文字数はコードポイントで数える。JSON Schema の検証器は入れず、同じ規則を手で書いた
+  （fraction-agents の `pi-package/lib/reply.ts` と同じ規則）。
+  - 緩くしない理由: 拡張を名乗る相手は取り決めを守るはずで、守れていない返事を推し量って読むより、文章の扱いに戻すほうが確かである。
+    文章は、同じ返事を Markdown にしたものなので、なつみの読む形はほぼ変わらない。
+  - fraction-agents のホストは、取り決めに合わない返事をそもそも DataPart にしない（実物で確かめた）。natsumi の検証は、相手の不具合への備えである。
+- 合えば、DataPart の要約・節・出典をそのまま置く。節の本文の中に見出しがあっても、節は切れない。
+  合わなければ、今どおり文章を見出しで節に切る。
+- どちらで置いたかは `result.json` に残す。中身は `form`（`data` か `text`）、置いた返事（`reply`）、
+  DataPart が届いたときはその中身そのまま（`data`、合わなかったものも）である。
+  `README.md` には書かない。なつみには、どちらの形で届いたかは要らない。
+  - 合わなかったときは、サーバーのログに相手の名前と、合わなかった理由（欄の名前と規則）を 1 行出す。返事の中身は出さない。
+    Consequences の「相手の側の不具合に気づきにくい」への手当てである。
+
 ### まだ決めていないこと
 
 - Slack の送信役のポッポさん（[ADR 0039](0039-slack-as-files-and-a-scored-dove.md)・[ADR 0040](0040-the-dove-sends-what-the-judge-passes.md)）の結果も、今は `agent_reply` の出来事（`agent: poppo`）で届いている。
@@ -226,3 +256,4 @@ A2A の DataPart は中身のスキーマを決めていない。相手が構造
 - system prompt の出来事の説明と、`ask_agent` のツールの説明が変わる。反映した時点で prefix が変わる。
 - DataPart に対応していない相手の返事は、見出しで切るだけなので、節の分け方は相手の書き方に左右される。
 - 取り決めの拡張を名乗るのに中身が合わない相手の返事は、文章の扱いに戻る。なつみからは違いが見えないので、相手の側の不具合に気づきにくい。
+  サーバーのログと `result.json` には残る（作業単位 4）。
