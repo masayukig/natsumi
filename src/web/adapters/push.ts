@@ -52,12 +52,21 @@ function sameKey(held: ArrayBuffer | null, key: Uint8Array): boolean {
   return key.every((byte, index) => byte === bytes[index]);
 }
 
-/** Ends the subscription in the browser; the server drops its copy when the push service next answers 404 or 410. */
+/**
+ * Ends the subscription in the browser; the server drops its copy when the push service next answers 404 or 410. One the
+ * browser could not end keeps coming, so it stays on and is still registered, with why.
+ */
 export async function unsubscribePush(dispatch: Dispatch): Promise<void> {
+  let subscription: PushSubscription | null | undefined;
   try {
-    await (await (await navigator.serviceWorker.getRegistration('/'))?.pushManager.getSubscription())?.unsubscribe();
+    subscription = await (await navigator.serviceWorker.getRegistration('/'))?.pushManager.getSubscription();
   } catch { /* nothing to end */ }
-  dispatch({ type: 'push-checked', supported: true });
+  if (!subscription) { dispatch({ type: 'push-checked', supported: true }); return; }
+  let ended = false;
+  try {
+    ended = await subscription.unsubscribe();
+  } catch { /* not ended */ }
+  dispatch({ type: 'push-checked', supported: true, ...(ended ? {} : { subscription: plain(subscription), error: 'not-stopped' as const }) });
 }
 
 function plain(subscription: PushSubscription): WebPushSubscription {

@@ -178,6 +178,26 @@ test('this browser’s notifications are turned on and off here, and the subscri
   assert.deepEqual(notifications(), { status: 'off' });
 });
 
+test('notifications the browser could not stop stay on, say so, and the subscription is still registered on every sync (ADR 0070)', () => {
+  const driver = onSettings();
+  const notifications = () => settingsProps(driver.state).notifications;
+  const subscription = { endpoint: 'https://push.example.test/one', keys: { p256dh: 'BKey', auth: 'auth' } };
+  driver.dispatch({ type: 'push-checked', supported: true, subscription });
+
+  assert.deepEqual(driver.dispatch({ type: 'push-toggle', on: false }), [{ kind: 'unsubscribe-push' }]);
+  driver.dispatch({ type: 'push-checked', supported: true, subscription, error: 'not-stopped' });
+  assert.equal(notifications().status, 'on', 'not shown as off while the browser still gets them');
+  assert.match(notifications().error ?? '', /止められませんでした/);
+
+  driver.dispatch({ type: 'socket-closed', code: 1006 }, { type: 'reconnect-due' }, { type: 'socket-opened' });
+  const sync = Driver.sent(driver.effects).filter(command => command.type === 'session.sync').at(-1)!;
+  const [again] = Driver.sent(driver.dispatch(server('session.snapshot', snapshot(), { seq: 1, requestId: sync.requestId })))
+    .filter(command => command.type === 'push.register');
+  assert.deepEqual(again?.payload, { subscription });
+
+  assert.deepEqual(driver.dispatch({ type: 'push-toggle', on: false }), [{ kind: 'unsubscribe-push' }], 'can be tried again');
+});
+
 // ADR 0068: the curator's route and the limits of each stage of its night.
 test('the curator\'s route is natsumi\'s or one of the routes, and the routes of outside services are marked', () => {
   const driver = onSettings();

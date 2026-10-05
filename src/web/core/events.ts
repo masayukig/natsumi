@@ -4,6 +4,9 @@ import type { Decision, Placement } from '../../shared/protocol/conversation.ts'
 import type { SettingKey } from '../../shared/protocol/settings.ts';
 import type { SettingInput } from './settings.ts';
 
+/** Why the notifications were not turned on, or not stopped (ADR 0070). */
+export type PushError = 'denied' | 'failed' | 'not-stopped';
+
 /**
  * What happens to the browser's app: the owner's doings, handed up by the view, and the outside world's, handed in by
  * the adapters. Each goes to the mediator, which alone decides what follows.
@@ -19,7 +22,7 @@ export type AppEvent =
   | { type: 'avatar-loaded'; manifest: AvatarManifest }
   | { type: 'avatar-failed' }
   | { type: 'visibility'; visible: boolean }
-  | { type: 'push-checked'; supported: boolean; subscription?: WebPushSubscription; error?: 'denied' | 'failed' }
+  | { type: 'push-checked'; supported: boolean; subscription?: WebPushSubscription; error?: PushError }
   // The chat.
   | { type: 'send'; text: string }
   | { type: 'retry-send'; requestId: string }
