@@ -1,4 +1,5 @@
 import type { ApprovalResolution } from '../../shared/protocol/conversation.ts';
+import type { PushError } from './events.ts';
 
 /** The server's codes, and what became of approvals, in words the owner reads. */
 
@@ -19,10 +20,14 @@ const CODES: Record<string, string> = {
   'not-implemented': 'サーバーがまだこの操作に対応していません。',
 };
 
-/** Why turning the notifications on did not go through (ADR 0070). */
-export const pushWords = (error: 'denied' | 'failed'): string => (error === 'denied'
-  ? '通知が許可されていません。ブラウザの設定で、このサイトの通知を許可してください。'
-  : '通知を有効にできませんでした。');
+/** Why the notifications were not turned on, or not stopped (ADR 0070). */
+const PUSH: Record<PushError, string> = {
+  denied: '通知が許可されていません。ブラウザの設定で、このサイトの通知を許可してください。',
+  failed: '通知を有効にできませんでした。',
+  'not-stopped': '通知を止められませんでした。もう一度試すか、ブラウザの設定でこのサイトの通知を止めてください。',
+};
+
+export const pushWords = (error: PushError): string => PUSH[error];
 
 export const codeWords = (code: string): string => CODES[code] ?? `受け付けられませんでした（${code}）。`;
 
