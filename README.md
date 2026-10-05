@@ -600,14 +600,25 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
 ```
 
 - 頼むと、サーバーは相手に送ってすぐ「頼んだ」とだけ natsumi に返します。返事はサーバーが `a2a.pollIntervalSeconds` ごとに
-  取りに行き、済んだ・できなかった・相手が聞き返している・待つのをやめた、のどれかになったら、相手の名前つきの出来事として
-  natsumi に届けます。依頼の ID は natsumi に見せません。相手の聞き返しには、natsumi が同じ相手との直近のやり取りに続けて答えます。
+  取りに行き、済んだ・できなかった・相手が聞き返している・待つのをやめた、のどれかになったら、返事を 1 件ずつ
+  data directory の `sources/agents/<名前>/<UTC の日時>-<短い印>/` に置き、`sources_updated` の attention（kind `agent_reply`）で
+  natsumi に知らせます（[ADR 0069](docs/adr/0069-agent-replies-as-files-in-sources.md)）。attention はすぐ出て、
+  相手の名前・状態（`completed`・`input_required`・`failed`・`gave_up`）・要約（3 行・300 字まで）と、返事の `README.md` の場所を載せます。
+  返事の本文は出来事に載せません。依頼の ID も natsumi に見せません。相手の聞き返しには、natsumi が同じ相手との直近のやり取りに続けて答えます。
+- 返事のディレクトリには、要約と節の一覧の `README.md`、節ごとの `01-<題>.md`…、出典の `sources.json`、受け取ったものの `result.json`、
+  画像の `images/` を置きます。文章だけの返事は、Markdown の見出しで節に切り、先頭の段落を要約にします。返事は消しません。
+  `images/` は `sources.git` の履歴に入れず、返事の本文は差分として見せません（新しいディレクトリは黙って取り込むので、`sources-diff` に出ません）。
 - 待っている依頼と、相手ごとの直近のやり取りは `.natsumi/state.sqlite`（migration 12）に残るので、再起動しても取りに行き直します。
-  返事の本文は、natsumi に渡すまでだけそこに置き、渡したら消します（以後は Pi の session にあります）。
+  返事を置けなかったとき（ディスクがいっぱいなど）は、次の回に取りに行き直します。
+- `a2a` があれば、Slack が無くても `sources/` と `sources.git/` を持ちます。履歴を用意できないときは、返事を受け取れないので `ask_agent` は頼まずに断ります。
 - 済んだ返事に画像の成果物（A2A の FilePart）があれば、サーバーが取り込みます（[ADR 0048](docs/adr/0048-bringing-in-images-an-agent-hands-back.md)）。
   相手の URL と同じ origin のものだけを、呼び出しと同じ token で取り（リダイレクトはたどりません）、PNG・JPEG・WebP（中身で判定）、
-  1 枚 10 MiB・1 回 8 枚までを、作業環境の `/work/agents/<名前>/<日時>-<名前>` に置き、`.natsumi/images/` にも写しを残します（migration 19）。
-  出来事には置いたパスと説明、取らなかった画像とその理由を書きます。取れなくてもテキストの返事はそのまま届けます。
+  1 枚 10 MiB・1 回 8 枚までを、返事の `images/` に置き、`.natsumi/images/` にも写しを残します（migration 19）。
+  `README.md` に置いた画像と説明、取らなかった画像とその理由を書きます。取れなくても文章の返事はそのまま届けます。
+  natsumi は `reply_to_mac` の `images` に、`/sources/agents/` の下の画像をそのまま並べられます。
+- Slack の送信役（ポッポさん）の結果は、今までどおり `agent_reply` の出来事で届けます。
+- 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
+  待っている依頼は、新しい版で取りに行き、`sources/agents/` に置きます。
 - 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
 - 頼める相手の一覧は、サーバーが起動のたびに各相手の Agent Card（token は付けずに取ります）から data directory の
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
@@ -683,7 +694,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
 
 ### 読みものの更新（sources_updated）
 
-`/sources` の下の読みもの（いまは Slack だけ）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
+`/sources` の下の読みもの（Slack と、外のエージェントの返事）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
 （[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)、[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。
 
 - サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。
