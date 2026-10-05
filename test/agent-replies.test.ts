@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  clampSummary, MAX_SUMMARY_CHARS, parseReplyData, replyFromText, sectionFileName, writeAgentReply,
+  clampSummary, firstLine, MAX_SUMMARY_CHARS, parseReplyData, replyFromText, sectionFileName, writeAgentReply, writeAgentRequest,
 } from '../src/server/agent-replies.ts';
 
 /**
@@ -155,4 +155,61 @@ test('two replies of the same agent in the same second get directories of their 
   const two = await writeAgentReply({ directory: f.directory, agent: 'wiki', state: 'completed', at: AT, reply: replyFromText('二') });
   assert.notEqual(one.path, two.path);
   assert.equal((await readdir(join(f.directory, 'wiki'))).length, 2);
+});
+
+// Sent back on #153: which request a reply answers, and what was asked, are in its directory.
+test('a request is put in a directory of its own when it is made, with what was asked in request.md', async t => {
+  const f = await setup(t);
+  const placed = await writeAgentRequest({ directory: f.directory, agent: 'wiki', at: AT, askedAt: '2026-09-24 12:00',
+    text: 'ねこの記事を要約して。\n箇条書きで。', how: 'new' });
+  assert.match(placed.path, /^\/sources\/agents\/wiki\/20260924T030000Z-[0-9a-f]{4}$/);
+  assert.deepEqual(await readdir(placed.directory), ['request.md']);
+  const request = await readFile(join(placed.directory, 'request.md'), 'utf8');
+  assert.match(request, /2026-09-24 12:00/);
+  assert.match(request, /wiki/);
+  assert.match(request, /新しい依頼/);
+  assert.match(request, /ねこの記事を要約して。\n箇条書きで。/);
+
+  const next = await writeAgentRequest({ directory: f.directory, agent: 'wiki', at: AT, askedAt: '2026-09-24 12:05', text: '続き',
+    how: 'continue', previous: placed.path });
+  assert.notEqual(next.path, placed.path);
+  assert.match(await readFile(join(next.directory, 'request.md'), 'utf8'), new RegExp(`続き[\\s\\S]*${placed.path}`));
+  const answer = await writeAgentRequest({ directory: f.directory, agent: 'wiki', at: AT, askedAt: '2026-09-24 12:06', text: 'index です',
+    how: 'answer', previous: null });
+  assert.match(await readFile(join(answer.directory, 'request.md'), 'utf8'), /聞き返しへの答え[\s\S]*分かりません/);
+});
+
+test('a reply goes into the directory of its request beside request.md, and the README begins with what was asked', async t => {
+  const f = await setup(t);
+  const text = '一行目の依頼\n二行目\n三行目\n四行目';
+  const place = await writeAgentRequest({ directory: f.directory, agent: 'wiki', at: AT, askedAt: '2026-09-24 12:00', text, how: 'new' });
+  // What a failed earlier attempt left is cleared first.
+  await writeFile(join(place.directory, '01-古い.md'), 'old');
+  const written = await writeAgentReply({ directory: f.directory, agent: 'wiki', state: 'completed', at: AT + 60_000,
+    reply: replyFromText('答えです。'), place, request: { text, askedAt: '2026-09-24 12:00' } });
+  assert.equal(written.path, place.path);
+  assert.equal(written.created, false);
+  assert.deepEqual((await readdir(place.directory)).sort(), ['01-本文.md', 'README.md', 'request.md', 'result.json', 'sources.json']);
+  const readme = await readFile(join(place.directory, 'README.md'), 'utf8');
+  const asked = readme.indexOf('## 頼んだこと');
+  assert.ok(asked > 0 && asked < readme.indexOf('## 要約'), readme);
+  assert.match(readme, /2026-09-24 12:00/);
+  assert.match(readme, /> 一行目の依頼\n> 二行目\n> 三行目/);
+  assert.doesNotMatch(readme, /四行目/);
+  assert.match(readme, /request\.md/);
+});
+
+test('a reply of a request made before requests were kept gets a directory of its own, and says nothing was kept', async t => {
+  const f = await setup(t);
+  const written = await writeAgentReply({ directory: f.directory, agent: 'wiki', state: 'completed', at: AT, reply: replyFromText('答え') });
+  assert.equal(written.created, true);
+  assert.match(await readFile(join(written.directory, 'README.md'), 'utf8'), /## 頼んだこと\n\n頼んだことの記録はありません/);
+  assert.equal(await stat(join(written.directory, 'request.md')).catch(() => undefined), undefined);
+});
+
+test('the first line of a request is kept short for the attention', () => {
+  assert.equal(firstLine('\n  ねこの記事を要約して  \n二行目'), 'ねこの記事を要約して');
+  const long = firstLine('あ'.repeat(100));
+  assert.equal([...long].length, 80);
+  assert.ok(long.endsWith('…'));
 });

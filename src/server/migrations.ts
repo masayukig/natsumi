@@ -853,11 +853,19 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 26,
-    name: 'the fields of an attention',
+    name: 'the fields of an attention, and where a request to an agent is put',
     sql: `
       -- A source's own fields of an attention (ADR 0069), as a JSON object shown beside where it is: an outside agent's
       -- reply carries the agent, its state and a summary. An attention with no jq path keeps path empty.
       ALTER TABLE source_attention ADD COLUMN details TEXT NOT NULL DEFAULT '{}';
+
+      -- Where each request to an outside agent was put under /sources/agents as it was made, as the workspace names it,
+      -- and every word of it: its reply goes into the same directory. NULL for a request made before they were kept,
+      -- whose reply gets a directory of its own. An exchange keeps the place of its latest request, which the next
+      -- request going on with it names.
+      ALTER TABLE agent_tasks ADD COLUMN place TEXT;
+      ALTER TABLE agent_tasks ADD COLUMN request TEXT;
+      ALTER TABLE agent_contexts ADD COLUMN place TEXT;
     `,
   },
 ];

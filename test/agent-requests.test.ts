@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import type { Context } from '@earendil-works/pi-ai';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { AGENTS_REGISTRATION, MAX_SUMMARY_CHARS, replyPlaceOf } from '../src/server/agent-replies.ts';
@@ -45,6 +47,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   const opened: ThinkingLoop[] = [];
   const f = {
     agent, model, clock, db, tokenFile, root, work: join(data, 'work'), replies: join(sourcesDirectory, 'agents'),
+    gitDirectory: join(data, 'sources.git'),
     async open() {
       const sources = new Sources({ db, directory: sourcesDirectory, gitDirectory: join(data, 'sources.git'), timeZone: 'Asia/Tokyo',
         awakeHours: LOOP_DEFAULTS.awakeHours, activity: SOURCES_DEFAULTS.activity, historyDays: 7, now: () => clock.now });
@@ -52,7 +55,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
       await sources.prepare();
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 6 }, now: () => clock.now,
+        runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 6, timeZone: 'Asia/Tokyo' }, now: () => clock.now,
         configureSession: session => { session.agent.streamFunction = model.streamFunction; },
         ...(a2a ? { a2a } : {}), sources,
         ...(options.place === false ? {} : { agentReplies: replyPlaceOf(sources, sourcesDirectory) }),
@@ -101,7 +104,9 @@ const lines = (model: ScriptedModel, type: string) => {
     .flatMap(text => text.split('\n')).filter(line => line.includes(`"type":"${type}"`))
     .map(line => JSON.parse(line) as Record<string, unknown>);
 };
-interface ReplyAttention { source: string; kind: string; file: string; agent: string; state: string; summary: string; images?: number }
+interface ReplyAttention {
+  source: string; kind: string; file: string; agent: string; state: string; summary: string; images?: number; request?: string; asked_at?: string;
+}
 /** The attentions of the agents' replies the model has been handed, in order. */
 const replies = (model: ScriptedModel): ReplyAttention[] => lines(model, 'sources_updated')
   .flatMap(line => (line.changed as { attention?: ReplyAttention[] }[]).flatMap(entry => entry.attention ?? []))
@@ -155,14 +160,15 @@ test('a finished task is put under /sources/agents and reaches her as an attenti
   const [reply] = replies(f.model);
   assert.match(reply!.file, /^\/sources\/agents\/wiki\/20260924T030000Z-[0-9a-f]{4}\/README\.md$/);
   assert.deepEqual({ ...reply, file: undefined },
-    { source: 'agents', kind: 'agent_reply', file: undefined, agent: 'wiki', state: 'completed', summary: 'ねこは液体です。' });
+    { source: 'agents', kind: 'agent_reply', file: undefined, agent: 'wiki', state: 'completed', summary: 'ねこは液体です。',
+      request: 'ねこの記事を要約して', asked_at: '2026-09-24 12:00' });
   // The body is in the files only: the event carries the summary and the place.
   const prompt = JSON.stringify(f.model.contexts.at(-1));
   assert.equal(prompt.includes('容器に合わせて形を変えます。'), false);
   assert.equal(prompt.includes(f.agent.lastTask().id), false);
   assert.equal(prompt.includes(f.agent.lastTask().contextId), false);
   assert.equal(lines(f.model, 'agent_reply').length, 0, 'no agent_reply event any more');
-  assert.deepEqual((await f.list(dirOf(reply!))).sort(), ['01-はじめに.md', '02-根拠.md', 'README.md', 'result.json', 'sources.json']);
+  assert.deepEqual((await f.list(dirOf(reply!))).sort(), ['01-はじめに.md', '02-根拠.md', 'README.md', 'request.md', 'result.json', 'sources.json']);
   assert.equal(await f.read(`${dirOf(reply!)}/02-根拠.md`), '# 根拠\n\n容器に合わせて形を変えます。\n');
   assert.match(await f.read(reply!.file), /02-根拠\.md/);
   assert.deepEqual(events.filter(e => e.type === 'conversation.message' && e.payload.role === 'natsumi'), []);
@@ -522,7 +528,7 @@ test('a reply of text only has no images and says nothing of them', async t => {
   const f = await setup(t);
   const { loop } = await f.open();
   const { reply, dir, readme } = await finishWithFiles(f, loop, []);
-  assert.deepEqual(Object.keys(reply).sort(), ['agent', 'file', 'kind', 'source', 'state', 'summary']);
+  assert.deepEqual(Object.keys(reply).sort(), ['agent', 'asked_at', 'file', 'kind', 'request', 'source', 'state', 'summary']);
   assert.equal((await f.list(dir)).includes('images'), false);
   assert.doesNotMatch(readme, /## 画像/);
   assert.deepEqual(f.agent.fileRequests, []);
@@ -538,4 +544,137 @@ test('an image an agent handed back can be shown to the owner with reply_to_mac,
   const shown = events.filter(e => e.type === 'conversation.message' && e.payload.role === 'natsumi')
     .map(e => (e.payload as { images?: unknown[] }).images ?? []);
   assert.equal(shown.at(-1)!.length, 1);
+});
+
+// Sent back on #153: which request a reply answers, and what was asked, can be told from /sources.
+/** The directory a result of ask_agent names. */
+const placeIn = (text: string) => /(\/sources\/agents\/[a-z0-9-]+\/\d{8}T\d{6}Z-[0-9a-f]{4})\//.exec(text)?.[1];
+
+test('a request gets its directory as it is made: the result names it, request.md holds what was asked, and nothing is told', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'ねこの記事を要約して\n箇条書きで', false));
+  await turn(f, loop);
+  const [result] = toolResults(f.model);
+  const place = placeIn(result!.text);
+  assert.ok(place, result!.text);
+  assert.match(place, /^\/sources\/agents\/wiki\/20260924T030000Z-/, 'named by the time she asked');
+  assert.deepEqual(await f.list(place), ['request.md']);
+  const request = await f.read(`${place}/request.md`);
+  assert.match(request, /2026-09-24 12:00/);
+  assert.match(request, /新しい依頼/);
+  assert.match(request, /ねこの記事を要約して\n箇条書きで/);
+  // Her own request is no news to her.
+  const calls = f.model.calls;
+  await loop.idle();
+  assert.equal(f.model.calls, calls);
+  assert.equal(lines(f.model, 'sources_updated').length, 0);
+  // No ID reaches her (ADR 0024).
+  assert.equal(request.includes(f.agent.lastTask().id), false);
+  assert.equal(request.includes(f.agent.lastTask().contextId), false);
+
+  f.clock.now += 3 * 60_000;
+  f.agent.settle(f.agent.lastTask().id, 'completed', 'ねこは液体です。');
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const [reply] = replies(f.model);
+  assert.equal(dirOf(reply!), place, 'the reply is in the request\'s directory');
+  assert.equal(reply!.request, 'ねこの記事を要約して');
+  assert.equal(reply!.asked_at, '2026-09-24 12:00');
+  assert.deepEqual((await f.list(place)).sort(), ['01-本文.md', 'README.md', 'request.md', 'result.json', 'sources.json']);
+  const readme = await f.read(reply!.file);
+  assert.ok(readme.indexOf('## 頼んだこと') < readme.indexOf('## 要約'));
+  assert.match(readme, /> ねこの記事を要約して/);
+});
+
+test('two requests to the same agent are two directories, each with its own request and reply', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script(ask('wiki', '一つ目の依頼', false), ask('wiki', '二つ目の依頼', false));
+  await turn(f, loop);
+  const places = toolResults(f.model).map(result => placeIn(result.text));
+  assert.equal(new Set(places).size, 2);
+  const [first, second] = [...f.agent.tasks.values()];
+  f.agent.settle(second!.id, 'completed', '二つ目の答え');
+  f.agent.settle(first!.id, 'completed', '一つ目の答え');
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const got = Object.fromEntries(replies(f.model).map(reply => [reply.request, [dirOf(reply), reply.summary]]));
+  assert.deepEqual(got, { 一つ目の依頼: [places[0], '一つ目の答え'], 二つ目の依頼: [places[1], '二つ目の答え'] });
+});
+
+test('an answer to a question is a request of its own, naming the one before; the reply after it goes there', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script(ask('wiki', '記事を直して', false));
+  await turn(f, loop);
+  const first = placeIn(toolResults(f.model)[0]!.text)!;
+  f.agent.settle(f.agent.lastTask().id, 'input-required', 'どの記事ですか？');
+  f.script(ask('wiki', 'index の方です', true));
+  await loop.pollAgents();
+  await loop.idle();
+  const [question] = replies(f.model);
+  assert.equal(dirOf(question!), first);
+  const second = placeIn(toolResults(f.model).at(-1)!.text)!;
+  assert.notEqual(second, first);
+  const request = await f.read(`${second}/request.md`);
+  assert.match(request, /聞き返しへの答え/);
+  assert.ok(request.includes(`${first}/`), request);
+
+  f.agent.settle(f.agent.lastTask().id, 'completed', '直しました。');
+  f.script(ask('wiki', 'ほかにも', true));
+  await loop.pollAgents();
+  await loop.idle();
+  const done = replies(f.model).at(-1)!;
+  assert.deepEqual([dirOf(done), done.state, done.request], [second, 'completed', 'index の方です']);
+  // The question stays as it was in the first.
+  assert.match(await f.read(`${first}/README.md`), /input_required/);
+  const third = placeIn(toolResults(f.model).at(-1)!.text)!;
+  assert.match(await f.read(`${third}/request.md`), new RegExp(`前のやり取りの続き[\\s\\S]*${second}/`));
+});
+
+test('a request that could not be sent leaves no directory behind', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.agent.failWith = 503;
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  assert.equal(toolResults(f.model)[0]!.isError, true);
+  assert.deepEqual(await readdir(join(f.replies, 'wiki')).catch(() => []), []);
+});
+
+test('a task left waiting by an earlier version, with no directory, gets one of its own when it settles', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  const place = placeIn(toolResults(f.model)[0]!.text)!;
+  // As an earlier version left it: no place, no request.
+  f.db.prepare('UPDATE agent_tasks SET place = NULL, request = NULL').run();
+  await rm(join(f.replies, place.slice('/sources/agents/'.length)), { recursive: true });
+  f.agent.settle(f.agent.lastTask().id, 'completed', '前の版からの返事です。');
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const [reply] = replies(f.model);
+  assert.equal(reply!.summary, '前の版からの返事です。');
+  assert.equal(reply!.request, undefined);
+  assert.match(await f.read(reply!.file), /頼んだことの記録はありません/);
+});
+
+test('the history keeps the request and the README of a reply, and leaves the body out', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  f.agent.settle(f.agent.lastTask().id, 'completed', '要約です。\n\n## 詳細\n\n長い本文。', {
+    files: [{ name: 'a.png', mimeType: 'image/png', data: PNG }] });
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const tracked = (await promisify(execFile)('git', ['--git-dir', f.gitDirectory, 'ls-tree', '-r', '--name-only', 'HEAD'])).stdout
+    .split('\n').filter(Boolean).map(path => path.split('/').at(-1)).sort();
+  assert.deepEqual(tracked, ['README.md', 'request.md']);
 });

@@ -595,3 +595,14 @@ test('schema 26 keeps the attentions waiting, each with no fields of its own', (
   assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 26)).applied, [26]);
   assert.deepEqual(plainRows(db.prepare('SELECT path, details FROM source_attention').all()), [{ path: '.[0]', details: '{}' }]);
 }));
+
+/** Schema 26 also keeps where each request to an outside agent is put and what it said; a task from before has neither. */
+test('schema 26 gives the agents\' tasks and exchanges the place of their request, empty for those from before', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 25));
+  db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at)
+    VALUES ('wiki', 't1', 'c1', 'waiting', 'x', 'x', 'x')`).run();
+  db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, updated_at) VALUES ('wiki', 'c1', 't1', 'x')`).run();
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 26));
+  assert.deepEqual(plainRows(db.prepare('SELECT place, request FROM agent_tasks').all()), [{ place: null, request: null }]);
+  assert.deepEqual(plainRows(db.prepare('SELECT place FROM agent_contexts').all()), [{ place: null }]);
+}));

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { REPLY_FILE_MODE, type ImageNotTaken, type PlacedImage } from './agent-files.ts';
 import type { Attention, SourceRegistration, Sources } from './sources.ts';
@@ -20,11 +20,13 @@ export const AGENTS_SOURCE = 'agents';
 /** Where the replies are, as the workspace names it. */
 export const AGENTS_PATH = `${SOURCES_PATH}/${AGENTS_SOURCE}`;
 /**
- * Measured by the reply: `agents/<agent>/<reply>`. Each reply is a directory seen for the first time, which is taken in
- * silently, so a reply reaches her by its attention alone and its body is never shown as a diff. The images stay out
- * of the history.
+ * Measured by the request: `agents/<agent>/<request>`, whose reply goes into the same directory. The history keeps the
+ * request and the README alone, so `sources-diff` shows what was asked and the summary of the answer, and never the
+ * body: the sections, what was received, the sources and the images stay out of it.
  */
-export const AGENTS_REGISTRATION: SourceRegistration = { name: AGENTS_SOURCE, depth: 2, exclude: ['*/*/images/'] };
+export const AGENTS_REGISTRATION: SourceRegistration = {
+  name: AGENTS_SOURCE, depth: 2, exclude: ['*/*/[0-9]*.md', '*/*/result.json', '*/*/sources.json', '*/*/images/'],
+};
 
 /** A summary's length at most, in characters, and in lines. */
 export const MAX_SUMMARY_CHARS = 300;
@@ -138,17 +140,83 @@ export function replyPlaceOf(sources: Sources, sourcesDirectory: string): ReplyP
 /** The images of a reply, brought into `directory`, which the workspace names `path`. */
 export type BringImages = (directory: string, path: string) => Promise<{ images: PlacedImage[]; notTaken: ImageNotTaken[] }>;
 
+/** How a request stands to the exchange before it. */
+export type RequestKind = 'new' | 'continue' | 'answer';
+
+const REQUEST_KIND_WORDS: Record<RequestKind, string> = {
+  new: '新しい依頼',
+  continue: '前のやり取りの続き',
+  answer: '相手の聞き返しへの答え',
+};
+
+/** The longest first line of a request an attention carries, in characters. */
+export const MAX_REQUEST_LINE_CHARS = 80;
+
+/** A request's directory, where its reply goes too. */
+export interface RequestPlace {
+  /** As the workspace names it. */
+  path: string;
+  /** As the server sees it. */
+  directory: string;
+}
+
+export interface WriteRequestOptions {
+  /** `sources/agents` as the server sees it. */
+  directory: string;
+  agent: string;
+  /** When she asked, which names the directory. */
+  at: number;
+  /** The same time as she reads it, in the owner's time zone. */
+  askedAt: string;
+  text: string;
+  how: RequestKind;
+  /**
+   * For one that goes on with an exchange: the directory of the request it goes on from, or null when that is not
+   * known (one made before requests were kept).
+   */
+  previous?: string | null;
+}
+
+/**
+ * Makes the directory a request's reply will be put in, as the request is made, with `request.md`: when, to whom, how
+ * it stands to the exchange before it, and every word of it. A reply is told by its attention; the request is hers,
+ * and nothing is told of it.
+ */
+export async function writeAgentRequest(options: WriteRequestOptions): Promise<RequestPlace> {
+  const { directory, agent } = options;
+  const lines = [`# ${agent} への依頼`, '', `- 頼んだ時刻: ${options.askedAt}`, `- 相手: ${agent}`, `- 種類: ${REQUEST_KIND_WORDS[options.how]}`];
+  if (options.how !== 'new') {
+    lines.push(`- 前のやり取り: ${options.previous ? `${options.previous}/` : '分かりません（記録が残る前のやり取りです）'}`);
+  }
+  lines.push('', '## 文面', '', options.text.trim(), '');
+  const made = await makeReplyDirectory(directory, agent, options.at, async temporary => {
+    await put(join(temporary, REQUEST_FILE), lines.join('\n'));
+  });
+  return { path: made.path, directory: made.directory };
+}
+
+/** The first line of a request with words in it, cut short for an attention. */
+export function firstLine(text: string): string {
+  const line = text.split('\n').map(part => part.trim()).find(part => part !== '') ?? '';
+  const characters = [...line];
+  return characters.length > MAX_REQUEST_LINE_CHARS ? `${characters.slice(0, MAX_REQUEST_LINE_CHARS - 1).join('')}…` : line;
+}
+
 export interface WriteReplyOptions {
   /** `sources/agents` as the server sees it. */
   directory: string;
   agent: string;
   state: ReplyState;
-  /** When the reply was taken, which names its directory. */
+  /** When the reply was taken, which names its directory when its request has none. */
   at: number;
   reply: ReplyData;
   /** What was received, kept as it came in result.json. The reply itself when omitted. */
   received?: unknown;
   bring?: BringImages;
+  /** The request's directory. Without it (a request made before they were kept) the reply gets one of its own. */
+  place?: RequestPlace;
+  /** What was asked, for the head of the README. */
+  request?: { text: string; askedAt: string };
 }
 
 export interface WrittenReply {
@@ -157,21 +225,75 @@ export interface WrittenReply {
   /** The same, as the server sees it. */
   directory: string;
   readme: string;
+  /** Whether the directory was made for the reply, rather than its request's. */
+  created: boolean;
   images: PlacedImage[];
   notTaken: ImageNotTaken[];
 }
 
+/** The file a request is kept in, beside its reply. */
+export const REQUEST_FILE = 'request.md';
+
 /**
- * Writes a reply into a directory of its own. It is written beside its place under a name git leaves out and moved
- * into place whole, so no half-written reply is ever read or recorded. Throws when it cannot be written, and leaves
- * nothing behind.
+ * Writes a reply into its request's directory, or into a directory of its own. What an earlier attempt left there is
+ * cleared first, and the README is written last: it is what the sources' history follows. Throws when it cannot be
+ * written; `undoReply` takes back what was written.
  */
 export async function writeAgentReply(options: WriteReplyOptions): Promise<WrittenReply> {
-  const { directory, agent, state, reply } = options;
+  const { agent, state, reply } = options;
+  let target: RequestPlace;
+  let created = false;
+  if (options.place) {
+    target = options.place;
+    await clearReply(target.directory);
+  } else {
+    target = await makeReplyDirectory(options.directory, agent, options.at, async () => {});
+    created = true;
+  }
+  const here = target.directory;
+  try {
+    const files = reply.sections.map((section, index) => ({ name: sectionFileName(index, section.title), section }));
+    let images: PlacedImage[] = [];
+    let notTaken: ImageNotTaken[] = [];
+    if (options.bring) {
+      await mkdir(join(here, 'images'), { mode: 0o750 });
+      ({ images, notTaken } = await options.bring(join(here, 'images'), `${target.path}/images`));
+      if (images.length === 0) await rmdir(join(here, 'images'));
+    }
+    for (const { name: file, section } of files) await put(join(here, file), `# ${section.title}\n\n${section.body}\n`);
+    await put(join(here, 'sources.json'), `${JSON.stringify(reply.sources, null, 2)}\n`);
+    await put(join(here, 'result.json'), `${JSON.stringify(options.received ?? reply, null, 2)}\n`);
+    await put(join(here, 'README.md'), readme({ agent, state, reply, files, images, notTaken, path: target.path, request: options.request }));
+    return { path: target.path, directory: here, readme: `${target.path}/README.md`, created, images, notTaken };
+  } catch (error) {
+    await undoReply({ directory: here, created });
+    throw error;
+  }
+}
+
+/** Takes back a reply: its directory when it was made for it, or all but the request in its request's. */
+export async function undoReply(written: { directory: string; created: boolean }): Promise<void> {
+  if (written.created) await rm(written.directory, { recursive: true, force: true });
+  else await clearReply(written.directory);
+}
+
+/** Removes everything in a request's directory but the request. */
+async function clearReply(directory: string): Promise<void> {
+  for (const entry of await readdir(directory)) {
+    if (entry !== REQUEST_FILE) await rm(join(directory, entry), { recursive: true, force: true });
+  }
+}
+
+/**
+ * Makes a directory `<agent>/<time>-<mark>` with what `fill` writes into it. It is filled beside its place under a
+ * name git leaves out and moved into place whole, so it is never seen half-written.
+ */
+async function makeReplyDirectory(directory: string, agent: string, at: number, fill: (temporary: string) => Promise<void>):
+  Promise<RequestPlace> {
   const parent = join(directory, agent);
   await mkdir(parent, { recursive: true, mode: 0o750 });
   for (let attempt = 0; attempt < 16; attempt++) {
-    const name = `${timeStamp(options.at)}-${randomBytes(2).toString('hex')}`;
+    const name = `${timeStamp(at)}-${randomBytes(2).toString('hex')}`;
     const final = join(parent, name);
     const temporary = `${final}.tmp`;
     try {
@@ -181,41 +303,34 @@ export async function writeAgentReply(options: WriteReplyOptions): Promise<Writt
       throw error;
     }
     try {
-      const path = `${AGENTS_PATH}/${agent}/${name}`;
-      const files = reply.sections.map((section, index) => ({ name: sectionFileName(index, section.title), section }));
-      let images: PlacedImage[] = [];
-      let notTaken: ImageNotTaken[] = [];
-      if (options.bring) {
-        await mkdir(join(temporary, 'images'), { mode: 0o750 });
-        ({ images, notTaken } = await options.bring(join(temporary, 'images'), `${path}/images`));
-        if (images.length === 0) await rmdir(join(temporary, 'images'));
-      }
-      for (const { name: file, section } of files) await put(join(temporary, file), `# ${section.title}\n\n${section.body}\n`);
-      await put(join(temporary, 'sources.json'), `${JSON.stringify(reply.sources, null, 2)}\n`);
-      await put(join(temporary, 'result.json'), `${JSON.stringify(options.received ?? reply, null, 2)}\n`);
-      await put(join(temporary, 'README.md'), readme({ agent, state, reply, files, images, notTaken, path }));
+      await fill(temporary);
       try { await mkdir(final); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') { await rm(temporary, { recursive: true, force: true }); continue; }
         throw error;
       }
       // An empty directory is moved over, never a full one: the name was free a moment ago and is kept free here.
       await rename(temporary, final);
-      return { path, directory: final, readme: `${path}/README.md`, images, notTaken };
+      return { path: `${AGENTS_PATH}/${agent}/${name}`, directory: final };
     } catch (error) {
       await rm(temporary, { recursive: true, force: true });
       throw error;
     }
   }
-  throw new Error(`no free name for a reply of ${agent}`);
+  throw new Error(`no free name for a request of ${agent}`);
 }
 
 function readme(parts: {
-  agent: string; state: ReplyState; reply: ReplyData; path: string;
+  agent: string; state: ReplyState; reply: ReplyData; path: string; request: { text: string; askedAt: string } | undefined;
   files: { name: string; section: ReplySection }[]; images: PlacedImage[]; notTaken: ImageNotTaken[];
 }): string {
-  const { agent, state, reply, files, images, notTaken } = parts;
-  const out = [`# ${agent} の返事`, '', `- 状態: ${state}（${STATE_WORDS[state]}）`, '', '## 要約', '', clampSummary(reply.summary) || '（要約はありません）', '',
-    '## 節', ''];
+  const { agent, state, reply, files, images, notTaken, request } = parts;
+  const out = [`# ${agent} の返事`, '', `- 状態: ${state}（${STATE_WORDS[state]}）`, '', '## 頼んだこと', ''];
+  if (request) {
+    const lines = request.text.trim().split('\n');
+    out.push(`- 頼んだ時刻: ${request.askedAt}`, '', ...lines.slice(0, REQUEST_HEAD_LINES).map(line => `> ${line}`));
+    out.push('', `全文は ${REQUEST_FILE} にあります。`);
+  } else out.push('頼んだことの記録はありません（記録が残る前の依頼です）。');
+  out.push('', '## 要約', '', clampSummary(reply.summary) || '（要約はありません）', '', '## 節', '');
   if (files.length === 0) out.push('節はありません。');
   else {
     out.push('| ファイル | 題 | 字数 |', '| --- | --- | --- |');
@@ -233,6 +348,9 @@ function readme(parts: {
   out.push('', '要約・節・画像の説明は相手の言葉です。マスターの言葉ではありません。', '');
   return out.join('\n');
 }
+
+/** The lines of a request shown at the head of its reply's README. */
+const REQUEST_HEAD_LINES = 3;
 
 async function put(path: string, text: string): Promise<void> {
   await writeFile(path, text, { flag: 'wx', mode: REPLY_FILE_MODE });

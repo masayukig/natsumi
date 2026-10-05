@@ -1,14 +1,16 @@
 import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { A2ACallError, type A2AClient, type AgentFile, type AgentTaskState, type SendResult } from './a2a-client.ts';
 import { bringAgentImages, discardBrought, type BroughtImages } from './agent-files.ts';
 import {
-  AGENTS_SOURCE, clampSummary, replyFromText, writeAgentReply, type ReplyData, type ReplyPlace, type ReplyState, type WrittenReply,
+  AGENTS_PATH, AGENTS_SOURCE, clampSummary, firstLine, replyFromText, undoReply, writeAgentReply, writeAgentRequest, type ReplyData,
+  type ReplyPlace, type ReplyState, type RequestKind, type RequestPlace, type WrittenReply,
 } from './agent-replies.ts';
 import type { A2AConfig } from './config.ts';
 import type { ImageStore } from './images.ts';
 import type { ToolOutcome } from './loop-tools.ts';
-import { isoAt } from './nightly.ts';
+import { isoAt, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 
 /** The longest answer a legacy event carries. A longer one is cut, and the event says so. */
@@ -27,8 +29,13 @@ const TASK_END: Record<ReplyState, TaskEnd> = {
 /** What a legacy event says of the images an agent handed back, as the `files` column keeps it until the event is taken. */
 interface ReplyFiles { images: { path: string; description: string }[]; not_taken: { name: string; reason: string }[] }
 
-interface TaskRow { agent: string; task_id: string; context_id: string; state: string; sent_at: string }
-interface ContextRow { agent: string; context_id: string; task_id: string | null }
+interface TaskRow {
+  agent: string; task_id: string; context_id: string; state: string; sent_at: string; place: string | null; request: string | null;
+}
+interface ContextRow { agent: string; context_id: string; task_id: string | null; place: string | null }
+
+/** A request as it was made: where it was put, what it said, and when. */
+interface MadeRequest { place: RequestPlace; text: string; at: number }
 
 export interface AgentRequestsOptions {
   db: DatabaseSync;
@@ -40,6 +47,8 @@ export interface AgentRequestsOptions {
   replies?: ReplyPlace;
   /** Where the images an agent hands back are copied and recorded (ADR 0048). Without it they are not brought. */
   images?: ImageStore;
+  /** The owner's time zone, in which the time of a request is written. UTC when omitted. */
+  timeZone?: string;
   log?: (line: string) => void;
 }
 
@@ -80,6 +89,7 @@ export class AgentRequests {
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '頼んでいません') };
 
     let to: { contextId?: string; taskId?: string } = {};
+    let previous: string | null | undefined;
     if (goOn) {
       const last = this.lastContext(agent);
       if (!last) return refuse(`「${agent}」との続けられるやり取りがありません。新しく頼むなら continue を false にしてください。`);
@@ -88,12 +98,28 @@ export class AgentRequests {
         return refuse(`「${agent}」に前に頼んだことの返事を、まだ待っています。返事が sources_updated の attention として届いてから続けてください。`);
       }
       to = task?.state === 'input-required' ? { contextId: last.context_id, taskId: task.task_id } : { contextId: last.context_id };
+      previous = last.place;
+    }
+
+    // The request's directory is made before it is sent, so its reply has somewhere to go however soon it comes. It
+    // tells her nothing: the request is hers.
+    const how: RequestKind = to.taskId ? 'answer' : to.contextId ? 'continue' : 'new';
+    const at = this.options.now();
+    let made: MadeRequest;
+    try {
+      const place = await writeAgentRequest({ directory: this.options.replies.directory, agent, at, askedAt: this.localTime(at),
+        text: message, how, ...(goOn ? { previous: previous ?? null } : {}) });
+      made = { place, text: message, at };
+    } catch {
+      this.log(`a2a: the request to ${agent} could not be put in /sources`);
+      return refuse(`依頼を ${AGENTS_PATH} に置けませんでした。急ぎならマスターに伝えてください。`);
     }
 
     let sent: SendResult;
     try {
       sent = await client.send(target.url, { text: message, ...to });
     } catch (error) {
+      await rm(made.place.directory, { recursive: true, force: true });
       const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
       this.log(`a2a: sending to ${agent} failed (${kind})`);
       if (kind === 'refused' && goOn) {
@@ -103,9 +129,10 @@ export class AgentRequests {
       return { ok: false, text: `頼めませんでした。「${agent}」につながりません。時間をおいてもう一度頼むか、急ぎならマスターに伝えてください。` };
     }
     if (this.closed) return { ok: false, text: '頼んだかどうか分かりません。サーバーが止まるところです。' };
-    await this.record(agent, sent);
-    const how = to.taskId ? 'の聞き返しに答えました' : to.contextId ? 'との前のやり取りに続けて送りました' : 'に頼みました';
-    return { ok: true, text: `「${agent}」${how}。返事は後で sources_updated の attention（kind: agent_reply）として届きます。`
+    await this.record(agent, sent, made);
+    const done = how === 'answer' ? 'の聞き返しに答えました' : how === 'continue' ? 'との前のやり取りに続けて送りました' : 'に頼みました';
+    return { ok: true, text: `「${agent}」${done}。頼んだことは ${made.place.path}/request.md に置きました。`
+      + `返事は後で同じ ${made.place.path}/ に置かれ、sources_updated の attention（kind: agent_reply）で届きます。`
       + '待たずに、ほかのことをしてかまいません。' };
   }
 
@@ -144,8 +171,8 @@ export class AgentRequests {
     const { config, client } = this.options;
     if (!config || !client || !this.options.replies || this.closed) return;
     const limitMs = config.giveUpAfterHours * 3_600_000;
-    const waiting = this.db.prepare(`SELECT agent, task_id, context_id, state, sent_at FROM agent_tasks WHERE state = 'waiting'
-      ORDER BY sent_at`).all() as unknown as TaskRow[];
+    const waiting = this.db.prepare(`SELECT agent, task_id, context_id, state, sent_at, place, request FROM agent_tasks
+      WHERE state = 'waiting' ORDER BY sent_at`).all() as unknown as TaskRow[];
     for (const task of waiting) {
       if (this.closed) return;
       if (this.options.now() - Date.parse(task.sent_at) >= limitMs) {
@@ -189,7 +216,9 @@ export class AgentRequests {
    */
   private async settle(task: TaskRow, state: ReplyState, reply: ReplyData, handed?: { url: string; files: AgentFile[] | undefined }):
     Promise<void> {
-    const delivered = await this.deliver(task.agent, state, reply, handed, () => {
+    const place = task.place ? this.placeOf(task.place) : undefined;
+    const made = place && task.request !== null ? { place, text: task.request, at: Date.parse(task.sent_at) } : undefined;
+    const delivered = await this.deliver(task.agent, state, reply, handed, made, () => {
       this.db.prepare(`UPDATE agent_tasks SET state = ?, updated_at = ? WHERE agent = ? AND task_id = ?`)
         .run(TASK_END[state], this.iso(), task.agent, task.task_id);
     });
@@ -201,7 +230,7 @@ export class AgentRequests {
    * transaction, and asks for the event. Whatever fails leaves nothing behind: no files, no copies, no rows.
    */
   private async deliver(agent: string, state: ReplyState, reply: ReplyData, handed: { url: string; files: AgentFile[] | undefined } | undefined,
-    rows: () => void): Promise<boolean> {
+    made: MadeRequest | undefined, rows: () => void): Promise<boolean> {
     const place = this.options.replies;
     if (!place || this.closed) return false;
     const { client, images } = this.options;
@@ -210,6 +239,7 @@ export class AgentRequests {
     let written: WrittenReply;
     try {
       written = await writeAgentReply({ directory: place.directory, agent, state, at: this.options.now(), reply,
+        ...(made ? { place: made.place, request: { text: made.text, askedAt: this.localTime(made.at) } } : {}),
         ...(files.length > 0 && client && images && handed ? {
           bring: async (directory: string, path: string) => {
             brought = await bringAgentImages({ url: handed.url, files, client, directory, path, imageDirectory: images.directory });
@@ -223,7 +253,7 @@ export class AgentRequests {
     }
     const undo = async () => {
       if (brought) await discardBrought(brought);
-      await rm(written.directory, { recursive: true, force: true });
+      await undoReply(written);
     };
     // The task is fetched again after the restart, and is put again.
     if (this.closed) { await undo(); return false; }
@@ -233,7 +263,8 @@ export class AgentRequests {
       rows();
       if (brought) this.options.images?.record(brought.taken, this.iso());
       const recorded = place.record({ source: AGENTS_SOURCE, kind: 'agent_reply', file: written.readme,
-        details: { agent, state, summary: clampSummary(reply.summary), ...(imageCount > 0 ? { images: imageCount } : {}) } });
+        details: { agent, state, summary: clampSummary(reply.summary), ...(imageCount > 0 ? { images: imageCount } : {}),
+          ...(made ? { request: firstLine(made.text), asked_at: this.localTime(made.at) } : {}) } });
       if (!recorded) throw new Error('the attention was let go');
       this.db.exec('COMMIT');
     } catch {
@@ -246,15 +277,16 @@ export class AgentRequests {
   }
 
   /** What a send started: the agent's latest exchange, and the task to fetch or the answer that already came. */
-  private async record(agent: string, sent: SendResult): Promise<void> {
+  private async record(agent: string, sent: SendResult, made: MadeRequest): Promise<void> {
     const now = this.iso();
     const remember = () => {
-      this.db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, updated_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT (agent) DO UPDATE SET context_id = excluded.context_id, task_id = excluded.task_id, updated_at = excluded.updated_at`)
-        .run(agent, sent.contextId, sent.kind === 'task' ? sent.taskId : null, now);
+      this.db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, place, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (agent) DO UPDATE SET context_id = excluded.context_id, task_id = excluded.task_id, place = excluded.place,
+          updated_at = excluded.updated_at`)
+        .run(agent, sent.contextId, sent.kind === 'task' ? sent.taskId : null, made.place.path, now);
     };
     if (sent.kind === 'message') {
-      if (!await this.deliver(agent, 'completed', textReply('completed', sent.text), undefined, remember)) {
+      if (!await this.deliver(agent, 'completed', textReply('completed', sent.text), undefined, made, remember)) {
         // The answer is lost, and the exchange is still remembered, so she can go on with it.
         this.log(`a2a: the reply of ${agent} could not be put in /sources`);
         remember();
@@ -265,10 +297,12 @@ export class AgentRequests {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       remember();
-      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at)
-        VALUES (?, ?, ?, 'waiting', ?, ?, ?)
-        ON CONFLICT (agent, task_id) DO UPDATE SET state = 'waiting', sent_at = excluded.sent_at, updated_at = excluded.updated_at`)
-        .run(agent, sent.taskId, sent.contextId, now, now, now);
+      // An answer to a question goes on with the same task: the reply after it belongs to the answer, and goes there.
+      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, place, request, created_at, updated_at)
+        VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?)
+        ON CONFLICT (agent, task_id) DO UPDATE SET state = 'waiting', sent_at = excluded.sent_at, place = excluded.place,
+          request = excluded.request, updated_at = excluded.updated_at`)
+        .run(agent, sent.taskId, sent.contextId, isoAt(made.at), made.place.path, made.text, now, now);
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
@@ -277,15 +311,26 @@ export class AgentRequests {
   }
 
   private lastContext(agent: string): ContextRow | undefined {
-    return this.db.prepare('SELECT agent, context_id, task_id FROM agent_contexts WHERE agent = ?').get(agent) as ContextRow | undefined;
+    return this.db.prepare('SELECT agent, context_id, task_id, place FROM agent_contexts WHERE agent = ?').get(agent) as ContextRow | undefined;
   }
 
   private task(agent: string, taskId: string): TaskRow | undefined {
-    return this.db.prepare('SELECT agent, task_id, context_id, state, sent_at FROM agent_tasks WHERE agent = ? AND task_id = ?')
+    return this.db.prepare('SELECT agent, task_id, context_id, state, sent_at, place, request FROM agent_tasks WHERE agent = ? AND task_id = ?')
       .get(agent, taskId) as TaskRow | undefined;
   }
 
   private iso() { return isoAt(this.options.now()); }
+
+  /** A time as she reads it: in the owner's time zone. */
+  private localTime(at: number): string { return localDateTime(at, this.options.timeZone ?? 'UTC'); }
+
+  /** A request's directory by the path it was kept by, or undefined when the path is not one of the replies'. */
+  private placeOf(path: string): RequestPlace | undefined {
+    const replies = this.options.replies;
+    const relative = path.startsWith(`${AGENTS_PATH}/`) ? path.slice(AGENTS_PATH.length + 1) : undefined;
+    if (!replies || !relative || relative.split('/').some(part => part === '' || part === '.' || part === '..')) return undefined;
+    return { path, directory: join(replies.directory, relative) };
+  }
 
   private log(line: string) { this.options.log?.(line); }
 }
