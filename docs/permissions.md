@@ -117,6 +117,8 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 
 読み取り専用で見せるものもあります。
 
-- `/sources`: サーバーが書く読みもの（Slack のチャンネルなど）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)）。
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
+  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
+  なつみは `reply_to_mac` でそこから見せられます（サーバーが写しを取って見せます）。
 - `/sources.git`: `/sources` の履歴。data directory の `sources.git/` で、作業環境の `sources-diff` が読みます。commit と ref を動かすのはサーバーだけで、
   作業環境からは書けません。中身は `/sources` と同じ読みものの、数日分の差分です（[ADR 0050](adr/0050-telling-of-source-updates-with-one-event.md)）。

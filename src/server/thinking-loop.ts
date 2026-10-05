@@ -8,6 +8,7 @@ import { routeReady } from '../pi/auth.ts';
 import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
 import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
+import type { ReplyPlace } from './agent-replies.ts';
 import { AgentRequests } from './agent-requests.ts';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
@@ -215,6 +216,11 @@ export interface LoopOptions {
   /** Replaces the SDK client built from `a2a`. */
   a2aClient?: A2AClient;
   /**
+   * Where the outside agents' replies are put and how she hears of them: under /sources, by an attention of a
+   * `sources_updated` event (ADR 0069). Without it every ask is refused.
+   */
+  agentReplies?: ReplyPlace;
+  /**
    * What natsumi reads besides her memory (ADR 0050): the line of a `sources_updated` event, made as its turn begins,
    * and the images beside it. The loop knows neither how many sources there are nor what they read.
    */
@@ -408,8 +414,8 @@ export class ThinkingLoop {
     this.agents = new AgentRequests({
       db: options.db, now: this.now, config: a2a,
       client: options.a2aClient ?? (a2a ? new SdkA2AClient({ tokenFile: a2a.tokenFile }) : undefined),
-      raise: record => this.raiseAgentReply(record), log: line => this.log(line),
-      images: this.images, workDirectory: join(options.dataDirectory, WORK_DIRECTORY),
+      ...(options.agentReplies ? { replies: options.agentReplies } : {}), log: line => this.log(line), images: this.images,
+      timeZone: loop.timeZone,
     });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
@@ -669,19 +675,11 @@ export class ThinkingLoop {
   }
 
   /**
-   * An agent's answer, as an event of its own. It waits behind whatever is running rather than being steered in:
-   * nobody is waiting on it the way the owner waits on a reply (ADR 0036).
-   */
-  private raiseAgentReply(record: (eventId: string, transaction: Transaction) => void): void {
-    this.raise('agent-reply', record);
-  }
-
-  /**
    * An event raised from outside the loop, such as the dove's answer (ADR 0040). The caller's own rows are written in
-   * the event's transaction, so neither is ever recorded without the other. Like an agent's answer it waits behind
+   * the event's transaction, so neither is ever recorded without the other. It waits behind
    * whatever is running: it is queued, not steered in.
    */
-  raise(kind: RaisedKind | 'agent-reply', record: (eventId: string, transaction: Transaction) => void): void {
+  raise(kind: RaisedKind, record: (eventId: string, transaction: Transaction) => void): void {
     const eventId = this.store.transaction(transaction => {
       const id = this.store.insertEvent(kind);
       record(id, transaction);
@@ -1526,7 +1524,9 @@ export class ThinkingLoop {
     let taken: TakenImage[] = [];
     if (paths.length > 0) {
       const workDirectory = join(this.options.dataDirectory, WORK_DIRECTORY);
-      const result = await this.images.take(paths, workDirectory, this.options.replyImageLimits ?? REPLY_IMAGE_LIMITS);
+      // What an outside agent handed back may be shown as it is, where the server put it (ADR 0069).
+      const result = await this.images.take(paths, workDirectory, this.options.replyImageLimits ?? REPLY_IMAGE_LIMITS,
+        this.options.agentReplies?.directory);
       if (!result.ok) return { ok: false, text: `送信していません（セリフも送っていません）。${result.text}直してから、セリフと一緒に送り直してください。` };
       taken = result.images;
     }

@@ -215,7 +215,7 @@ follow: true
 ```
 
 - 既定は 1 ターンです。相手役は依頼を受け付けるだけで、返事はしません。
-- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は `agent_reply`（サーバーの返事の取りに行きの道筋を通ります）、ポッポさんの返事は `agent: poppo` の `agent_reply`（`result`・`reply_to`・`draft`・`text`）です。依頼が無くなるか、ターンが上限に達したら止まります。
+- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は、実行の data directory の `sources/agents/` に置かれ、`sources_updated` の attention（kind `agent_reply`）で届きます（サーバーの返事の取りに行きの道筋と、本物の `sources` を通ります。ADR 0069）。ポッポさんの返事は `agent: poppo` の `agent_reply`（`result`・`reply_to`・`draft`・`text`）です。依頼が無くなるか、ターンが上限に達したら止まります。
 - `replies` を書いた相手役は、書いた順に返事を返します（使い切ったら最後のものを繰り返します）。ポッポさんの `result` は `sent`・`reacted`・`to_owner`・`returned`・`rejected`・`expired`・`not_sent` のどれかで、省くと `sent` です。
 - `replies` の無い相手役は LLM（`--actor`）が演じます。外のエージェントは Agent Card の説明と `instructions` を、ポッポさんは「判定と承認を経て投稿する係」という役と `instructions` を渡されます。ドライランでは決まった文で答えます。
 - 相手役への依頼と返事、返事が書いた文か LLM か（`by`）は、結果の `actors` に残ります。判定役にも見せます。ターン数は `turns`、呼び出し回数・トークン・時間は全ターンの合計です。

@@ -127,7 +127,7 @@ ${workspace}
 - mac_message: マスターとの一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、マスターがまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
 - ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time はマスターのタイムゾーンの今の時刻です。マスターに伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。
 - self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの check_id・reason・予定の時刻（scheduled_for）があります。繰り返しの予約には cron が付き、予約はそのまま次の時刻まで残ります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。繰り返しの予約は、過ぎた回がいくつあっても 1 回だけ届きます。
-- sources_updated: /sources の読みもの（Slack のチャンネルなど）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file と path（jq -s のパス）がその場所で、kind の意味と読み方は読みものごとのマニュアル（Slack なら /manual/slack.md）にあります。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。
+- sources_updated: /sources の読みもの（Slack のチャンネルや、外のエージェントの返事など）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file がその場所で、path があれば、それが file の中の jq -s のパスです。kind の意味と読み方は読みものごとのマニュアル（Slack なら /manual/slack.md、外のエージェントの返事の agent_reply なら /manual/ask-agent.md）にあります。agent_reply には、相手の名前（agent）・状態（state）・要約（summary）が付きます。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。マスターには何も送りません。`;
 
 /**
@@ -206,7 +206,7 @@ const LINE_EXPRESSION_SENTENCE = 'expression には、このセリフに込め�
 export const REPLY_TO_MAC_DESCRIPTION = 'マスターにセリフを送り、マスターの Mac に表示する。マスターのメッセージ（mac_message）への返事にも、自分から話しかけるのにも使う。'
   + 'まだ返事をしていないマスターのメッセージがあれば、次に送るセリフがそのすべてへの返事になるので、まとめて答える。'
   + '続けて何回でも送れるが、同じことを繰り返さない。本文は日本語で書く。' + LINE_EXPRESSION_SENTENCE
-  + '画像を見せるときは images に /work の下のパスを並べる。';
+  + '画像を見せるときは images に /work の下か、/sources/agents の下（外のエージェントが返した画像）のパスを並べる。';
 
 export const NOTIFY_OWNER_DESCRIPTION = 'マスターに確かめてほしい相談や知らせを送る。知らせは、マスターが確かめるまで残る。'
   + 'ふだんの会話や、自分から話しかけるのは reply_to_mac で行う。何もしなかったことや内心は送らない。送れる回数には上限がある。'
@@ -237,15 +237,19 @@ export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の�
 
 /**
  * Fixed like every description here: which agents exist is the config's, so the list lives in the manual she reads
- * with run_shell, and this names only where it is (ADR 0036). The statuses are the event's own words.
+ * with run_shell, and this names only where it is (ADR 0036). The states are the attention's own words (ADR 0069).
  */
 export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。'
   + 'agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。'
   + 'continue を true にすると、その相手との直近のやり取りに続けて送り、相手は前の文脈を覚えている。相手の聞き返しに答えるときも true にする。'
   + 'false なら新しいやり取りとして始める。\n'
-  + 'この道具は頼んだことだけを返す。返事は後で agent_reply の出来事として、相手の名前（agent）と status を付けて届く。'
-  + 'status は completed（済んだ。text が答え）、failed（できなかった）、input_required（相手が聞き返している。text が質問）、'
-  + 'gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。\n'
+  + 'この道具は頼んだことだけを返す。頼むと、サーバーが依頼ごとのディレクトリを /sources/agents の下に作って request.md に頼んだことを置き、結果でその場所を伝える。'
+  + '返事は後で同じディレクトリに置かれ、sources_updated の attention（kind: agent_reply）として届く。'
+  + 'attention には相手の名前（agent）、state、要約（summary）、頼んだことの先頭の行（request）と頼んだ時刻（asked_at）が付き、file はそのディレクトリの README.md を指す。'
+  + 'state は completed（済んだ）、failed（できなかった）、input_required（相手が聞き返している。summary が質問）、'
+  + 'gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。'
+  + '要約で足りなければ README.md を読み、要る節のファイルだけを読む。読み方は /manual/ask-agent.md にある。'
+  + 'ポッポさん（poppo）の結果だけは、agent_reply の出来事として届く（/manual/slack.md）。\n'
   + '返事を待たずに、ほかのことをしてよい。相手とのやり取りはマスターには見えないので、マスターに伝えたいことは reply_to_mac か notify_owner で伝える。';
 
 // ── On a turn's input ──

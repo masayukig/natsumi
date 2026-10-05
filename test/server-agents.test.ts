@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -64,8 +64,9 @@ test('without the a2a section the list says there is nobody, and nothing is fetc
   assert.deepEqual(f.agent.cardRequests, []);
 });
 
-// ADR 0035: the server fetches the waiting tasks on its own, including those a previous process left.
-test('the server fetches the waiting tasks on its interval and hands a settled one to natsumi', async t => {
+// ADR 0035: the server fetches the waiting tasks on its own, including those a previous process left. ADR 0069: with no
+// Slack configured, the sources are there all the same, for the replies.
+test('the server fetches the waiting tasks on its interval and hands a settled one to natsumi under /sources', async t => {
   const f = await launch(t, (agent, root) => ({ tokenFile: join(root, 'a2a-token'), agents: { wiki: { url: agent.url } } }));
   await new SdkA2AClient({ tokenFile: join(f.root, 'a2a-token') }).send(f.agent.url, { text: 'しらべて' });
   const task = f.agent.lastTask();
@@ -78,5 +79,9 @@ test('the server fetches the waiting tasks on its interval and hands a settled o
   } finally { db.close(); }
   await until(() => f.agent.polls.length >= 2);
   f.agent.settle(task.id, 'completed', 'しらべました。');
-  await until(() => f.model.contexts.some(context => JSON.stringify(context.messages).includes('しらべました。')));
+  const seen = await until(() => f.model.contexts.map(context => JSON.stringify(context.messages)).find(text => text.includes('しらべました。')));
+  assert.match(seen, /sources_updated/);
+  assert.match(seen, /agent_reply/);
+  const [reply] = await readdir(join(f.data, 'sources', 'agents', 'wiki'));
+  assert.match(await readFile(join(f.data, 'sources', 'agents', 'wiki', reply!, 'README.md'), 'utf8'), /しらべました。/);
 });
