@@ -1,5 +1,5 @@
 import {
-  checkSetting, isSettingKey, JUDGE_SETTINGS, type AwakeHours, type Fold, type JudgeName, type JudgeThresholds, type RouteView, type SettingItem,
+  checkSetting, isSettingKey, JUDGE_SETTINGS, type AwakeHours, type CuratorNight, type Fold, type JudgeName, type JudgeThresholds, type RouteView, type SettingItem,
   type SettingKey, type SettingsView, type SettingValues, type TurnLimits,
 } from '../../shared/protocol/settings.ts';
 import { clearOverride, readOverrides, writeOverride, type Overrides } from './store.ts';
@@ -32,11 +32,12 @@ export interface RouteControl {
 }
 
 /**
- * The config's values of the settings, the time zone the awake hours are in, and which of the dove's judges the config
- * has an endpoint for (ADR 0059). The route's is the loop's default.
+ * The config's values of the settings, the time zone the awake hours are in, which of the dove's judges the config
+ * has an endpoint for (ADR 0059), and which routes are reached through an outside service (ADR 0068). The route's is
+ * the loop's default.
  */
 type Configured = Omit<SettingValues, 'modelRoute'>;
-export type SettingsDefaults = Configured & { timeZone: string; judgeAvailable: Record<JudgeName, boolean> };
+export type SettingsDefaults = Configured & { timeZone: string; judgeAvailable: Record<JudgeName, boolean>; outsideRoutes: string[] };
 
 /** The dove's judges as they are in force: on only when turned on and there is an endpoint to ask (ADR 0059). */
 export interface JudgesInForce { logprobs: boolean; jev: boolean; adopted: JudgeName; thresholds: Record<JudgeName, JudgeThresholds> }
@@ -95,8 +96,10 @@ export class RuntimeSettings {
     const configured: Configured = defaults;
     const item = <K extends keyof Configured>(key: K): SettingItem<Configured[K]> => {
       const config = configured[key];
-      return { value: o[key] ?? config, config, overridden: o[key] !== undefined };
+      // The curator's route may be overridden with null, for natsumi's: an override is one that is there at all.
+      return { value: o[key] !== undefined ? o[key] as Configured[K] : config, config, overridden: o[key] !== undefined };
     };
+    const curatorRoute = this.curatorRoute();
     return {
       modelRoute: { value: status.chosen, config: status.defaultRoute, overridden: o.modelRoute !== undefined, inUse: status.current,
         routes: status.routes.map(({ name, provider, model, ready }) => ({ name, provider, model, ready })) },
@@ -112,6 +115,10 @@ export class RuntimeSettings {
       judgeAdopted: item('judgeAdopted'),
       judgeLogprobsThresholds: item('judgeLogprobsThresholds'),
       judgeJevThresholds: item('judgeJevThresholds'),
+      curatorRoute: { value: curatorRoute, config: defaults.curatorRoute, overridden: o.curatorRoute !== undefined,
+        night: curatorRoute ?? status.chosen, outside: [...defaults.outsideRoutes] },
+      curatorModelCalls: item('curatorModelCalls'),
+      curatorTimeoutMinutes: item('curatorTimeoutMinutes'),
     };
   }
 
@@ -131,6 +138,12 @@ export class RuntimeSettings {
       // A judge with no endpoint in the config has nothing to ask: the settings cannot add one (ADR 0059).
       const judge = (Object.keys(JUDGE_SETTINGS) as JudgeName[]).find(name => JUDGE_SETTINGS[name] === checked.key);
       if (judge && checked.value === 'on' && !this.options.defaults.judgeAvailable[judge]) return { kind: 'rejected', code: 'judge-unavailable' };
+      if (checked.key === 'curatorRoute' && checked.value !== null) {
+        // The curator's route is the owner's choice of the config's routes, as natsumi's is; it is not moved to until the night.
+        const route = this.options.routes.routeStatus().routes.find(candidate => candidate.name === checked.value);
+        if (!route) return { kind: 'rejected', code: 'unknown-route' };
+        if (!route.ready) return { kind: 'rejected', code: 'route-unavailable' };
+      }
       if (checked.key === 'modelRoute') {
         const chosen = await this.options.routes.chooseRoute({ route: checked.value, deviceId: input.deviceId });
         if (chosen.kind !== 'accepted') return chosen;
@@ -178,7 +191,25 @@ export class RuntimeSettings {
       thresholds: { logprobs: { ...judgeLogprobsThresholds }, jev: { ...judgeJevThresholds } } };
   }
 
-  private inForce(): Omit<Configured, 'turnFold'> {
+  /** What the next night of the curator runs on and with (ADR 0068); its route null for the one natsumi is on then. */
+  curator(): CuratorNight {
+    const { curatorModelCalls, curatorTimeoutMinutes } = this.inForce();
+    return { route: this.curatorRoute(), modelCalls: curatorModelCalls, timeoutMinutes: curatorTimeoutMinutes };
+  }
+
+  /**
+   * The curator's route in force: the override, else the config's. An override naming a route the config no longer has
+   * is passed over for the config's, as a route on file the config lost is for natsumi's (ADR 0046).
+   */
+  private curatorRoute(): string | null {
+    const known = (name: string | null | undefined) =>
+      name === null || (name !== undefined && this.options.routes.routeStatus().routes.some(route => route.name === name));
+    const chosen = this.overrides.curatorRoute;
+    if (chosen !== undefined && known(chosen)) return chosen;
+    return known(this.options.defaults.curatorRoute) ? this.options.defaults.curatorRoute : null;
+  }
+
+  private inForce(): Omit<Configured, 'turnFold' | 'curatorRoute'> {
     const { defaults } = this.options;
     const o = this.overrides;
     return {
@@ -189,6 +220,8 @@ export class RuntimeSettings {
       eventModelCalls: o.eventModelCalls ?? defaults.eventModelCalls, eventTimeoutMinutes: o.eventTimeoutMinutes ?? defaults.eventTimeoutMinutes,
       reviewModelCalls: o.reviewModelCalls ?? defaults.reviewModelCalls, reviewTimeoutMinutes: o.reviewTimeoutMinutes ?? defaults.reviewTimeoutMinutes,
       awakeHours: o.awakeHours ?? defaults.awakeHours, pingIntervalMinutes: o.pingIntervalMinutes ?? defaults.pingIntervalMinutes,
+      curatorModelCalls: o.curatorModelCalls ?? defaults.curatorModelCalls,
+      curatorTimeoutMinutes: o.curatorTimeoutMinutes ?? defaults.curatorTimeoutMinutes,
     };
   }
 

@@ -69,7 +69,7 @@ test('a turn is read from the bytes its row points at, and nothing outside them'
   const f = await setup();
   try {
     const record = new SessionRecord('new-session');
-    ordinaryTurn(record, T0 - 60_000, { message: '前の質問', thought: '前の思考', reply: '前の返事', memo: '前のメモ' });
+    ordinaryTurn(record, T0 - 60_000, { message: '一つ前の質問', thought: '一つ前の思考', reply: '一つ前の返事', memo: '一つ前のメモ' });
     const startOffset = record.bytes();
     const turn = ordinaryTurn(record, T0, { message: '今の質問', thought: '今の思考', reply: '今の返事', memo: '今のメモ' });
     const endOffset = record.bytes();
@@ -83,7 +83,7 @@ test('a turn is read from the bytes its row points at, and nothing outside them'
     assert.equal(reading.entries.at(-1)!.id, turn.last);
     const text = texts(reading).join('\n');
     assert.match(text, /今の思考/);
-    assert.doesNotMatch(text, /前の|次の/);
+    assert.doesNotMatch(text, /一つ前の|次の/);
   } finally { await f.cleanup(); }
 });
 
@@ -122,7 +122,7 @@ test('a turn from before the places is estimated from its times and the <events>
   try {
     f.rotated();
     const old = new SessionRecord('old-session', '2026-01-01T00:00:00.000Z');
-    ordinaryTurn(old, T0 - 60_000, { message: '前の質問', thought: '前の思考', reply: '前の返事', memo: '前のメモ' });
+    ordinaryTurn(old, T0 - 60_000, { message: '一つ前の質問', thought: '一つ前の思考', reply: '一つ前の返事', memo: '一つ前のメモ' });
     const iso = (offset: number) => new Date(T0 + offset).toISOString();
     old.events(iso(10), [{ type: 'mac_message', received_at: iso(0), text: '一件目' }]);
     old.assistant(iso(1_000), [{ type: 'toolCall', id: 'c1', name: 'list_self_checks', arguments: {} }]);
@@ -147,7 +147,7 @@ test('a turn from before the places is estimated from its times and the <events>
     assert.match(text, /一件目/);
     assert.match(text, /差し込み/);
     assert.match(text, /"メモ"/);
-    assert.doesNotMatch(text, /前の|次の|翌日/);
+    assert.doesNotMatch(text, /一つ前の|次の|翌日/);
 
     // The day after is in the session current now.
     const later = found(await readTurn(f.source, { row: f.record({ startedAt: Date.parse('2026-01-02T09:00:00.000Z') }) }));

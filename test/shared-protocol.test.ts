@@ -23,6 +23,9 @@ const settings = {
   judgeAdopted: { value: 'jev', config: 'logprobs', overridden: true },
   judgeLogprobsThresholds: { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false },
   judgeJevThresholds: { value: { owner: 0.6, return: 0.95 }, config: { owner: 0.5, return: 0.9 }, overridden: true },
+  curatorRoute: { value: null, config: 'local', overridden: true, night: 'plus', outside: ['plus'] },
+  curatorModelCalls: { value: 60, config: 60, overridden: false },
+  curatorTimeoutMinutes: { value: 45, config: 30, overridden: true },
 };
 
 test('a message is read with its place in the stream, its request and its fields', () => {
@@ -112,6 +115,11 @@ test('an event it does not know, or one whose payload is not the contract’s, s
   assert.deepEqual(readEnvelope(envelope('model.routes', {})), { position: { epoch: 'epoch-1', streamId: 'stream-1', seq: 3 }, event: { type: 'ignored' } });
   assert.deepEqual(readEnvelope(envelope('conversation.message', { text: 1 }))?.event, { type: 'ignored' });
   assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, turnFold: { value: 'sometimes' } } }))?.event, { type: 'ignored' });
+  const { night: _night, ...withoutNight } = settings.curatorRoute;
+  assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, curatorRoute: withoutNight } }))?.event, { type: 'ignored' },
+    'the curator\'s route says where the next night runs');
+  assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, curatorRoute: { ...settings.curatorRoute, outside: 'plus' } } }))?.event,
+    { type: 'ignored' }, 'and which routes are outside services');
   const { available: _available, ...withoutAvailable } = settings.judgeJev;
   assert.deepEqual(readEnvelope(envelope('settings.changed', { settings: { ...settings, judgeJev: withoutAvailable } }))?.event, { type: 'ignored' },
     'a judge is listed with whether it can be turned on');

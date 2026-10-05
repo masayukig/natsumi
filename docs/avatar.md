@@ -5,7 +5,7 @@ natsumi の姿と名前は、サーバーの設定で選ぶ「アバター」か
 
 アバターには 2 種類あります。
 
-- **組み込みのアバター**: サーバーの image に含まれていて、ID で選びます。`natsumi`（なつみ。既定）、`iori`（[伊織](../assets/avatars/iori/README.md)）、`myao`（[ミャオ](../assets/avatars/myao/README.md)）、`nanashi`（名無し。顔の無い人形）の 4 つです。
+- **組み込みのアバター**: サーバーの image に含まれていて、ID で選びます。`natsumi`（なつみ。既定）、`iori`（[伊織](../assets/avatars/iori/README.md)）、`myao`（[ミャオ](../assets/avatars/myao/README.md)）、`aki`（[アキ](../assets/avatars/aki/README.md)）、`nanashi`（名無し。顔の無い人形）の 5 つです。
 - **足すアバター**: 自分で作ったアバターのディレクトリで、パスで指します。この文書の手順で作るのはこちらです。
 
 組み込みも足すものも、同じ形のディレクトリで、同じ検査を受けます。
@@ -141,6 +141,7 @@ natsumi は、自分が入る絵（自撮り、気分の絵、ほかの人と並
 中身は sdctl の params の YAML で、サーバーの既定（名無しの [assets/avatars/nanashi/sdctl-params.yaml](../assets/avatars/nanashi/sdctl-params.yaml)）が見本です。
 
 - モデルとモジュールは、生成ごとの `override_settings` で指定します（中継が WebUI の設定の変更を通さないため）。
+- WebUI の拡張（always-on script）の設定は `alwayson_scripts` に書きます。txt2img・img2img・hires の要求にそのまま渡ります（例: ADetailer で顔を描き直す。拡張は WebUI 側に入っている必要があります）。
 - `prompt` は書きません。プロンプトは natsumi が毎回書くものです。
 - `/manual/avatar/images.md` の「既定はモデル…、896×1152（縦長）」の行は、この `override_settings.sd_model_checkpoint`・`width`・`height` から作られます。
 
@@ -179,6 +180,17 @@ natsumi が最初に持つ性格と話し方を決めたいときだけ、`perso
 2. 設定ファイルの `avatar.directory` に、コンテナの中から見た絶対パスを書きます（例 `/var/lib/natsumi-avatars/hana`）。
    組み込みのアバターを使うなら、代わりに `avatar.id` に ID を書きます（例 `nanashi`）。この場合、1 の置き場所は要りません。
    `avatar.id` と `avatar.directory` はどちらか一方だけを書きます。`avatar` を省略すると、組み込みのなつみを使います。
+   姿だけを替えたいときは、`avatar.appearance` に別の `appearance.yaml` の絶対パスを書きます（例 `/etc/natsumi/appearance.yaml`）。
+   アバターの `appearance.yaml` を混ぜずに丸ごと置き換えます。組み込みのアバターを、眼鏡やスーツの衣装違いで使うときなどに使います。
+   検査はアバターの `appearance.yaml` と同じで、無い・壊れていると起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
+   画像生成の設定だけを替えたいときは、`avatar.sdctlParams` に別の `sdctl-params.yaml` の絶対パスを書きます（例 `/etc/natsumi/sdctl-params.yaml`）。
+   アバターの `sdctl-params.yaml`（無ければサーバーの既定）を混ぜずに丸ごと置き換え、`/manual/avatar/sdctl-params.yaml` と `images.md` の既定の行に使います。
+   モデルや LoRA を、image を作り直さずに替えるときなどに使います。`avatar.appearance` と併せて書けます。
+   検査はアバターの `sdctl-params.yaml` と同じで、無い・壊れていると起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
+   性格・話し方の初期値だけを替えたいときは、`avatar.personality` に別の `personality.md` の絶対パスを書きます（例 `/etc/natsumi/personality.md`）。
+   アバターの `personality.md`（無ければ無し）を混ぜずに丸ごと置き換えます。組み込みのアバターを、自分のインスタンスだけ違う性格で使うときなどに使います。
+   意味はアバターの `personality.md` と同じで、記憶に `personality.md` がまだ無いときだけ写し、すでにある性格は上書きしません。ほかの上書きと併せて書けます。
+   検査はアバターの `personality.md` と同じで、無い・空・読めないと起動しません。ConfigMap でマウントしたもの（symlink）もそのまま読めます。
 3. サーバーを再起動します。アバターは起動時に 1 度だけ読みます。素材を直したときも、再起動で反映します。
 4. 起動のログに `avatar: <id> (<表示名>), version <版>` と、埋めたものが出ることを確かめます。
 5. アプリは、再接続したときに版が変わったことを知り、新しいアバターを取り直します。

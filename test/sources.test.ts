@@ -478,3 +478,45 @@ test('the nightly pruning keeps N days, and every ref still works after it', asy
   const fsck = await run('git', ['--git-dir', f.gitDirectory, 'fsck', '--no-progress']);
   assert.equal(fsck.stderr.trim(), '');
 });
+
+// ADR 0069: a source may put a whole new directory and an attention in it at once, such as an outside agent's reply.
+test('an attention in a directory seen for the first time is still shown, with its own fields and no jq path', async t => {
+  const f = await setup(t);
+  f.sources.register({ name: 'agents', depth: 2, exclude: ['*/*/images/'] });
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('agents/wiki/20260927T010000Z-ab12/README.md', '# wiki の返事\n');
+  await f.write('agents/wiki/20260927T010000Z-ab12/01-本文.md', '# 本文\n\nねこは液体です。\n');
+  await f.write('agents/wiki/20260927T010000Z-ab12/images/a.png', 'png');
+  // Recorded in the caller's transaction, and the event asked for afterwards.
+  f.db.exec('BEGIN');
+  const recorded = f.sources.recordAttention({ source: 'agents', kind: 'agent_reply', file: '/sources/agents/wiki/20260927T010000Z-ab12/README.md',
+    details: { agent: 'wiki', state: 'completed', summary: 'ねこは液体です。' } });
+  f.db.exec('COMMIT');
+  assert.equal(recorded, true);
+  assert.equal(f.raised(), 0, 'recording alone asks for nothing');
+  f.sources.notify();
+  assert.equal(f.raised(), 1);
+  // A tick in between takes the new directory in, and the attention still waits.
+  await f.sources.tick();
+  const { line } = await f.take();
+  const changed = line!.changed as Record<string, unknown>[];
+  assert.deepEqual(changed.map(entry => entry.dir), ['/sources/agents/wiki/20260927T010000Z-ab12']);
+  assert.deepEqual(changed[0]!.attention, [{ source: 'agents', kind: 'agent_reply',
+    file: '/sources/agents/wiki/20260927T010000Z-ab12/README.md', agent: 'wiki', state: 'completed', summary: 'ねこは液体です。' }]);
+  // The body is not shown as a diff: she reads the README and the sections she needs.
+  assert.equal(changed[0]!.diff, undefined);
+  // The images are kept out of the history.
+  const tracked = (await run('git', ['--git-dir', f.gitDirectory, '-c', 'core.quotePath=false', 'ls-tree', '-r', '--name-only', 'HEAD'])).stdout;
+  assert.match(tracked, /01-本文\.md/);
+  assert.doesNotMatch(tracked, /images/);
+});
+
+test('an attention outside the directories of its source is let go when recorded, and nothing is asked for', async t => {
+  const f = await setup(t);
+  f.sources.register({ name: 'agents', depth: 2 });
+  await f.sources.prepare();
+  assert.equal(f.sources.recordAttention({ source: 'agents', kind: 'agent_reply', file: '/sources/agents/wiki' }), false);
+  assert.equal(f.sources.recordAttention({ source: 'agents', kind: 'agent_reply', file: '/sources/chat/work/dm/a.jsonl' }), false);
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM source_attention').get()!.n, 0);
+});

@@ -34,6 +34,7 @@ const SCHEDULE_DEFAULTS = {
   eventModelCalls: 8,
   eventTimeoutMinutes: 10,
   turnFold: 'off',
+  codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 40 },
 };
 const base = () => ({ pi: pi(), publicOrigin: 'https://natsumi.example.test', listen: listen(), github: github() });
 
@@ -60,7 +61,8 @@ test('a valid config becomes a typed server config', () => {
     },
     loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
     sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 },
-    curator: { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2 },
+    curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2, rewriteAllMaxChars: 100000,
+      conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
   });
   const { clientSecretEnv: _, ...rest } = github();
   assert.deepEqual(parseConfig({ ...base(), github: { ...rest, clientSecretFile: '/run/secrets/github-client-secret' } }).github.clientSecret,
@@ -145,6 +147,32 @@ test('the loop section says whether ended turns are folded, off by default', () 
   assert.equal(parseConfig(base()).loop.turnFold, 'off');
   assert.equal(parseConfig({ ...base(), loop: { turnFold: 'on' } }).loop.turnFold, 'on');
   for (const value of [true, 'yes', 1]) rejects({ ...base(), loop: { turnFold: value } }, 'loop.turnFold', /"on" or "off"/);
+});
+
+// ADR 0066: Codemode is off until the owner turns it on, for natsumi and for the curator apart.
+test('Codemode is set apart for natsumi and for the curator, off by default, with the workspace tools direct', () => {
+  const config = parseConfig(base());
+  assert.deepEqual(config.loop.codemode, { enabled: false, workspaceTools: 'direct', nestedCalls: 40 });
+  assert.deepEqual(config.curator.codemode, { enabled: false, workspaceTools: 'direct', nestedCalls: 120 });
+  assert.deepEqual(parseConfig({ ...base(), loop: { codemode: { enabled: true } } }).loop.codemode,
+    { enabled: true, workspaceTools: 'direct', nestedCalls: 40 });
+  const on = parseConfig({ ...base(), loop: { codemode: { enabled: true, workspaceTools: 'codemode', nestedCalls: 10 } },
+    curator: { codemode: { enabled: true, workspaceTools: 'codemode', nestedCalls: 30 } } });
+  assert.deepEqual(on.loop.codemode, { enabled: true, workspaceTools: 'codemode', nestedCalls: 10 });
+  assert.deepEqual(on.curator.codemode, { enabled: true, workspaceTools: 'codemode', nestedCalls: 30 });
+  // One does not carry over to the other.
+  assert.equal(parseConfig({ ...base(), loop: { codemode: { enabled: true } } }).curator.codemode.enabled, false);
+  assert.equal(parseConfig({ ...base(), curator: { codemode: { enabled: true } } }).loop.codemode.enabled, false);
+  for (const [section, value] of [['loop', 40], ['curator', 120]] as const) {
+    rejects({ ...base(), [section]: { codemode: true } }, `${section}.codemode`);
+    rejects({ ...base(), [section]: { codemode: { enabled: 'on' } } }, `${section}.codemode.enabled`, /true or false/);
+    for (const tools of ['only', 'hidden', true]) {
+      rejects({ ...base(), [section]: { codemode: { workspaceTools: tools } } }, `${section}.codemode.workspaceTools`, /"direct" or "codemode"/);
+    }
+    for (const calls of [0, 1.5, String(value)]) rejects({ ...base(), [section]: { codemode: { nestedCalls: calls } } }, `${section}.codemode.nestedCalls`);
+    rejects({ ...base(), [section]: { codemode: { mode: 'only' } } }, `${section}.codemode.mode`);
+    rejects({ ...base(), [section]: { codemode: { models: true } } }, `${section}.codemode.models`);
+  }
 });
 
 test('the loop section sets an ordinary turn\'s limits, each with a default', () => {
@@ -698,12 +726,14 @@ test('the list of reactions is gone: a config that still has one is refused, and
 });
 
 test('the memory curator runs every night by default, on natsumi\'s route, with limits of its own (ADR 0055)', () => {
-  assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2 });
+  assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2,
+    rewriteAllMaxChars: 100000, conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
   const { model: _, ...withoutModel } = pi();
   const withRoutes = { ...base(), pi: { ...withoutModel, routes, defaultRoute: 'local' } };
   assert.deepEqual(parseConfig({ ...withRoutes, curator: { route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 } }).curator,
-    { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 });
+    { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, stopStartingAt: '05:30', rotateFiles: 1, rewriteAllMaxChars: 100000,
+      conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   assert.equal(parseConfig({ ...base(), curator: { enabled: false } }).curator.enabled, false);
   rejects({ ...withRoutes, curator: { route: 'elsewhere' } }, 'curator.route', /pi\.routes/);
   rejects({ ...base(), curator: { route: '' } }, 'curator.route');
@@ -713,4 +743,28 @@ test('the memory curator runs every night by default, on natsumi\'s route, with 
   for (const files of [-1, 1.5, 11]) rejects({ ...base(), curator: { rotateFiles: files } }, 'curator.rotateFiles');
   assert.equal(parseConfig({ ...base(), curator: { rotateFiles: 0 } }).curator.rotateFiles, 0);
   rejects({ ...base(), curator: { persona: 'natsumi' } }, 'curator.persona');
+});
+
+test('the curator may rewrite every topic while the topics together are no bigger than a size (ADR 0068)', () => {
+  assert.equal(parseConfig({ ...base(), curator: { rewriteAllMaxChars: 50000 } }).curator.rewriteAllMaxChars, 50000);
+  // 0: never all of them, only what changed and the files in turn.
+  assert.equal(parseConfig({ ...base(), curator: { rewriteAllMaxChars: 0 } }).curator.rewriteAllMaxChars, 0);
+  for (const chars of [-1, 1.5, '100000']) rejects({ ...base(), curator: { rewriteAllMaxChars: chars } }, 'curator.rewriteAllMaxChars');
+});
+
+test('the curator begins no stage past a morning time, in the loop\'s time zone, or at any time with false (ADR 0068)', () => {
+  assert.equal(parseConfig({ ...base(), curator: { stopStartingAt: '06:15' } }).curator.stopStartingAt, '06:15');
+  assert.equal(parseConfig({ ...base(), curator: { stopStartingAt: false } }).curator.stopStartingAt, false);
+  for (const at of ['5:30', '24:00', '05:60', true, 530, '']) rejects({ ...base(), curator: { stopStartingAt: at } }, 'curator.stopStartingAt');
+  // The night would have no end before it began again: the same time as the switch is refused.
+  rejects({ ...base(), loop: { nightlyRotationAt: '02:00' }, curator: { stopStartingAt: '02:00' } }, 'curator.stopStartingAt',
+    /nightlyRotationAt/);
+  assert.equal(parseConfig({ ...base(), loop: { nightlyRotationAt: false }, curator: { stopStartingAt: '04:00' } }).curator.stopStartingAt,
+    '04:00');
+});
+
+test('the conversation handed to the curator has a limit of its own, and 0 hands none (ADR 0068)', () => {
+  assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 50000 } }).curator.conversationMaxChars, 50000);
+  assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 0 } }).curator.conversationMaxChars, 0);
+  for (const chars of [-1, 1.5, '30000']) rejects({ ...base(), curator: { conversationMaxChars: chars } }, 'curator.conversationMaxChars');
 });

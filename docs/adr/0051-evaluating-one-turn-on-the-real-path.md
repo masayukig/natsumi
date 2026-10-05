@@ -1,7 +1,7 @@
 # 0051. 本物のターンの経路で 1 ターンを回し、場面ごとの成功率で評価する
 
 - Date: 2026-09-27
-- Status: Accepted
+- Status: Accepted（評価で回せるものに、写しから始める整理係の一晩（全工程）を加えることは [ADR 0068](0068-a-curator-that-remembers-like-a-person.md) で追加）
 
 ## Context
 

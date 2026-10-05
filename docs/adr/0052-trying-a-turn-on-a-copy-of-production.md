@@ -1,7 +1,7 @@
 # 0052. 本番の状態の写しから始め、相手役を立てて、修正したコードでターンを試す
 
 - Date: 2026-09-27
-- Status: Accepted
+- Status: Accepted（写しの記憶と session から整理係の一晩（全工程）を回せるようにすることは [ADR 0068](0068-a-curator-that-remembers-like-a-person.md) で追加）
 
 ## Context
 

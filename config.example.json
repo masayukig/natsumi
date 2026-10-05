@@ -33,7 +33,7 @@
   },
   "loop": {
     "timeZone": "Asia/Tokyo",
-    "nightlyRotationAt": "04:00",
+    "nightlyRotationAt": "02:00",
     "compactionThreshold": 60000,
     "compactionKeepRecent": 20000,
     "awakeHours": { "start": "08:00", "end": "23:00" },
@@ -46,13 +46,18 @@
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
     "memoryFileMaxChars": 32000,
     "alwaysMemoryMaxChars": 2000,
-    "turnFold": "off"
+    "turnFold": "off",
+    "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 40 }
   },
   "curator": {
     "enabled": true,
-    "modelCalls": 60,
-    "timeoutMinutes": 30,
-    "rotateFiles": 2
+    "modelCalls": 100,
+    "timeoutMinutes": 60,
+    "stopStartingAt": "05:30",
+    "rotateFiles": 2,
+    "rewriteAllMaxChars": 100000,
+    "conversationMaxChars": 30000,
+    "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 120 }
   },
   "avatar": { "id": "natsumi" }
 }

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { loadAvatar } from '../src/server/avatar.ts';
 import { ConfigError, parseConfig } from '../src/server/config.ts';
 import { gitIdentity, runGit } from '../src/server/git.ts';
-import { curationBrief } from '../src/server/memory-curator.ts';
+import { CURATOR_STAGES } from '../src/server/memory-curator.ts';
 import { MemoryRepository } from '../src/server/memory-repository.ts';
 import { compactionInstructions, composeSystemPrompt, curatorSystemPrompt, DEFAULT_SELF } from '../src/server/prompts.ts';
 import { pushAlert } from '../src/server/push.ts';
@@ -32,6 +32,19 @@ test('the config chooses a built-in avatar by its ID or adds one by its absolute
   assert.deepEqual(parseConfig({ ...base(), avatar: { id: 'natsumi' } }).avatar, { id: 'natsumi' });
   assert.deepEqual(parseConfig({ ...base(), avatar: { directory: '/var/lib/natsumi-avatars/hana' } }).avatar,
     { directory: '/var/lib/natsumi-avatars/hana' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { id: 'iori', appearance: '/etc/natsumi/appearance.yaml' } }).avatar,
+    { id: 'iori', appearance: '/etc/natsumi/appearance.yaml' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { id: 'natsumi', sdctlParams: '/etc/natsumi/sdctl-params.yaml' } }).avatar,
+    { id: 'natsumi', sdctlParams: '/etc/natsumi/sdctl-params.yaml' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml',
+    sdctlParams: '/etc/natsumi/sdctl-params.yaml' } }).avatar,
+    { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml', sdctlParams: '/etc/natsumi/sdctl-params.yaml' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { id: 'aki', personality: '/etc/natsumi/personality.md' } }).avatar,
+    { id: 'aki', personality: '/etc/natsumi/personality.md' });
+  assert.deepEqual(parseConfig({ ...base(), avatar: { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml',
+    sdctlParams: '/etc/natsumi/sdctl-params.yaml', personality: '/etc/natsumi/personality.md' } }).avatar,
+    { directory: '/var/lib/natsumi-avatars/hana', appearance: '/etc/natsumi/appearance.yaml', sdctlParams: '/etc/natsumi/sdctl-params.yaml',
+      personality: '/etc/natsumi/personality.md' });
   for (const [avatar, path] of [
     [{ directory: 'avatars/hana' }, 'avatar.directory'],
     [{}, 'avatar'],
@@ -39,6 +52,12 @@ test('the config chooses a built-in avatar by its ID or adds one by its absolute
     [{ id: 'Natsumi' }, 'avatar.id'],
     [{ id: '../natsumi' }, 'avatar.id'],
     [{ directory: '/a', name: 'はな' }, 'avatar.name'],
+    [{ id: 'iori', appearance: 'appearance.yaml' }, 'avatar.appearance'],
+    [{ appearance: '/a.yaml' }, 'avatar'],
+    [{ id: 'iori', sdctlParams: 'sdctl-params.yaml' }, 'avatar.sdctlParams'],
+    [{ sdctlParams: '/a.yaml' }, 'avatar'],
+    [{ id: 'iori', personality: 'personality.md' }, 'avatar.personality'],
+    [{ personality: '/a.md' }, 'avatar'],
     ['/a', 'avatar'],
   ] as const) {
     assert.throws(() => parseConfig({ ...base(), avatar }), (error: unknown) => error instanceof ConfigError && error.path === path,
@@ -65,9 +84,10 @@ test('the curator is told whose memory it keeps by the display name', () => {
   assert.ok(prompt.startsWith('あなたは記憶の整理係です。ある個人秘書（はな）の長期記憶を、夜の間に組み直します。\nあなたははなではありません。'));
   assert.ok(!prompt.includes('なつみ'));
   assert.ok(curatorSystemPrompt('なつみ').includes('あなたはなつみではありません。'));
-  const brief = curationBrief({ name: 'はな', date: '2026-09-28', fileMaxChars: 100,
-    files: [{ path: 'always.md', chars: 3, headings: [] }], changed: [], rotated: [] });
-  assert.match(brief, /always\.md（3 文字・はなのもの、変えない）/);
+  const { text } = CURATOR_STAGES[0]!.brief({ name: 'はな', date: '2026-09-28', timeZone: 'Asia/Tokyo', fileMaxChars: 100, rotateFiles: 0,
+    rewriteAllMaxChars: 0, files: [{ path: 'always.md', chars: 3, sections: [] }], lastChanged: new Map(), curated: new Map(), changed: [],
+    since: 0, conversation: { lines: [], dropped: 0 } });
+  assert.match(text, /always\.md（3 文字・はなのもの、変えない）/);
 });
 
 test('the lock screen shows the display name', () => {

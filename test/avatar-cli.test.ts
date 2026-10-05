@@ -27,7 +27,7 @@ test('the command line takes one directory or built-in ID to check, and nothing 
   }
 });
 
-test('natsumi passes, by her directory or by her ID as a built-in avatar, with her version and the server\'s default params', async () => {
+test('natsumi passes, by her directory or by her ID as a built-in avatar, with her version and her own drawing params', async () => {
   assert.deepEqual(await check('natsumi'), await check(NATSUMI));
   const { code, lines } = await check(NATSUMI);
   assert.equal(code, 0);
@@ -37,7 +37,6 @@ test('natsumi passes, by her directory or by her ID as a built-in avatar, with h
     'errors (the server does not start): none',
     'filled in with the faceless pictures: none',
     'the server\'s defaults:',
-    '- sdctl-params.yaml',
     '- personality.md',
   ]);
 });
@@ -75,6 +74,6 @@ test('what is broken fails the check, and what is only missing is listed apart',
     // A name without a slash is a built-in avatar's ID; a directory beside it is named with ./.
     const unknown = await check('hana');
     assert.equal(unknown.code, 1);
-    assert.deepEqual(unknown.lines, ['errors (the server does not start):', '- hana is not a built-in avatar (iori, myao, nanashi, natsumi)']);
+    assert.deepEqual(unknown.lines, ['errors (the server does not start):', '- hana is not a built-in avatar (aki, iori, myao, nanashi, natsumi)']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

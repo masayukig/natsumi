@@ -4,7 +4,10 @@ import { basename, join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ShownImage } from '../shared/protocol/conversation.ts';
 import { isWithin } from './paths.ts';
-import { imageType, WORK_PATH } from './view.ts';
+import { imageType, SOURCES_PATH, WORK_PATH } from './view.ts';
+
+/** The replies of the outside agents, where the server puts the images they hand back (ADR 0069). */
+const AGENT_REPLIES_PATH = `${SOURCES_PATH}/agents`;
 
 /**
  * Images natsumi hands the server from /work (ADR 0044), such as those she names under `画像:` in a request to the
@@ -62,15 +65,18 @@ export type TakenImages = { ok: true; images: TakenImage[] } | { ok: false; text
 
 /**
  * Checks every image and copies them all into `destination`, each named by its new ID, or copies none and says in one
- * sentence what to fix. `workDirectory` is `/work` as the server sees it.
+ * sentence what to fix. `workDirectory` is `/work` as the server sees it. `agentReplies`, `/sources/agents` as the
+ * server sees it, is given for a reply to the owner, which may show what an outside agent handed back (ADR 0069).
  */
-export async function takeImages(paths: string[], options: { workDirectory: string; destination: string; limits: ImageLimits }):
-  Promise<TakenImages> {
+export async function takeImages(paths: string[],
+  options: { workDirectory: string; agentReplies?: string; destination: string; limits: ImageLimits }): Promise<TakenImages> {
   const { limits } = options;
   if (paths.length > limits.maxCount) return { ok: false, text: `画像は 1 回に ${limits.maxCount} 枚までです（${paths.length} 枚ありました）。` };
+  const places = [{ prefix: WORK_PATH, directory: options.workDirectory },
+    ...(options.agentReplies ? [{ prefix: AGENT_REPLIES_PATH, directory: options.agentReplies }] : [])];
   const read: { source: string; data: Buffer; mimeType: PostImageType }[] = [];
   for (const path of paths) {
-    const one = await readImage(path, options.workDirectory, limits.maxBytes);
+    const one = await readImage(path, places, limits.maxBytes);
     if (!one.ok) return one;
     read.push(one);
   }
@@ -123,8 +129,8 @@ export class ImageStore {
     this.directory = directory;
   }
 
-  take(paths: string[], workDirectory: string, limits: ImageLimits): Promise<TakenImages> {
-    return takeImages(paths, { workDirectory, destination: this.directory, limits });
+  take(paths: string[], workDirectory: string, limits: ImageLimits, agentReplies?: string): Promise<TakenImages> {
+    return takeImages(paths, { workDirectory, ...(agentReplies ? { agentReplies } : {}), destination: this.directory, limits });
   }
 
   /** Records taken images. Called inside the transaction that records what they belong to. */
@@ -149,19 +155,20 @@ export class ImageStore {
   path(file: string): string { return join(this.directory, file); }
 }
 
-async function readImage(path: string, workDirectory: string, maxBytes: number):
+async function readImage(path: string, places: { prefix: string; directory: string }[], maxBytes: number):
   Promise<{ ok: true; source: string; data: Buffer; mimeType: PostImageType } | { ok: false; text: string }> {
   const refuse = (text: string) => ({ ok: false as const, text });
-  const outside = refuse(`画像「${path}」は使えません。画像にできるのは /work/ の下のファイルだけです。`);
+  const outside = refuse(`画像「${path}」は使えません。画像にできるのは ${places.map(place => `${place.prefix}/`).join(' か ')} の下のファイルだけです。`);
   const source = posix.normalize(path);
-  if (!source.startsWith(`${WORK_PATH}/`)) return outside;
+  const place = places.find(candidate => source.startsWith(`${candidate.prefix}/`));
+  if (!place) return outside;
   let root: string;
   let real: string;
   try {
-    root = await realpath(workDirectory);
-    real = await realpath(join(root, source.slice(WORK_PATH.length + 1)));
+    root = await realpath(place.directory);
+    real = await realpath(join(root, source.slice(place.prefix.length + 1)));
   } catch { return refuse(`画像 ${source} が見つかりません。`); }
-  // A link that leads out of /work is refused as if it were outside, and says nothing of where it leads.
+  // A link that leads out of its place is refused as if it were outside, and says nothing of where it leads.
   if (!isWithin(real, root) || real === root) return outside;
   let handle;
   try { handle = await open(real, 'r'); } catch { return refuse(`画像 ${source} が見つかりません。`); }

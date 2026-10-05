@@ -61,9 +61,18 @@ export interface SourceRegistration {
 
 /**
  * A place in a file that is for natsumi, as a source tells it. `kind` is the source's own word, which the core never
- * reads; `path` is a `jq -s` path into the file; `images` are paths under `/sources` to show her with it.
+ * reads; `path` is a `jq -s` path into the file, when the file is a list of records; `images` are paths under `/sources`
+ * to show her with it. `details` are the source's own fields, shown beside the others as they are, such as the summary
+ * of an outside agent's reply (ADR 0069).
  */
-export interface Attention { source: string; kind: string; file: string; path: string; images?: readonly string[] }
+export interface Attention {
+  source: string;
+  kind: string;
+  file: string;
+  path?: string;
+  images?: readonly string[];
+  details?: Readonly<Record<string, string | number>>;
+}
 
 export interface SourcesOptions {
   db: DatabaseSync;
@@ -84,7 +93,9 @@ export interface SourcesOptions {
   log?: (line: string) => void;
 }
 
-interface AttentionRow { attention_id: number; source: string; kind: string; dir: string; file: string; path: string; images: string }
+interface AttentionRow {
+  attention_id: number; source: string; kind: string; dir: string; file: string; path: string; images: string; details: string;
+}
 
 export class Sources {
   private readonly options: SourcesOptions;
@@ -185,16 +196,29 @@ export class Sources {
 
   /** A place a source says is for her. It waits in the database until an event takes it, and asks for one now. */
   attention(attention: Attention): void {
+    if (this.recordAttention(attention)) this.notify();
+  }
+
+  /**
+   * Records an attention without asking for the event, so a source can write it in the same transaction as its own
+   * rows and ask with `notify` once that is committed. False when it was let go: its file is not in one of the
+   * source's directories.
+   */
+  recordAttention(attention: Attention): boolean {
     const relative = attention.file.startsWith(`${SOURCES_PATH}/`) ? attention.file.slice(SOURCES_PATH.length + 1) : undefined;
     const dir = relative === undefined ? undefined : this.unitOf(posix.normalize(relative));
     if (!dir || attention.source !== dir.split('/')[0]) {
       this.log(`an attention from ${attention.source} was let go: its file is not in one of its directories`);
-      return;
+      return false;
     }
-    this.options.db.prepare(`INSERT INTO source_attention (source, kind, dir, file, path, images, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(attention.source, attention.kind, dir, attention.file, attention.path, JSON.stringify(attention.images ?? []), isoAt(this.options.now()));
-    this.raiseEvent?.();
+    this.options.db.prepare(`INSERT INTO source_attention (source, kind, dir, file, path, images, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(attention.source, attention.kind, dir, attention.file, attention.path ?? '',
+      JSON.stringify(attention.images ?? []), JSON.stringify(attention.details ?? {}), isoAt(this.options.now()));
+    return true;
   }
+
+  /** Asks the loop for a `sources_updated` event, for the attentions recorded so far. */
+  notify(): void { this.raiseEvent?.(); }
 
   /** The mean wait of a directory now, from its writes in the window. */
   mean(dir: string): number {
@@ -249,7 +273,7 @@ export class Sources {
         changed.push({
           dir: `${SOURCES_PATH}/${dir}`, files: files.map(file => `${SOURCES_PATH}/${file}`), writes,
           ...(files.length > 0 ? { diff: `sources-diff ${SOURCES_PATH}/${dir}` } : {}),
-          ...(here.length > 0 ? { attention: here.map(row => ({ source: row.source, kind: row.kind, file: row.file, path: row.path })) } : {}),
+          ...(here.length > 0 ? { attention: here.map(attentionLine) } : {}),
         });
       }
       if (changed.length === 0) return false;
@@ -466,8 +490,8 @@ export class Sources {
   private git(args: string[], options: { allowFailure?: boolean; env?: Record<string, string> } = {}): Promise<GitResult> {
     const { directory, gitDirectory, now } = this.options;
     const date = `@${Math.floor(now() / 1000)} +0000`;
-    return runGit(directory, [`--git-dir=${gitDirectory}`, `--work-tree=${directory}`, '-c', `safe.directory=${gitDirectory}`, ...args],
-      { ...options, env: { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, ...options.env } });
+    return runGit(directory, [`--work-tree=${directory}`, '-c', `safe.directory=${gitDirectory}`, ...args],
+      { ...options, gitDirectory, env: { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, ...options.env } });
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
@@ -495,6 +519,17 @@ async function fileSignature(path: string): Promise<string> {
 
 async function exists(path: string): Promise<boolean> {
   try { await stat(path); return true; } catch { return false; }
+}
+
+/** An attention as the event shows it: the source's own fields beside where it is, which they never replace. */
+function attentionLine(row: AttentionRow): Record<string, unknown> {
+  let details: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(row.details) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) details = parsed as Record<string, unknown>;
+  } catch { /* shown without them */ }
+  return { source: row.source, kind: row.kind, file: row.file, ...(row.path ? { path: row.path } : {}),
+    ...Object.fromEntries(Object.entries(details).filter(([key]) => !['source', 'kind', 'file', 'path'].includes(key))) };
 }
 
 function parseList(json: string): string[] {

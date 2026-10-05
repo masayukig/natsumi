@@ -146,12 +146,33 @@ export interface LoopConfig {
    * memo is asked for after every turn either way, so that on and off differ only in the folding.
    */
   turnFold: 'on' | 'off';
+  /** Pi's Codemode in natsumi's own session (ADR 0066). Off by default; it is read once, at the start. */
+  codemode: CodemodeConfig;
   /**
    * Settings still written but no longer read, present only when there are any: `selfCheck`, whose limits ADR 0063
    * removed. They do not stop the start, which logs them.
    */
   ignored?: string[];
 }
+
+/**
+ * Pi's Codemode for one kind of session (ADR 0066): natsumi's own, or the curator's. Off, nothing about the session
+ * changes. On, a `codemode` tool is added after the others; the tools that reach the owner or anyone outside stay
+ * for the model to call itself, and only the workspace's three tools can be called from a script.
+ */
+export interface CodemodeConfig {
+  enabled: boolean;
+  /**
+   * How `run_shell`, `read` and `search_memory` are reached: `direct`, by the model as well as from scripts, or
+   * `codemode`, from scripts only, so that their raw output has no way into the context.
+   */
+  workspaceTools: 'direct' | 'codemode';
+  /** Tool calls the scripts of one turn may make, all scripts together. Past it a call is refused. */
+  nestedCalls: number;
+}
+
+/** natsumi's: five calls a script for each of an ordinary turn's eight model calls (ADR 0066). */
+export const DEFAULT_CODEMODE: CodemodeConfig = { enabled: false, workspaceTools: 'direct', nestedCalls: 40 };
 
 // The turns' limits live here rather than in the thinking loop, which loads Pi's SDK on import.
 export const DEFAULT_REVIEW_MODEL_CALLS = 40;
@@ -170,6 +191,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
   eventModelCalls: DEFAULT_EVENT_MODEL_CALLS, eventTimeoutMinutes: DEFAULT_EVENT_TIMEOUT_MINUTES,
   turnFold: 'off',
+  codemode: DEFAULT_CODEMODE,
 };
 
 /** Below this a memory file could not hold a topic, and every night's work would go back. */
@@ -336,15 +358,43 @@ export interface CuratorConfig {
   enabled: boolean;
   /** A name in `pi.routes`; without it the curator runs on the route natsumi is on. */
   route?: string;
-  /** Model calls the curator's one turn may make. */
+  /** Model calls each stage of the curator's night may make, the whole of it for every stage (ADR 0068). */
   modelCalls: number;
-  /** Minutes the curator's one turn may take. */
+  /** Minutes each stage of the curator's night may take, the whole of it for every stage (ADR 0068). */
   timeoutMinutes: number;
+  /**
+   * The morning deadline, `HH:MM` in `loop.timeZone`: past the first such time after the night's switching time, no
+   * further stage begins, and those left wait for the next night (ADR 0068). A stage under way runs to its own limits.
+   * False for none.
+   */
+  stopStartingAt: string | false;
   /** Files handed over each night in turn, besides the ones that changed that day, those left longest first. */
   rotateFiles: number;
+  /**
+   * While the topics together are no more characters than this, every topic may be rewritten each night; past it,
+   * only those that changed and those in turn (ADR 0068). 0 for never all of them.
+   */
+  rewriteAllMaxChars: number;
+  /**
+   * The most characters of the day's conversation handed to the knowledge stage (ADR 0068); past it, the oldest
+   * lines are left out. 0 for none: the stage then works from the diary alone.
+   */
+  conversationMaxChars: number;
+  /** Pi's Codemode in the curator's session, apart from natsumi's (ADR 0066). */
+  codemode: CodemodeConfig;
 }
 
-export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 60, timeoutMinutes: 30, rotateFiles: 2 };
+/**
+ * The curator's: twice its model calls when they were 60 (ADR 0066), and still more than the 100 they are now (ADR 0068).
+ * Its night is a run of workspace calls, one or more for each of its model calls, so a script must be able to take
+ * over at least as many as the model could have made directly, or
+ * moving the work into scripts would cut it short. A loop over the whole of memory is still stopped well before the
+ * time limit would.
+ */
+export const DEFAULT_CURATOR_CODEMODE: CodemodeConfig = { enabled: false, workspaceTools: 'direct', nestedCalls: 120 };
+
+export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2,
+  rewriteAllMaxChars: 100_000, conversationMaxChars: 30_000, codemode: DEFAULT_CURATOR_CODEMODE };
 /** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
 const MAX_ROTATE_FILES = 10;
 
@@ -364,8 +414,12 @@ export interface ServerConfig {
   avatar?: AvatarConfig;
 }
 
-/** A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start. */
-export type AvatarConfig = { id: string } | { directory: string };
+/**
+ * A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start.
+ * `appearance`, `sdctlParams` and `personality`, the absolute paths of an `appearance.yaml`, an `sdctl-params.yaml` and a
+ * `personality.md`, replace the avatar's own.
+ */
+export type AvatarConfig = ({ id: string } | { directory: string }) & { appearance?: string; sdctlParams?: string; personality?: string };
 
 const AVATAR_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -432,6 +486,9 @@ export function parseConfig(raw: unknown): ServerConfig {
   };
   if (config.curator.route !== undefined && !config.pi.routes.some(route => route.name === config.curator.route)) {
     throw new ConfigError('curator.route', 'must be one of pi.routes');
+  }
+  if (config.curator.stopStartingAt !== false && config.curator.stopStartingAt === config.loop.nightlyRotationAt) {
+    throw new ConfigError('curator.stopStartingAt', 'must not be loop.nightlyRotationAt, or the night would have no end');
   }
   if (config.slack) {
     const judge = parseJudges((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
@@ -828,35 +885,64 @@ function parseSlack(value: unknown, path: string): SlackConfig {
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
   const curator = object(value, path);
-  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'rotateFiles']);
+  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'stopStartingAt', 'rotateFiles', 'rewriteAllMaxChars', 'conversationMaxChars',
+    'codemode']);
   const enabled = curator.enabled ?? CURATOR_DEFAULTS.enabled;
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
   const calls = curator.modelCalls ?? CURATOR_DEFAULTS.modelCalls;
-  if (!positiveInteger(calls, 1)) throw new ConfigError(`${path}.modelCalls`, 'must be a positive integer');
+  // The settings may override these two, by the same rule (ADR 0068).
+  if (!isTurnLimit(calls)) throw new ConfigError(`${path}.modelCalls`, 'must be a positive integer');
   const minutes = curator.timeoutMinutes ?? CURATOR_DEFAULTS.timeoutMinutes;
-  if (!positiveInteger(minutes, 1)) throw new ConfigError(`${path}.timeoutMinutes`, 'must be a positive integer');
+  if (!isTurnLimit(minutes)) throw new ConfigError(`${path}.timeoutMinutes`, 'must be a positive integer');
+  const stopStartingAt = curator.stopStartingAt ?? CURATOR_DEFAULTS.stopStartingAt;
+  if (stopStartingAt !== false && (typeof stopStartingAt !== 'string' || !TIME_OF_DAY.test(stopStartingAt))) {
+    throw new ConfigError(`${path}.stopStartingAt`, 'must be a 24-hour HH:MM time, or false');
+  }
   const files = curator.rotateFiles ?? CURATOR_DEFAULTS.rotateFiles;
   if (!positiveInteger(files, 0) || (files as number) > MAX_ROTATE_FILES) {
     throw new ConfigError(`${path}.rotateFiles`, `must be an integer from 0 to ${MAX_ROTATE_FILES}`);
   }
+  const rewriteAll = curator.rewriteAllMaxChars ?? CURATOR_DEFAULTS.rewriteAllMaxChars;
+  if (!positiveInteger(rewriteAll, 0)) throw new ConfigError(`${path}.rewriteAllMaxChars`, 'must be an integer of 0 or more');
+  const conversation = curator.conversationMaxChars ?? CURATOR_DEFAULTS.conversationMaxChars;
+  if (!positiveInteger(conversation, 0)) throw new ConfigError(`${path}.conversationMaxChars`, 'must be an integer of 0 or more');
   return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
-    rotateFiles: files as number };
+    stopStartingAt, rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, conversationMaxChars: conversation as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
+}
+
+function parseCodemode(value: unknown, path: string, defaults: CodemodeConfig): CodemodeConfig {
+  const codemode = object(value, path);
+  onlyKeys(codemode, path, ['enabled', 'workspaceTools', 'nestedCalls']);
+  const enabled = codemode.enabled ?? defaults.enabled;
+  if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
+  const workspaceTools = codemode.workspaceTools ?? defaults.workspaceTools;
+  if (workspaceTools !== 'direct' && workspaceTools !== 'codemode') {
+    throw new ConfigError(`${path}.workspaceTools`, 'must be "direct" or "codemode"');
+  }
+  const nestedCalls = codemode.nestedCalls ?? defaults.nestedCalls;
+  if (!positiveInteger(nestedCalls, 1)) throw new ConfigError(`${path}.nestedCalls`, 'must be a positive integer');
+  return { enabled, workspaceTools, nestedCalls: nestedCalls as number };
 }
 
 function parseAvatar(value: unknown, path: string): AvatarConfig {
   const avatar = object(value, path);
-  onlyKeys(avatar, path, ['id', 'directory']);
+  onlyKeys(avatar, path, ['id', 'directory', 'appearance', 'sdctlParams', 'personality']);
   if (avatar.id !== undefined && avatar.directory !== undefined) throw new ConfigError(path, 'set id or directory, not both');
   if (avatar.id === undefined && avatar.directory === undefined) {
     throw new ConfigError(path, 'set id (a built-in avatar) or directory (an avatar of your own)');
   }
-  if (avatar.directory !== undefined) return { directory: absolutePath(avatar.directory, `${path}.directory`) };
+  const replaced = {
+    ...(avatar.appearance === undefined ? {} : { appearance: absolutePath(avatar.appearance, `${path}.appearance`) }),
+    ...(avatar.sdctlParams === undefined ? {} : { sdctlParams: absolutePath(avatar.sdctlParams, `${path}.sdctlParams`) }),
+    ...(avatar.personality === undefined ? {} : { personality: absolutePath(avatar.personality, `${path}.personality`) }),
+  };
+  if (avatar.directory !== undefined) return { directory: absolutePath(avatar.directory, `${path}.directory`), ...replaced };
   // Whether it is one of the image's is known only once the image is looked at, when the avatar is read.
   if (typeof avatar.id !== 'string' || !AVATAR_ID.test(avatar.id)) {
     throw new ConfigError(`${path}.id`, 'must be lowercase letters, digits and "-", starting with a letter');
   }
-  return { id: avatar.id };
+  return { id: avatar.id, ...replaced };
 }
 
 function parseSources(value: unknown, path: string): SourcesConfig {
@@ -1023,7 +1109,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
     'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'awakeHours',
     'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
-    'eventModelCalls', 'eventTimeoutMinutes', 'turnFold']);
+    'eventModelCalls', 'eventTimeoutMinutes', 'turnFold', 'codemode']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -1080,6 +1166,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     expressionResetMinutes: reset as number,
     reviewModelCalls: reviewCalls, reviewTimeoutMinutes: reviewMinutes,
     eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, turnFold,
+    codemode: parseCodemode(loop.codemode ?? {}, `${path}.codemode`, LOOP_DEFAULTS.codemode),
     ...('selfCheck' in loop ? { ignored: [`${path}.selfCheck`] } : {}),
   };
 }

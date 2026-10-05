@@ -853,9 +853,26 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 26,
+    name: 'the fields of an attention, and where a request to an agent is put',
+    sql: `
+      -- A source's own fields of an attention (ADR 0069), as a JSON object shown beside where it is: an outside agent's
+      -- reply carries the agent, its state and a summary. An attention with no jq path keeps path empty.
+      ALTER TABLE source_attention ADD COLUMN details TEXT NOT NULL DEFAULT '{}';
+
+      -- Where each request to an outside agent was put under /sources/agents as it was made, as the workspace names it,
+      -- and every word of it: its reply goes into the same directory. NULL for a request made before they were kept,
+      -- whose reply gets a directory of its own. An exchange keeps the place of its latest request, which the next
+      -- request going on with it names.
+      ALTER TABLE agent_tasks ADD COLUMN place TEXT;
+      ALTER TABLE agent_tasks ADD COLUMN request TEXT;
+      ALTER TABLE agent_contexts ADD COLUMN place TEXT;
+    `,
+  },
+  {
+    version: 27,
     name: 'web-push-subscriptions',
     sql: `
-      -- Where to push a browser that is not connected (ADR 0065): its push service's endpoint, and the P-256 key and
+      -- Where to push a browser that is not connected (ADR 0070): its push service's endpoint, and the P-256 key and
       -- auth secret its pushes are encrypted to. One per device, overwritten on every push.register; an endpoint
       -- belongs to one device at a time. As with push_registrations, whether it may be sent to follows the session.
       CREATE TABLE web_push_subscriptions (

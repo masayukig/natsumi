@@ -38,9 +38,12 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | ポッポさんの判定（`jev`） | TypeSafe AI の Jev の API キー（任意）。下書きと返信先の周りの発言を送ります。`logprobs` と同時に使え、有効な間は採用していなくても投稿のたびに呼びます（従量課金） | `slack.judge` の Jev の判定（接続先・`apiKeyEnv` / `apiKeyFile`（秘密）・model・しきい値）。書いたときだけ有効です。有効・無効と採用する方は設定 `judgeJev`・`judgeAdopted` でも上書きできます | `api.typesafe.ai`（既定）か、Jev の判定の接続先のホスト | 同上 | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md)、[0059](adr/0059-two-judges-side-by-side-and-fewer-issues.md) |
 | 証明書の取得（ACME） | サーバーが作る ACME のアカウント鍵。CA の利用規約に同意して登録します | `listen.tls.acme.directoryUrl`、`listen.tls.acme.contactEmail`、`listen.tls.acme.httpPort` | `listen.tls.acme.directoryUrl` のホスト（既定 `acme-v02.api.letsencrypt.org`） | `acme` を使わないなら要りません（証明書ファイルか、手前のプロキシで TLS を終端）。取得できるまで HTTPS の待ち受けを開きません | [0007](adr/0007-acme-and-fixed-ipv6.md)、[0033](adr/0033-running-on-kubernetes.md) |
 
-記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち `curator.route` の経路
-（書かなければ、そのときなつみが使っている経路）で動き、同じ credential を使います。毎晩、記憶の全ファイルの一覧と見出し、
-係が読んだファイルの中身がその経路の接続先へ送られます。本人のエンドポイントの外の経路を選ぶと、記憶がそこへ出ます。
+記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち、設定 `curatorRoute`（`/settings` で選んだもの）、
+それが無ければ `curator.route` の経路（どちらも無ければ、そのときなつみが使っている経路）で動き、同じ credential を使います（[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+毎晩、工程ごとに、記憶の全ファイルの一覧と見出し・節ごとの行数・日付、係が読んだファイルの中身がその経路の接続先へ送られます。
+最初の 2 つの工程（出来事から知識へ・古い記憶）には、その日の会話の本文（マスターの言葉、なつみの返事と知らせ・Slack への投稿、
+なつみが読んだ記憶のパスと探した言葉。`curator.conversationMaxChars` まで）も送られます。
+本人のエンドポイントの外の経路（ChatGPT Plus など、`compatible` を持たない経路）を選ぶと、記憶と会話の本文がそこへ出ます。`/settings` の画面は、そうした経路に印を付け、次の夜がそこで動くときはそう示します。
 
 サーバーは記憶の git を push しません（push するのは本人です）。Google などほかの外部サービスには、今はつなぎません。
 
@@ -102,7 +105,9 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 なつみのツールのうち作業環境に届くのは `run_shell`・`read`・`search_memory` の 3 つで、どれもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)、[ADR 0055](adr/0055-a-memory-curator-at-night.md)）。
 `read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
 `search_memory` は `rg` を決まったオプションで `/memory` の下にだけ掛けます。検索語とパスはオプションとして解釈されない形で渡し、パスは `/memory` の外を指せません。
-夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、1 つでも当たればその夜の変更をすべて捨てます。
+夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール、まとめて消したファイルの行き先を伝えるツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、当たれば理由を伝えて 1 度だけ直させ、それでも当たればその工程の変更をすべて捨てます（前の工程のコミットは残ります。[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+`/memory/archive/` を書けるのは係の古い記憶の工程だけで、今月のファイルへの追記と、サーバーがその夜に決めたまとめ直しのほかは検査で拒みます。なつみのターンで変わっていれば戻します。
+係の工程がファイルを改名・移動・統合したときは、その工程のコミットの後に、サーバー自身が `always.md`・`handoff.md`・`personality.md`・`INDEX.md` の中の古いパスと、すべてのファイルのリンクを置き換えてコミットします。係がなつみのファイルを変えられないことは変わりません。置き換えは runner を通らず、外にも何も送りません。
 サーバーのコンテナのファイル（ログインのファイルや secret）は、どちらからも見えません。Pi の組み込みの bash・edit・write・grep・find・ls は有効にしません。
 
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
@@ -115,6 +120,8 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 
 読み取り専用で見せるものもあります。
 
-- `/sources`: サーバーが書く読みもの（Slack のチャンネルなど）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)）。
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
+  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
+  なつみは `reply_to_mac` でそこから見せられます（サーバーが写しを取って見せます）。
 - `/sources.git`: `/sources` の履歴。data directory の `sources.git/` で、作業環境の `sources-diff` が読みます。commit と ref を動かすのはサーバーだけで、
   作業環境からは書けません。中身は `/sources` と同じ読みものの、数日分の差分です（[ADR 0050](adr/0050-telling-of-source-updates-with-one-event.md)）。

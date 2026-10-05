@@ -36,6 +36,9 @@ export const settingsView = (overrides: Partial<SettingsView> = {}): SettingsVie
   judgeAdopted: { value: 'logprobs', config: 'logprobs', overridden: false },
   judgeLogprobsThresholds: { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false },
   judgeJevThresholds: { value: { owner: 0.6, return: 0.95 }, config: { owner: 0.5, return: 0.9 }, overridden: true },
+  curatorRoute: { value: null, config: null, overridden: false, night: 'local', outside: ['plus'] },
+  curatorModelCalls: { value: 60, config: 60, overridden: false },
+  curatorTimeoutMinutes: { value: 30, config: 30, overridden: false },
   ...overrides,
 });
 
