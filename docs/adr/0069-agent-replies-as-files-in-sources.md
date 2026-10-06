@@ -1,7 +1,7 @@
 # 0069. 外のエージェントの返事は /sources にファイルで置き、sources_updated で知らせる
 
 - Date: 2026-10-05
-- Status: Accepted
+- Status: Accepted（「外から届くものは、可能な限り `sources_updated` に寄せる」の方針の例外として、本人がチャットで添えたファイルは置き場所だけを `/sources/uploads` に揃え、知らせは本人のメッセージで行うことを [ADR 0071](0071-attaching-files-to-a-chat-message.md) で追加）
 
 ## Context
 

@@ -1,7 +1,7 @@
 # 0050. 読みものの更新を 1 種類のイベントで知らせ、差分は git で見せる
 
 - Date: 2026-09-27
-- Status: Accepted（「いつ起こすか」の間隔の決め方（直近 1 時間の書き込みの速さによる間隔と、「前回の確認 + 間隔」の期限）は [ADR 0053](0053-waiting-at-random-for-source-updates.md) で置き換え（最初の変化で引く指数分布の待ち）、Slack の `attention` の種類に natsumi のスレッドへの返事の `thread-reply` を同 ADR で追加、更新元 `agents` と `attention` の種類 `agent_reply`（要約などの欄を伴う）を [ADR 0069](0069-agent-replies-as-files-in-sources.md) で追加）
+- Status: Accepted（「いつ起こすか」の間隔の決め方（直近 1 時間の書き込みの速さによる間隔と、「前回の確認 + 間隔」の期限）は [ADR 0053](0053-waiting-at-random-for-source-updates.md) で置き換え（最初の変化で引く指数分布の待ち）、Slack の `attention` の種類に natsumi のスレッドへの返事の `thread-reply` を同 ADR で追加、更新元 `agents` と `attention` の種類 `agent_reply`（要約などの欄を伴う）を [ADR 0069](0069-agent-replies-as-files-in-sources.md) で追加、本人がチャットで添えたファイルの置き場所 `/sources/uploads` を差分の見張りから外すことを [ADR 0071](0071-attaching-files-to-a-chat-message.md) で追加）
 
 ## Context
 
