@@ -11,5 +11,6 @@
 | Slack に投稿する、リアクションを付ける、画像を投稿する（ポッポさんに頼む） | `/manual/slack.md` |
 | 絵・画像を作る（sdctl）、自分の絵を描く（自撮り・気分の絵も） | `/manual/avatar/images.md` |
 | 出来事 sources_updated の attention を読む（Slack） | `/manual/slack.md` |
+| マスターがチャットに添えた PDF を読む | `/manual/slack.md` の「PDF を読む」 |
 
 `/manual/agents/INDEX.md` と `/manual/avatar/images.md` は、サーバーが起動するたびに書き直します。ほかのファイルは、natsumi のコードと一緒に更新されます。

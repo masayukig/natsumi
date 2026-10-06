@@ -33,8 +33,9 @@ RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yu
 
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
-# poppler-utils (pdftotext, pdftoppm) is for reading the PDFs taken in from Slack (ADR 0072); poppler-data holds the
-# CJK character maps, without which a Japanese PDF gives no text and its pages render blank.
+# poppler-utils (pdftotext, pdftoppm) is for reading PDFs: those taken in from Slack (ADR 0072) and those attached to a
+# chat message (ADR 0071). poppler-data holds the CJK character maps, without which a Japanese PDF gives no text and its
+# pages render blank.
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
