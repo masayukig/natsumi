@@ -92,7 +92,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | クライアント command | payload | サーバーの結果 |
 | --- | --- | --- |
 | `session.sync` | `resume`: 前回の epoch/streamId/seq または null | 下記「端末の登録と stream」 |
-| `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / `service.unavailable` |
+| `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId。任意で uploadIds（上げたファイルの ID の配列、1 つ以上。あれば text は空でもよい） | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / upload-not-found / too-many-uploads / `service.unavailable`。下記「ファイルの添付」 |
 | `conversation.read` | throughMessageId（会話の messageId） | `command.accepted`（readThroughMessageId、unreadReplyCount。手前の位置なら今の位置）、または invalid-request / `service.unavailable`。下記「既読と知らせの確認」 |
 | `conversation.interrupt` | — | 受け付けない（`not-implemented`）。進行中の思考は外から止めない |
 | `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel / broadcast） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
@@ -265,7 +265,7 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 ## 会話の画像
 
 natsumi は返事（kind: reply）に画像を添えることがある（[ADR 0045](adr/0045-showing-the-owner-images-with-a-reply.md)）。
-知らせ（kind: notice）と本人のメッセージには画像は付かない。
+知らせ（kind: notice）には画像は付かない。本人のメッセージに添えたファイル（画像を含む）は `images` ではなく `attachments` で表す（下記「ファイルの添付」）。
 
 `conversation.message` と `session.snapshot` の `messages` の要素のうち、画像の添えられた返事だけが `images` を持つ。
 `images` は 1 つ以上の要素の配列で、natsumi が並べた順（表示する順）である。1 つの返事に付くのは 4 枚までである。
@@ -289,6 +289,56 @@ natsumi は返事（kind: reply）に画像を添えることがある（[ADR 00
 - `images` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
 - 画像が取れないとき（404、つながらない）は、画像の場所に取れなかったことを示し、本文はそのまま出す。
 - iPhone の通知には画像は載らない。本文の末尾に画像の枚数の印が付く（下記「iPhone への通知」の「e の暗号」）。
+
+## ファイルの添付
+
+本人は、メッセージにファイルを添えられる（[ADR 0071](adr/0071-attaching-files-to-a-chat-message.md)）。種類は問わない。
+ファイルは先に HTTP で 1 つずつ上げ、送るときに `conversation.send` の `uploadIds` で ID を並べる。いまはブラウザが使い、Mac・iPhone も同じ道を使える。
+
+### 上げる
+
+- `POST /v1/uploads?name=<元のファイル名を URL エンコードしたもの>`。本文はファイルのバイトそのもの（`Content-Type` は見ない）。
+- 認証は `Authorization: Bearer <token>`（アプリ）か、セッションの cookie（ブラウザ）。cookie で上げるときは Origin が `publicOrigin` でなければならない。
+  bearer があれば cookie は見ない。使うたびにセッションが延びる。
+- 成功すると `201` で、上げたファイルを次の形で返す。`mimeType`・`width`・`height` は中身で PNG・JPEG・WebP と分かったときだけ付く。
+  `name` はサーバーが直した名前（パスの区切りの前は捨て、制御文字を `_` に、先頭の `.` を `_` に、200 バイトまでに縮める。空なら `file`）。
+
+```json
+{"uploadId":"upload-00000000-0000-4000-8000-000000000000","name":"報告書.pdf","bytes":120034}
+```
+
+| 応答 | 意味 |
+| --- | --- |
+| `401` `unauthorized` | セッションが無い・切れている |
+| `403` `origin-not-allowed` | cookie を publicOrigin 以外の Origin から出した |
+| `413` `too-large` | 1 ファイルの上限（既定 25MB、`uploads.maxFileBytes`）を超えた。接続は閉じられる |
+
+- 上限は `session.snapshot` の `uploads`（`maxFileBytes`・`maxFiles`）でも知らされる。端末は上げる前に確かめてよい。
+- 上げたが送らなかったファイルは、1 日経つとサーバーが片付ける。取り消す口は無い（消したいときは送らなければよい）。
+
+### 送る
+
+- `conversation.send` の `payload.uploadIds` に、送るファイルの ID を表示する順に並べる。1 つのメッセージに `uploads.maxFiles`（既定 10）個まで。
+- 同じアカウントが上げて、まだどのメッセージにも付いていないファイルだけを付けられる。違えば `upload-not-found`、多すぎれば `too-many-uploads`、
+  同じ ID を 2 度並べたら `invalid-request`。
+- 同じ requestId の送り直しは、text と uploadIds が同じなら最初の結果で答える。違えば `request-conflict`。
+- 付けたファイルは、そのメッセージのものになる。ほかのメッセージには付けられない。
+
+### 会話の記録
+
+- 本人のメッセージ（kind: message）は、ファイルが付いていれば `attachments` を持つ。送った順である。
+
+| 欄 | 内容 |
+| --- | --- |
+| `uploadId` | ファイルの ID。取得の道に使う |
+| `name` | 上げたときに直した名前 |
+| `bytes` | バイト数 |
+| `mimeType`・`width`・`height` | PNG・JPEG・WebP と分かったときだけ。大きさはヘッダーから読めたときだけ 2 つそろって付く |
+
+- 中身は `GET /v1/uploads/<uploadId>` で取る（会話の画像と同じく、bearer か、cookie。GET は Origin を見ない）。メッセージに付いたものだけを返し、ほかは 404。
+  画像はその種類で返し（`<img src>` に使える）、ほかは `application/octet-stream` と `Content-Disposition: attachment` で返す。
+- `attachments` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
+- なつみには ID を見せない。見せるのは置き場所（`/sources/uploads/<UTC の日時>-<16 進 4 桁>/<名前>`）である。
 
 ## アバター
 
@@ -665,6 +715,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
   承認は外に作用するので、押し間違いの確認は画面の側で行う。
 - `push.register` は Web Push の購読（`subscription`）だけを受け付け、APNs の登録（`token`・`publicKey`・`environment`）は `command.rejected`（`invalid-request`）で断られる（下記「ブラウザへの通知」）。
   ブラウザがつながっていても、iPhone への通知は止まらない（通知の判定は端末ごとである）。
+- ファイルの添付（上記「ファイルの添付」）は、`fetch('/v1/uploads?name=…', { method: 'POST', body: file })` で上げる。ブラウザが cookie と Origin を付ける。
 - 返事の画像（`images`）は `GET /v1/images/<imageId>` を cookie 付きで取る（`<img src>` でよい。同じオリジンなので cookie が付く）。
   URL は imageId だけで決め、クエリを足さない。同じ URL なら、ブラウザは一度取った画像を HTTP のキャッシュから出す（上記「承認と外部実行」の「画像」）。
   このキャッシュはログアウトしても端末に残る。
@@ -677,6 +728,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 - `/`・`/settings` を cookie 無しで開くと `/fake-login?to=<戻り先>` に回され、そこで cookie `natsumi_session=fake-session` が付いて戻る。テストはこの cookie を自分で付けてもよい。
 - `/v1/ws` は、cookie があって Origin が `http://localhost:<port>` でなければ 403 を返す。cookie でつないだ接続の `push.register` は、`subscription` なら受け付け（何も送らない）、APNs の登録なら断る。
 - `settings.*` は本物と同じ規則で答え、ログアウト（`POST /auth/logout`、または同じオリジンからの `POST /dashboard/logout`）で config の値に戻る。
+- `POST /v1/uploads` と `GET /v1/uploads/<uploadId>` を本物と同じ形で答える。ファイルはメモリにだけ持つ。
 - 束は `--bundle` のディレクトリ（省略すると本物と同じ場所）から配る。
 
 ## 通知と定期処理
