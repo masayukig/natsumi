@@ -19,6 +19,19 @@ export interface ShownImage {
   height?: number;
 }
 
+/**
+ * A file the owner attached to a message (ADR 0071), by its upload's ID, which the devices fetch it by. `mimeType` and
+ * the size are there only for a PNG, JPEG or WebP, told by its bytes.
+ */
+export interface ShownAttachment {
+  uploadId: string;
+  name: string;
+  bytes: number;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+}
+
 /** One line of the conversation: the owner's message, natsumi's reply or her notice. */
 export interface ShownMessage {
   messageId: string;
@@ -32,6 +45,8 @@ export interface ShownMessage {
   /** The feeling she put in the line; missing when not recorded or not one the contract knows. */
   expression?: Expression;
   images?: ShownImage[];
+  /** The files an owner message carries, in the order they were sent (ADR 0071). */
+  attachments?: ShownAttachment[];
 }
 
 export type EventState = 'queued' | 'processing' | 'replied' | 'no-reply' | 'failed';
@@ -90,11 +105,19 @@ export function readImage(value: unknown): ShownImage | undefined {
   return { imageId, mimeType, bytes, ...(isCount(width) && isCount(height) ? { width, height } : {}) };
 }
 
+export function readAttachment(value: unknown): ShownAttachment | undefined {
+  if (!isObject(value) || !isString(value.uploadId) || !isString(value.name) || !isCount(value.bytes)) return undefined;
+  const { uploadId, name, bytes, mimeType, width, height } = value;
+  return { uploadId, name, bytes, ...(isString(mimeType) ? { mimeType } : {}), ...(isCount(width) && isCount(height) ? { width, height } : {}) };
+}
+
 export function readMessage(value: unknown): ShownMessage | undefined {
   if (!isObject(value) || !isString(value.messageId) || !isString(value.text) || !isString(value.createdAt)) return undefined;
   if (!isOneOf(['owner', 'natsumi'] as const, value.role) || !isOneOf(['message', 'reply', 'notice'] as const, value.kind)) return undefined;
   const images = value.images === undefined ? undefined : readList(value.images, readImage);
   if (value.images !== undefined && !images) return undefined;
+  const attachments = value.attachments === undefined ? undefined : readList(value.attachments, readAttachment);
+  if (value.attachments !== undefined && !attachments) return undefined;
   const about = Array.isArray(value.about) && value.about.every(isString) ? value.about : undefined;
   return {
     messageId: value.messageId, role: value.role, kind: value.kind, text: value.text, createdAt: value.createdAt,
@@ -103,6 +126,7 @@ export function readMessage(value: unknown): ShownMessage | undefined {
     ...(about ? { about } : {}),
     ...(isExpression(value.expression) ? { expression: value.expression } : {}),
     ...(images ? { images } : {}),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
   };
 }
 
