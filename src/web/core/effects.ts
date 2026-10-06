@@ -1,3 +1,5 @@
+import type { UploadFile } from './events.ts';
+
 /**
  * What the mediator asks of the outside after an event. main.ts carries each out with an adapter, and what comes of it
  * comes back as an event.
@@ -16,4 +18,11 @@ export type Effect =
   /** Load the page again: the server sends a browser without a live session to log in. */
   | { kind: 'sign-in-again' }
   /** Look for this browser's Web Push subscription, subscribe it, or end it; each hands back `push-checked`. */
-  | { kind: 'check-push' | 'subscribe-push' | 'unsubscribe-push' };
+  | { kind: 'check-push' | 'subscribe-push' | 'unsubscribe-push' }
+  /**
+   * Upload this file to `/v1/uploads` (ADR 0071), handing back `upload-done` or `upload-failed`, and an image's small
+   * picture as `attachment-preview` first.
+   */
+  | { kind: 'upload'; localId: string; file: UploadFile }
+  /** Let go of a small picture made for a chip. */
+  | { kind: 'forget-preview'; url: string };

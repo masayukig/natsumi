@@ -1,6 +1,6 @@
 import type { AvatarManifest } from '../../shared/protocol/avatar.ts';
-import type { Approval, Decision, EventState, Expression, Placement, ShownMessage } from '../../shared/protocol/conversation.ts';
-import type { Position, WebPushSubscription } from '../../shared/protocol/envelope.ts';
+import type { Approval, Decision, EventState, Expression, Placement, ShownAttachment, ShownMessage } from '../../shared/protocol/conversation.ts';
+import type { Position, UploadLimits, WebPushSubscription } from '../../shared/protocol/envelope.ts';
 import type { SettingKey, SettingsView } from '../../shared/protocol/settings.ts';
 
 /**
@@ -16,8 +16,23 @@ export type Screen = 'chat' | 'settings';
  */
 export type Link = 'idle' | 'connecting' | 'syncing' | 'synced' | 'waiting' | 'replaced' | 'signed-out';
 
-/** A message the owner wrote that the server has not recorded yet. */
-export interface Outgoing { requestId: string; text: string; status: 'sending' | 'failed'; code?: string }
+/** A message the owner wrote that the server has not recorded yet, with the files it names and their names. */
+export interface Outgoing { requestId: string; text: string; uploadIds?: string[]; files?: string[]; status: 'sending' | 'failed'; code?: string }
+
+/**
+ * A file attached to the message being written (ADR 0071): going up, up and named by its upload, or not taken and why.
+ * `preview` is the browser's own small picture of an image, for the chip.
+ */
+export interface Draft {
+  localId: string;
+  name: string;
+  bytes: number;
+  status: 'uploading' | 'ready' | 'failed';
+  preview?: string;
+  upload?: ShownAttachment;
+  /** The words for why it was not taken. */
+  error?: string;
+}
 
 /** A read or a notice's check on this device that the server has not answered yet (shown as done already). */
 export interface LocalRead { requestId: string; kind: 'read' | 'ack'; id: string }
@@ -70,6 +85,10 @@ export interface AppState {
   expression: Expression;
   thinkingLine?: string;
   outbox: Outgoing[];
+  /** The files of the message being written, in the order they were chosen. */
+  drafts: Draft[];
+  /** How large a file and how many to a message the server takes, as the last snapshot told. */
+  uploadLimits?: UploadLimits;
   /** How many messages the owner has sent from this page: the view empties its field when this moves. */
   sentCount: number;
   readThrough: string | null;

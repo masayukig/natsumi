@@ -3,6 +3,7 @@ import { fetchAvatar } from './adapters/avatar.ts';
 import { checkPush, subscribePush, unsubscribePush } from './adapters/push.ts';
 import { openSocket, socketUrl, type Socket } from './adapters/socket.ts';
 import { readDevice, rememberDevice } from './adapters/storage.ts';
+import { forgetPreview, uploadFile } from './adapters/upload.ts';
 import type { Effect } from './core/effects.ts';
 import type { AppEvent } from './core/events.ts';
 import { initialState, mediate } from './core/mediator.ts';
@@ -52,6 +53,9 @@ function perform(effect: Effect): void {
     case 'check-push': void checkPush(dispatch); return;
     case 'subscribe-push': void subscribePush(dispatch); return;
     case 'unsubscribe-push': void unsubscribePush(dispatch); return;
+    // The view hands up the browser's File; the core only names it.
+    case 'upload': void uploadFile(effect.file as File, effect.localId, dispatch); return;
+    case 'forget-preview': forgetPreview(effect.url); return;
   }
 }
 

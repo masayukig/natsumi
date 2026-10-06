@@ -234,6 +234,30 @@ test('the conversation holds a reply with images, and a message asking for a pic
   client.close();
 }));
 
+// docs/client-contract.md「ファイルの添付」(ADR 0071): taken over HTTP, named in the message, fetched back by ID.
+test('a file is uploaded with the token, named by its ID in a message, and fetched back; the snapshot tells the limits', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  assert.deepEqual(snapshot.payload.uploads, { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 });
+  const post = (headers: Record<string, string>) => fetch(`http://localhost:${port}/v1/uploads?name=${encodeURIComponent('メモ.txt')}`,
+    { method: 'POST', headers, body: 'hello' });
+  assert.equal((await post({})).status, 401);
+  assert.equal((await post({ cookie: FAKE_SESSION_COOKIE, origin: 'http://elsewhere.example.test' })).status, 403);
+  const taken = await post({ authorization: 'Bearer fake-token' });
+  assert.equal(taken.status, 201);
+  const upload = await taken.json() as { uploadId: string; name: string; bytes: number };
+  assert.deepEqual({ name: upload.name, bytes: upload.bytes }, { name: 'メモ.txt', bytes: 5 });
+  const from = client.received.length;
+  const sent = await client.request('conversation.send', { text: '', uploadIds: [upload.uploadId] });
+  assert.equal(sent.type, 'command.accepted');
+  const own = await client.next(e => e.type === 'conversation.message' && e.payload.role === 'owner', from);
+  assert.deepEqual(own.payload.attachments, [upload]);
+  const unknown = await client.request('conversation.send', { text: 'x', uploadIds: ['upload-unknown'] });
+  assert.deepEqual([unknown.type, unknown.payload.code], ['command.rejected', 'upload-not-found']);
+  const fetched = await fetch(`http://localhost:${port}/v1/uploads/${upload.uploadId}`, { headers: { authorization: 'Bearer fake-token' } });
+  assert.deepEqual([fetched.status, await fetched.text()], [200, 'hello']);
+  client.close();
+}));
+
 // docs/client-contract.md「モデルの経路」(ADR 0046): the routes in the snapshot, model.list and model.use.
 test('the snapshot and model.list carry the routes, one of them not ready', () => withServer(async port => {
   const { client, snapshot } = await synced(port);

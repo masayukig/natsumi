@@ -2,11 +2,11 @@ import type { Approval } from '../../shared/protocol/conversation.ts';
 import { encodeCommand, readEnvelope, type Accepted, type ClientCommand, type ServerEvent, type Snapshot } from '../../shared/protocol/envelope.ts';
 import type { SettingKey } from '../../shared/protocol/settings.ts';
 import type { Effect } from './effects.ts';
-import type { AppEvent } from './events.ts';
+import type { AppEvent, UploadFile } from './events.ts';
 import { parseSettingInput } from './settings.ts';
-import type { AppState, ApprovalFlow, Screen } from './state.ts';
+import type { AppState, ApprovalFlow, Draft, Outgoing, Screen } from './state.ts';
 import { place } from './stream.ts';
-import { codeWords, pushWords, resolutionWords, unavailableWords } from './words.ts';
+import { codeWords, pushWords, resolutionWords, sizeWords, unavailableWords, uploadWords } from './words.ts';
 
 /**
  * The browser app's mediator (ADR 0058; the Mac's `UIMediator`, mac/CLAUDE.md): (state, event) → (state, effects). It is
@@ -25,7 +25,7 @@ export function initialState(options: { screen: Screen; idPrefix: string; device
     link: 'idle', socketOpen: false, attempts: 0, visible: false,
     ...(options.deviceId ? { deviceId: options.deviceId } : {}),
     avatarRequested: false,
-    messages: [], pending: {}, expression: 'neutral', outbox: [], sentCount: 0,
+    messages: [], pending: {}, expression: 'neutral', outbox: [], drafts: [], sentCount: 0,
     readThrough: null, unreadReplyCount: 0, unacknowledged: [], localReads: [],
     approvals: [], flows: {}, results: [], settingEntries: {}, push: { status: 'unsupported' },
   };
@@ -108,13 +108,34 @@ class Run {
       case 'retry-send': {
         const item = this.state.outbox.find(outgoing => outgoing.requestId === event.requestId);
         if (!item) return;
-        this.set({ outbox: this.state.outbox.map(outgoing => (outgoing === item ? { requestId: item.requestId, text: item.text, status: 'sending' } : outgoing)) });
-        if (this.synced) this.send({ type: 'conversation.send', payload: { text: item.text } }, item.requestId);
+        const { code: _code, ...again } = item;
+        this.set({ outbox: this.state.outbox.map(outgoing => (outgoing === item ? { ...again, status: 'sending' } : outgoing)) });
+        if (this.synced) this.send(sendCommand(item), item.requestId);
         return;
       }
       case 'dismiss-send':
         this.set({ outbox: this.state.outbox.filter(outgoing => outgoing.requestId !== event.requestId) });
         return;
+      case 'attach':
+        this.attach(event.files);
+        return;
+      case 'attachment-preview':
+        if (!this.state.drafts.some(draft => draft.localId === event.localId)) { this.effects.push({ kind: 'forget-preview', url: event.url }); return; }
+        this.draft(event.localId, { preview: event.url });
+        return;
+      case 'upload-done':
+        this.draft(event.localId, { status: 'ready', upload: event.upload });
+        return;
+      case 'upload-failed':
+        this.draft(event.localId, { status: 'failed', error: uploadWords(event.code) });
+        return;
+      case 'remove-attachment': {
+        const draft = this.state.drafts.find(item => item.localId === event.localId);
+        if (!draft) return;
+        this.set({ drafts: this.state.drafts.filter(item => item !== draft) });
+        if (draft.preview) this.effects.push({ kind: 'forget-preview', url: draft.preview });
+        return;
+      }
       case 'ack-notice':
         if (!this.synced || !this.unacknowledged().includes(event.notificationId)) return;
         this.set({ localReads: [...this.state.localReads, {
@@ -243,6 +264,7 @@ class Run {
         .map(item => [item.eventId, item.state])),
       readThrough: snapshot.readThroughMessageId, unreadReplyCount: snapshot.unreadReplyCount,
       unacknowledged: snapshot.unacknowledgedNotificationIds, localReads: [],
+      ...(snapshot.uploads ? { uploadLimits: snapshot.uploads } : {}),
       approvals: snapshot.pendingApprovals, flows: keepFlows(this.state.flows, snapshot.pendingApprovals),
       ...(snapshot.settings ? { settings: snapshot.settings } : {}), settingEntries: {},
     });
@@ -263,7 +285,7 @@ class Run {
 
   /** After a sync, what was written while away goes; the server answers a request it has already the same. */
   private resendUnsent(items = this.state.outbox.filter(item => item.status === 'sending')): void {
-    for (const item of items) this.send({ type: 'conversation.send', payload: { text: item.text } }, item.requestId);
+    for (const item of items) this.send(sendCommand(item), item.requestId);
   }
 
   private device(deviceId: string | undefined): void {
@@ -333,12 +355,42 @@ class Run {
 
   // The chat.
 
+  /**
+   * A message goes with the files that are up, once none is still going; those not taken are cleared with it. Its files
+   * alone are a message (ADR 0071).
+   */
   private sendMessage(text: string): void {
-    if (text.trim() === '') return;
+    const { drafts } = this.state;
+    if (drafts.some(draft => draft.status === 'uploading')) return;
+    const ready = drafts.filter(draft => draft.status === 'ready' && draft.upload);
+    if (text.trim() === '' && ready.length === 0) return;
     const requestId = `${this.state.idPrefix}-${this.state.nextId}`;
-    this.set({ nextId: this.state.nextId + 1, sentCount: this.state.sentCount + 1,
-      outbox: [...this.state.outbox, { requestId, text, status: 'sending' }] });
-    if (this.synced) this.send({ type: 'conversation.send', payload: { text } }, requestId);
+    const files = ready.length > 0 ? { uploadIds: ready.map(draft => draft.upload!.uploadId), files: ready.map(draft => draft.name) } : {};
+    const item: Outgoing = { requestId, text, ...files, status: 'sending' };
+    this.set({ nextId: this.state.nextId + 1, sentCount: this.state.sentCount + 1, outbox: [...this.state.outbox, item], drafts: [] });
+    for (const draft of drafts) if (draft.preview) this.effects.push({ kind: 'forget-preview', url: draft.preview });
+    if (this.synced) this.send(sendCommand(item), requestId);
+  }
+
+  /** Each file is uploaded as it is chosen, unless it is past the size or the count the server takes. */
+  private attach(files: UploadFile[]): void {
+    const limits = this.state.uploadLimits;
+    let drafts = this.state.drafts;
+    let nextId = this.state.nextId;
+    for (const file of files) {
+      const localId = `${this.state.idPrefix}-file-${nextId++}`;
+      const going = drafts.filter(draft => draft.status !== 'failed').length;
+      const error = limits && file.size > limits.maxFileBytes ? `${sizeWords(limits.maxFileBytes)} までです。`
+        : limits && going >= limits.maxFiles ? `ひとつのメッセージに添えられるのは ${limits.maxFiles} 個までです。` : undefined;
+      drafts = [...drafts, { localId, name: file.name, bytes: file.size, status: error ? 'failed' : 'uploading', ...(error ? { error } : {}) }];
+      if (!error) this.effects.push({ kind: 'upload', localId, file });
+    }
+    this.set({ drafts, nextId });
+  }
+
+  private draft(localId: string, changes: Partial<Draft>): void {
+    if (!this.state.drafts.some(draft => draft.localId === localId)) return;
+    this.set({ drafts: this.state.drafts.map(draft => (draft.localId === localId ? { ...draft, ...changes } : draft)) });
   }
 
   private unacknowledged(): string[] {
@@ -407,6 +459,11 @@ class Run {
   private settingOf(requestId: string): SettingKey | undefined {
     return (Object.entries(this.state.settingEntries) as [SettingKey, { pending?: string }][]).find(([, entry]) => entry.pending === requestId)?.[0];
   }
+}
+
+/** The command that sends a message, naming its files when it has any. */
+function sendCommand(item: Outgoing): ClientCommand {
+  return { type: 'conversation.send', payload: { text: item.text, ...(item.uploadIds ? { uploadIds: item.uploadIds } : {}) } };
 }
 
 /** The flows of approvals still waiting, except those being sent, whose answer a new sync will not bring. */
