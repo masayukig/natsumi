@@ -44,10 +44,15 @@ import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
+import { Uploads } from './uploads.ts';
 
 const SESSION_SWEEP_MS = 30_000;
 /** How often approvals past their time are closed. A minute late is nothing against a week (ADR 0040). */
 const APPROVAL_SWEEP_MS = 60_000;
+/** How often the files of the chat left unsent are looked for. An hour late is nothing against the day they wait (ADR 0071). */
+const UPLOAD_SWEEP_MS = 60 * 60_000;
+/** Where a file of the chat is written while it comes, in the server's own state (ADR 0071). */
+const UPLOAD_STAGING_DIRECTORY = 'uploads';
 
 export interface StartOptions {
   config: string;
@@ -222,6 +227,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     for (const key of config.loop.ignored ?? []) log(`config: ${key} is no longer read (ADR 0063); it can be deleted`);
     // The images she hands the server from /work (ADR 0044), fetched by the devices by their IDs.
     const images = new ImageStore(db, join(dataDirectory, STATE_DIRECTORY, IMAGE_DIRECTORY));
+    // The files the owner attaches in the chat, put under sources/uploads (ADR 0071). They need no source: they are
+    // told of by the message that carries them, never by sources_updated.
+    const uploads = new Uploads({ db, sourcesDirectory: join(dataDirectory, SOURCES_DIRECTORY),
+      stagingDirectory: join(dataDirectory, STATE_DIRECTORY, UPLOAD_STAGING_DIRECTORY), limits: config.uploads, now });
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
       timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
@@ -277,7 +286,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(config.a2a && sources ? { agentReplies: replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) } : {}),
-      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
+      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
     });
     raiseInto = thinkingLoop;
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
@@ -341,6 +350,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const browser = new BrowserSessions({ sessions, allowedUserId, publicOrigin: config.publicOrigin, now });
     const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize, avatarVersion: avatar.version,
+      uploadLimits: config.uploads,
       ...(theDove ? { approvals: { pending: () => theDove.pendingApprovals(), decide: input => theDove.decide(input),
         subscribe: listener => theDove.subscribe(listener) } } : {}),
       settings: { view: () => settings.view(), list: () => settings.list(), set: input => settings.set(input), reset: input => settings.reset(input),
@@ -404,6 +414,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
           pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
+        uploads,
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 
@@ -454,6 +465,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       if (event.type === 'model.routes') void settings.refresh().catch(() => { log('settings: the overrides could not be read'); });
     });
     timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
+    // What a previous process left unsent goes on the first sweep, which is now.
+    const sweepUploads = () => { void uploads.sweep().catch(() => { log('uploads: the unsent files could not be cleared away'); }); };
+    sweepUploads();
+    timers.push(setInterval(sweepUploads, UPLOAD_SWEEP_MS));
 
     let stopping: Promise<void> | undefined;
     const database = db;

@@ -124,7 +124,7 @@ export const BASE_INSTRUCTION = (workspace: string, self: Self = DEFAULT_SELF) =
 ${workspace}
 
 ## 出来事の種類
-- mac_message: マスターとの一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、マスターがまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
+- mac_message: マスターとの一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、マスターがまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。attachments があれば、マスターがメッセージに添えたファイルです。path が置き場所（/sources/uploads の下で、読み取り専用）、bytes が大きさです。shown_as_image が付いたものは、画像としてメッセージと一緒に届いています。ほかのファイルは、要るときに作業環境で読みます。
 - ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time はマスターのタイムゾーンの今の時刻です。マスターに伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。
 - self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの check_id・reason・予定の時刻（scheduled_for）があります。繰り返しの予約には cron が付き、予約はそのまま次の時刻まで残ります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。繰り返しの予約は、過ぎた回がいくつあっても 1 回だけ届きます。
 - sources_updated: /sources の読みもの（Slack のチャンネルや、外のエージェントの返事など）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file がその場所で、path があれば、それが file の中の jq -s のパスです。kind の意味と読み方は読みものごとのマニュアル（Slack なら /manual/slack.md、外のエージェントの返事の agent_reply なら /manual/ask-agent.md）にあります。agent_reply には、相手の名前（agent）・状態（state）・要約（summary）が付きます。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。

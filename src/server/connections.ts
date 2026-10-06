@@ -59,8 +59,11 @@ export interface HubLoop {
   readonly unavailable: string | undefined;
   /** Everything the loop shows the owner, to be broadcast. Returns the way to stop listening. */
   subscribe(listener: (event: { type: string; payload: Record<string, unknown>; ephemeral?: boolean }) => void): () => void;
-  /** Records an owner message and answers; the loop's own events follow the answer. */
-  send(input: { requestId: string; deviceId: string; text: string }):
+  /**
+   * Records an owner message and answers; the loop's own events follow the answer. `uploadIds` are the files it carries
+   * (ADR 0071), which must be the account's own and not sent yet.
+   */
+  send(input: { requestId: string; deviceId: string; text: string; uploadIds?: string[]; githubUserId?: number }):
     | { kind: 'accepted'; messageId: string; eventId: string; state: string }
     | { kind: 'rejected'; code: string }
     | { kind: 'unavailable'; code: string };
@@ -124,7 +127,12 @@ export interface ConnectionHubOptions {
    * It changes only with a restart, which a device meets as a new epoch, so no event tells of a change.
    */
   avatarVersion?: string;
+  /** How large a file and how many to a message the server takes (ADR 0071), told in every snapshot. */
+  uploadLimits?: { maxFileBytes: number; maxFiles: number };
 }
+
+/** The most upload IDs one message's envelope may name; the config's limit is the loop's to hold to. */
+const MAX_UPLOAD_IDS = 64;
 
 type Payload = Record<string, unknown>;
 const isObject = (value: unknown): value is Payload => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -253,7 +261,7 @@ export class ConnectionHub {
     switch (type) {
       case 'conversation.send':
         if (id === undefined) return reject('invalid-request');
-        return this.send(stream!, connection.deviceId!, payload, id);
+        return this.send(stream!, connection.deviceId!, connection.session.githubUserId, payload, id);
       case 'conversation.read': {
         const { throughMessageId } = payload;
         if (!isId(throughMessageId)) return reject('invalid-request');
@@ -351,20 +359,25 @@ export class ConnectionHub {
     // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
     // Its own seq is the barrier; events numbered after it apply on top.
     stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), pendingApprovals: this.options.approvals?.pending() ?? [], sessionExpiresAt,
-      ...this.avatarVersion(), ...(this.options.settings ? { settings: this.options.settings.view() } : {}) }, requestId);
+      ...this.avatarVersion(), ...(this.options.settings ? { settings: this.options.settings.view() } : {}),
+      ...(this.options.uploadLimits ? { uploads: { ...this.options.uploadLimits } } : {}) }, requestId);
   }
 
   private avatarVersion() {
     return this.options.avatarVersion === undefined ? {} : { avatarVersion: this.options.avatarVersion };
   }
 
-  private send(stream: EventStream, deviceId: string, payload: Payload, requestId: string) {
-    const { text } = payload;
-    if (typeof text !== 'string' || text.trim() === '' || Buffer.byteLength(text) > MAX_TEXT_BYTES) {
+  private send(stream: EventStream, deviceId: string, githubUserId: number, payload: Payload, requestId: string) {
+    const { text, uploadIds } = payload;
+    // A message may be its files alone (ADR 0071); without any, it must say something.
+    const ids = uploadIds === undefined ? [] : uploadIds;
+    if (!Array.isArray(ids) || (uploadIds !== undefined && ids.length === 0) || ids.length > MAX_UPLOAD_IDS
+      || !ids.every(item => typeof item === 'string' && item.length > 0 && item.length <= 128)
+      || typeof text !== 'string' || (ids.length === 0 && text.trim() === '') || Buffer.byteLength(text) > MAX_TEXT_BYTES) {
       stream.publish('command.rejected', { code: 'invalid-request' }, requestId);
       return;
     }
-    const outcome = this.options.loop.send({ requestId, deviceId, text });
+    const outcome = this.options.loop.send({ requestId, deviceId, text, ...(ids.length > 0 ? { uploadIds: ids as string[], githubUserId } : {}) });
     if (outcome.kind === 'unavailable') {
       stream.publish('service.unavailable', { code: outcome.code }, requestId);
     } else if (outcome.kind === 'rejected') {

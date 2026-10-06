@@ -89,6 +89,19 @@ test('a directory seen for the first time is taken in silently: its past is not 
   assert.equal((await f.take()).ready, false);
 });
 
+test('the files of the chat under uploads/ are outside the history: never committed, never news (ADR 0071)', async t => {
+  const f = await setup(t);
+  await f.sources.prepare();
+  await f.write('uploads/20261006T000000Z-ab12/報告書.pdf', '%PDF');
+  f.advance(90 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 0);
+  assert.equal((await f.take()).ready, false);
+  const git = (...args: string[]) => run('git', [`--git-dir=${f.gitDirectory}`, `--work-tree=${f.directory}`, ...args]);
+  assert.equal((await git('status', '--porcelain', '--untracked-files=all')).stdout, '', 'left out, not even untracked');
+  assert.equal((await git('log', '--all', '--format=%H', '--', 'uploads')).stdout, '');
+});
+
 test('a changed directory raises once the wait drawn at its first change is up, and the event names the files', async t => {
   const f = await setup(t);
   await f.write('chat/work/dev/2026-09-27.jsonl', '{"text":"一"}\n');

@@ -37,6 +37,7 @@ import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 import { parseView, viewImage } from './view.ts';
+import type { ShownAttachment } from '../shared/protocol/conversation.ts';
 
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
 export const DEFAULT_NOTIFY_LIMITS = { perTurn: 3, perHour: 12 };
@@ -68,7 +69,7 @@ export interface LoopClientEvent {
 
 export type SendOutcome =
   | { kind: 'accepted'; messageId: string; eventId: string; state: EventState }
-  | { kind: 'rejected'; code: 'request-conflict' }
+  | { kind: 'rejected'; code: 'request-conflict' | 'upload-not-found' | 'too-many-uploads' | 'invalid-request' }
   | { kind: 'unavailable'; code: UnavailableCode };
 
 /** Only a message that does not exist (or, for an acknowledgement, is not a notice) is refused. */
@@ -99,6 +100,8 @@ export interface ShownMessage {
   expression?: Expression;
   /** The images a reply shows, in her order (ADR 0045). Absent, rather than empty, on a line that shows none. */
   images?: ShownImage[];
+  /** The files an owner message carries (ADR 0071). Absent, rather than empty, on one that carries none. */
+  attachments?: ShownAttachment[];
 }
 
 /** A type rather than an interface: it is a client event's payload, and is spread into one whole. */
@@ -235,6 +238,8 @@ export interface LoopOptions {
   images?: ImageStore;
   /** How large and how many the images of one reply may be. */
   replyImageLimits?: ImageLimits;
+  /** The files the owner attaches to a message (ADR 0071). Without it a message naming any is refused. */
+  uploads?: LoopUploads;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -256,6 +261,20 @@ export interface SourceEvents {
   take(eventId: string): Promise<boolean>;
   eventLine(eventId: string, receivedAt: string): Record<string, unknown>;
   images(eventId: string): Promise<ImageContent[]>;
+}
+
+/**
+ * The files of the owner's messages as the loop uses them (ADR 0071): taken by a message as it is recorded, told to her
+ * in its line by their places, the images shown beside it, and shown to the devices with the message.
+ */
+export interface LoopUploads {
+  check(uploadIds: readonly string[], githubUserId: number): { ok: true } | { ok: false; code: 'invalid-request' | 'upload-not-found' | 'too-many-uploads' };
+  attach(uploadIds: readonly string[], messageId: string): void;
+  idsOf(messageId: string): string[];
+  shown(messageIds: readonly string[]): Map<string, ShownAttachment[]>;
+  lineEntries(messageId: string): object[];
+  hasImages(messageId: string): boolean;
+  images(messageId: string): Promise<ImageContent[]>;
 }
 
 /** The side of the dove the loop talks to: a request, and the line of each answer. */
@@ -457,21 +476,38 @@ export class ThinkingLoop {
    * Records an owner message and its event, then answers. Client events follow on a microtask, so the caller can
    * deliver `command.accepted` first.
    */
-  send(input: { requestId: string; deviceId: string; text: string }): SendOutcome {
+  send(input: { requestId: string; deviceId: string; text: string; uploadIds?: string[]; githubUserId?: number }): SendOutcome {
     const unavailable = this.unavailable;
     if (unavailable) return { kind: 'unavailable', code: unavailable };
+    const uploadIds = input.uploadIds ?? [];
+    const { uploads } = this.options;
     const existing = this.store.existingByRequest(input.requestId);
     if (existing) {
-      if (existing.text !== input.text || existing.device_id !== input.deviceId) return { kind: 'rejected', code: 'request-conflict' };
+      const carried = uploads?.idsOf(existing.message_id) ?? [];
+      if (existing.text !== input.text || existing.device_id !== input.deviceId
+        || carried.length !== uploadIds.length || carried.some((id, index) => id !== uploadIds[index])) {
+        return { kind: 'rejected', code: 'request-conflict' };
+      }
       return { kind: 'accepted', messageId: existing.message_id, eventId: existing.event_id, state: existing.state };
     }
+    // The files are looked at and taken with no wait in between, so no other message can take one meanwhile (ADR 0071).
+    if (uploadIds.length > 0) {
+      if (!uploads || input.githubUserId === undefined) return { kind: 'rejected', code: 'upload-not-found' };
+      const checked = uploads.check(uploadIds, input.githubUserId);
+      if (!checked.ok) return { kind: 'rejected', code: checked.code };
+    }
 
-    const { row, eventId } = this.store.insertOwnerMessage(input);
+    const { row, eventId } = this.store.insertOwnerMessage(input,
+      uploadIds.length > 0 ? messageId => uploads!.attach(uploadIds, messageId) : undefined);
+    const attachments = uploadIds.length > 0 ? uploads!.shown([row.message_id]).get(row.message_id) : undefined;
     this.activityAt = this.now();
     let state: EventState = 'queued';
     const session = this.session!;
     const reviewing = this.rotating || this.turn?.kind === 'review' || this.isRotationQueuedFirst();
-    if (this.turn?.kind === 'events' && session.isStreaming) {
+    // Steering carries text only as it is made here, so a message with images to show waits for the next turn instead,
+    // where they go beside its line.
+    const showsImages = uploadIds.length > 0 && uploads!.hasImages(row.message_id);
+    if (this.turn?.kind === 'events' && session.isStreaming && !showsImages) {
       // Steered in at the next model-call boundary; the thought in progress is not interrupted (Q1).
       this.beginHandling(eventId, row.message_id, false);
       this.workingPlace?.eventIds.push(eventId);
@@ -484,7 +520,7 @@ export class ThinkingLoop {
       this.queue.push(eventId);
     }
     queueMicrotask(() => {
-      this.emit('conversation.message', shown(row));
+      this.emit('conversation.message', shown(row, undefined, attachments));
       // The server shows that natsumi is thinking without waiting for the model (Q2); asleep, she stays asleep.
       if (!reviewing) this.setAvatar('thinking', 'server');
       this.pump();
@@ -634,8 +670,10 @@ export class ThinkingLoop {
   }
 
   private shownRows(rows: MessageRow[]): ShownMessage[] {
-    const images = this.store.messageImages(rows.map(row => row.message_id));
-    return rows.map(row => shown(row, images.get(row.message_id)));
+    const ids = rows.map(row => row.message_id);
+    const images = this.store.messageImages(ids);
+    const attachments = this.options.uploads?.shown(ids) ?? new Map<string, ShownAttachment[]>();
+    return rows.map(row => shown(row, images.get(row.message_id), attachments.get(row.message_id)));
   }
 
   /** No turn is running and nothing is waiting: the scheduler may raise an event. */
@@ -1442,7 +1480,10 @@ export class ThinkingLoop {
     if (row.kind === 'ping') {
       return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
     }
-    return { type: 'mac_message', received_at: row.message_at, text: row.text, ...notices };
+    // The files it carries, by their places (ADR 0071); the images among them are shown beside the line.
+    const messageId = this.options.uploads ? this.store.eventMessageId(eventId) : undefined;
+    const attachments = messageId ? this.options.uploads!.lineEntries(messageId) : [];
+    return { type: 'mac_message', received_at: row.message_at, text: row.text, ...(attachments.length > 0 ? { attachments } : {}), ...notices };
   }
 
   private host(): LoopToolHost {
@@ -1498,8 +1539,12 @@ export class ThinkingLoop {
   private async eventImages(eventIds: string[]): Promise<ImageContent[]> {
     const images: ImageContent[] = [];
     for (const eventId of eventIds) {
-      if (this.store.eventKind(eventId) !== 'sources-updated' || !this.options.sources) continue;
-      try { images.push(...await this.options.sources.images(eventId)); } catch { /* the line still goes; the images are a courtesy */ }
+      const kind = this.store.eventKind(eventId);
+      const messageId = kind === 'mac-message' && this.options.uploads ? this.store.eventMessageId(eventId) : undefined;
+      try {
+        if (kind === 'sources-updated' && this.options.sources) images.push(...await this.options.sources.images(eventId));
+        if (messageId) images.push(...await this.options.uploads!.images(messageId));
+      } catch { /* the line still goes; the images are a courtesy */ }
     }
     return images;
   }
@@ -1772,9 +1817,10 @@ function sumUsage(replies: Reply[]): TokenCounts {
     output: sum.output + (usage?.output ?? 0) }), { input: 0, cacheRead: 0, output: 0 });
 }
 
-function shown(row: MessageRow, images?: ShownImage[]): ShownMessage {
+function shown(row: MessageRow, images?: ShownImage[], attachments?: ShownAttachment[]): ShownMessage {
   const base = { messageId: row.message_id, role: row.role, kind: row.kind, text: row.text, createdAt: row.created_at,
-    ...(row.expression === null ? {} : { expression: row.expression }), ...(images && images.length > 0 ? { images } : {}) };
+    ...(row.expression === null ? {} : { expression: row.expression }), ...(images && images.length > 0 ? { images } : {}),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}) };
   if (row.kind === 'message') return { ...base, eventId: row.event_id! };
   if (row.kind === 'reply') return row.event_id === null ? base : { ...base, replyTo: row.event_id };
   const about = row.about_event_ids ? JSON.parse(row.about_event_ids) as string[] : [];

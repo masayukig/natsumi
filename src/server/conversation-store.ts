@@ -82,13 +82,16 @@ export class ConversationStore {
 
   /**
    * An owner message and the event it raises, written together: the two rows point at each other, so one without
-   * the other would be a conversation the loop can never answer.
+   * the other would be a conversation the loop can never answer. `attach` gives it its files in the same transaction
+   * (ADR 0071), so a message is never recorded without them nor they taken without it.
    */
-  insertOwnerMessage(input: { requestId: string; deviceId: string; text: string }): { row: MessageRow; eventId: string } {
+  insertOwnerMessage(input: { requestId: string; deviceId: string; text: string },
+    attach?: (messageId: string) => void): { row: MessageRow; eventId: string } {
     const eventId = `event-${randomUUID()}`;
     const row = this.transaction(() => {
       const message = this.insertMessage({ role: 'owner', kind: 'message', text: input.text, eventId,
         requestId: input.requestId, deviceId: input.deviceId });
+      attach?.(message.message_id);
       const now = this.iso();
       this.db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
         VALUES (?, 'mac-message', ?, 'queued', ?, ?)`).run(eventId, message.message_id, now, now);

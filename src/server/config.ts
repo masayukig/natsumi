@@ -9,6 +9,7 @@ import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repos
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
+import { UPLOAD_DEFAULTS, type UploadLimits } from './uploads.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES,
   type AwakeHours } from './scheduler.ts';
@@ -352,6 +353,12 @@ const MAX_SOURCES_HISTORY_DAYS = 90;
 /** Slack's emoji names: lower case, digits and a few marks, without the colons. */
 const EMOJI_NAME = /^[a-z0-9_+'-]+$/;
 
+/** The files the owner attaches in the chat (ADR 0071): one file's bytes and one message's files, at most. */
+export type UploadsConfig = UploadLimits;
+const MIN_UPLOAD_BYTES = 1024;
+const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
+const MAX_UPLOAD_FILES = 50;
+
 /** The memory curator that reorganizes memory after the nightly review (ADR 0055). */
 export interface CuratorConfig {
   /** False to leave memory as natsumi left it. */
@@ -409,6 +416,7 @@ export interface ServerConfig {
   a2a?: A2AConfig;
   slack?: SlackConfig;
   sources: SourcesConfig;
+  uploads: UploadsConfig;
   curator: CuratorConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
@@ -441,6 +449,7 @@ const SECTIONS = {
   a2a: parseA2A,
   slack: parseSlack,
   sources: parseSources,
+  uploads: parseUploads,
   curator: parseCurator,
   avatar: parseAvatar,
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
@@ -481,6 +490,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
     sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
+    uploads: SECTIONS.uploads(root.uploads ?? {}, 'uploads'),
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
@@ -976,6 +986,20 @@ function parseSources(value: unknown, path: string): SourcesConfig {
   }
   return { activity: { k, minMinutes: least as number, maxMinutes: most as number, windowMinutes: window as number,
     quietMeanMinutes: quiet as number }, historyDays: days as number };
+}
+
+function parseUploads(value: unknown, path: string): UploadsConfig {
+  const uploads = object(value, path);
+  onlyKeys(uploads, path, ['maxFileBytes', 'maxFiles']);
+  const bytes = uploads.maxFileBytes ?? UPLOAD_DEFAULTS.maxFileBytes;
+  if (!positiveInteger(bytes, MIN_UPLOAD_BYTES) || (bytes as number) > MAX_UPLOAD_BYTES) {
+    throw new ConfigError(`${path}.maxFileBytes`, `must be an integer from ${MIN_UPLOAD_BYTES} to ${MAX_UPLOAD_BYTES}`);
+  }
+  const files = uploads.maxFiles ?? UPLOAD_DEFAULTS.maxFiles;
+  if (!positiveInteger(files, 1) || (files as number) > MAX_UPLOAD_FILES) {
+    throw new ConfigError(`${path}.maxFiles`, `must be an integer from 1 to ${MAX_UPLOAD_FILES}`);
+  }
+  return { maxFileBytes: bytes as number, maxFiles: files as number };
 }
 
 /**

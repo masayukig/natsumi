@@ -42,6 +42,19 @@ test('a message is read with its place in the stream, its request and its fields
   });
 });
 
+test('an owner message carries its files, an image with its type and size (ADR 0071)', () => {
+  const attachments = [{ uploadId: 'upload-1', name: '報告書.pdf', bytes: 1200 },
+    { uploadId: 'upload-2', name: 'shot.png', bytes: 30, mimeType: 'image/png', width: 4, height: 3 }];
+  const read = readEnvelope(envelope('conversation.message', { messageId: 'm1', role: 'owner', kind: 'message', text: '', eventId: 'e1',
+    createdAt: 't', attachments }));
+  assert.ok(read?.event.type === 'conversation.message');
+  assert.deepEqual(read.event.message.attachments, attachments);
+  assert.deepEqual(readEnvelope(envelope('conversation.message', { messageId: 'm1', role: 'owner', kind: 'message', text: '', createdAt: 't',
+    attachments: [{ uploadId: 'upload-1', name: 'x' }] }))?.event, { type: 'ignored' }, 'a file without its size is not the contract’s');
+  const sent = JSON.parse(encodeCommand({ requestId: 'q1', command: { type: 'conversation.send', payload: { text: '', uploadIds: ['upload-1'] } } }));
+  assert.deepEqual(sent.payload, { text: '', uploadIds: ['upload-1'] });
+});
+
 test('a feeling it does not know is read as none, and so is one that is missing', () => {
   const read = readEnvelope(envelope('conversation.message', { messageId: 'r1', role: 'natsumi', kind: 'reply', text: 'x', createdAt: 't', expression: 'angry' }));
   assert.equal(read?.event.type, 'conversation.message');
@@ -53,11 +66,12 @@ test('the snapshot is read whole, the settings with it', () => {
     deviceId: 'device-1', messages: [], pendingEvents: [{ eventId: 'e1', messageId: 'm1', state: 'processing' }],
     avatar: { expression: 'thinking' }, readThroughMessageId: null, unreadReplyCount: 2, unacknowledgedNotificationIds: ['n1'],
     pendingApprovals: [], modelRoutes: {}, sessionExpiresAt: 't', avatarVersion: 'abc', settings,
+    uploads: { maxFileBytes: 1024, maxFiles: 3 },
   }));
   assert.deepEqual(read?.event, { type: 'session.snapshot', snapshot: {
     deviceId: 'device-1', messages: [], pendingEvents: [{ eventId: 'e1', messageId: 'm1', state: 'processing' }],
     expression: 'thinking', readThroughMessageId: null, unreadReplyCount: 2, unacknowledgedNotificationIds: ['n1'],
-    pendingApprovals: [], avatarVersion: 'abc', settings,
+    pendingApprovals: [], avatarVersion: 'abc', settings, uploads: { maxFileBytes: 1024, maxFiles: 3 },
   } });
 });
 

@@ -885,4 +885,31 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 28,
+    name: 'uploads',
+    sql: `
+      -- The files the owner hands natsumi from the chat (ADR 0071), put under sources/uploads as they came. path is
+      -- relative to sources/; mime_type, width and height are there only for a PNG, JPEG or WebP told by its bytes. A
+      -- file belongs to one owner message once it is sent, at its place among the message's files; until then it is
+      -- the account's that sent it, and is cleared away when it is not sent in time.
+      CREATE TABLE uploads (
+        upload_id TEXT PRIMARY KEY,
+        github_user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        bytes INTEGER NOT NULL CHECK (bytes >= 0),
+        sha256 TEXT NOT NULL,
+        mime_type TEXT,
+        width INTEGER,
+        height INTEGER,
+        message_id TEXT REFERENCES conversation_messages (message_id),
+        position INTEGER,
+        created_at TEXT NOT NULL,
+        CHECK ((message_id IS NULL) = (position IS NULL)),
+        UNIQUE (message_id, position)
+      ) STRICT;
+      CREATE INDEX uploads_unsent ON uploads (created_at) WHERE message_id IS NULL;
+    `,
+  },
 ];

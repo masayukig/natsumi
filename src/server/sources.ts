@@ -5,6 +5,7 @@ import type { ImageContent } from '@earendil-works/pi-ai';
 import { runGit, type GitResult } from './git.ts';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { current, isAwake, type AwakeHours, type Live } from './scheduler.ts';
+import { UPLOADS_DIRECTORY } from './uploads.ts';
 import { imageType, SOURCES_PATH } from './view.ts';
 
 /**
@@ -467,8 +468,9 @@ export class Sources {
   }
 
   private excludes(): string {
-    // A file being written is renamed into place; its temporary never belongs in the history.
-    const lines = ['*.tmp'];
+    // A file being written is renamed into place; its temporary never belongs in the history. The files of the chat
+    // are told of by their messages, and are too large to keep a history of (ADR 0071).
+    const lines = ['*.tmp', `/${UPLOADS_DIRECTORY}/`];
     for (const registration of this.registrations.values()) {
       for (const pattern of registration.exclude ?? []) lines.push(`/${registration.name}/${pattern.replace(/^\//, '')}`);
     }

@@ -1,10 +1,10 @@
 import type { AvatarManifest } from '../../shared/protocol/avatar.ts';
-import { PLACEMENTS, type Approval, type Expression, type Placement, type ShownImage, type ShownMessage } from '../../shared/protocol/conversation.ts';
+import { PLACEMENTS, type Approval, type Expression, type Placement, type ShownAttachment, type ShownImage, type ShownMessage } from '../../shared/protocol/conversation.ts';
 import { SETTING_KEYS, type SettingKey, type SettingsView } from '../../shared/protocol/settings.ts';
 import { readIndex } from './mediator.ts';
 import { isLimitKey } from './settings.ts';
 import type { AppState, ApprovalFlow } from './state.ts';
-import { codeWords } from './words.ts';
+import { codeWords, sizeWords } from './words.ts';
 
 /**
  * The props of the two screens (ADR 0058; the Mac's `UIProps`, mac/CLAUDE.md): everything the view draws, worked out
@@ -19,6 +19,22 @@ export interface StatusProps { tone: 'ok' | 'busy' | 'warn'; text: string }
 
 export interface ImageProps { src: string; alt: string; width?: number; height?: number }
 
+/** A file a message carried that is not shown as a picture: its name and size, and where it downloads from. */
+export interface FileProps { name: string; size: string; href: string }
+
+/** A file of the message being written (ADR 0071), as a chip with its button to take it back. */
+export interface AttachmentProps {
+  localId: string;
+  name: string;
+  size: string;
+  state: 'uploading' | 'ready' | 'failed';
+  /** An image's small picture. */
+  preview?: string;
+  /** Why it was not taken. */
+  note?: string;
+  removeLabel: string;
+}
+
 export interface RowProps {
   id: string;
   side: 'owner' | 'natsumi';
@@ -30,12 +46,17 @@ export interface RowProps {
   text: string;
   time: string;
   images: ImageProps[];
+  /** The files an owner message carried, other than its images (ADR 0071). */
+  files: FileProps[];
   unread: boolean;
   /** The check a notice not checked yet offers. */
   ack?: { label: string; notificationId: string };
 }
 
-export interface OutboxProps { requestId: string; text: string; note: string; failed: boolean }
+/** The field to write in, with the files of the message being written and `note` saying why sending waits for them. */
+export interface ComposerProps { placeholder: string; sentCount: number; attachments: AttachmentProps[]; note?: string; attachLabel: string }
+
+export interface OutboxProps { requestId: string; text: string; files: string[]; note: string; failed: boolean }
 
 export interface ConfirmProps {
   question: string;
@@ -74,7 +95,7 @@ export interface ChatProps {
   unreadCount: number;
   rows: RowProps[];
   outbox: OutboxProps[];
-  composer: { placeholder: string; sentCount: number };
+  composer: ComposerProps;
   approvals: ApprovalProps[];
   results: string[];
 }
@@ -155,6 +176,16 @@ const imagesOf = (images: ShownImage[] | undefined): ImageProps[] => (images ?? 
   ...(image.width && image.height ? { width: image.width, height: image.height } : {}),
 }));
 
+const uploadSrc = (attachment: ShownAttachment) => `/v1/uploads/${encodeURIComponent(attachment.uploadId)}`;
+
+/** The pictures among a message's files, fetched by their uploads' IDs (ADR 0071). */
+const attachedImages = (attachments: ShownAttachment[] | undefined): ImageProps[] => (attachments ?? [])
+  .filter(attachment => attachment.mimeType).map(attachment => ({ src: uploadSrc(attachment), alt: attachment.name,
+    ...(attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : {}) }));
+
+const attachedFiles = (attachments: ShownAttachment[] | undefined): FileProps[] => (attachments ?? [])
+  .filter(attachment => !attachment.mimeType).map(attachment => ({ name: attachment.name, size: sizeWords(attachment.bytes), href: uploadSrc(attachment) }));
+
 export function chatProps(state: AppState): ChatProps {
   const name = state.avatar?.name ?? DEFAULT_NAME;
   const read = readIndex(state);
@@ -168,10 +199,17 @@ export function chatProps(state: AppState): ChatProps {
     unreadCount: read < 0 ? Math.max(state.unreadReplyCount, listedUnread) : listedUnread,
     rows: state.messages.map((message, index) => rowOf(message, index > read, notices, name, state.avatar)),
     outbox: state.outbox.map(item => ({
-      requestId: item.requestId, text: item.text, failed: item.status === 'failed',
+      requestId: item.requestId, text: item.text, files: item.files ?? [], failed: item.status === 'failed',
       note: item.status === 'failed' ? codeWords(item.code ?? '') : '送っています…',
     })),
-    composer: { placeholder: `${name}に話しかける`, sentCount: state.sentCount },
+    composer: {
+      placeholder: `${name}に話しかける`, sentCount: state.sentCount, attachLabel: 'ファイルを添える',
+      attachments: state.drafts.map(draft => ({
+        localId: draft.localId, name: draft.name, size: sizeWords(draft.bytes), state: draft.status,
+        ...(draft.preview ? { preview: draft.preview } : {}), ...(draft.error ? { note: draft.error } : {}), removeLabel: `${draft.name} を取り消す`,
+      })),
+      ...(state.drafts.some(draft => draft.status === 'uploading') ? { note: 'ファイルを上げています…' } : {}),
+    },
     approvals: state.approvals.map(approval => approvalProps(approval, state.flows[approval.approvalId] ?? { step: 'idle' })),
     results: state.results,
   };
@@ -184,7 +222,8 @@ function rowOf(message: ShownMessage, afterRead: boolean, notices: Set<string>, 
   return {
     id: message.messageId, side: hers ? 'natsumi' : 'owner', speaker: hers ? name : 'あなた',
     ...(face ? { face } : {}), ...(message.kind === 'notice' ? { label: 'お知らせ' } : {}),
-    text: message.text, time: timeOf(message.createdAt), images: imagesOf(message.images),
+    text: message.text, time: timeOf(message.createdAt),
+    images: [...imagesOf(message.images), ...attachedImages(message.attachments)], files: attachedFiles(message.attachments),
     unread: (message.kind === 'reply' && afterRead) || ack,
     ...(ack ? { ack: { label: '確認した', notificationId: message.messageId } } : {}),
   };
