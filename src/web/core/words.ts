@@ -1,4 +1,5 @@
 import type { ApprovalResolution } from '../../shared/protocol/conversation.ts';
+import type { PushError, UploadError } from './events.ts';
 
 /** The server's codes, and what became of approvals, in words the owner reads. */
 
@@ -17,7 +18,34 @@ const CODES: Record<string, string> = {
   'conversation-restore-failed': '会話を読み込めず、なつみがいま話せない状態です。',
   stopping: 'サーバーが止まるところで、なつみがいま話せない状態です。',
   'not-implemented': 'サーバーがまだこの操作に対応していません。',
+  'upload-not-found': '添えたファイルが見つかりませんでした。時間が経って片付けられたかもしれません。添え直してください。',
+  'too-many-uploads': '添えたファイルが多すぎるため受け付けられませんでした。',
 };
+
+/** Why a file did not go up (ADR 0071). */
+const UPLOADS: Record<UploadError, string> = {
+  'too-large': '大きすぎるため上げられませんでした。',
+  unauthorized: 'ログインが切れていて上げられませんでした。ページを開き直してください。',
+  failed: '上げられませんでした。取り消して、もう一度添えてください。',
+};
+
+export const uploadWords = (error: UploadError): string => UPLOADS[error];
+
+/** A file's size as the owner reads it: bytes, then KB and MB to one place, dropping a place of 0. */
+export function sizeWords(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const [value, unit] = bytes < 1024 * 1024 ? [bytes / 1024, 'KB'] : [bytes / 1024 / 1024, 'MB'];
+  return `${Number(value.toFixed(1))} ${unit}`;
+}
+
+/** Why the notifications were not turned on, or not stopped (ADR 0070). */
+const PUSH: Record<PushError, string> = {
+  denied: '通知が許可されていません。ブラウザの設定で、このサイトの通知を許可してください。',
+  failed: '通知を有効にできませんでした。',
+  'not-stopped': '通知を止められませんでした。もう一度試すか、ブラウザの設定でこのサイトの通知を止めてください。',
+};
+
+export const pushWords = (error: PushError): string => PUSH[error];
 
 export const codeWords = (code: string): string => CODES[code] ?? `受け付けられませんでした（${code}）。`;
 

@@ -234,6 +234,30 @@ test('the conversation holds a reply with images, and a message asking for a pic
   client.close();
 }));
 
+// docs/client-contract.md「ファイルの添付」(ADR 0071): taken over HTTP, named in the message, fetched back by ID.
+test('a file is uploaded with the token, named by its ID in a message, and fetched back; the snapshot tells the limits', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  assert.deepEqual(snapshot.payload.uploads, { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 });
+  const post = (headers: Record<string, string>) => fetch(`http://localhost:${port}/v1/uploads?name=${encodeURIComponent('メモ.txt')}`,
+    { method: 'POST', headers, body: 'hello' });
+  assert.equal((await post({})).status, 401);
+  assert.equal((await post({ cookie: FAKE_SESSION_COOKIE, origin: 'http://elsewhere.example.test' })).status, 403);
+  const taken = await post({ authorization: 'Bearer fake-token' });
+  assert.equal(taken.status, 201);
+  const upload = await taken.json() as { uploadId: string; name: string; bytes: number };
+  assert.deepEqual({ name: upload.name, bytes: upload.bytes }, { name: 'メモ.txt', bytes: 5 });
+  const from = client.received.length;
+  const sent = await client.request('conversation.send', { text: '', uploadIds: [upload.uploadId] });
+  assert.equal(sent.type, 'command.accepted');
+  const own = await client.next(e => e.type === 'conversation.message' && e.payload.role === 'owner', from);
+  assert.deepEqual(own.payload.attachments, [upload]);
+  const unknown = await client.request('conversation.send', { text: 'x', uploadIds: ['upload-unknown'] });
+  assert.deepEqual([unknown.type, unknown.payload.code], ['command.rejected', 'upload-not-found']);
+  const fetched = await fetch(`http://localhost:${port}/v1/uploads/${upload.uploadId}`, { headers: { authorization: 'Bearer fake-token' } });
+  assert.deepEqual([fetched.status, await fetched.text()], [200, 'hello']);
+  client.close();
+}));
+
 // docs/client-contract.md「モデルの経路」(ADR 0046): the routes in the snapshot, model.list and model.use.
 test('the snapshot and model.list carry the routes, one of them not ready', () => withServer(async port => {
   const { client, snapshot } = await synced(port);
@@ -332,6 +356,11 @@ test('settings.list answers every setting; settings.set changes one, which every
   assert.deepEqual(snapshot.payload.settings.judgeAdopted, { value: 'logprobs', config: 'logprobs', overridden: false });
   assert.deepEqual(snapshot.payload.settings.judgeLogprobsThresholds, { value: { owner: 0.5, return: 0.9 }, config: { owner: 0.5, return: 0.9 }, overridden: false });
   assert.deepEqual(snapshot.payload.settings.judgeJevThresholds.config, { owner: 0.5, return: 0.9 });
+  // The curator's route and limits (ADR 0068): on natsumi's route, `plus` an outside service.
+  assert.deepEqual(snapshot.payload.settings.curatorRoute, { value: null, config: null, overridden: false, night: 'local', outside: ['plus'] });
+  assert.deepEqual(snapshot.payload.settings.curatorModelCalls, { value: 100, config: 100, overridden: false });
+  assert.deepEqual(snapshot.payload.settings.curatorTimeoutMinutes, { value: 60, config: 60, overridden: false });
+  assert.equal((await client.request('settings.set', { key: 'curatorRoute', value: 'spare' })).payload.code, 'route-unavailable');
   const listed = await client.request('settings.list', {});
   assert.equal(listed.type, 'command.accepted');
   assert.deepEqual(listed.payload.settings, snapshot.payload.settings);
@@ -409,6 +438,8 @@ test('the browser logs in at the fake login, gets the page, and connects with it
   assert.equal((await browser.next(e => e.requestId === sync)).type, 'session.snapshot');
   const push = await browser.request('push.register', { token: 'ab', publicKey: 'x', environment: 'sandbox' });
   assert.deepEqual([push.type, push.payload.code], ['command.rejected', 'invalid-request']);
+  const subscribed = await browser.request('push.register', { subscription: { endpoint: 'https://push.example.test/one', keys: {} } });
+  assert.equal(subscribed.type, 'command.accepted');
   const image = await fetch(`${base}/v1/images/image-fake-happy`, { headers: { cookie: FAKE_SESSION_COOKIE } });
   assert.equal(image.status, 200);
   browser.close();

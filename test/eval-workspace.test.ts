@@ -37,6 +37,9 @@ test('the real runner answers inside bubblewrap, laid out as the workspace conta
         const refused = await shell.run(`touch ${place}`);
         assert.doesNotMatch(refused.text, /終了コード 0/, place);
       }
+      // git trusts /memory, and only it, as the image's system config does; not whatever the host's says.
+      const trusted = await shell.run('git config --system --get-all safe.directory');
+      assert.match(trusted.text, /終了コード 0 で終わりました。\n標準出力:\n\/memory\n$/);
       // No network, and the owner's time zone.
       const offline = await shell.run('cat /sys/class/net/*/operstate 2>/dev/null | grep -c up; date +%Z');
       assert.match(offline.text, /標準出力:\n0\nJST/);

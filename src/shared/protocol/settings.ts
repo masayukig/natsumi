@@ -9,7 +9,8 @@
  */
 
 export const SETTING_KEYS = ['modelRoute', 'turnFold', 'eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls',
-  'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds'] as const;
+  'reviewTimeoutMinutes', 'awakeHours', 'pingIntervalMinutes', 'judgeLogprobs', 'judgeJev', 'judgeAdopted', 'judgeLogprobsThresholds', 'judgeJevThresholds',
+  'curatorRoute', 'curatorModelCalls', 'curatorTimeoutMinutes'] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
 
@@ -43,6 +44,11 @@ export interface SettingValues {
   /** Each judge's thresholds (ADR 0059). */
   judgeLogprobsThresholds: JudgeThresholds;
   judgeJevThresholds: JudgeThresholds;
+  /** The memory curator's route (ADR 0068): one of the config's by name, or null for the route natsumi is on. */
+  curatorRoute: string | null;
+  /** Model calls and minutes each stage of the curator's night may take (ADR 0068). */
+  curatorModelCalls: number;
+  curatorTimeoutMinutes: number;
 }
 
 /** A route as the owner is shown it (ADR 0046): never its endpoint or its key. */
@@ -69,10 +75,21 @@ export interface SettingsView {
   judgeAdopted: SettingItem<JudgeName>;
   judgeLogprobsThresholds: SettingItem<JudgeThresholds>;
   judgeJevThresholds: SettingItem<JudgeThresholds>;
+  /**
+   * `night`: the route the next night runs on, natsumi's chosen one when the curator has none of its own.
+   * `outside`: the routes reached through an outside service rather than the owner's own endpoint (ADR 0068): on one
+   * of them, memory and the day's conversation leave for that service every night.
+   */
+  curatorRoute: SettingItem<string | null> & { night: string; outside: string[] };
+  curatorModelCalls: SettingItem<number>;
+  curatorTimeoutMinutes: SettingItem<number>;
 }
 
 /** The limits of one turn, as the thinking loop reads them before it starts one. */
 export type TurnLimits = Pick<SettingValues, 'eventModelCalls' | 'eventTimeoutMinutes' | 'reviewModelCalls' | 'reviewTimeoutMinutes'>;
+
+/** The curator's night as the thinking loop reads it before the night starts (ADR 0068): null for natsumi's route. */
+export interface CuratorNight { route: string | null; modelCalls: number; timeoutMinutes: number }
 
 export type SettingCheck =
   | { [K in SettingKey]: { ok: true; key: K; value: SettingValues[K] } }[SettingKey]
@@ -137,7 +154,10 @@ export function checkSetting(key: string, value: unknown): SettingCheck {
       const thresholds = thresholdsOf(value);
       return thresholds ? { ok: true, key, value: thresholds } : invalid;
     }
+    case 'curatorRoute':
+      return value === null || (typeof value === 'string' && ROUTE_NAME.test(value)) ? { ok: true, key, value } : invalid;
     case 'eventModelCalls': case 'eventTimeoutMinutes': case 'reviewModelCalls': case 'reviewTimeoutMinutes':
+    case 'curatorModelCalls': case 'curatorTimeoutMinutes':
       return isTurnLimit(value) ? { ok: true, key, value } : invalid;
     case 'awakeHours': {
       if (awakeHoursProblem(value)) return invalid;
@@ -155,7 +175,7 @@ const isRouteView = (value: unknown): value is RouteView => typeof value === 'ob
 
 /**
  * The list as it came over the wire, or undefined when it is not the contract's: every setting there, each value and
- * config's value keeping the setting's rules (a route's name its shape), and the extra fields of the five that have them.
+ * config's value keeping the setting's rules (a route's name its shape), and the extra fields of the six that have them.
  */
 export function readSettingsView(value: unknown): SettingsView | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
@@ -164,7 +184,7 @@ export function readSettingsView(value: unknown): SettingsView | undefined {
   for (const key of SETTING_KEYS) {
     const item = list[key];
     if (typeof item !== 'object' || item === null) return undefined;
-    const { value: current, config, overridden, inUse, routes, timeZone, available } = item as Record<string, unknown>;
+    const { value: current, config, overridden, inUse, routes, timeZone, available, night, outside } = item as Record<string, unknown>;
     const valueCheck = checkSetting(key, current);
     const configCheck = checkSetting(key, config);
     if (!valueCheck.ok || !configCheck.ok || typeof overridden !== 'boolean') return undefined;
@@ -179,6 +199,10 @@ export function readSettingsView(value: unknown): SettingsView | undefined {
     } else if (key === 'awakeHours') {
       if (typeof timeZone !== 'string') return undefined;
       read.timeZone = timeZone;
+    } else if (key === 'curatorRoute') {
+      if (typeof night !== 'string' || !ROUTE_NAME.test(night)) return undefined;
+      if (!Array.isArray(outside) || !outside.every(name => typeof name === 'string')) return undefined;
+      Object.assign(read, { night, outside: [...outside] as string[] });
     } else if (key === 'judgeLogprobs' || key === 'judgeJev') {
       if (typeof available !== 'boolean') return undefined;
       read.available = available;

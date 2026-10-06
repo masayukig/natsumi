@@ -18,6 +18,8 @@ import { FAKE_SESSION_COOKIE, startFakeServer, type FakeServer } from '../../src
 const BUNDLE = fileURLToPath(new URL('../../dist/web/', import.meta.url));
 const SCREENSHOTS = process.env.NATSUMI_SCREENSHOTS;
 const [COOKIE_NAME, COOKIE_VALUE] = FAKE_SESSION_COOKIE.split('=') as [string, string];
+/** A whole 1×1 PNG, base64, for a picture the browser can draw. */
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 const SIZES = [
   { name: 'phone', options: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true } },
@@ -85,6 +87,45 @@ for (const size of SIZES) {
         const reply = page.locator('.row.natsumi', { hasText: '「絵を描いて」だね。' });
         await reply.locator('.images img').waitFor();
         assert.equal(await reply.locator('.images img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0), true);
+        assert.deepEqual(errors, []);
+      } finally { await done(); }
+    });
+
+    test('files are attached by the clip, a paste and a drop, shown as chips, and go with the message (ADR 0071)', async () => {
+      const { page, errors, done } = await open(size);
+      try {
+        await page.locator('.composer input[type="file"]').setInputFiles([
+          { name: '報告書.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7 fake') },
+        ]);
+        // A picture pasted into the field, and a file dropped on the chat.
+        await page.evaluate(async png => {
+          const bytes = Uint8Array.from(atob(png), character => character.charCodeAt(0));
+          const pasted = new DataTransfer();
+          pasted.items.add(new File([bytes], 'shot.png', { type: 'image/png' }));
+          document.querySelector('.composer textarea')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: pasted, bubbles: true, cancelable: true }));
+          const dropped = new DataTransfer();
+          dropped.items.add(new File(['memo'], 'memo.txt', { type: 'text/plain' }));
+          const chat = document.querySelector('.chat')!;
+          chat.dispatchEvent(new DragEvent('dragover', { dataTransfer: dropped, bubbles: true, cancelable: true }));
+          chat.dispatchEvent(new DragEvent('drop', { dataTransfer: dropped, bubbles: true, cancelable: true }));
+        }, PNG);
+        const chips = page.locator('.composer .chip');
+        await page.waitForFunction(() => document.querySelectorAll('.composer .chip.ready').length === 3);
+        assert.deepEqual(await chips.locator('.chip-name').allTextContents(), ['報告書.pdf', 'shot.png', 'memo.txt']);
+        assert.equal(await chips.nth(1).locator('img.thumb').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0), true,
+          'an image is shown small');
+        await shoot(page, `attachments-${size.name}`);
+        await page.getByRole('button', { name: 'memo.txt を取り消す' }).click();
+        await page.waitForFunction(() => document.querySelectorAll('.composer .chip').length === 2);
+        await page.getByLabel('メッセージ').fill('これ見て');
+        await page.getByRole('button', { name: '送る', exact: true }).click();
+        const own = page.locator('.row.owner', { hasText: 'これ見て' }).last();
+        await own.locator('.file a', { hasText: '報告書.pdf' }).waitFor();
+        assert.match(await own.locator('.file a').getAttribute('href') ?? '', /^\/v1\/uploads\/upload-/);
+        await own.locator('.images img').waitFor();
+        await page.waitForFunction(() => [...document.querySelectorAll<HTMLImageElement>('.row.owner .images img')].every(image => image.complete && image.naturalWidth > 0));
+        assert.equal(await page.locator('.composer .chip').count(), 0, 'the chips go with the message');
+        await shoot(page, `attachments-sent-${size.name}`);
         assert.deepEqual(errors, []);
       } finally { await done(); }
     });

@@ -59,6 +59,7 @@ npm run eval -- compare eval/results/qwen-before eval/results/qwen-after
 - `npm run eval -- list`: 場面と変種と項目の一覧。このブランチで回せない場面には、その理由が付きます
 - `npm run eval -- summarize <結果のディレクトリ>`: 集計し直します
 - `npm run eval -- pull …`・`npm run eval -- snapshots`: 本番の写しを取る・一覧する（下の「本番の写しから試す」）
+- `npm run eval -- curate …`・`npm run eval -- curate-compare <a> <b>`: 写しの記憶で整理係の一晩を回す・2 つの夜を並べる（下の「係の一晩を写しで回す」）
 - `npm run eval -- compare <a> <b>`: 場面・変種・項目ごとに、合格数、率の差（b − a）、Newcombe の 95% 区間を並べます。その横に、着くまでの呼び出し回数の中央値（数えた回数つき）と、その差（b − a）を並べます
 
 ### 結果
@@ -214,7 +215,7 @@ follow: true
 ```
 
 - 既定は 1 ターンです。相手役は依頼を受け付けるだけで、返事はしません。
-- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は `agent_reply`（サーバーの返事の取りに行きの道筋を通ります）、ポッポさんの返事は `agent: poppo` の `agent_reply`（`result`・`reply_to`・`draft`・`text`）です。依頼が無くなるか、ターンが上限に達したら止まります。
+- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は、実行の data directory の `sources/agents/` に置かれ、`sources_updated` の attention（kind `agent_reply`）で届きます（サーバーの返事の取りに行きの道筋と、本物の `sources` を通ります。ADR 0069）。ポッポさんの返事は `agent: poppo` の `agent_reply`（`result`・`reply_to`・`draft`・`text`）です。依頼が無くなるか、ターンが上限に達したら止まります。
 - `replies` を書いた相手役は、書いた順に返事を返します（使い切ったら最後のものを繰り返します）。ポッポさんの `result` は `sent`・`reacted`・`to_owner`・`returned`・`rejected`・`expired`・`not_sent` のどれかで、省くと `sent` です。
 - `replies` の無い相手役は LLM（`--actor`）が演じます。外のエージェントは Agent Card の説明と `instructions` を、ポッポさんは「判定と承認を経て投稿する係」という役と `instructions` を渡されます。ドライランでは決まった文で答えます。
 - 相手役への依頼と返事、返事が書いた文か LLM か（`by`）は、結果の `actors` に残ります。判定役にも見せます。ターン数は `turns`、呼び出し回数・トークン・時間は全ターンの合計です。
@@ -315,6 +316,55 @@ bubblewrap が user と network の名前空間を作れない環境では、写
 npm run eval -- run --scenes ~/natsumi-eval/scenes --model ~/natsumi-eval/qwen.json --judge ~/natsumi-eval/plus.json --runs 5 --label replay-before
 npm run eval -- compare ~/.local/share/natsumi-eval/results/replay-before ~/.local/share/natsumi-eval/results/replay-after
 ```
+
+## 係の一晩を写しで回す
+
+記憶の整理係（[ADR 0055](../docs/adr/0055-a-memory-curator-at-night.md)）の一晩を、本番の写しの記憶の上で回します（[ADR 0068](../docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
+係の変更を本番に入れる前に、結果の記憶を読み、モデルの経路どうしを比べるためのものです。判定の項目はありません。読むのは本人です。
+
+```sh
+npm run eval -- pull --context <本番の context>
+npm run eval -- curate --model ~/natsumi-eval/qwen.json --label curator-qwen
+npm run eval -- curate --model ~/natsumi-eval/plus.json --label curator-plus
+npm run eval -- curate-compare ~/.local/share/natsumi-eval/results/curator-qwen ~/.local/share/natsumi-eval/results/curator-plus
+```
+
+| 指定 | 意味 |
+| --- | --- |
+| `--model <file>` | 係を回すモデル（上の「モデルのファイル」）。設定の `curator.route` の代わりに、このファイルの経路で回します |
+| `--snapshot <name>` | 使う写し。既定は `latest`（いちばん新しいもの）。同じ写しで経路を比べるときは名前で揃えます |
+| `--snapshots <dir>` | 写しの置き場。既定は `~/.local/share/natsumi-eval/snapshots` |
+| `--label L`・`--out <dir>` | 結果の置き場は `<out>/<label>/`。`--out` の既定は `~/.local/share/natsumi-eval/results` |
+| `--max-calls N`・`--minutes N`・`--rotate-files N` | 係の上限と順番の本数（設定の `curator.modelCalls`・`timeoutMinutes`・`rotateFiles`）。省くと設定の既定値 |
+| `--at <時刻>` | 係に伝える「今夜」。既定は写しを取った時刻 |
+| `--stop-starting-at HH:MM` | 朝の締め切り（設定の `curator.stopStartingAt`）。`--at` の後で最初に来るこの時刻を過ぎたら、次の工程を始めません。既定は無しで、写しを取った時刻に関わらず全工程を回します。要約に締め切りと、始めなかった工程（`skipped-deadline`）が出ます |
+| `--time-zone <zone>` | 日付を決めるタイムゾーン。既定は手元のもの |
+| `--dry-run` | 偽のモデルで流れを確かめます。key は読みません。偽のモデルの答えは `--script <file>` で書けます（場面の `dryRun` と同じ形の YAML のリスト）。省くと「変えることはありません」と答えて終わります |
+
+回し方:
+
+1. 写しの記憶（git の履歴ごと）、SQLite、Pi の session を、結果の `copy/` に写します。写しそのものは変わりません。評価するブランチの migration は、写した SQLite に走ります。
+2. 写しの記憶にコミットされていない変更があれば、夜の前に `eval: 写しにコミットされずに残っていた変更` として別にコミットします。本番では、夜の振り返りが係の直前にコミットしているからです。係の途中で取られた写しなら、サーバーと同じく係の書きかけを捨てます。
+3. サーバーと同じ係の一晩（全工程）を 1 度回します。写しに係の書きかけが残っていれば、サーバーの起動と同じく先に捨てます。なつみの夜の振り返りは回しません。係の作業環境は本物の runner（bubblewrap の中）です。
+   最初の工程（出来事から知識へ）に渡す会話の本文は、写した Pi の session から、写しの SQLite にある前回の整理の成功から「今夜」までを抜き出します。
+4. 係が残した記憶とコミットを読み、要約を出します。
+
+外に作用させない仕組みは、上の「外に作用させない仕組み」と同じです（評価用の設定だけ、ネットワークからの隔離、起動時の拒否）。
+
+結果（`<out>/<label>/`、0700、30 日で消します）:
+
+| ファイル | 中身 |
+| --- | --- |
+| `summary.md` | 写し・モデル・時間、工程ごとの結果・呼び出しの回数・時間・token・ツールの失敗・コミット・変更の説明・検査に当たったもの（やり直す前に当たったものも）、コミットのメッセージ、変わったファイル、サーバーのログ（記憶と係の行だけ） |
+| `night.json` | 同じものを JSON で。`curate-compare` はこれを読みます |
+| `memory.diff` | 夜の前のコミットから夜の後までの `git diff` |
+| `copy/data/memory/` | 夜の後の記憶。git の履歴ごとなので、`git log`・`git show`・`git diff <夜の前>` で読めます |
+| `copy/pi/sessions/curator/` | 係の session の記録（工程ごとに 1 つ）。係が何を読み、どう考えたかはここにあります |
+
+`curate-compare <a> <b>` は、2 つの夜を並べます（モデル、時間、コミットとファイルの数、工程ごとの結果、ファイルごとの変更）。写しが違えばそう書きます。
+2 つの夜の記憶そのものの違いは `diff -ru --exclude=.git <a>/copy/data/memory <b>/copy/data/memory` で見られます。
+
+結果には本人の記憶と、係が読んだ会話がそのまま入っています。Git やクラウドに上げないでください。
 
 ## 私的な場面
 

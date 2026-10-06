@@ -851,4 +851,65 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX self_checks_by_due ON self_checks (state, due_at);
     `,
   },
+  {
+    version: 26,
+    name: 'the fields of an attention, and where a request to an agent is put',
+    sql: `
+      -- A source's own fields of an attention (ADR 0069), as a JSON object shown beside where it is: an outside agent's
+      -- reply carries the agent, its state and a summary. An attention with no jq path keeps path empty.
+      ALTER TABLE source_attention ADD COLUMN details TEXT NOT NULL DEFAULT '{}';
+
+      -- Where each request to an outside agent was put under /sources/agents as it was made, as the workspace names it,
+      -- and every word of it: its reply goes into the same directory. NULL for a request made before they were kept,
+      -- whose reply gets a directory of its own. An exchange keeps the place of its latest request, which the next
+      -- request going on with it names.
+      ALTER TABLE agent_tasks ADD COLUMN place TEXT;
+      ALTER TABLE agent_tasks ADD COLUMN request TEXT;
+      ALTER TABLE agent_contexts ADD COLUMN place TEXT;
+    `,
+  },
+  {
+    version: 27,
+    name: 'web-push-subscriptions',
+    sql: `
+      -- Where to push a browser that is not connected (ADR 0070): its push service's endpoint, and the P-256 key and
+      -- auth secret its pushes are encrypted to. One per device, overwritten on every push.register; an endpoint
+      -- belongs to one device at a time. As with push_registrations, whether it may be sent to follows the session.
+      CREATE TABLE web_push_subscriptions (
+        device_id TEXT PRIMARY KEY REFERENCES devices (device_id),
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh BLOB NOT NULL CHECK (length(p256dh) = 65),
+        auth BLOB NOT NULL CHECK (length(auth) = 16),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
+  {
+    version: 28,
+    name: 'uploads',
+    sql: `
+      -- The files the owner hands natsumi from the chat (ADR 0071), put under sources/uploads as they came. path is
+      -- relative to sources/; mime_type, width and height are there only for a PNG, JPEG or WebP told by its bytes. A
+      -- file belongs to one owner message once it is sent, at its place among the message's files; until then it is
+      -- the account's that sent it, and is cleared away when it is not sent in time.
+      CREATE TABLE uploads (
+        upload_id TEXT PRIMARY KEY,
+        github_user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        bytes INTEGER NOT NULL CHECK (bytes >= 0),
+        sha256 TEXT NOT NULL,
+        mime_type TEXT,
+        width INTEGER,
+        height INTEGER,
+        message_id TEXT REFERENCES conversation_messages (message_id),
+        position INTEGER,
+        created_at TEXT NOT NULL,
+        CHECK ((message_id IS NULL) = (position IS NULL)),
+        UNIQUE (message_id, position)
+      ) STRICT;
+      CREATE INDEX uploads_unsent ON uploads (created_at) WHERE message_id IS NULL;
+    `,
+  },
 ];

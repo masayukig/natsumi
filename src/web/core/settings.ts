@@ -7,12 +7,15 @@ import {
  * config keep) before anything is sent, with the words for what is wrong.
  */
 
-export type LimitKey = 'eventModelCalls' | 'eventTimeoutMinutes' | 'reviewModelCalls' | 'reviewTimeoutMinutes';
-export const LIMIT_KEYS: readonly LimitKey[] = ['eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes'];
+export type LimitKey = 'eventModelCalls' | 'eventTimeoutMinutes' | 'reviewModelCalls' | 'reviewTimeoutMinutes' | 'curatorModelCalls' | 'curatorTimeoutMinutes';
+export const LIMIT_KEYS: readonly LimitKey[] = ['eventModelCalls', 'eventTimeoutMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
+  'curatorModelCalls', 'curatorTimeoutMinutes'];
 export const isLimitKey = (key: SettingKey): key is LimitKey => (LIMIT_KEYS as readonly string[]).includes(key);
 
 export type SettingInput =
   | { key: 'modelRoute'; route: string }
+  /** The curator's route: a route's name, or empty for natsumi's (ADR 0068). */
+  | { key: 'curatorRoute'; route: string }
   | { key: 'turnFold'; fold: string }
   | { key: LimitKey; text: string }
   | { key: 'awakeHours'; start: string; end: string }
@@ -38,6 +41,8 @@ export function parseSettingInput(input: SettingInput): ParsedSetting {
   switch (input.key) {
     case 'modelRoute':
       return checked(input.route) ?? wrong('経路を選んでください。');
+    case 'curatorRoute':
+      return checked(input.route === '' ? null : input.route) ?? wrong('経路を選んでください。');
     case 'turnFold':
       return checked(input.fold) ?? wrong('on か off を選んでください。');
     case 'judgeLogprobs': case 'judgeJev':

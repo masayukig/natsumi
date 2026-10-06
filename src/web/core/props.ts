@@ -1,10 +1,10 @@
 import type { AvatarManifest } from '../../shared/protocol/avatar.ts';
-import { PLACEMENTS, type Approval, type Expression, type Placement, type ShownImage, type ShownMessage } from '../../shared/protocol/conversation.ts';
+import { PLACEMENTS, type Approval, type Expression, type Placement, type ShownAttachment, type ShownImage, type ShownMessage } from '../../shared/protocol/conversation.ts';
 import { SETTING_KEYS, type SettingKey, type SettingsView } from '../../shared/protocol/settings.ts';
 import { readIndex } from './mediator.ts';
 import { isLimitKey } from './settings.ts';
 import type { AppState, ApprovalFlow } from './state.ts';
-import { codeWords } from './words.ts';
+import { codeWords, sizeWords } from './words.ts';
 
 /**
  * The props of the two screens (ADR 0058; the Mac's `UIProps`, mac/CLAUDE.md): everything the view draws, worked out
@@ -19,6 +19,22 @@ export interface StatusProps { tone: 'ok' | 'busy' | 'warn'; text: string }
 
 export interface ImageProps { src: string; alt: string; width?: number; height?: number }
 
+/** A file a message carried that is not shown as a picture: its name and size, and where it downloads from. */
+export interface FileProps { name: string; size: string; href: string }
+
+/** A file of the message being written (ADR 0071), as a chip with its button to take it back. */
+export interface AttachmentProps {
+  localId: string;
+  name: string;
+  size: string;
+  state: 'uploading' | 'ready' | 'failed';
+  /** An image's small picture. */
+  preview?: string;
+  /** Why it was not taken. */
+  note?: string;
+  removeLabel: string;
+}
+
 export interface RowProps {
   id: string;
   side: 'owner' | 'natsumi';
@@ -30,12 +46,17 @@ export interface RowProps {
   text: string;
   time: string;
   images: ImageProps[];
+  /** The files an owner message carried, other than its images (ADR 0071). */
+  files: FileProps[];
   unread: boolean;
   /** The check a notice not checked yet offers. */
   ack?: { label: string; notificationId: string };
 }
 
-export interface OutboxProps { requestId: string; text: string; note: string; failed: boolean }
+/** The field to write in, with the files of the message being written and `note` saying why sending waits for them. */
+export interface ComposerProps { placeholder: string; sentCount: number; attachments: AttachmentProps[]; note?: string; attachLabel: string }
+
+export interface OutboxProps { requestId: string; text: string; files: string[]; note: string; failed: boolean }
 
 export interface ConfirmProps {
   question: string;
@@ -74,7 +95,7 @@ export interface ChatProps {
   unreadCount: number;
   rows: RowProps[];
   outbox: OutboxProps[];
-  composer: { placeholder: string; sentCount: number };
+  composer: ComposerProps;
   approvals: ApprovalProps[];
   results: string[];
 }
@@ -108,6 +129,8 @@ export interface SettingsProps {
   status: StatusProps;
   reconnect?: { label: string };
   rows: SettingRowProps[];
+  /** This browser's notifications (ADR 0070). */
+  notifications: { status: 'unsupported' | 'off' | 'busy' | 'on'; error?: string };
 }
 
 export type ScreenProps = ChatProps | SettingsProps;
@@ -153,6 +176,16 @@ const imagesOf = (images: ShownImage[] | undefined): ImageProps[] => (images ?? 
   ...(image.width && image.height ? { width: image.width, height: image.height } : {}),
 }));
 
+const uploadSrc = (attachment: ShownAttachment) => `/v1/uploads/${encodeURIComponent(attachment.uploadId)}`;
+
+/** The pictures among a message's files, fetched by their uploads' IDs (ADR 0071). */
+const attachedImages = (attachments: ShownAttachment[] | undefined): ImageProps[] => (attachments ?? [])
+  .filter(attachment => attachment.mimeType).map(attachment => ({ src: uploadSrc(attachment), alt: attachment.name,
+    ...(attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : {}) }));
+
+const attachedFiles = (attachments: ShownAttachment[] | undefined): FileProps[] => (attachments ?? [])
+  .filter(attachment => !attachment.mimeType).map(attachment => ({ name: attachment.name, size: sizeWords(attachment.bytes), href: uploadSrc(attachment) }));
+
 export function chatProps(state: AppState): ChatProps {
   const name = state.avatar?.name ?? DEFAULT_NAME;
   const read = readIndex(state);
@@ -166,10 +199,17 @@ export function chatProps(state: AppState): ChatProps {
     unreadCount: read < 0 ? Math.max(state.unreadReplyCount, listedUnread) : listedUnread,
     rows: state.messages.map((message, index) => rowOf(message, index > read, notices, name, state.avatar)),
     outbox: state.outbox.map(item => ({
-      requestId: item.requestId, text: item.text, failed: item.status === 'failed',
+      requestId: item.requestId, text: item.text, files: item.files ?? [], failed: item.status === 'failed',
       note: item.status === 'failed' ? codeWords(item.code ?? '') : '送っています…',
     })),
-    composer: { placeholder: `${name}に話しかける`, sentCount: state.sentCount },
+    composer: {
+      placeholder: `${name}に話しかける`, sentCount: state.sentCount, attachLabel: 'ファイルを添える',
+      attachments: state.drafts.map(draft => ({
+        localId: draft.localId, name: draft.name, size: sizeWords(draft.bytes), state: draft.status,
+        ...(draft.preview ? { preview: draft.preview } : {}), ...(draft.error ? { note: draft.error } : {}), removeLabel: `${draft.name} を取り消す`,
+      })),
+      ...(state.drafts.some(draft => draft.status === 'uploading') ? { note: 'ファイルを上げています…' } : {}),
+    },
     approvals: state.approvals.map(approval => approvalProps(approval, state.flows[approval.approvalId] ?? { step: 'idle' })),
     results: state.results,
   };
@@ -182,7 +222,8 @@ function rowOf(message: ShownMessage, afterRead: boolean, notices: Set<string>, 
   return {
     id: message.messageId, side: hers ? 'natsumi' : 'owner', speaker: hers ? name : 'あなた',
     ...(face ? { face } : {}), ...(message.kind === 'notice' ? { label: 'お知らせ' } : {}),
-    text: message.text, time: timeOf(message.createdAt), images: imagesOf(message.images),
+    text: message.text, time: timeOf(message.createdAt),
+    images: [...imagesOf(message.images), ...attachedImages(message.attachments)], files: attachedFiles(message.attachments),
     unread: (message.kind === 'reply' && afterRead) || ack,
     ...(ack ? { ack: { label: '確認した', notificationId: message.messageId } } : {}),
   };
@@ -246,7 +287,14 @@ const LABELS: Record<SettingKey, { label: string; help: string; unit?: string }>
   judgeLogprobsThresholds: { label: 'logprobs のしきい値', help: 'この点数以上で本人へ回し、もう一方以上で突き返します。0 より大きく 1 以下。次の下書きから。' },
   judgeJevThresholds: { label: 'Jev のしきい値', help: 'この点数以上で本人へ回し、もう一方以上で突き返します。0 より大きく 1 以下。次の下書きから。' },
   judgeAdopted: { label: 'ポッポさんの採用する判定', help: 'この判定で決めます。答えが無ければもう一方で、両方だめなら本人に回します。次の下書きから。' },
+  curatorRoute: { label: '記憶の整理係の経路', help: '夜に記憶を組み直す係が使うモデル。係は毎晩、記憶とその日の会話の本文をこの経路の接続先へ送ります。'
+    + 'ChatGPT Plus など外のサービスの経路を選ぶと、それらが毎晩外に出ます。次の夜から。' },
+  curatorModelCalls: { label: '整理係の呼び出しの上限', help: '係の夜の工程ごとにモデルを呼べる回数。工程ごとにまるごと使えます。次の夜から。', unit: '回' },
+  curatorTimeoutMinutes: { label: '整理係の時間の上限', help: '係の夜の工程ごとにかけられる時間。工程ごとにまるごと使えます。次の夜から。', unit: '分' },
 };
+
+/** What the curator's route is shown as when it has none of its own (ADR 0068). */
+const NATSUMI_ROUTE = 'なつみと同じ経路';
 
 function valueText(key: SettingKey, value: unknown, view: SettingsView): string {
   if (key === 'awakeHours') {
@@ -258,6 +306,7 @@ function valueText(key: SettingKey, value: unknown, view: SettingsView): string 
     const thresholds = value as { owner: number; return: number };
     return `本人へ ${thresholds.owner}・突き返す ${thresholds.return}`;
   }
+  if (key === 'curatorRoute') return value === null ? NATSUMI_ROUTE : String(value);
   if (isLimitKey(key)) return `${String(value)} ${LABELS[key].unit}`;
   return String(value);
 }
@@ -267,6 +316,12 @@ function controlOf(key: SettingKey, view: SettingsView): ControlProps {
     case 'modelRoute':
       return { kind: 'select', selected: view.modelRoute.value, options: view.modelRoute.routes.map(route => ({
         value: route.name, label: `${route.name}（${route.model}）${route.ready ? '' : ' — 使えません'}`, disabled: !route.ready })) };
+    case 'curatorRoute': {
+      const { value, outside } = view.curatorRoute;
+      return { kind: 'select', selected: value ?? '', options: [{ value: '', label: NATSUMI_ROUTE, disabled: false },
+        ...view.modelRoute.routes.map(route => ({ value: route.name, disabled: !route.ready,
+          label: `${route.name}（${route.model}）${outside.includes(route.name) ? ' — 外のサービス' : ''}${route.ready ? '' : ' — 使えません'}` }))] };
+    }
     case 'turnFold':
       return { kind: 'select', selected: view.turnFold.value, options: [{ value: 'on', label: 'on', disabled: false }, { value: 'off', label: 'off', disabled: false }] };
     case 'judgeLogprobs': case 'judgeJev': {
@@ -294,6 +349,10 @@ function noteOf(key: SettingKey, view: SettingsView): string | undefined {
   }
   if (key === 'turnFold' && view.turnFold.inUse !== view.turnFold.value) return `次のターンから（いまは ${view.turnFold.inUse}）`;
   if ((key === 'judgeLogprobs' || key === 'judgeJev') && !view[key].available) return 'config に接続先がありません。on にはできません。';
+  if (key === 'curatorRoute') {
+    const { night, outside } = view.curatorRoute;
+    return `次の夜は ${night} で動きます。${outside.includes(night) ? '外のサービスの経路なので、記憶とその日の会話の本文がそこへ送られます。' : ''}`;
+  }
   return undefined;
 }
 
@@ -312,5 +371,6 @@ export function settingsProps(state: AppState): SettingsProps {
       canReset: item.overridden, busy: entry.pending !== undefined, ...(entry.error ? { error: entry.error } : {}),
     };
   }) : [];
-  return { screen: 'settings', name, ...(face ? { face } : {}), ...statusOf(state), rows };
+  const { status, error } = state.push;
+  return { screen: 'settings', name, ...(face ? { face } : {}), ...statusOf(state), rows, notifications: { status, ...(error ? { error } : {}) } };
 }

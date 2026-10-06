@@ -91,3 +91,16 @@ test('a file that cannot be read as JSON is as good as none, and is named', () =
   await writeOverride(data, 'eventTimeoutMinutes', 20, NOW);
   assert.deepEqual(await readOverrides(data), { values: { eventTimeoutMinutes: 20 }, ignored: [] }, 'writing starts it over');
 }));
+
+test('the curator\'s route and limits share the server\'s file; null for natsumi\'s route is an override kept like any other (ADR 0068)', () => withData(async (data, state) => {
+  await writeOverride(data, 'curatorRoute', null, NOW);
+  await writeOverride(data, 'curatorTimeoutMinutes', 45, NOW);
+  assert.deepEqual((await readJson(join(state, RUNTIME_SETTINGS_FILE))).overrides, { curatorRoute: null, curatorTimeoutMinutes: 45 });
+  assert.deepEqual(await readOverrides(data), { values: { curatorRoute: null, curatorTimeoutMinutes: 45 }, ignored: [] });
+  await writeOverride(data, 'curatorModelCalls', 90, NOW);
+  assert.deepEqual((await readOverrides(data)).values, { curatorRoute: null, curatorTimeoutMinutes: 45, curatorModelCalls: 90 }, 'writing one keeps the null');
+  await clearOverride(data, 'curatorRoute', NOW);
+  assert.deepEqual((await readOverrides(data)).values, { curatorTimeoutMinutes: 45, curatorModelCalls: 90 });
+  await writeOverride(data, 'curatorRoute', 'plus', NOW);
+  assert.equal((await readOverrides(data)).values.curatorRoute, 'plus');
+}));

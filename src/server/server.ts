@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { SdkA2AClient } from './a2a-client.ts';
 import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
+import { AGENTS_REGISTRATION, replyPlaceOf } from './agent-replies.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { loadAvatar } from './avatar.ts';
 import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from './avatar-manual.ts';
@@ -37,15 +38,21 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
+import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
+import { Uploads } from './uploads.ts';
 
 const SESSION_SWEEP_MS = 30_000;
 /** How often approvals past their time are closed. A minute late is nothing against a week (ADR 0040). */
 const APPROVAL_SWEEP_MS = 60_000;
+/** How often the files of the chat left unsent are looked for. An hour late is nothing against the day they wait (ADR 0071). */
+const UPLOAD_SWEEP_MS = 60 * 60_000;
+/** Where a file of the chat is written while it comes, in the server's own state (ADR 0071). */
+const UPLOAD_STAGING_DIRECTORY = 'uploads';
 
 export interface StartOptions {
   config: string;
@@ -70,6 +77,8 @@ export interface StartOptions {
   streamBufferSize?: number;
   /** Replaces the APNs hosts and the waits between tries. Tests point them at a local stand-in. */
   apns?: { origins?: Record<ApnsEnvironment, string>; retryDelaysMs?: number[] };
+  /** Replaces the posting of a Web Push (ADR 0070). Tests stand in for the push services. */
+  webPush?: { send?: (request: WebPushRequest) => Promise<number> };
   /** Replaces `a2a.pollIntervalSeconds`, whose floor is too long for a test. */
   a2a?: { pollIntervalMs?: number };
   /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
@@ -148,6 +157,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let db: DatabaseSync | undefined;
   let hub: ConnectionHub | undefined;
   let notifier: PushNotifier | undefined;
+  let webNotifier: WebPushNotifier | undefined;
   let apns: ApnsClient | undefined;
   let loop: ThinkingLoop | undefined;
   let listener: Listener | undefined;
@@ -164,6 +174,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
+    webNotifier?.close();
     apns?.close();
     await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
     try {
@@ -196,7 +207,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       judgeLogprobs: judges?.logprobs?.enabled ? 'on' : 'off', judgeJev: judges?.jev?.enabled ? 'on' : 'off',
       judgeAdopted: judges?.adopted ?? JUDGE_DEFAULTS.adopted,
       judgeLogprobsThresholds: judges?.logprobs?.thresholds ?? JUDGE_DEFAULTS.thresholds,
-      judgeJevThresholds: judges?.jev?.thresholds ?? JUDGE_DEFAULTS.jev.thresholds, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined } } });
+      judgeJevThresholds: judges?.jev?.thresholds ?? JUDGE_DEFAULTS.jev.thresholds, judgeAvailable: { logprobs: judges?.logprobs !== undefined, jev: judges?.jev !== undefined },
+      // The curator's night (ADR 0068). A route without the owner's own endpoint reaches an outside service, such as Plus.
+      curatorRoute: config.curator.route ?? null, curatorModelCalls: config.curator.modelCalls, curatorTimeoutMinutes: config.curator.timeoutMinutes,
+      outsideRoutes: config.pi.routes.filter(route => route.compatible === undefined).map(route => route.name) } });
     // The page on drawing and the sdctl params, for the workspace to read as /manual/avatar (ADR 0057).
     await writeAvatarManual(join(dataDirectory, AVATAR_MANUAL_DIRECTORY), avatar);
     // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).
@@ -213,15 +227,21 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     for (const key of config.loop.ignored ?? []) log(`config: ${key} is no longer read (ADR 0063); it can be deleted`);
     // The images she hands the server from /work (ADR 0044), fetched by the devices by their IDs.
     const images = new ImageStore(db, join(dataDirectory, STATE_DIRECTORY, IMAGE_DIRECTORY));
+    // The files the owner attaches in the chat, put under sources/uploads (ADR 0071). They need no source: they are
+    // told of by the message that carries them, never by sources_updated.
+    const uploads = new Uploads({ db, sourcesDirectory: join(dataDirectory, SOURCES_DIRECTORY),
+      stagingDirectory: join(dataDirectory, STATE_DIRECTORY, UPLOAD_STAGING_DIRECTORY), limits: config.uploads, now });
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
       timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
-    // The core that tells her what changed in them (ADR 0050), when there is anything to read. A history that cannot be
-    // kept leaves her the files and no events; the server still starts.
-    let sources: Sources | undefined = archive ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
+    // the outside agents (ADR 0069). A history that cannot be kept leaves her the files and no events, and no agent can
+    // be asked; the server still starts.
+    let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
-    sources?.register(SLACK_REGISTRATION);
+    if (archive) sources?.register(SLACK_REGISTRATION);
+    if (config.a2a) sources?.register(AGENTS_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -262,10 +282,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
       ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
-      settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours() },
+      settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
       ...(manualIndex ? { manualIndex } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
-      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images,
+      ...(config.a2a && sources ? { agentReplies: replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) } : {}),
+      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
     });
     raiseInto = thinkingLoop;
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
@@ -323,10 +344,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
     const registrations = new PushRegistrations(db, now);
+    const subscriptions = new WebPushSubscriptions(db, now);
+    const vapid = await loadVapidKey(join(dataDirectory, STATE_DIRECTORY, VAPID_KEY_FILE));
     // The browser's cookie (ADR 0058): the dashboard, the chat and the settings, the images, and /v1/ws with our Origin.
     const browser = new BrowserSessions({ sessions, allowedUserId, publicOrigin: config.publicOrigin, now });
     const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize, avatarVersion: avatar.version,
+      uploadLimits: config.uploads,
       ...(theDove ? { approvals: { pending: () => theDove.pendingApprovals(), decide: input => theDove.decide(input),
         subscribe: listener => theDove.subscribe(listener) } } : {}),
       settings: { view: () => settings.view(), list: () => settings.list(), set: input => settings.set(input), reset: input => settings.reset(input),
@@ -347,6 +371,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       renew: sessionId => sessions.renew(sessionId),
       push: {
         register: (deviceId, payload) => {
+          // The hub lets a subscription in from a browser only (ADR 0070).
+          if ('subscription' in payload) {
+            const subscription = parseSubscription(payload.subscription);
+            if (!subscription) return { kind: 'rejected', code: 'invalid-request' };
+            subscriptions.save(deviceId, subscription);
+            return { kind: 'accepted' };
+          }
           const registration = parseRegistration(payload);
           if (!registration) return { kind: 'rejected', code: 'invalid-request' };
           registrations.save(deviceId, registration);
@@ -367,6 +398,12 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     } else {
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
+    // Pushes to the browsers that are away (ADR 0070): the VAPID key is the server's own, so this needs no config.
+    webNotifier = new WebPushNotifier({
+      loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), subscriptions, vapid, subject: config.publicOrigin, allowedUserId,
+      isConnected: deviceId => connections.isConnected(deviceId), log, now, name: avatar.name, iconOrigin: config.publicOrigin,
+      ...(options.webPush?.send ? { send: options.webPush.send } : {}),
+    });
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const dashboard = new Dashboard({ publicOrigin: config.publicOrigin, allowedUserId, sessions, browser, login, loop: thinkingLoop, dataDirectory,
       name: avatar.name, avatarId: avatar.id,
@@ -375,7 +412,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
-        webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory }),
+        webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
+          pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
+        uploads,
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 
@@ -426,6 +465,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       if (event.type === 'model.routes') void settings.refresh().catch(() => { log('settings: the overrides could not be read'); });
     });
     timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
+    // What a previous process left unsent goes on the first sweep, which is now.
+    const sweepUploads = () => { void uploads.sweep().catch(() => { log('uploads: the unsent files could not be cleared away'); }); };
+    sweepUploads();
+    timers.push(setInterval(sweepUploads, UPLOAD_SWEEP_MS));
 
     let stopping: Promise<void> | undefined;
     const database = db;

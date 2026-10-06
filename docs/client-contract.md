@@ -92,13 +92,13 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | クライアント command | payload | サーバーの結果 |
 | --- | --- | --- |
 | `session.sync` | `resume`: 前回の epoch/streamId/seq または null | 下記「端末の登録と stream」 |
-| `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / `service.unavailable` |
+| `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId。任意で uploadIds（上げたファイルの ID の配列、1 つ以上。あれば text は空でもよい） | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / upload-not-found / too-many-uploads / `service.unavailable`。下記「ファイルの添付」 |
 | `conversation.read` | throughMessageId（会話の messageId） | `command.accepted`（readThroughMessageId、unreadReplyCount。手前の位置なら今の位置）、または invalid-request / `service.unavailable`。下記「既読と知らせの確認」 |
 | `conversation.interrupt` | — | 受け付けない（`not-implemented`）。進行中の思考は外から止めない |
 | `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel / broadcast） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
-| `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
+| `push.register` | token、publicKey、environment（ブラウザは subscription） | `command.accepted`（environment。ブラウザは中身なし）、または invalid-request。下記「iPhone への通知」「ブラウザへの通知」 |
 | `model.list` | — | `command.accepted`（`modelRoutes` と同じ形: defaultRoute、current、chosen、routes）、または `service.unavailable`。下記「モデルの経路」 |
 | `model.use` | route（経路の名前） | `command.accepted`（chosen、current）、または unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「モデルの経路」 |
 | `settings.list` | — | `command.accepted`（settings: 設定の一覧）、または `service.unavailable`。下記「実行中の設定」 |
@@ -225,6 +225,9 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `judgeAdopted` | 採用する判定。`"logprobs"` / `"jev"`。採用する方が答えなければもう一方で決める | 次の下書きから |
 | `judgeLogprobsThresholds` | logprobs の判定のしきい値 `{"owner":0.5,"return":0.9}`。どちらも 0 より大きく 1 以下、owner ≦ return。owner 以上で本人へ回し、return 以上で突き返す | 次の下書きから |
 | `judgeJevThresholds` | Jev の判定のしきい値。形と規則は `judgeLogprobsThresholds` と同じ | 次の下書きから |
+| `curatorRoute` | 記憶の整理係の経路（[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。経路の名前（config にあり、使える状態のもの）、または `null`（そのときなつみが使っている経路）。config の値は `curator.route`（無ければ `null`） | 次の係の夜から |
+| `curatorModelCalls` | 係の夜の工程ごとのモデルの呼び出しの上限。1 以上の整数。工程ごとにまるごと使える | 次の係の夜から |
+| `curatorTimeoutMinutes` | 係の夜の工程ごとの時間の上限（分）。1 以上の整数。工程ごとにまるごと使える | 次の係の夜から |
 
 一覧（`settings`: `session.snapshot` の欄、`settings.list`・`settings.set`・`settings.reset` の答え、`settings.changed` の payload）は、key ごとに次の欄を持つオブジェクトである。
 
@@ -237,9 +240,11 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 | `routes` | `modelRoute` だけ。経路の一覧（上記「モデルの経路」の `routes` と同じ形） |
 | `timeZone` | `awakeHours` だけ。時間帯の IANA タイムゾーン（config の値。端末からは変えない） |
 | `available` | `judgeLogprobs` と `judgeJev` だけ。config にその判定の接続先があるか。false なら `"on"` にできない |
+| `night` | `curatorRoute` だけ。次の係の夜が動く経路の名前。`value` が `null` なら、なつみが選んでいる経路（`modelRoute` の `value`） |
+| `outside` | `curatorRoute` だけ。外のサービスにつながる経路（本人のエンドポイントでない経路。ChatGPT Plus など）の名前の一覧。係はその経路の接続先へ、毎晩、記憶とその日の会話の本文を送る |
 
 ```json
-{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false},"judgeLogprobsThresholds":{"value":{"owner":0.5,"return":0.9},"config":{"owner":0.5,"return":0.9},"overridden":false},"judgeJevThresholds":{"value":{"owner":0.6,"return":0.95},"config":{"owner":0.5,"return":0.9},"overridden":true}}
+{"modelRoute":{"value":"plus","config":"local","overridden":true,"inUse":"local","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"example-plus-model","ready":true}]},"turnFold":{"value":"off","config":"off","overridden":false,"inUse":"off"},"eventModelCalls":{"value":12,"config":8,"overridden":true},"eventTimeoutMinutes":{"value":10,"config":10,"overridden":false},"reviewModelCalls":{"value":40,"config":40,"overridden":false},"reviewTimeoutMinutes":{"value":30,"config":30,"overridden":false},"awakeHours":{"value":{"start":"07:00","end":"23:00"},"config":{"start":"07:00","end":"23:00"},"overridden":false,"timeZone":"Asia/Tokyo"},"pingIntervalMinutes":{"value":false,"config":180,"overridden":true},"judgeLogprobs":{"value":"on","config":"on","overridden":false,"available":true},"judgeJev":{"value":"on","config":"off","overridden":true,"available":true},"judgeAdopted":{"value":"logprobs","config":"logprobs","overridden":false},"judgeLogprobsThresholds":{"value":{"owner":0.5,"return":0.9},"config":{"owner":0.5,"return":0.9},"overridden":false},"judgeJevThresholds":{"value":{"owner":0.6,"return":0.95},"config":{"owner":0.5,"return":0.9},"overridden":true},"curatorRoute":{"value":null,"config":null,"overridden":false,"night":"plus","outside":["plus"]},"curatorModelCalls":{"value":100,"config":100,"overridden":false},"curatorTimeoutMinutes":{"value":45,"config":60,"overridden":true}}
 ```
 
 - `settings.set`（payload `{"key":"eventModelCalls","value":12}`）は、値を config と同じ規則で確かめてから上書きを書き、変えた後の一覧を `command.accepted` で返す。
@@ -247,6 +252,8 @@ natsumi が動いている最中に変えられる設定を、端末から読み
   - 知らない key は `unknown-setting`、規則に合わない値は `invalid-value`、key が文字列でない・空・64 文字を超える、または value が無いと `invalid-request`。
   - `modelRoute` は `model.use` と同じ処理を通る。config に無い経路は `unknown-route`、使える状態にない経路は `route-unavailable`。
   - `judgeLogprobs`・`judgeJev` を `"on"` にするとき、config にその判定の接続先が無ければ `judge-unavailable`。`"off"` はいつでも受け付ける。
+  - `curatorRoute` は、なつみの経路を動かさない。config に無い経路は `unknown-route`、使える状態にない経路は `route-unavailable`。`null` はいつでも受け付ける。
+    上書きした経路が後で config から消えたら、config の値（それも無ければなつみの経路）で動く。
 - `settings.reset`（payload `{"key":"eventModelCalls"}`）は上書きを消し、戻した後の一覧を返す。上書きが無くても受け付ける（何も変わらなければ `settings.changed` は届かない）。
   `modelRoute` を戻すと、既定の経路へ次のターンの前に移る。
 - 2 つの端末から同時に変えても、1 つずつ順に書かれ、どちらも失われない。
@@ -258,7 +265,7 @@ natsumi が動いている最中に変えられる設定を、端末から読み
 ## 会話の画像
 
 natsumi は返事（kind: reply）に画像を添えることがある（[ADR 0045](adr/0045-showing-the-owner-images-with-a-reply.md)）。
-知らせ（kind: notice）と本人のメッセージには画像は付かない。
+知らせ（kind: notice）には画像は付かない。本人のメッセージに添えたファイル（画像を含む）は `images` ではなく `attachments` で表す（下記「ファイルの添付」）。
 
 `conversation.message` と `session.snapshot` の `messages` の要素のうち、画像の添えられた返事だけが `images` を持つ。
 `images` は 1 つ以上の要素の配列で、natsumi が並べた順（表示する順）である。1 つの返事に付くのは 4 枚までである。
@@ -282,6 +289,56 @@ natsumi は返事（kind: reply）に画像を添えることがある（[ADR 00
 - `images` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
 - 画像が取れないとき（404、つながらない）は、画像の場所に取れなかったことを示し、本文はそのまま出す。
 - iPhone の通知には画像は載らない。本文の末尾に画像の枚数の印が付く（下記「iPhone への通知」の「e の暗号」）。
+
+## ファイルの添付
+
+本人は、メッセージにファイルを添えられる（[ADR 0071](adr/0071-attaching-files-to-a-chat-message.md)）。種類は問わない。
+ファイルは先に HTTP で 1 つずつ上げ、送るときに `conversation.send` の `uploadIds` で ID を並べる。いまはブラウザが使い、Mac・iPhone も同じ道を使える。
+
+### 上げる
+
+- `POST /v1/uploads?name=<元のファイル名を URL エンコードしたもの>`。本文はファイルのバイトそのもの（`Content-Type` は見ない）。
+- 認証は `Authorization: Bearer <token>`（アプリ）か、セッションの cookie（ブラウザ）。cookie で上げるときは Origin が `publicOrigin` でなければならない。
+  bearer があれば cookie は見ない。使うたびにセッションが延びる。
+- 成功すると `201` で、上げたファイルを次の形で返す。`mimeType`・`width`・`height` は中身で PNG・JPEG・WebP と分かったときだけ付く。
+  `name` はサーバーが直した名前（パスの区切りの前は捨て、制御文字を `_` に、先頭の `.` を `_` に、200 バイトまでに縮める。空なら `file`）。
+
+```json
+{"uploadId":"upload-00000000-0000-4000-8000-000000000000","name":"報告書.pdf","bytes":120034}
+```
+
+| 応答 | 意味 |
+| --- | --- |
+| `401` `unauthorized` | セッションが無い・切れている |
+| `403` `origin-not-allowed` | cookie を publicOrigin 以外の Origin から出した |
+| `413` `too-large` | 1 ファイルの上限（既定 25MB、`uploads.maxFileBytes`）を超えた。接続は閉じられる |
+
+- 上限は `session.snapshot` の `uploads`（`maxFileBytes`・`maxFiles`）でも知らされる。端末は上げる前に確かめてよい。
+- 上げたが送らなかったファイルは、1 日経つとサーバーが片付ける。取り消す口は無い（消したいときは送らなければよい）。
+
+### 送る
+
+- `conversation.send` の `payload.uploadIds` に、送るファイルの ID を表示する順に並べる。1 つのメッセージに `uploads.maxFiles`（既定 10）個まで。
+- 同じアカウントが上げて、まだどのメッセージにも付いていないファイルだけを付けられる。違えば `upload-not-found`、多すぎれば `too-many-uploads`、
+  同じ ID を 2 度並べたら `invalid-request`。
+- 同じ requestId の送り直しは、text と uploadIds が同じなら最初の結果で答える。違えば `request-conflict`。
+- 付けたファイルは、そのメッセージのものになる。ほかのメッセージには付けられない。
+
+### 会話の記録
+
+- 本人のメッセージ（kind: message）は、ファイルが付いていれば `attachments` を持つ。送った順である。
+
+| 欄 | 内容 |
+| --- | --- |
+| `uploadId` | ファイルの ID。取得の道に使う |
+| `name` | 上げたときに直した名前 |
+| `bytes` | バイト数 |
+| `mimeType`・`width`・`height` | PNG・JPEG・WebP と分かったときだけ。大きさはヘッダーから読めたときだけ 2 つそろって付く |
+
+- 中身は `GET /v1/uploads/<uploadId>` で取る（会話の画像と同じく、bearer か、cookie。GET は Origin を見ない）。メッセージに付いたものだけを返し、ほかは 404。
+  画像はその種類で返し（`<img src>` に使える）、ほかは `application/octet-stream` と `Content-Disposition: attachment` で返す。
+- `attachments` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
+- なつみには ID を見せない。見せるのは置き場所（`/sources/uploads/<UTC の日時>-<16 進 4 桁>/<名前>`）である。
 
 ## アバター
 
@@ -493,6 +550,52 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 - アプリはバッジを直し、届いている通知のうち、`position` が `readThroughPosition` 以下の返事と、確認済みの知らせを消す。
 - background push は iOS が間引くので確実には届かない。アプリは前に戻ったとき、同期した状態に合わせて通知とバッジを片づける。
 
+## ブラウザへの通知
+
+ブラウザは、閉じている間の返事・知らせ・承認待ちを Web Push で受けられる（[ADR 0070](adr/0070-web-push-to-the-browser.md)）。
+送り先を決める規則は iPhone と同じで、購読があり、その端末のセッションが生きていて、**いま接続していない**端末に送る。
+
+### 登録
+
+ブラウザは購読したとき（設定の画面の「通知を受け取る」）と、その後の同期のたびに、`push.register` を送る。
+
+```json
+{"subscription":{"endpoint":"https://push.example.test/send/abc","keys":{"p256dh":"BNcR…","auth":"tBHI…"}}}
+```
+
+- `subscription` は `PushSubscription.toJSON()` の形のまま送ってよい（`expirationTime` は見ない）。
+  `endpoint` は https の URL、`keys.p256dh` は P-256 の公開鍵（非圧縮、65 バイト）、`keys.auth` は 16 バイトで、どちらも base64url である。
+- 購読は VAPID の公開鍵（ページの `<meta name="natsumi-push-key">`）を `applicationServerKey` にし、`userVisibleOnly: true` で作る。
+- 受け付けると `command.accepted`（中身なし）が返る。形が合わなければ `invalid-request`。bearer の接続（アプリ）からの `subscription` も断る。
+- 購読は端末ごとに 1 つで、送るたびに上書きする。同じ endpoint を別の端末が登録すると、前の端末の購読は消える。
+- 解除のコマンドは無い。ブラウザで購読を止めると、push service が 404 か 410 を返し、そのときサーバーが購読を消す。
+  ブラウザが購読を止められなかったとき（`unsubscribe()` が例外を投げた、または `false` を返した）は、通知は届き続けるので「止めた」と出さない。
+  受け取る状態のまま止められなかったことを伝え、同期のたびの登録も続ける。
+- サーバーの VAPID の鍵が作り直されると、古い鍵の購読への push は 401・403 で断られ、サーバーは消さない。ブラウザはページを開いたときに購読の `applicationServerKey` とページの鍵を比べ、違えば購読し直して登録する。
+- タブが開いていてつながっている間は、見えていなくても送らない。
+
+### いつ何を送るか
+
+| きっかけ | 送るもの |
+| --- | --- |
+| 返事（kind: reply）・知らせ（kind: notice）を記録した | 本文 |
+| 承認待ちができた（`approval.pending`） | 承認待ちの見出しと下書き |
+
+既読・確認・承認が閉じたことは送らない（ブラウザは届いた push をすべて通知として出す）。1 回だけ送り、送り直さない。
+push service が 404 か 410 を返すと、その購読を消す。
+
+push は RFC 8291 の `aes128gcm` で購読の鍵に暗号化し、VAPID（RFC 8292、ES256。`aud` は endpoint のオリジン、`exp` は 12 時間後、`sub` は `publicOrigin`）を付けて POST する（redirect は追わない）。Apple の push service は https でない・localhost の `sub` を 403 で断る。
+ヘッダーは `Authorization: vapid t=<JWT>, k=<公開鍵>`、`Content-Encoding: aes128gcm`、`TTL: 86400`、`Urgency: high`。平文は UTF-8 の JSON である。
+
+```json
+{"title":"なつみ","tag":"message-example","text":"猫を描いてみました。（画像 1 枚）","expression":"happy","icon":"https://natsumi.example.net/avatar/happy.png"}
+{"title":"なつみ","tag":"approval-example","text":"承認待ちがあります（work/#dev）\n明日は 10 時からなら大丈夫です。"}
+```
+
+- `title` はアバターの表示名、`tag` は messageId か approvalId である。
+- `text`・`expression`・`icon` は iPhone の `e` の平文と同じ規則で作る（上記「e の暗号」の切り方と画像の印）。1 つの record（平文 3993 バイト）に収まらなければ、さらに短く切る。
+- service worker は `title` と `text` と `icon` で通知を出し、`tag` で同じ行の通知をまとめる。押されたら、開いているタブを前に出すか、`/` を開く。
+
 ## 承認と外部実行
 
 ### Slack の投稿の承認
@@ -579,7 +682,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 ## ブラウザ
 
 ブラウザは、`/` でなつみと話し、`/settings` で実行中の設定を変える、もう 1 台の端末である（[ADR 0058](adr/0058-settings-and-chat-in-the-browser.md)）。
-開いている間だけの端末で、通知は受けない。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
+閉じている間の返事と知らせは、Web Push で受けられる（下記「ブラウザへの通知」、[ADR 0070](adr/0070-web-push-to-the-browser.md)）。読み取り専用のダッシュボード（`/dashboard`、[ADR 0049](adr/0049-a-read-only-dashboard-in-the-browser.md)）とはリンクで行き来する。
 
 ### ログインと cookie
 
@@ -599,6 +702,9 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
   サーバーは束を checkout の `dist/web/`（image では `/app/dist/web/`）から読む。
 - CSP は `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://<publicOrigin のホスト>; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` である。
   inline の script と style、`eval`、ほかのオリジンからの読み込みはできない。
+- HTML の head には、Web App Manifest（`<link rel="manifest" href="/app/manifest.webmanifest">`）と、Web Push の VAPID の公開鍵（`<meta name="natsumi-push-key" content="…">`、base64url）が載る。
+  manifest はサーバーがアバターから作り（名前は表示名、アイコンは `/avatar/neutral.png`）、ログイン無しで取れる。
+- service worker は束の `/app/sw.js` である。サーバーはこのファイルにだけ `Service-Worker-Allowed: /` を付けるので、scope `/` で登録できる。
 
 ### WSS への接続
 
@@ -607,7 +713,9 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 - つないだ後は、上記「端末の登録と stream」と同じである。最初の `session.sync` で deviceId を受け取り、手元（localStorage など）に控えて、次の接続の envelope に付ける。
 - 話す（`conversation.send`）、既読（`conversation.read`）、知らせの確認（`notification.ack`）、承認（`approval.decide`）、経路（`model.*`）、設定（`settings.*`）は、Mac・iPhone と同じに使える。
   承認は外に作用するので、押し間違いの確認は画面の側で行う。
-- `push.register` は `command.rejected`（`invalid-request`）で断られる。ブラウザがつながっていても、iPhone への通知は止まらない（通知の判定は端末ごとで、ブラウザは登録を持たない）。
+- `push.register` は Web Push の購読（`subscription`）だけを受け付け、APNs の登録（`token`・`publicKey`・`environment`）は `command.rejected`（`invalid-request`）で断られる（下記「ブラウザへの通知」）。
+  ブラウザがつながっていても、iPhone への通知は止まらない（通知の判定は端末ごとである）。
+- ファイルの添付（上記「ファイルの添付」）は、`fetch('/v1/uploads?name=…', { method: 'POST', body: file })` で上げる。ブラウザが cookie と Origin を付ける。
 - 返事の画像（`images`）は `GET /v1/images/<imageId>` を cookie 付きで取る（`<img src>` でよい。同じオリジンなので cookie が付く）。
   URL は imageId だけで決め、クエリを足さない。同じ URL なら、ブラウザは一度取った画像を HTTP のキャッシュから出す（上記「承認と外部実行」の「画像」）。
   このキャッシュはログアウトしても端末に残る。
@@ -618,8 +726,9 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 `npm run fake-server -- [--bundle <dir>]` は、GitHub もモデルも使わずにブラウザの画面を試すための偽のサーバーである（`http://localhost:8787`）。
 
 - `/`・`/settings` を cookie 無しで開くと `/fake-login?to=<戻り先>` に回され、そこで cookie `natsumi_session=fake-session` が付いて戻る。テストはこの cookie を自分で付けてもよい。
-- `/v1/ws` は、cookie があって Origin が `http://localhost:<port>` でなければ 403 を返す。cookie でつないだ接続の `push.register` は断る。
+- `/v1/ws` は、cookie があって Origin が `http://localhost:<port>` でなければ 403 を返す。cookie でつないだ接続の `push.register` は、`subscription` なら受け付け（何も送らない）、APNs の登録なら断る。
 - `settings.*` は本物と同じ規則で答え、ログアウト（`POST /auth/logout`、または同じオリジンからの `POST /dashboard/logout`）で config の値に戻る。
+- `POST /v1/uploads` と `GET /v1/uploads/<uploadId>` を本物と同じ形で答える。ファイルはメモリにだけ持つ。
 - 束は `--bundle` のディレクトリ（省略すると本物と同じ場所）から配る。
 
 ## 通知と定期処理

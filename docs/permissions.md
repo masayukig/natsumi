@@ -30,6 +30,7 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | 思考ループのモデル（本人が動かす OpenAI 互換のエンドポイント） | エンドポイントの API キー（`Authorization: Bearer`）。経路ごとに別のキーを指せ、キーはその経路の接続先にしか送りません | `pi.routes.<名前>.model.provider` = `natsumi-compatible`（または `natsumi-compatible-<何か>`）、`pi.routes.<名前>.compatible.baseUrl`、`pi.routes.<名前>.compatible.apiKeyEnv` / `apiKeyFile`（秘密） | `pi.routes.<名前>.compatible.baseUrl` のホスト（https。http は loopback だけ） | 同上。キーは起動時ではなく、思考ループがモデルの runtime を作るときに読みます。差し替えは再起動で効きます | [0004](adr/0004-pi-tool-and-voice-boundaries.md)、[0046](adr/0046-named-model-routes-switched-by-hand.md) |
 | Mac・iPhone のログイン（GitHub） | GitHub の OAuth App。scope は要求しません。GitHub のアクセストークンは数値 ID の確認にだけ使い、保存しません。入れるのは `allowedUserId` の 1 人だけです | `github.clientId`、`github.clientSecretEnv` / `clientSecretFile`（秘密）、`github.callbackUrl`、`github.allowedUserId` | `github.com`（code の交換）、`api.github.com`（数値 ID の取得） | `github` は必須です。無い・secret が読めないと起動を止めます | [0002](adr/0002-client-events-and-approvals.md)、[0006](adr/0006-github-login-and-transport.md) |
 | iPhone への通知（APNs） | APNs の token 認証の鍵（.p8、P-256）。サーバーが JWT を作ります（発行者はチームの ID、`kid` は鍵の ID）。`apns-topic` はアプリの bundle ID です | `apns.teamId`、`apns.keyId`、`apns.topic`、`apns.keyEnv` / `keyFile`（秘密） | `api.push.apple.com`（配布したアプリ）、`api.sandbox.push.apple.com`（開発用に署名したアプリ）。iPhone が登録した環境で決まります | `apns` が無ければ送りません（iPhone の登録は受け付けて記録します）。`apns` があって鍵が読めない・P-256 でなければ起動を止めます | [0029](adr/0029-push-notifications-on-the-iphone.md) |
+| ブラウザへの通知（Web Push） | サーバーが作る VAPID の鍵（P-256、`.natsumi/web-push-key.pem`）。送るたびに ES256 の JWT を作ります（`aud` は endpoint のオリジン、`sub` は `publicOrigin`）。本文は購読の鍵で暗号化します（`aes128gcm`） | なし | ブラウザが購読した push service の endpoint（https。例: Chrome は Google、Firefox は Mozilla） | 購読が無ければ送りません。push service が 404・410 を返した購読は消します | [0070](adr/0070-web-push-to-the-browser.md) |
 | 外のエージェントに頼む（A2A） | 呼び出しの token（相手が確かめる ServiceAccount の token、audience `a2a`）。Kubernetes では Pod に差し込まれる projected token です。token は `a2a.agents` の URL にだけ送り、Agent Card は token なしで取ります。返事の画像の成果物も、その URL と同じ origin のものだけを同じ token で取ります（リダイレクトはたどりません） | `a2a.tokenFile`（秘密。ファイルだけ）、`a2a.agents.<名前>.url` | 各 `a2a.agents.<名前>.url` のホスト（https。http は loopback だけ） | `a2a` が無ければ `ask_agent` は頼まずに断ります。token が読めなければ、その呼び出しは何も送らずに失敗します | [0025](adr/0025-talking-to-outside-agents-over-a2a.md)、[0033](adr/0033-running-on-kubernetes.md)、[0035](adr/0035-asking-outside-agents-and-hearing-back.md)、[0036](adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[0048](adr/0048-bringing-in-images-an-agent-hands-back.md) |
 | Slack を受け取る | ワークスペースごとの bot token（`xoxb-`）と app-level token（`xapp-`、`connections:write`）。bot の scope は発言・チャンネル・DM・利用者・添付・リアクションを読むもの、メンションの受け取り、👀 を付ける `reactions:write` です（下の「Slack の scope」） | `slack.workspaces.<名前>.botTokenEnv` / `botTokenFile`、`appTokenEnv` / `appTokenFile`（どれも秘密） | `slack.com`（Web API と Socket Mode の接続先の取得）、Socket Mode の WebSocket（`wss-primary.slack.com` など、Slack が接続のたびに返すホスト）、`files.slack.com`（添付の画像と PDF。bot token を付けて取ります） | `slack` が無ければ Slack にはつなぎません。token の参照が読めなければ起動を止めます。token が違う・App の設定が足りないと、そのワークスペースだけ `could not start` をログに出して動きません。`reactions:read` とリアクションのイベントが無ければ、リアクションは埋め直しで取れた分だけがファイルに書かれます | [0012](adr/0012-slack-and-colleagues.md)、[0039](adr/0039-slack-as-files-and-a-scored-dove.md)、[0043](adr/0043-reactions-in-the-channel-files.md)、[0066](adr/0066-reading-pdfs-posted-in-slack.md) |
 | Slack に投稿する（ポッポさん） | 上と同じ bot token。`chat:write`、`chat:write.customize`（表情のアイコン）、`reactions:write`、`emoji:read`（カスタム絵文字の一覧）、`files:write`（画像の投稿） | 上と同じ。画像の大きさと枚数の上限は `slack.postImages` | `slack.com`。画像の中身は、Slack が `files.getUploadURLExternal` で返すアップロード先（`files.slack.com`）へ送ります。そこへは bot token を付けません。アイコンは Slack が `/avatar/<表情>.png` を取りに来ます（下の「入ってくるもの」） | `emoji:read` が無ければ標準の絵文字だけで確かめます。`chat:write.customize` が無ければ bot の既定のアイコンになります。`files:write` が無ければ画像付きの投稿は届きません | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md)、[0041](adr/0041-approving-slack-posts-on-the-iphone.md)、[0042](adr/0042-any-emoji-that-exists.md)、[0044](adr/0044-drawing-with-sdctl-and-posting-images.md) |
@@ -37,9 +38,12 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | ポッポさんの判定（`jev`） | TypeSafe AI の Jev の API キー（任意）。下書きと返信先の周りの発言を送ります。`logprobs` と同時に使え、有効な間は採用していなくても投稿のたびに呼びます（従量課金） | `slack.judge` の Jev の判定（接続先・`apiKeyEnv` / `apiKeyFile`（秘密）・model・しきい値）。書いたときだけ有効です。有効・無効と採用する方は設定 `judgeJev`・`judgeAdopted` でも上書きできます | `api.typesafe.ai`（既定）か、Jev の判定の接続先のホスト | 同上 | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md)、[0059](adr/0059-two-judges-side-by-side-and-fewer-issues.md) |
 | 証明書の取得（ACME） | サーバーが作る ACME のアカウント鍵。CA の利用規約に同意して登録します | `listen.tls.acme.directoryUrl`、`listen.tls.acme.contactEmail`、`listen.tls.acme.httpPort` | `listen.tls.acme.directoryUrl` のホスト（既定 `acme-v02.api.letsencrypt.org`） | `acme` を使わないなら要りません（証明書ファイルか、手前のプロキシで TLS を終端）。取得できるまで HTTPS の待ち受けを開きません | [0007](adr/0007-acme-and-fixed-ipv6.md)、[0033](adr/0033-running-on-kubernetes.md) |
 
-記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち `curator.route` の経路
-（書かなければ、そのときなつみが使っている経路）で動き、同じ credential を使います。毎晩、記憶の全ファイルの一覧と見出し、
-係が読んだファイルの中身がその経路の接続先へ送られます。本人のエンドポイントの外の経路を選ぶと、記憶がそこへ出ます。
+記憶の整理係（[ADR 0055](adr/0055-a-memory-curator-at-night.md)）は、上の思考ループのモデルの経路のうち、設定 `curatorRoute`（`/settings` で選んだもの）、
+それが無ければ `curator.route` の経路（どちらも無ければ、そのときなつみが使っている経路）で動き、同じ credential を使います（[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+毎晩、工程ごとに、記憶の全ファイルの一覧と見出し・節ごとの行数・日付、係が読んだファイルの中身がその経路の接続先へ送られます。
+最初の 2 つの工程（出来事から知識へ・古い記憶）には、その日の会話の本文（マスターの言葉、なつみの返事と知らせ・Slack への投稿、
+なつみが読んだ記憶のパスと探した言葉。`curator.conversationMaxChars` まで）も送られます。
+本人のエンドポイントの外の経路（ChatGPT Plus など、`compatible` を持たない経路）を選ぶと、記憶と会話の本文がそこへ出ます。`/settings` の画面は、そうした経路に印を付け、次の夜がそこで動くときはそう示します。
 
 サーバーは記憶の git を push しません（push するのは本人です）。Google などほかの外部サービスには、今はつなぎません。
 
@@ -64,6 +68,8 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | ログインのセッション | `.natsumi/state.sqlite` | bearer token（ブラウザでは cookie `natsumi_session` に載せたセッション）の SHA-256 だけを持ちます。token そのものは持ちません | [0006](adr/0006-github-login-and-transport.md)、[0030](adr/0030-a-session-that-lasts-while-it-is-used.md)、[0049](adr/0049-a-read-only-dashboard-in-the-browser.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | なつみが渡した画像の写し | data directory の `.natsumi/images/`（ディレクトリ 0700、ファイル 0600）と `.natsumi/state.sqlite` | ポッポさんへの依頼と `reply_to_mac` の `images` で `/work` から写し取った画像。承認に見せ、Slack に送り、会話の返事で本人に見せるのはこれです。会話と同じく消しません。作業環境からは見えません | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md)・[0045](adr/0045-showing-the-owner-images-with-a-reply.md) |
 | iPhone の device token | `.natsumi/state.sqlite` | APNs に送る宛先。ログには出しません | [0029](adr/0029-push-notifications-on-the-iphone.md) |
+| Web Push の VAPID の鍵 | data directory の `.natsumi/web-push-key.pem`（0600） | 初めての起動でサーバーが作ります。公開鍵だけをページに載せます。読めなければ起動を止めます | [0070](adr/0070-web-push-to-the-browser.md) |
+| ブラウザの Web Push の購読 | `.natsumi/state.sqlite` | push service の endpoint と、暗号化に使う公開鍵・auth secret。endpoint はそれだけで送り先になるので、ログには出しません | [0070](adr/0070-web-push-to-the-browser.md) |
 | TLS の鍵（ファイルで渡すとき） | `listen.tls.keyFile` | 読めないと起動を止めます。Ingress の後ろでは要りません | [0006](adr/0006-github-login-and-transport.md)、[0033](adr/0033-running-on-kubernetes.md) |
 
 ## 入ってくるもの
@@ -78,6 +84,8 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | `POST /auth/logout` | アプリ | bearer token | セッションを失効させ、そのセッションの WebSocket を閉じます | [0006](adr/0006-github-login-and-transport.md) |
 | `/v1/ws`（WebSocket） | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。Origin があれば `publicOrigin` と一致すること。bearer が無いときだけセッションの cookie を見て、それは Origin が `publicOrigin` のときだけ受け付けます（Origin が無い・違えば 403）。bearer があれば cookie は見ません | 会話、承認、実行中の設定の読み書き、iPhone の通知の登録（cookie でつないだ接続からは断ります）。つなぐたびにセッションが延びます | [0006](adr/0006-github-login-and-transport.md)、[0029](adr/0029-push-notifications-on-the-iphone.md)、[0041](adr/0041-approving-slack-posts-on-the-iphone.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `GET /v1/images/<imageId>` | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。bearer が無ければセッションの cookie（GET だけで状態を変えず、`SameSite=Strict` なので別のサイトからは cookie が付きません）。セッションを確かめてから画像を探します | サーバーが写し取った画像（承認待ちの `images` と会話の返事の画像）。使うたびにセッションが延びます | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
+| `POST /v1/uploads`（チャットのファイルの添付） | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。bearer が無ければセッションの cookie で、Origin が `publicOrigin` のときだけ受け付けます（無い・違えば 403）。使うたびにセッションが延びます | 本文のファイルを 1 つ、`.natsumi/uploads/` に書いてから data directory の `sources/uploads/<UTC の日時>-<16 進 4 桁>/<名前>` に移します。1 ファイル `uploads.maxFileBytes`（既定 25MB）まで。超えれば 413 で断り、何も残しません。どのメッセージにも付かなかったものは 1 日で消します | [0071](adr/0071-attaching-files-to-a-chat-message.md) |
+| `GET /v1/uploads/<uploadId>` | アプリと本人のブラウザ | 上の `GET /v1/images/<imageId>` と同じ（bearer、無ければ cookie） | 本人のメッセージに付いたファイルだけ。PNG・JPEG・WebP はその種類で、ほかは `application/octet-stream` と `Content-Disposition: attachment` で返します。どちらも `nosniff` と `Content-Security-Policy: sandbox` を付けます | [0071](adr/0071-attaching-files-to-a-chat-message.md) |
 | `GET /`・`GET /settings` | 本人のブラウザ | セッションの cookie。無ければ GitHub のログインから始め、済むと開いたページに戻ります | JS の束を読み込むだけの HTML（個人データを含みません。画面は束が WebSocket で組みます）。束が無ければその旨の文だけ。CSP は `script-src 'self'`・`connect-src 'self'` と `publicOrigin` の wss・`frame-ancestors 'none'` です | [0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `GET /app/<ファイル名>` | 本人のブラウザ | なし | ブラウザの画面の JS の束と style（`.js`・`.css`・`.map`、名前だけでディレクトリは持てません）。公開のリポジトリのコードをビルドしたもので、秘密も個人データも含みません | [0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `/dashboard` の下（画面・自動更新・画像） | 本人のブラウザ | セッションの cookie（`natsumi_session`。`HttpOnly`・`Secure`・`SameSite=Strict`・`Path=/`。`allowedUserId` のセッションだけ。`Secure` は `publicOrigin` が https のときに付け、http が許される loopback の試験でだけ外れます）。以前の cookie（`natsumi_dashboard`、`Path=/dashboard`）はここでだけ 1 度受け付け、新しい cookie に移し替えます。無ければ GitHub のログインから始めます。読み取り専用で、状態を変える操作はありません（例外は下のログアウトと予約した確認の取り消し） | ターンの一覧と、思考・ツールの引数と結果・返事・一行メモの全文、画像、いまの状態、失敗と待ち、統計のグラフ、一行メモ・ポッポさん・承認の履歴・端末の一覧。ターンの中身は、Pi の session のファイル（`pi.sessionDirectory` の中だけ）から、`turn_stats` の位置の分だけを読みます。画像はそこに入っているもののうち PNG・JPEG・GIF・WebP だけを、ページに埋め込まず `/dashboard/turns/<ターン>/images/<番号>` で返します。一行メモの一覧は、各ターンの位置の終わりの付近（最大 1MB）だけを読みます。失敗と待ち（失敗した出来事、承認待ちの下書き、予約した確認の理由、外のエージェントへの依頼、夜の切り替え）、予約した確認の一覧（繰り返しの cron 式、次の時刻、理由、check_id）、ポッポさんへの依頼の下書きと送った文・判定、承認の履歴（承認を求めた文と投稿先、判定、本人の決定と直した文、決めた端末の ID、送った結果）、端末とログインのセッションの一覧は、`.natsumi/state.sqlite` から読みます。統計のグラフは、`.natsumi/state.sqlite` の `turn_stats` の数値（時間・回数・tokens・outcome）だけを、期間（最長 30 日）の分だけ集計します。セッションの token のハッシュ、push の device token と公開鍵は読み出しません。HTML はすべてエスケープし、CSP は `script-src 'self'`・`frame-ancestors 'none'` です | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md)、[0064](adr/0064-cancelling-a-self-check-from-the-dashboard.md) |
@@ -99,7 +107,9 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 なつみのツールのうち作業環境に届くのは `run_shell`・`read`・`search_memory` の 3 つで、どれもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)、[ADR 0055](adr/0055-a-memory-curator-at-night.md)）。
 `read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
 `search_memory` は `rg` を決まったオプションで `/memory` の下にだけ掛けます。検索語とパスはオプションとして解釈されない形で渡し、パスは `/memory` の外を指せません。
-夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、1 つでも当たればその夜の変更をすべて捨てます。
+夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール、まとめて消したファイルの行き先を伝えるツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、当たれば理由を伝えて 1 度だけ直させ、それでも当たればその工程の変更をすべて捨てます（前の工程のコミットは残ります。[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
+`/memory/archive/` を書けるのは係の古い記憶の工程だけで、今月のファイルへの追記と、サーバーがその夜に決めたまとめ直しのほかは検査で拒みます。なつみのターンで変わっていれば戻します。
+係の工程がファイルを改名・移動・統合したときは、その工程のコミットの後に、サーバー自身が `always.md`・`handoff.md`・`personality.md`・`INDEX.md` の中の古いパスと、すべてのファイルのリンクを置き換えてコミットします。係がなつみのファイルを変えられないことは変わりません。置き換えは runner を通らず、外にも何も送りません。
 サーバーのコンテナのファイル（ログインのファイルや secret）は、どちらからも見えません。Pi の組み込みの bash・edit・write・grep・find・ls は有効にしません。
 
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
@@ -112,6 +122,11 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 
 読み取り専用で見せるものもあります。
 
-- `/sources`: サーバーが書く読みもの（Slack のチャンネルなど）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)）。
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
+  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
+  なつみは `reply_to_mac` でそこから見せられます（サーバーが写しを取って見せます）。
+- `/sources/uploads`: 本人がチャットでメッセージに添えたファイル（[ADR 0071](adr/0071-attaching-files-to-a-chat-message.md)）。ディレクトリは 0750、ファイルは 0640 で、
+  作業環境のグループは読めるだけです。渡されたときのまま残り、なつみからは書き換えも削除もできません。サーバーも送ったものは消しません。
+  `/sources` の履歴（下の `/sources.git`）からは外していて、`sources-diff` にも `sources_updated` にも出ません。なつみは、それを付けたメッセージで置き場所を知ります。
 - `/sources.git`: `/sources` の履歴。data directory の `sources.git/` で、作業環境の `sources-diff` が読みます。commit と ref を動かすのはサーバーだけで、
   作業環境からは書けません。中身は `/sources` と同じ読みものの、数日分の差分です（[ADR 0050](adr/0050-telling-of-source-updates-with-one-event.md)）。

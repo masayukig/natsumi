@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { JudgeClient } from '../../src/server/judge.ts';
 import { startServer, type RunningServer } from '../../src/server/server.ts';
 import type { SlackApi, SlackSocket } from '../../src/server/slack-api.ts';
+import type { WebPushRequest } from '../../src/server/web-push.ts';
 import { fixtureRuntime } from './fixture.ts';
 import { ScriptedModel } from './scripted-model.ts';
 
@@ -101,12 +102,18 @@ export interface FixtureOptions {
   pi?: Record<string, unknown>;
   /** Overlaid on the loop section. */
   loop?: Record<string, unknown>;
+  /** The curator section (ADR 0055). */
+  curator?: Record<string, unknown>;
+  /** The uploads section (ADR 0071). */
+  uploads?: Record<string, unknown>;
   /** Writes an avatar under the fixture's root and gives the `avatar` section naming it (ADR 0057). */
   avatar?: (root: string) => Promise<Record<string, unknown>>;
   /** Fills the data directory before the first start, as one a previous version left behind. */
   prepare?: (data: string) => Promise<void>;
   /** Where the browser's bundle is read from (ADR 0058), under the fixture's root. None by default, so none is found. */
   webBundle?: (root: string) => string;
+  /** Stands in for the push services of Web Push (ADR 0070). */
+  webPush?: { send: (request: WebPushRequest) => Promise<number> };
 }
 
 export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
@@ -133,7 +140,8 @@ export async function startFixture(options: FixtureOptions = {}) {
     }
     const avatar = options.avatar ? await options.avatar(root) : undefined;
     await writeFile(configFile, JSON.stringify({ ...config, ...(slack ? { slack: slack.section } : {}),
-      ...(options.loop ? { loop: options.loop } : {}), ...(avatar ? { avatar } : {}) }));
+      ...(options.loop ? { loop: options.loop } : {}), ...(options.curator ? { curator: options.curator } : {}), ...(avatar ? { avatar } : {}),
+      ...(options.uploads ? { uploads: options.uploads } : {}) }));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),
@@ -142,6 +150,7 @@ export async function startFixture(options: FixtureOptions = {}) {
       pi: { runtime: fixtureRuntime, configureSession: session => { session.agent.streamFunction = model.streamFunction; } },
       streamBufferSize: options.streamBufferSize,
       web: { bundleDirectory: options.webBundle ? options.webBundle(root) : join(root, 'no-bundle') },
+      ...(options.webPush ? { webPush: options.webPush } : {}),
       ...(apns ? { apns: { origins: { sandbox: apns.origin, production: apns.origin }, retryDelaysMs: apns.retryDelaysMs } } : {}),
       ...(slack ? { slack: { connector: () => ({ api: slack.api, socket: slack.api }) }, ...(slack.judge ? { judge: { clients: { logprobs: slack.judge, jev: slack.judge } } } : {}) } : {}),
     });
