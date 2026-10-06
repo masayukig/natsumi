@@ -700,7 +700,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   1 行 1 発言の JSON Lines で書きます（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
   行は記録した順に並び、あとで動きません。時刻（`at`）は natsumi のタイムゾーンの秒まで、スレッドの返信は親と同じファイルの 1 行で、親の行の番号を `reply_to` に持ちます。
   編集と削除ではその日のファイルを書き直し、削除された発言は `deleted` の行として残します。
-  画像と PDF は同じ場所の `files/` に取ってきます（PDF は行の `pdfs`。モデルには画像として渡さず、なつみが作業環境の `pdftotext`・`pdftoppm` で読みます。[ADR 0066](docs/adr/0066-reading-pdfs-posted-in-slack.md)）。目次は `sources/slack/INDEX.md`（Markdown）です。ファイルは消さないので、古いものは手で片づけます。
+  画像と PDF は同じ場所の `files/` に取ってきます（PDF は行の `pdfs`。モデルには画像として渡さず、なつみが作業環境の `pdftotext`・`pdftoppm` で読みます。[ADR 0072](docs/adr/0072-reading-pdfs-posted-in-slack.md)）。目次は `sources/slack/INDEX.md`（Markdown）です。ファイルは消さないので、古いものは手で片づけます。
   Markdown で書いていた以前の日付のファイルは、起動したときに SQLite から JSON Lines に書き直して消します。
 - 発言に付いたリアクションは、その発言の行の `reactions` に書き、付け外しのたびにその日のファイルを書き直します
   （[ADR 0043](docs/adr/0043-reactions-in-the-channel-files.md)）。natsumi 自身が付けたものも書きます。記録に無い発言へのリアクションは捨てます。

@@ -1,4 +1,4 @@
-# 0066. Slack に貼られた PDF を取り込み、なつみが作業環境の poppler で読む
+# 0072. Slack に貼られた PDF を取り込み、なつみが作業環境の poppler で読む
 
 - Date: 2026-10-03
 - Status: Accepted
