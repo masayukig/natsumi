@@ -69,20 +69,27 @@ test('a followed scene hands the actors\' replies back as events, turn after tur
     assert.equal(record.outcome, 'ok', record.error);
     // The ask, the keeper's answer, and the dove's.
     assert.equal(record.turns, 3);
-    assert.deepEqual(record.events.map(event => [event.type, event.agent ?? event.text]), [
-      ['mac_message', 'デプロイっていつだっけ？'], ['agent_reply', 'wiki-keeper'], ['agent_reply', 'poppo']]);
-    const keeper = record.events[1]!;
-    assert.equal(keeper.status, 'completed');
-    assert.match(String(keeper.text), /FIXTURE-KEEPER-REPLY/);
+    // The keeper's answer is put under /sources and told by its attention (ADR 0069); the dove's is still an agent_reply.
+    const attentionOf = (event: Record<string, unknown>) =>
+      (event.changed as { attention?: Record<string, unknown>[] }[] | undefined)?.flatMap(entry => entry.attention ?? [])[0];
+    assert.deepEqual(record.events.map(event => [event.type, event.agent ?? attentionOf(event)?.agent ?? event.text]), [
+      ['mac_message', 'デプロイっていつだっけ？'], ['sources_updated', 'wiki-keeper'], ['agent_reply', 'poppo']]);
+    const keeper = attentionOf(record.events[1]!)!;
+    assert.equal(keeper.kind, 'agent_reply');
+    assert.equal(keeper.state, 'completed');
+    assert.match(String(keeper.summary), /FIXTURE-KEEPER-REPLY/);
+    assert.match(String(keeper.file), /^\/sources\/agents\/wiki-keeper\/.*\/README\.md$/);
     const dove = record.events[2]!;
     assert.equal(dove.result, 'returned');
     assert.equal(dove.reply_to, 'work/#dev 2026-09-27 14:32:05 田中');
     assert.match(String(dove.text), /FIXTURE-DOVE-REPLY/);
     // Neither event names a task, a context or an ID (ADR 0024).
     assert.ok(!JSON.stringify(record.events).includes('actor-task'));
-    assert.deepEqual(record.actors!.map(exchange => [exchange.agent, exchange.turn, exchange.taken, exchange.by]), [
+    // The two asks of one call run side by side, so they are compared by agent, not in the order they were recorded.
+    const actors = [...record.actors!].sort((a, b) => b.agent.localeCompare(a.agent));
+    assert.deepEqual(actors.map(exchange => [exchange.agent, exchange.turn, exchange.taken, exchange.by]), [
       ['wiki-keeper', 1, true, 'written'], ['poppo', 1, true, 'written']]);
-    assert.equal(record.actors![1]!.result, 'returned');
+    assert.equal(actors[1]!.result, 'returned');
     assert.deepEqual(record.replies.map(reply => reply.text), ['毎週木曜だって！']);
     assert.deepEqual(record.checks.map(check => [check.id, check.pass]), [['listed', true], ['told', true], ['asked-keeper', true]]);
     // The numbers are those of all the turns: two calls in the first, two in the second, one in the third.
@@ -97,7 +104,8 @@ test('without follow the actors only take the request, and the run is one turn',
     assert.equal(record.outcome, 'ok', record.error);
     assert.equal(record.turns, 1);
     assert.deepEqual(record.events.map(event => event.type), ['mac_message']);
-    assert.deepEqual(record.actors!.map(exchange => [exchange.agent, exchange.taken, exchange.reply]), [['wiki-keeper', true, undefined], ['poppo', true, undefined]]);
+    assert.deepEqual([...record.actors!].sort((a, b) => b.agent.localeCompare(a.agent)).map(exchange => [exchange.agent, exchange.taken, exchange.reply]),
+      [['wiki-keeper', true, undefined], ['poppo', true, undefined]]);
     const asked = record.tools.filter(tool => tool.name === 'ask_agent').map(tool => tool.result);
     assert.match(asked[0]!, /wiki-keeper.*頼みました/);
     assert.match(asked[1]!, /受け付けました/);

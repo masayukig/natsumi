@@ -8,6 +8,7 @@ import { routesRuntime } from '../pi/auth.ts';
 import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
 import { readSessionId, type PiTarget } from '../pi/session.ts';
 import { AGENT_LIST_DIRECTORY, writeAgentList } from '../server/agent-list.ts';
+import { AGENTS_REGISTRATION, replyPlaceOf } from '../server/agent-replies.ts';
 import { loadAvatar } from '../server/avatar.ts';
 import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from '../server/avatar-manual.ts';
 import { LOOP_DEFAULTS } from '../server/config.ts';
@@ -16,10 +17,11 @@ import { initializeDataDirectory, STATE_DIRECTORY } from '../server/data-directo
 import { DOVE_NAME } from '../server/dove.ts';
 import { readManualIndex } from '../server/manual.ts';
 import { MIGRATIONS } from '../server/migrations.ts';
-import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from '../server/paths.ts';
+import { HOME_DIRECTORY, SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from '../server/paths.ts';
 import { isReflectionRequest, REFLECTION_REQUEST } from '../server/prompts.ts';
+import { SOURCES_DEFAULTS, Sources } from '../server/sources.ts';
 import { migrate, openStateDatabase } from '../server/state-db.ts';
-import { ThinkingLoop, type LoopClientEvent, type LoopOptions } from '../server/thinking-loop.ts';
+import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SourceEvents } from '../server/thinking-loop.ts';
 import { Stage, type ActorModel } from './actors.ts';
 import { judgeChecks, type Judge } from './checks.ts';
 import { loadSceneModule } from './hooks.ts';
@@ -184,11 +186,30 @@ export async function runCondition(condition: Condition, options: RunOptions): P
       return revised;
     };
 
-    // An event line written in the scene goes in through the loop's side for outside events, as the branch has it.
+    // An event line written in the scene goes in through the loop's side for outside events, as the branch has it. The
+    // actors' replies are put under /sources and told by their attention, through the server's own sources (ADR 0069).
     let rawLine: Record<string, unknown> = {};
+    let sceneLineWaiting = false;
+    const sceneEvents = new Set<string>();
     const lineOf = (receivedAt: string) => ({ received_at: receivedAt, ...rawLine });
-    const sources = { take: async () => true, eventLine: (_id: string, receivedAt: string) => lineOf(receivedAt),
-      images: async (): Promise<ImageContent[]> => [] };
+    let replies: Sources | undefined;
+    if (a2a) {
+      replies = new Sources({ db, directory: join(data, SOURCES_DIRECTORY), gitDirectory: join(data, SOURCES_GIT_DIRECTORY),
+        timeZone: scene.timeZone, awakeHours: LOOP_DEFAULTS.awakeHours, activity: SOURCES_DEFAULTS.activity,
+        historyDays: SOURCES_DEFAULTS.historyDays, now });
+      replies.register(AGENTS_REGISTRATION);
+      await replies.prepare();
+    }
+    const sources: SourceEvents = {
+      take: async eventId => {
+        if (!sceneLineWaiting) return replies ? replies.take(eventId) : false;
+        sceneLineWaiting = false;
+        sceneEvents.add(eventId);
+        return true;
+      },
+      eventLine: (eventId, receivedAt) => sceneEvents.has(eventId) || !replies ? lineOf(receivedAt) : replies.eventLine(eventId, receivedAt),
+      images: async (eventId): Promise<ImageContent[]> => sceneEvents.has(eventId) || !replies ? [] : replies.images(eventId),
+    };
 
     const logs: string[] = [];
     const limits = { modelCalls: options.limits?.modelCalls ?? scene.limits.modelCalls, minutes: options.limits?.minutes ?? scene.limits.minutes };
@@ -201,11 +222,13 @@ export async function runCondition(condition: Condition, options: RunOptions): P
         ...(limits.modelCalls === undefined ? {} : { eventModelCalls: limits.modelCalls }),
         ...(limits.minutes === undefined ? {} : { eventTimeoutMinutes: limits.minutes }) },
       ...(a2a ? { a2a, a2aClient: stage.client } : {}),
+      ...(replies ? { agentReplies: replyPlaceOf(replies, join(data, SOURCES_DIRECTORY)) } : {}),
       ...(scene.dove ? { dove: stage.dove } : {}),
       sources,
     } as LoopOptions;
     const loop = await ThinkingLoop.open(loopOptions);
     closers.unshift(() => loop.close());
+    replies?.connect(() => { loop.raiseSourcesUpdated(); });
     if (promptError) throw new Error(promptError);
     if (loop.unavailable) throw new Error(`the thinking loop is unavailable (${loop.unavailable}; ${logs.at(-1) ?? 'no log'})`);
     const workspace = await options.runner.start({ data, manual, socketDirectory, sandbox, timeZone: scene.timeZone });
@@ -217,6 +240,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
       else if (event.kind === 'ping') handed = loop.ping();
       else {
         rawLine = event.line;
+        sceneLineWaiting = true;
         handed = loop.raiseSourcesUpdated();
       }
       if (!handed) throw new Error(`the loop did not take the ${event.kind} event`);
@@ -392,7 +416,7 @@ function redactor(file: ModelFile | undefined): (text: string) => string {
  * an event, so that only the scene's event is handled. The events it had queued count as failed, and the tasks it was
  * waiting on as given up.
  */
-async function openSnapshot(db: ReturnType<typeof openStateDatabase>, snapshot: string, sessionDirectory: string, now: () => number): Promise<void> {
+export async function openSnapshot(db: ReturnType<typeof openStateDatabase>, snapshot: string, sessionDirectory: string, now: () => number): Promise<void> {
   const at = new Date(now()).toISOString();
   db.prepare(`UPDATE loop_events SET state = 'failed', reason = 'left in the snapshot', updated_at = ? WHERE state IN ('queued', 'processing')`).run(at);
   db.prepare(`UPDATE agent_tasks SET state = 'gave-up', updated_at = ? WHERE state = 'waiting'`).run(at);

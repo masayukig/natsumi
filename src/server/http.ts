@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -8,11 +9,15 @@ import type { BrowserSessions } from './browser/session-cookie.ts';
 import { WebApp } from './browser/web-app.ts';
 import { Dashboard } from './dashboard.ts';
 import type { GitHubLogin, Outcome } from './github-login.ts';
-import type { SessionStore } from './sessions.ts';
+import type { SessionStore, VerifiedSession } from './sessions.ts';
+import type { Received } from './uploads.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;
 /** `/v1/images/<imageId>`: the ID is the server's own, of letters, digits and hyphens. */
 const IMAGE_PATH = /^\/v1\/images\/([A-Za-z0-9-]{1,128})$/;
+/** The files of the chat (ADR 0071): `POST /v1/uploads` takes one, `GET /v1/uploads/<uploadId>` gives back one sent. */
+const UPLOADS_PATH = '/v1/uploads';
+const UPLOAD_PATH = /^\/v1\/uploads\/(upload-[0-9a-f-]{36})$/;
 /** The Slack icon of a feeling (ADR 0040): `/avatar/<feeling>.png`. */
 const SLACK_ICON_PATH = /^\/avatar\/([a-z]+)\.png$/;
 /** One file of the avatar's bundle under its version (ADR 0057): `/v1/avatar/<version>/<path>`. */
@@ -36,6 +41,12 @@ export interface ListenerOptions {
   browser: BrowserSessions;
   /** The avatar read at start (ADR 0057): its bundle for the apps and its Slack icons, all served without a login. */
   avatar: Avatar;
+  /** The files attached in the chat (ADR 0071): taken one by one, and given back once a message carries them. */
+  uploads: {
+    readonly limits: { maxFileBytes: number };
+    receive(body: AsyncIterable<Buffer>, input: { name: string; githubUserId: number }): Promise<Received>;
+    read(uploadId: string): Promise<{ name: string; bytes: number; mimeType?: string; file: string } | undefined>;
+  };
 }
 
 export interface Listener {
@@ -138,6 +149,24 @@ async function route(request: IncomingMessage, response: ServerResponse, options
       'content-length': image.data.length }).end(image.data);
     return;
   }
+  if (method === 'POST' && url.pathname === UPLOADS_PATH) return receiveUpload(request, response, url, options);
+  const uploadId = method === 'GET' ? UPLOAD_PATH.exec(url.pathname)?.[1] : undefined;
+  if (uploadId) {
+    // As an image of the conversation: the session first, a bearer or, for a GET, the cookie.
+    if (!readerSession(request, options)) return json(response, 401, { error: 'unauthorized' });
+    const file = await options.uploads.read(uploadId);
+    if (!file) return json(response, 404, { error: 'not-found' });
+    // An image is shown in its place; anything else only ever downloads, never runs as a page of this origin.
+    const kind = file.mimeType ? { 'content-type': file.mimeType, 'cache-control': 'private, max-age=31536000, immutable' }
+      : { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}` };
+    const stream = createReadStream(file.file);
+    const opened = await new Promise<boolean>(resolve => { stream.once('open', () => resolve(true)); stream.once('error', () => resolve(false)); });
+    // A file taken away by hand is as one never sent.
+    if (!opened) return json(response, 404, { error: 'not-found' });
+    response.writeHead(200, { ...kind, 'content-security-policy': "sandbox; default-src 'none'", 'content-length': file.bytes });
+    stream.pipe(response);
+    return;
+  }
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
   if (Dashboard.owns(url.pathname)) return options.dashboard.handle(request, response, url);
   if (WebApp.owns(url.pathname)) return options.webApp.handle(request, response, url);
@@ -159,6 +188,37 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     return;
   }
   json(response, 404, { error: 'not-found' });
+}
+
+/** The live session of a GET that reads: the bearer, renewed by the use, or without one the browser's cookie. */
+function readerSession(request: IncomingMessage, options: ListenerOptions): VerifiedSession | undefined {
+  const token = bearerToken(request);
+  if (!token) return options.browser.session(request);
+  const session = options.sessions.verify(token, options.allowedUserId);
+  const expiresAt = session && options.sessions.renew(session.sessionId);
+  return session && expiresAt ? { ...session, expiresAt } : undefined;
+}
+
+/**
+ * One file of the chat (ADR 0071), its bytes the body and its name `?name=`. It changes state, so a cookie is taken only
+ * with the public origin as the Origin, as `/v1/ws` takes it (ADR 0058); a bearer decides alone. A body past the limit
+ * is refused as soon as that is known, and the connection is not kept for the rest of it.
+ */
+async function receiveUpload(request: IncomingMessage, response: ServerResponse, url: URL, options: ListenerOptions) {
+  let session: VerifiedSession | undefined;
+  if (bearerToken(request)) session = readerSession(request, options);
+  else {
+    const cookie = options.browser.upgrade(request);
+    if (cookie.kind === 'origin-not-allowed') return json(response, 403, { error: 'origin-not-allowed' });
+    if (cookie.kind === 'session') session = cookie.session;
+  }
+  if (!session) return json(response, 401, { error: 'unauthorized' });
+  const tooLarge = () => { response.setHeader('connection', 'close'); json(response, 413, { error: 'too-large' }); };
+  if (Number(request.headers['content-length'] ?? 0) > options.uploads.limits.maxFileBytes) return tooLarge();
+  const received = await options.uploads.receive(request.iterator({ destroyOnReturn: false }),
+    { name: url.searchParams.get('name') ?? '', githubUserId: session.githubUserId });
+  if (!received.ok) return tooLarge();
+  json(response, 201, { ...received.upload });
 }
 
 function answer(response: ServerResponse, outcome: Outcome) {

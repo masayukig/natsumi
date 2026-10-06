@@ -21,17 +21,24 @@
  * `/` and `/settings` without the cookie go to `/fake-login`, which sets `natsumi_session=fake-session` (FAKE_SESSION_COOKIE,
  * which a test may also set itself) and goes back. With it they serve the server's own page, which loads the bundle
  * (`--bundle <dir>`, by default where the build puts it) from `/app/`. `/v1/ws` refuses the cookie from an Origin other
- * than its own, and such a connection may not register for pushes; the images take the cookie too. A POST to
+ * than its own, and such a connection registers a Web Push subscription only (ADR 0070); the images take the cookie too. A POST to
  * `/dashboard/logout` from its own origin clears the cookie.
+ *
+ * Files attached in the chat (ADR 0071) are taken at `POST /v1/uploads` with the token or the cookie from its own
+ * origin, kept in memory, carried by the message that names them in `conversation.send`, and served back at
+ * `GET /v1/uploads/<uploadId>`.
  */
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { parseArgs } from 'node:util';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { avatarManifest, loadAvatar } from '../server/avatar.ts';
 import { SESSION_COOKIE } from '../server/browser/session-cookie.ts';
 import { readBundleFile, webAppCsp, webAppPage } from '../server/browser/web-app.ts';
+import { imageSize, type PostImageType } from '../server/images.ts';
+import { imageType } from '../server/view.ts';
 import { checkSetting, isSettingKey, type SettingKey, type SettingValues } from '../shared/protocol/settings.ts';
 
 /** The cookie the fake login sets, as a `Cookie` header's value; a browser test may set it itself. */
@@ -72,7 +79,13 @@ interface Message {
   about?: string[];
   expression?: string;
   images?: ShownImage[];
+  attachments?: ShownAttachment[];
 }
+
+interface ShownAttachment { uploadId: string; name: string; bytes: number; mimeType?: string; width?: number; height?: number }
+
+/** The server's defaults (ADR 0071), told in the snapshot. */
+const UPLOAD_LIMITS = { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 };
 
 interface ShownImage { imageId: string; mimeType: string; bytes: number; width?: number; height?: number }
 
@@ -121,7 +134,10 @@ const SETTING_DEFAULTS: Omit<SettingValues, 'modelRoute'> = {
   awakeHours: { start: '07:00', end: '23:00' }, pingIntervalMinutes: 180,
   judgeLogprobs: 'on', judgeJev: 'off', judgeAdopted: 'logprobs',
   judgeLogprobsThresholds: { owner: 0.5, return: 0.9 }, judgeJevThresholds: { owner: 0.5, return: 0.9 },
+  curatorRoute: null, curatorModelCalls: 100, curatorTimeoutMinutes: 60,
 };
+/** The made-up routes reached through an outside service rather than the owner's own endpoint (ADR 0068). */
+const OUTSIDE_ROUTES = ['plus'];
 /** Which of the dove's judges the made-up config has an endpoint for: Jev has none, so it cannot be turned on (ADR 0059). */
 const JUDGE_AVAILABLE = { judgeLogprobs: true, judgeJev: false };
 
@@ -231,6 +247,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
   let routeChosen = false;
   const timers = new Set<NodeJS.Timeout>();
   const sockets = new Set<WebSocket>();
+  /** The files uploaded, and whether a message took each yet. */
+  const uploads = new Map<string, { shown: ShownAttachment; data: Buffer; sent: boolean }>();
   const log = (...args: unknown[]) => { if (options.log) console.log(...args); };
 
   function later(ms: number, fn: () => void): void {
@@ -258,7 +276,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
   /** The settings as the server lists them: the value in force, the config's, and whether it is overridden. */
   function settingsView() {
     const item = <K extends keyof typeof SETTING_DEFAULTS>(key: K) =>
-      ({ value: overrides[key] ?? SETTING_DEFAULTS[key], config: SETTING_DEFAULTS[key], overridden: overrides[key] !== undefined });
+      ({ value: overrides[key] !== undefined ? overrides[key] : SETTING_DEFAULTS[key], config: SETTING_DEFAULTS[key], overridden: overrides[key] !== undefined });
+    const curatorRoute = item('curatorRoute');
     return {
       modelRoute: { value: chosenRoute, config: 'local', overridden: routeChosen, inUse: currentRoute, routes: ROUTES },
       turnFold: { ...item('turnFold'), inUse: overrides.turnFold ?? SETTING_DEFAULTS.turnFold },
@@ -268,6 +287,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       judgeLogprobs: { ...item('judgeLogprobs'), available: JUDGE_AVAILABLE.judgeLogprobs },
       judgeJev: { ...item('judgeJev'), available: JUDGE_AVAILABLE.judgeJev }, judgeAdopted: item('judgeAdopted'),
       judgeLogprobsThresholds: item('judgeLogprobsThresholds'), judgeJevThresholds: item('judgeJevThresholds'),
+      curatorRoute: { ...curatorRoute, night: curatorRoute.value ?? chosenRoute, outside: OUTSIDE_ROUTES },
+      curatorModelCalls: item('curatorModelCalls'), curatorTimeoutMinutes: item('curatorTimeoutMinutes'),
     };
   }
 
@@ -284,7 +305,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
           deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
           readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
           pendingApprovals: approvals, modelRoutes: routeStatus(), sessionExpiresAt: sessionEnd(), avatarVersion: AVATAR.version,
-          settings: settingsView(),
+          settings: settingsView(), uploads: UPLOAD_LIMITS,
         }, requestId);
         if (!laterScheduled && options.approvalDelayMs > 0) {
           laterScheduled = true;
@@ -303,14 +324,20 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
         unacknowledged = unacknowledged.filter((id) => id !== payload.notificationId);
         broadcast('command.accepted', { notificationId: payload.notificationId }, requestId);
         return;
-      case 'conversation.send':
-        converse(String(payload.text), requestId);
+      case 'conversation.send': {
+        const ids = Array.isArray(payload.uploadIds) ? payload.uploadIds as unknown[] : [];
+        const files = ids.map(id => (typeof id === 'string' ? uploads.get(id) : undefined));
+        if (files.some(file => !file || file.sent)) { broadcast('command.rejected', { code: 'upload-not-found' }, requestId); return; }
+        if (files.length > UPLOAD_LIMITS.maxFiles) { broadcast('command.rejected', { code: 'too-many-uploads' }, requestId); return; }
+        for (const file of files) file!.sent = true;
+        converse(String(payload.text), requestId, files.map(file => file!.shown));
         return;
+      }
       case 'push.register':
-        // A browser is never pushed to, so it has nothing to register (ADR 0058).
-        if (browser) { broadcast('command.rejected', { code: 'invalid-request' }, requestId); return; }
+        // A browser registers a Web Push subscription and nothing else, an app never one (ADR 0070).
+        if (browser !== ('subscription' in payload)) { broadcast('command.rejected', { code: 'invalid-request' }, requestId); return; }
         // Nothing is sent from here: the simulator's pushes are not the server's to make.
-        broadcast('command.accepted', { environment: payload.environment }, requestId);
+        broadcast('command.accepted', browser ? {} : { environment: payload.environment }, requestId);
         return;
       case 'approval.decide':
         decide(payload, requestId);
@@ -381,6 +408,11 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       if ((checked.key === 'judgeLogprobs' || checked.key === 'judgeJev') && checked.value === 'on' && !JUDGE_AVAILABLE[checked.key]) {
         return reject('judge-unavailable');
       }
+      if (checked.key === 'curatorRoute' && checked.value !== null) {
+        const route = ROUTES.find((r) => r.name === checked.value);
+        if (!route) return reject('unknown-route');
+        if (!route.ready) return reject('route-unavailable');
+      }
       if (checked.key === 'modelRoute') {
         const route = ROUTES.find((r) => r.name === checked.value);
         if (!route) return reject('unknown-route');
@@ -416,11 +448,12 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     });
   }
 
-  function converse(text: string, requestId: string): void {
+  function converse(text: string, requestId: string, attachments: ShownAttachment[] = []): void {
     sent += 1;
     const messageId = `m${100 + sent}`;
     const eventId = `e${100 + sent}`;
-    const own: Message = { messageId, role: 'owner', kind: 'message', text, createdAt: new Date().toISOString(), eventId };
+    const own: Message = { messageId, role: 'owner', kind: 'message', text, createdAt: new Date().toISOString(), eventId,
+      ...(attachments.length > 0 ? { attachments } : {}) };
     messages.push(own);
     broadcast('conversation.message', own);
     broadcast('command.accepted', { messageId, eventId, state: 'processing' }, requestId);
@@ -475,7 +508,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       response.writeHead(302, { Location: to, 'Set-Cookie': `${FAKE_SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Strict` }).end();
     } else if (url.pathname.startsWith('/app/') && request.method === 'GET') {
       const file = await readBundleFile(url.pathname.slice('/app/'.length), options.bundleDirectory);
-      if (file) response.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.data.length }).end(file.data);
+      if (file) response.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.data.length, ...file.headers }).end(file.data);
       else response.writeHead(404).end();
     } else if (url.pathname === '/dashboard/logout' && request.method === 'POST') {
       if (request.headers.origin !== origin()) { response.writeHead(403).end(); return; }
@@ -495,6 +528,31 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       } else {
         response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=31536000, immutable',
           'Content-Length': image.length }).end(image);
+      }
+    } else if (url.pathname === '/v1/uploads' && request.method === 'POST') {
+      // A cookie from another origin is refused, as the server refuses it (ADR 0071).
+      const json = (status: number, body: unknown) => response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        .end(JSON.stringify(body));
+      if (hasCookie(request) && request.headers.authorization === undefined && request.headers.origin !== origin()) { json(403, { error: 'origin-not-allowed' }); return; }
+      if (request.headers.authorization !== 'Bearer fake-token' && !hasCookie(request)) { json(401, { error: 'unauthorized' }); return; }
+      const chunks: Buffer[] = [];
+      for await (const chunk of request as AsyncIterable<Buffer>) chunks.push(chunk);
+      const data = Buffer.concat(chunks);
+      if (data.length > UPLOAD_LIMITS.maxFileBytes) { json(413, { error: 'too-large' }); return; }
+      const type = imageType(data);
+      const mimeType = type === 'image/png' || type === 'image/jpeg' || type === 'image/webp' ? type : undefined;
+      const size = mimeType ? imageSize(data, mimeType as PostImageType) : undefined;
+      const shown: ShownAttachment = { uploadId: `upload-${randomUUID()}`, name: (url.searchParams.get('name') ?? '').split(/[/\\]/).at(-1) || 'file',
+        bytes: data.length, ...(mimeType ? { mimeType } : {}), ...(size ?? {}) };
+      uploads.set(shown.uploadId, { shown, data, sent: false });
+      json(201, shown);
+    } else if (url.pathname.startsWith('/v1/uploads/') && request.method === 'GET') {
+      const file = uploads.get(url.pathname.slice('/v1/uploads/'.length));
+      if (request.headers.authorization !== 'Bearer fake-token' && !hasCookie(request)) response.writeHead(401).end();
+      else if (!file?.sent) response.writeHead(404).end();
+      else {
+        response.writeHead(200, { 'Content-Type': file.shown.mimeType ?? 'application/octet-stream', 'Content-Length': file.data.length,
+          ...(file.shown.mimeType ? {} : { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.shown.name)}` }) }).end(file.data);
       }
     } else if (url.pathname === '/v1/avatar' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(avatarManifest(AVATAR)));

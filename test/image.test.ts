@@ -90,7 +90,7 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   const text = await dockerfile();
   const stage = text.slice(text.indexOf(' AS sdctl\n'), text.indexOf('\nFROM ', text.indexOf(' AS sdctl\n')));
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
-  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.2\b/);
+  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.3\b/);
   assert.doesNotMatch(stage, /@latest/);
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });
@@ -127,7 +127,7 @@ test('the workspace image gives sdctl its defaults in a config file that the sdc
   assert.match(config, /^output_dir: \/work\/images$/m);
 });
 
-// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2). The server takes either by its content (ADR 0044, 0045).
+// PNG is heavy, so what natsumi draws is JPEG (sdctl v0.3.2 and later; the image has v0.3.3). The server takes either by its content (ADR 0044, 0045).
 test('sdctl writes JPEG by default in the workspace', async () => {
   const config = parse(await readFile(`${root}docker/sdctl/config.yaml`, 'utf8')) as Record<string, unknown>;
   assert.equal(config.format, 'jpeg');
@@ -186,13 +186,16 @@ async function throughRunner(container: string, command: string): Promise<Runner
 }
 
 // Builds the workspace image and runs it the way the Pod does, with no network, until its runner answers.
-async function startWorkspace(t: TestContext, name: string) {
+// `uid` is the one it runs as: the image's own, or, as on Kubernetes, another one (ADR 0033). /memory is then an empty
+// place owned by the image's UID, standing in for the memory repository the server owns.
+async function startWorkspace(t: TestContext, name: string, uid = 1000) {
   // The host network only for the build: some hosts resolve no names on the default bridge.
   await docker(['build', '--network', 'host', '--target', 'workspace', '--tag', workspaceTag, root]);
   const container = `natsumi-workspace-test-${name}-${process.pid}`;
+  const own = `uid=${uid},gid=${uid},mode=755`;
   await docker(['run', '--detach', '--rm', '--name', container, '--network', 'none', '--read-only', '--init',
-    '--tmpfs', '/tmp:mode=1777', '--tmpfs', '/run/natsumi-workspace:uid=1000,gid=1000,mode=755',
-    '--tmpfs', '/work:uid=1000,gid=1000,mode=755', '--tmpfs', '/home/natsumi:uid=1000,gid=1000,mode=755',
+    '--user', `${uid}:${uid}`, '--tmpfs', '/tmp:mode=1777', '--tmpfs', `/run/natsumi-workspace:${own}`,
+    '--tmpfs', `/work:${own}`, '--tmpfs', `/home/natsumi:${own}`, '--tmpfs', '/memory:uid=1000,gid=1000,mode=777',
     '--tmpfs', '/manual/avatar:mode=755', workspaceTag, 'serve']);
   t.after(() => docker(['rm', '--force', container]).catch(() => undefined));
   // What the server writes from the avatar on every start, which the deployment shows read-only as /manual/avatar
@@ -305,6 +308,39 @@ test('through the runner, as run_shell runs it, jq is on PATH', {
   assert.match(version.stdout, /^jq-\d+\.\d+/);
   const filtered = await throughRunner(container, `printf '{"a":[1,2]}' | jq -c '.a | map(. * 2)'`);
   assert.equal(filtered.stdout, '[2,4]\n');
+});
+
+// The memory repository is the server's, and on Kubernetes the workspace runs as another UID (ADR 0033), so git
+// would refuse it as of dubious ownership. The image trusts /memory, and only it, in the system config: the runner
+// gives a command none of the image's environment (ADR 0019), but git reads /etc/gitconfig whatever the environment.
+test('the workspace image trusts /memory, and nothing else, in the system git config', async () => {
+  assert.match(await workspaceStage(), /^COPY docker\/workspace\/gitconfig \/etc\/gitconfig$/m);
+  const config = await readFile(`${root}docker/workspace/gitconfig`, 'utf8');
+  assert.deepEqual([...config.matchAll(/^\s*directory\s*=\s*(.*)$/gm)].map(match => match[1]), ['/memory']);
+});
+
+test('through the runner, as run_shell runs it as another UID, git reads the history of the memory the server owns', {
+  skip: hasDocker ? false : 'docker is not available',
+  timeout: 30 * 60_000,
+}, async t => {
+  const container = await startWorkspace(t, 'git', 1001);
+  // The server's commit, made as the image's UID that stands in for it. The files are writable to the workspace, as
+  // the shared group makes them on Kubernetes.
+  await docker(['exec', '--user', '1000:1000', '--env', 'HOME=/tmp', container, 'sh', '-c',
+    'umask 0 && cd /memory && git init -q && echo note > always.md && git add always.md'
+    + ' && git -c user.name=natsumi -c user.email=natsumi@example.invalid commit -qm remembered']);
+  const id = await throughRunner(container, 'id -u');
+  assert.equal(id.stdout, '1001\n');
+  // Without the image's config, git refuses the repository: this is what the setting is for.
+  const refused = await throughRunner(container, 'GIT_CONFIG_NOSYSTEM=1 git -C /memory log --format=%s');
+  assert.notEqual(refused.exitCode, 0);
+  assert.match(refused.stderr, /dubious ownership/);
+  const log = await throughRunner(container, 'git -C /memory log --format=%s');
+  assert.equal(log.exitCode, 0, log.stderr);
+  assert.equal(log.stdout, 'remembered\n');
+  const diff = await throughRunner(container, 'echo more >> /memory/always.md && git -C /memory diff --stat');
+  assert.equal(diff.exitCode, 0, diff.stderr);
+  assert.match(diff.stdout, /always\.md \| 1 \+/);
 });
 
 const serverTag = 'natsumi-server:test';

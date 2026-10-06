@@ -194,3 +194,29 @@ test('a taken image keeps its width and height when they can be read, and the re
   assert.deepEqual(size(wide!.imageId), { width: 1152, height: 896 });
   assert.deepEqual(size(cat!.imageId), { width: null, height: null });
 });
+
+// ADR 0069: a reply to the owner may show an image an outside agent handed back, where the server put it.
+test('with the replies of the outside agents allowed, an image under /sources/agents is taken too, and the rest of /sources is not', async t => {
+  const f = await setup(t);
+  const agents = join(f.root, 'sources', 'agents');
+  await mkdir(join(agents, 'wiki', '20260924T030000Z-ab12', 'images'), { recursive: true });
+  await writeFile(join(agents, 'wiki', '20260924T030000Z-ab12', 'images', 'shot.png'), PNG);
+  await mkdir(join(f.root, 'sources', 'slack'), { recursive: true });
+  await writeFile(join(f.root, 'sources', 'slack', 'cat.png'), PNG);
+  await symlink(join(f.root, 'secret.png'), join(agents, 'wiki', 'link.png'));
+  const take = (paths: string[]) => takeImages(paths, { workDirectory: f.work, agentReplies: agents, destination: f.destination, limits: LIMITS });
+
+  const taken = await take(['/work/images/cat.png', '/sources/agents/wiki/20260924T030000Z-ab12/images/shot.png']);
+  assert.ok(taken.ok, JSON.stringify(taken));
+  assert.deepEqual(taken.images.map(image => image.source),
+    ['/work/images/cat.png', '/sources/agents/wiki/20260924T030000Z-ab12/images/shot.png']);
+  for (const path of ['/sources/slack/cat.png', '/sources/agents/../slack/cat.png', '/sources/agents/wiki/link.png']) {
+    const refused = await take([path]);
+    assert.equal(refused.ok, false, path);
+    assert.match((refused as { text: string }).text, /\/sources\/agents\//);
+  }
+  // Without it, as for a post to Slack, only /work.
+  const work = await f.take(['/sources/agents/wiki/20260924T030000Z-ab12/images/shot.png']);
+  assert.equal(work.ok, false);
+  assert.match((work as { text: string }).text, /画像にできるのは \/work\/ の下のファイルだけです/);
+});

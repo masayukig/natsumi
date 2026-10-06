@@ -29,12 +29,13 @@ RUN go test ./... \
 # sdctl, which natsumi draws with (ADR 0044). Its releases carry no binary, so it is built from its source at a fixed
 # version, static like the runner.
 FROM golang:1.27 AS sdctl
-RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.2
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.3
 
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
-# poppler-utils (pdftotext, pdftoppm) is for reading the PDFs taken in from Slack (ADR 0066); poppler-data holds the
-# CJK character maps, without which a Japanese PDF gives no text and its pages render blank.
+# poppler-utils (pdftotext, pdftoppm) is for reading PDFs: those taken in from Slack (ADR 0072) and those attached to a
+# chat message (ADR 0071). poppler-data holds the CJK character maps, without which a Japanese PDF gives no text and its
+# pages render blank.
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -55,6 +56,8 @@ COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-
 COPY --from=sdctl /out/sdctl /usr/libexec/sdctl
 COPY --chmod=755 docker/sdctl/sdctl /usr/local/bin/sdctl
 COPY docker/sdctl/config.yaml /etc/sdctl/config.yaml
+# git reads the memory's history in /memory, which the server owns (ADR 0018, 0033); see the file for why it is trusted.
+COPY docker/workspace/gitconfig /etc/gitconfig
 # sources-diff (ADR 0050): what changed under /sources, read from the history the server keeps in /sources.git, which
 # is mounted read-only. The runner gives it none of the image's environment, so the script knows the place itself.
 COPY --chmod=755 docker/sources-diff/sources-diff /usr/local/bin/sources-diff

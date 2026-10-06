@@ -27,7 +27,12 @@ export interface Snapshot {
   pendingApprovals: Approval[];
   avatarVersion?: string;
   settings?: SettingsView;
+  /** How large a file and how many to a message the server takes (ADR 0071). Absent from a server without uploads. */
+  uploads?: UploadLimits;
 }
+
+/** One file's bytes and one message's files, at most (ADR 0071). */
+export interface UploadLimits { maxFileBytes: number; maxFiles: number }
 
 /** The fields of `command.accepted` a device uses; which of them there are depends on the command. */
 export interface Accepted {
@@ -68,13 +73,17 @@ export const MOMENT_EVENTS: readonly ServerEvent['type'][] = ['conversation.thin
 
 export type ClientCommand =
   | { type: 'session.sync'; payload: { resume: Position | null } }
-  | { type: 'conversation.send'; payload: { text: string } }
+  | { type: 'conversation.send'; payload: { text: string; uploadIds?: string[] } }
   | { type: 'conversation.read'; payload: { throughMessageId: string } }
   | { type: 'notification.ack'; payload: { notificationId: string } }
   | { type: 'approval.decide'; payload: { approvalId: string; revision: number; decision: Decision; text?: string; placement?: Placement } }
   | { type: 'settings.list'; payload: Record<string, never> }
   | { type: 'settings.set'; payload: { [K in SettingKey]: { key: K; value: SettingValues[K] } }[SettingKey] }
-  | { type: 'settings.reset'; payload: { key: SettingKey } };
+  | { type: 'settings.reset'; payload: { key: SettingKey } }
+  | { type: 'push.register'; payload: { subscription: WebPushSubscription } };
+
+/** A browser's Web Push subscription as `PushSubscription.toJSON()` gives it, the keys in base64url (ADR 0070). */
+export interface WebPushSubscription { endpoint: string; keys: { p256dh: string; auth: string } }
 
 export function encodeCommand(input: { requestId: string; deviceId?: string; command: ClientCommand }): string {
   const { requestId, deviceId, command } = input;
@@ -158,6 +167,8 @@ function readSnapshot(payload: Record<string, unknown>): Snapshot | undefined {
     unreadReplyCount: payload.unreadReplyCount, unacknowledgedNotificationIds: notices, pendingApprovals,
     ...(isString(payload.avatarVersion) ? { avatarVersion: payload.avatarVersion } : {}),
     ...(settings ? { settings } : {}),
+    ...(isObject(payload.uploads) && isCount(payload.uploads.maxFileBytes) && isCount(payload.uploads.maxFiles)
+      ? { uploads: { maxFileBytes: payload.uploads.maxFileBytes, maxFiles: payload.uploads.maxFiles } } : {}),
   };
 }
 

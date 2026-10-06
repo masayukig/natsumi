@@ -1,4 +1,4 @@
-# 0066. Slack に貼られた PDF を取り込み、なつみが作業環境の poppler で読む
+# 0072. Slack に貼られた PDF を取り込み、なつみが作業環境の poppler で読む
 
 - Date: 2026-10-03
 - Status: Accepted
@@ -16,6 +16,8 @@ Slack では、資料や見積もりや案内を PDF で貼ることが多い。
 - 画像を取ってくる部品（宣言された種類と大きさで選び、bot token を付けて上限まで取り、中身の頭で種類を確かめてから書く）。
 - 作業環境（[ADR 0019](0019-a-workspace-not-a-memory-tool.md)）は普通の Debian で、ネットワークが無く、`/sources` を読み取り専用で見る。`view` で `/sources` と `/work` の画像を見られる。
 - 作業環境には PDF を読む道具が無かった。
+- 本人がブラウザのチャットで添えたファイルは、[ADR 0071](0071-attaching-files-to-a-chat-message.md) で `/sources/uploads` に置く。種類は絞らず、PDF も届く。
+  読み方は「作業環境で読む」とだけ決め、PDF を読む道具はこの ADR に任せた。
 
 ## Decision
 
@@ -38,6 +40,9 @@ Slack では、資料や見積もりや案内を PDF で貼ることが多い。
 
 - 作業環境のイメージに `poppler-utils` と `poppler-data` を入れる（`poppler-data` は日本語などの文字の対応表で、無いと日本語の PDF は文字が取れず、ページも白く描かれる）。文字は `pdftotext <パス> -` で読み、図や表やスキャンは `pdftoppm -png -r 100 -f N -l N <パス> /work/pdf/<名前>` でページを画像にしてから `view` で見る。
 - `/sources` は読み取り専用なので、ページの画像は `/work` に作る。手順は `/manual/slack.md` の「PDF を読む」に書く。
+- この道具は Slack の PDF に限らない。チャットに添えられた PDF（`/sources/uploads` の下）も、同じ手順で読む。
+- 置き場所と上限は ADR 0071 と揃えない。Slack の PDF はチャンネルの記録の一部として `files/` に置き、上限は固定の 20 MiB である。
+  チャットの添付は本人が渡した原本として `/sources/uploads` に置き、上限はその設定（`uploads.maxFileBytes`）に従う。理由は ADR 0071 の「実装で決めたこと」にある。
 
 退けた案:
 
@@ -49,6 +54,7 @@ Slack では、資料や見積もりや案内を PDF で貼ることが多い。
 ## Consequences
 
 - なつみは、Slack に貼られた PDF の中身を読んで答えられる。読むのは本人が頼んだときやメンションで要るときで、文字を先に読み、要るページだけを画像で見る。
+- チャットに添えられた PDF も、同じ道具と手順で読める。
 - `sources/slack` の `files/` に PDF も溜まる。画像と同じく消さないので、古いものは手で片づける。
 - 作業環境のイメージが `poppler-utils` とその依存の分だけ大きくなる。
 - 中身の頭だけを確かめるので、壊れた PDF や細工した PDF も置かれうる。読むのは作業環境の poppler で、ネットワークの無いコンテナの中に閉じる。

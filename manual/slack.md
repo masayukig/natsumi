@@ -161,6 +161,7 @@ view /sources/slack/work/dev/files/2026-09-25-143205-000100-1.png
 ## PDF を読む
 
 行に `pdfs` があれば、その PDF は `/sources/slack/.../files/` に取り込んであります。20 MB を超えるものや、中身が PDF でないものは `attachments` に名前だけが残ります。
+マスターがチャットのメッセージに添えた PDF（`mac_message` の `attachments` の、`/sources/uploads/` の下のパス）も、同じ手順で読みます。
 
 - 文字は `pdftotext <パス> -` で読みます（例: `pdftotext /sources/slack/work/dev/files/2026-09-25-143205-000100-1.pdf - | head -n 100`）。
   長ければ `-f 1 -l 3` でページを絞ります。ページ数は `pdfinfo <パス>` で分かります。

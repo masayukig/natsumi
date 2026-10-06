@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Role, TaskState, type AgentCard, type Message, type Part, type Task } from '@a2a-js/sdk';
-import { Client, JsonRpcTransportFactory } from '@a2a-js/sdk/client';
+import { Client, JsonRpcTransportFactory, ServiceParameters, withA2AExtensions } from '@a2a-js/sdk/client';
 import { A2AError, TaskNotFoundError } from '@a2a-js/sdk/errors';
+
+/**
+ * The reply extension of fraction-agents (its ADR 0015, `docs/extensions/reply/v1`): an agent that names it on its card
+ * hands back the reply of a finished task as a DataPart in the shape every agent shares (ADR 0069), beside the text.
+ * A constant, not a setting: the shape it names is the one natsumi reads.
+ */
+export const REPLY_EXTENSION_URI = 'https://github.com/yuanying/fraction-agents/tree/main/docs/extensions/reply/v1';
 
 /** How long one call to an agent may take. Sending returns at once (`returnImmediately`), so this is generous. */
 export const DEFAULT_A2A_CALL_TIMEOUT_MS = 30_000;
@@ -34,9 +41,10 @@ export type SendResult =
 
 /**
  * Where a task stands, and the text that goes with it: the answer, the failure, or the question. A finished task may
- * also hand back files, one artifact each; `files` is there only when it has some.
+ * also hand back files, one artifact each; `files` is there only when it has some. `data` is the content of the
+ * reply extension's DataPart, as it came and not yet checked, when the task has one.
  */
-export interface TaskView { state: AgentTaskState; text: string; files?: AgentFile[] }
+export interface TaskView { state: AgentTaskState; text: string; files?: AgentFile[]; data?: unknown }
 
 /**
  * A file a finished task hands back: an artifact with a FilePart, which A2A 1.0 writes as `{ url, mediaType, filename }`
@@ -95,6 +103,8 @@ export class SdkA2AClient implements A2AClient {
   private readonly tokenFile: string;
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
+  /** Whether each agent's card names the reply extension, by URL, from the card last read. */
+  private readonly offersReply = new Map<string, boolean>();
 
   constructor(options: SdkA2AClientOptions) {
     this.tokenFile = options.tokenFile;
@@ -102,7 +112,13 @@ export class SdkA2AClient implements A2AClient {
     this.fetch = options.fetch ?? globalThis.fetch;
   }
 
+  /**
+   * Sends a message, activating the reply extension when the agent's card names it (ADR 0069). The card read for the
+   * list of agents is reused; one that could not be had is asked for again, and the message goes plain until it is.
+   * An answer to a question activates it as well; a fetch of the task needs nothing, for the task keeps it.
+   */
   async send(url: string, input: { text: string; contextId?: string; taskId?: string }): Promise<SendResult> {
+    const reply = await this.offersReplyAt(url);
     const message: Message = {
       messageId: randomUUID(), contextId: input.contextId ?? '', taskId: input.taskId ?? '', role: Role.ROLE_USER,
       parts: [{ content: { $case: 'text', value: input.text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
@@ -110,8 +126,9 @@ export class SdkA2AClient implements A2AClient {
     };
     const result = await this.call(url, (client, signal) => client.sendMessage({
       tenant: '', message, metadata: undefined,
-      configuration: { acceptedOutputModes: ['text/plain'], taskPushNotificationConfig: undefined, returnImmediately: true },
-    }, { signal }));
+      configuration: { acceptedOutputModes: reply ? ['text/plain', 'application/json'] : ['text/plain'],
+        taskPushNotificationConfig: undefined, returnImmediately: true },
+    }, { signal, ...(reply ? { serviceParameters: ServiceParameters.create(withA2AExtensions(REPLY_EXTENSION_URI)) } : {}) }));
     if ('status' in result) return { kind: 'task', taskId: result.id, contextId: result.contextId, ...view(result) };
     return { kind: 'message', contextId: result.contextId, text: partsText(result.parts) };
   }
@@ -127,7 +144,15 @@ export class SdkA2AClient implements A2AClient {
       if (!response.ok) throw new Error(`the Agent Card answered ${response.status}`);
       return await response.json() as unknown;
     });
+    this.offersReply.set(url, extensionsOf(body).includes(REPLY_EXTENSION_URI));
     return summarizeCard(body);
+  }
+
+  private async offersReplyAt(url: string): Promise<boolean> {
+    if (!this.offersReply.has(url)) {
+      try { await this.card(url); } catch { return false; }
+    }
+    return this.offersReply.get(url) ?? false;
   }
 
   async fetchFile(url: string, fileUri: string, maxBytes: number): Promise<Buffer> {
@@ -236,7 +261,10 @@ function view(task: Task): TaskView {
     const answer = task.artifacts.map(artifact => partsText(artifact.parts)).filter(Boolean).join('\n\n');
     const files = task.artifacts.flatMap(artifact => artifact.parts.flatMap(part => part.content?.$case === 'url'
       ? [{ uri: part.content.value, mediaType: part.mediaType, name: part.filename, description: artifact.description }] : []));
-    return { state: 'completed', text: answer || said, ...(files.length > 0 ? { files } : {}) };
+    const data = task.artifacts.filter(artifact => artifact.extensions.includes(REPLY_EXTENSION_URI))
+      .flatMap(artifact => artifact.parts).find(part => part.content?.$case === 'data' && part.mediaType === 'application/json');
+    return { state: 'completed', text: answer || said, ...(files.length > 0 ? { files } : {}),
+      ...(data?.content?.$case === 'data' ? { data: data.content.value } : {}) };
   }
   if (state === TaskState.TASK_STATE_INPUT_REQUIRED) return { state: 'input-required', text: said };
   if (state === TaskState.TASK_STATE_FAILED || state === TaskState.TASK_STATE_CANCELED || state === TaskState.TASK_STATE_REJECTED
@@ -246,9 +274,18 @@ function view(task: Task): TaskView {
   return { state: 'waiting', text: '' };
 }
 
-/** The text of a message or an artifact. Files are brought separately (`fetchFile`), and data is not natsumi's to read. */
+/** The text of a message or an artifact. Files are brought separately (`fetchFile`), and the reply's data apart (`view`). */
 function partsText(parts: Part[]): string {
   return parts.map(part => part.content?.$case === 'text' ? part.content.value : '').filter(Boolean).join('\n');
+}
+
+/** The URIs of the extensions a card names, read as leniently as the rest of it. */
+function extensionsOf(body: unknown): string[] {
+  const card = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
+  const capabilities = typeof card.capabilities === 'object' && card.capabilities !== null ? card.capabilities as Record<string, unknown> : {};
+  const extensions = Array.isArray(capabilities.extensions) ? capabilities.extensions : [];
+  return extensions.flatMap(extension => typeof extension === 'object' && extension !== null
+    && typeof (extension as Record<string, unknown>).uri === 'string' ? [(extension as Record<string, unknown>).uri as string] : []);
 }
 
 /**

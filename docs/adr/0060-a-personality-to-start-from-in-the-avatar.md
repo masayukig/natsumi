@@ -1,7 +1,7 @@
 # 0060. 性格・話し方の初期値をアバターのディレクトリに置く
 
 - Date: 2026-09-29
-- Status: Accepted
+- Status: Accepted（アバターの `personality.md` を config の `avatar.personality` で丸ごと置き換えることは [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) の config の節で追加）
 
 ## Context
 
@@ -32,7 +32,7 @@ session を作るときにプロンプトに入り、夜の再構成のときだ
 
 1. 記憶のリポジトリに `personality.md` があれば、何もしない。
 2. 旧配置の `personality.md` があれば、それを移す（今までどおり）。
-3. アバターに `personality.md` があれば、その中身を写す。
+3. アバターに `personality.md` があれば、その中身を写す（config の `avatar.personality` があれば、アバターのものに代えてそれを写す）。
 4. どれも無ければ、固定の枠を置く。枠の中の名前は、アバターの表示名にする（例「なつみの性格と話し方をここに書きます。」）。
 
 置いたものは、他の固定のファイルと同じく、起動時のコミットに入る。
