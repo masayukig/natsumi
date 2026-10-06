@@ -685,7 +685,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.workspaces.<名前>` | 必須 | | ワークスペースごとの `botTokenEnv` か `botTokenFile`、`appTokenEnv` か `appTokenFile`。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi が読むパスと参照（`work/#dev`）に使います |
    | `slack.reaction` | | `eyes` | メンションと DM を受け取ったときにサーバーが付けるリアクション（コロンなしの絵文字名） |
    | `slack.backfillDays` | | 90 | 初めて見るチャンネルを何日前から埋めるか（1〜365） |
-   | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
+   | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと、画像でも PDF でもない添付は「添付あり（取り込まず）」とだけ書きます。PDF の上限は 20 MiB で固定です |
    | `slack.judge` | | 既定の経路の互換のモデルの logprobs だけ | ポッポさんの 2 つの判定（logprobs と Jev）の接続先・しきい値と、採用する方。下の「Slack に投稿する」 |
    | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
    | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後のチャンネル直下の発言がこの件数以内ならチャンネルに直接出し、超えたらスレッドに置く（0〜20）。スレッドの中の発言への返事はスレッドに置く |
@@ -700,7 +700,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   1 行 1 発言の JSON Lines で書きます（[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)）。
   行は記録した順に並び、あとで動きません。時刻（`at`）は natsumi のタイムゾーンの秒まで、スレッドの返信は親と同じファイルの 1 行で、親の行の番号を `reply_to` に持ちます。
   編集と削除ではその日のファイルを書き直し、削除された発言は `deleted` の行として残します。
-  画像は同じ場所の `files/` に取ってきます。目次は `sources/slack/INDEX.md`（Markdown）です。ファイルは消さないので、古いものは手で片づけます。
+  画像と PDF は同じ場所の `files/` に取ってきます（PDF は行の `pdfs`。モデルには画像として渡さず、なつみが作業環境の `pdftotext`・`pdftoppm` で読みます。[ADR 0072](docs/adr/0072-reading-pdfs-posted-in-slack.md)）。目次は `sources/slack/INDEX.md`（Markdown）です。ファイルは消さないので、古いものは手で片づけます。
   Markdown で書いていた以前の日付のファイルは、起動したときに SQLite から JSON Lines に書き直して消します。
 - 発言に付いたリアクションは、その発言の行の `reactions` に書き、付け外しのたびにその日のファイルを書き直します
   （[ADR 0043](docs/adr/0043-reactions-in-the-channel-files.md)）。natsumi 自身が付けたものも書きます。記録に無い発言へのリアクションは捨てます。
@@ -858,7 +858,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - natsumi に Docker のソケットは渡しません。
   - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
 - 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
-  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、画像を作る `sdctl`、それに runner です。
+  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、PDF を読む `poppler-utils`（`pdftotext`・`pdftoppm`）と、その日本語などの文字の対応表 `poppler-data`、画像を作る `sdctl`、それに runner です。
   **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
 - 書ける場所は 4 つです。ルートは読み取り専用のままです。
 

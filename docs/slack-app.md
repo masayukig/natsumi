@@ -83,7 +83,7 @@ Socket Mode は natsumi から Slack へ外向きにつなぐので、公開す�
 | `im:history` | DM を読む |
 | `channels:read` / `groups:read` / `im:read` | 参加しているチャンネルと DM の一覧と名前を知る |
 | `users:read` | 発言者の表示名を知る |
-| `files:read` | 添付の画像を取ってくる |
+| `files:read` | 添付の画像と PDF を取ってくる |
 | `reactions:write` | 受け取ったときに 👀 を付ける。ポッポさんに頼まれたリアクションを付ける |
 | `reactions:read` | 発言に付いたリアクションを受け取り、チャンネルのファイルに書く（[ADR 0043](adr/0043-reactions-in-the-channel-files.md)） |
 | `app_mentions:read` | メンションを受け取る |

@@ -1,7 +1,7 @@
 # 0071. ブラウザのチャットからファイルを上げ、本人のメッセージに添える
 
 - Date: 2026-10-06
-- Status: Accepted
+- Status: Accepted（チャットに添えられた PDF を読む道具（作業環境の poppler）は [ADR 0072](0072-reading-pdfs-posted-in-slack.md) で入った）
 
 ## Context
 
@@ -106,6 +106,7 @@
 - **本番の Ingress**: 前に立つ gated（v0.2.0）は本文の大きさに上限を持たない。本文を読む 1 回ごとに 60 秒の待ちの上限があるだけなので、25MB は通る。環境の設定を変える作業は足さない。
 - **PR #134（Slack の PDF）との揃え**: 置き場所は揃えない。Slack の添付はチャンネルの記録の一部として `sources/slack/…/files/` に置き、こちらは本人が渡した原本なので `sources/uploads` に置く。
   PDF を読む道具（`poppler-utils`）は PR #134 が作業環境に入れる。こちらはなつみへの説明で道具を名指しせず、「作業環境で読む」とだけ書く。上限は、こちらが本人の渡すファイルのための設定で、Slack の PDF の固定の上限（20MiB）とは別にする。
+  決着: PR #134 は [ADR 0072](0072-reading-pdfs-posted-in-slack.md) として入り、作業環境に `poppler-utils` と `poppler-data` が入った。チャットに添えられた PDF も同じ道具と、`/manual` の同じ手順で読む。置き場所と上限は、上のとおり揃えない。
 
 ### ADR との関係
 

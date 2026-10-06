@@ -25,7 +25,7 @@ export const SLACK_SOURCE = 'slack';
 export const SLACK_PATH = `${SOURCES_PATH}/${SLACK_SOURCE}`;
 /**
  * How the core measures Slack: by channel (`slack/<workspace>/<channel>`). The index changes with every message and
- * the fetched images are named in the lines, so neither is kept in the history.
+ * the fetched images and PDFs are named in the lines, so neither is kept in the history.
  */
 export const SLACK_REGISTRATION: SourceRegistration = { name: SLACK_SOURCE, depth: 2, exclude: ['INDEX.md', '*/*/files/'] };
 
@@ -38,7 +38,7 @@ export interface ArchivedMessage {
   /** Posted by natsumi's own bot. */
   own: boolean;
   text: string;
-  /** `path` is where the workspace sees a fetched image; without it the file was only noted. */
+  /** `path` is where the workspace sees a fetched image or PDF; without it the file was only noted. */
   files: { name: string; path?: string }[];
   edited: boolean;
   /**
@@ -149,10 +149,10 @@ export class SlackArchive {
   }
 
   /**
-   * Where a fetched image goes: beside the day's files, named by the message's local time. Returns the path on disk
-   * and the one natsumi reads.
+   * Where a fetched image or PDF goes: beside the day's files, named by the message's local time. Returns the path on
+   * disk and the one natsumi reads.
    */
-  imagePath(workspace: string, channelId: string, ts: string, index: number, extension: string): { disk: string; shown: string } {
+  filePath(workspace: string, channelId: string, ts: string, index: number, extension: string): { disk: string; shown: string } {
     const channel = this.channel(workspace, channelId)!;
     const { date, time } = this.local(ts);
     const name = `${date}-${time.replace(/:/g, '')}-${ts.split('.')[1] ?? '0'}-${index + 1}.${extension}`;
@@ -229,7 +229,8 @@ export class SlackArchive {
 
   /**
    * Marks a recorded message as for her, once: returns where it is — its day's file and the `jq -s` path of its line —
-   * and its images, or undefined when it was marked before (Slack sent it again, or it was a mention event before).
+   * and its images (not its PDFs: she reads those with poppler), or undefined when it was marked before (Slack sent it
+   * again, or it was a mention event before).
    */
   markForHer(workspace: string, channelId: string, ts: string): ForHer | undefined {
     const row = this.row(workspace, channelId, ts);
@@ -243,7 +244,7 @@ export class SlackArchive {
       .get(workspace, channelId, row.file_date, row.line, row.line, row.ts) as { index: number };
     return {
       file: `${SLACK_PATH}/${workspace}/${channel.directory}/${row.file_date}.jsonl`, path: `.[${index}]`,
-      images: parseFiles(row.files).flatMap(file => file.path ? [file.path] : []),
+      images: fetched(parseFiles(row.files)).images,
     };
   }
 
@@ -415,7 +416,7 @@ export class SlackArchive {
   /**
    * One message as its line: when (local, to the second) and who, which are what a reference to it is written from;
    * `mine` on her own; `reply_to` the line of its thread's parent in the same file (`in_thread` when the parent is not
-   * recorded); then the text, images, attachments not taken in, `edited`, and the reactions. A deleted one keeps only
+   * recorded); then the text, images, PDFs, attachments not taken in, `edited`, and the reactions. A deleted one keeps only
    * when, who, its place in a thread, and `deleted`.
    */
   private entry(row: MessageRow, index: Map<string, number>, reactions: ReactionRow[]): Record<string, unknown> {
@@ -427,11 +428,12 @@ export class SlackArchive {
     };
     if (row.deleted) return { ...base, deleted: true };
     const files = parseFiles(row.files);
-    const images = files.flatMap(file => file.path ? [file.path] : []);
+    const { images, pdfs } = fetched(files);
     const attachments = files.flatMap(file => file.path ? [] : [oneLine(file.name)]);
     const reacted = reactionList(reactions);
     return {
-      ...base, text: row.text, ...(images.length > 0 ? { images } : {}), ...(attachments.length > 0 ? { attachments } : {}),
+      ...base, text: row.text, ...(images.length > 0 ? { images } : {}), ...(pdfs.length > 0 ? { pdfs } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(row.edited ? { edited: true } : {}), ...(reacted.length > 0 ? { reactions: reacted } : {}),
     };
   }
@@ -491,6 +493,12 @@ function reactionList(rows: ReactionRow[]): { name: string; by: string[]; others
 
 function parseFiles(json: string): { name: string; path?: string }[] {
   try { return JSON.parse(json) as { name: string; path?: string }[]; } catch { return []; }
+}
+
+/** The fetched files' paths, told apart by the extension the server gave them. */
+function fetched(files: { name: string; path?: string }[]): { images: string[]; pdfs: string[] } {
+  const paths = files.flatMap(file => file.path ? [file.path] : []);
+  return { images: paths.filter(path => !path.endsWith('.pdf')), pdfs: paths.filter(path => path.endsWith('.pdf')) };
 }
 
 /** A name that is safe as one directory: no separators, no control characters, no leading dot. */

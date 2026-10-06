@@ -122,7 +122,7 @@ test('an image is fetched into files/ beside the day\'s file; one too large or n
   f.slack.emit(message({ text: '画像です', files: [
     { id: 'F1', name: 'a.png', mimetype: 'image/png', size: PNG.length, url_private_download: 'https://files.example.test/a.png' },
     { id: 'F2', name: 'big.png', mimetype: 'image/png', size: 5000, url_private_download: 'https://files.example.test/big.png' },
-    { id: 'F3', name: 'memo.pdf', mimetype: 'application/pdf', size: 100, url_private_download: 'https://files.example.test/memo.pdf' },
+    { id: 'F3', name: 'memo.txt', mimetype: 'text/plain', size: 100, url_private_download: 'https://files.example.test/memo.txt' },
   ] }));
   await f.workspace.idle();
   const [line] = await f.lines('work/dev/2026-09-25.jsonl');
@@ -132,8 +132,34 @@ test('an image is fetched into files/ beside the day\'s file; one too large or n
   const saved = await readdir(join(f.directory, 'work', 'dev', 'files'));
   assert.equal(saved.length, 1);
   assert.deepEqual(await readFile(join(f.directory, images[0]!.replace('/sources/slack/', ''))), PNG);
-  assert.deepEqual(line!.attachments, ['big.png', 'memo.pdf']);
+  assert.deepEqual(line!.attachments, ['big.png', 'memo.txt']);
   assert.deepEqual(f.slack.downloads, ['https://files.example.test/a.png'], 'what is too large or not an image is not fetched');
+});
+
+test('a PDF is fetched beside the images and listed in pdfs, never told as an image; a fake or too large one is only noted', async t => {
+  const f = await setup(t);
+  const PDF = Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n', 'latin1');
+  f.slack.files.set('https://files.example.test/a.pdf', PDF);
+  f.slack.files.set('https://files.example.test/fake.pdf', Buffer.from('<html>not a pdf</html>'));
+  // Slack's size is the poster's word too: the download itself stops at the limit.
+  f.slack.files.set('https://files.example.test/lying.pdf', Buffer.concat([PDF, Buffer.alloc(20 * 1024 * 1024)]));
+  const pdf = (name: string, size: number) =>
+    ({ id: name, name, mimetype: 'application/pdf', size, url_private_download: `https://files.example.test/${name}` });
+  f.slack.emit(message({ text: '<@UBOT> 資料です', files: [
+    pdf('a.pdf', PDF.length), pdf('fake.pdf', 22), pdf('big.pdf', 20 * 1024 * 1024 + 1), pdf('lying.pdf', 100),
+  ] }));
+  await f.workspace.idle();
+  const [line] = await f.lines('work/dev/2026-09-25.jsonl');
+  const pdfs = line!.pdfs as string[];
+  assert.equal(pdfs.length, 1);
+  assert.match(pdfs[0]!, /^\/sources\/slack\/work\/dev\/files\/\S+\.pdf$/);
+  assert.deepEqual(await readFile(join(f.directory, pdfs[0]!.replace('/sources/slack/', ''))), PDF);
+  assert.equal(line!.images, undefined);
+  assert.deepEqual(line!.attachments, ['fake.pdf', 'big.pdf', 'lying.pdf']);
+  assert.deepEqual(await readdir(join(f.directory, 'work', 'dev', 'files')), [pdfs[0]!.split('/').pop()]);
+  assert.ok(!f.slack.downloads.includes('https://files.example.test/big.pdf'), 'one said to be too large is not fetched');
+  assert.equal(f.told.length, 1);
+  assert.equal(f.told[0]!.images, undefined, 'a PDF is not given to the model as an image');
 });
 
 test('a mention is told to the core once, with the jq path of its line and its images, and gets the eyes reaction once', async t => {
