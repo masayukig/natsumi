@@ -117,6 +117,24 @@ test('she shows she is typing from a message on Signal until that turn is done, 
   typing.stop();
 });
 
+test('when she asked an agent since the owner\'s message, typing goes on past the turn until her next line once the agent answered', async () => {
+  const api = new FakeSignal();
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  let waiting = 1;
+  const typing = new SignalTyping({ loop: { subscribe: l => { listener = l; return () => {}; } }, api,
+    askedOnSignal: () => true, waitingAgents: () => waiting, intervalMs: 10, maxMs: 1_000 });
+  typing.start();
+  const natsumi = () => listener({ type: 'conversation.message', payload: { role: 'natsumi', text: '…' } });
+  natsumi(); // 「聞いています」 within the turn
+  listener({ type: 'conversation.event.completed', payload: { eventId: 'e', status: 'replied' } });
+  natsumi(); // still waiting on the agent
+  assert.ok(!api.typings.includes(true));
+  waiting = 0;
+  natsumi();
+  assert.equal(api.typings.at(-1), true);
+  typing.stop();
+});
+
 test('files the owner sends are put in /work/signal, never over one another, and natsumi is told where', async t => {
   const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-'));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -227,29 +227,42 @@ export class SignalOwner {
 
 /**
  * Signal's "typing…" while natsumi works on what the owner said there, so the owner can tell she has not stopped. The
- * app lets it go after about 15 seconds, so it is sent again every 10; it stops when a turn asked on Signal is done
- * (replied, not replied or failed), and after ten minutes whatever happens.
+ * app lets it go after about 15 seconds, so it is sent again every 10. It stops when the turn asked on Signal is done
+ * (replied, not replied or failed), unless she asked an agent since the owner's message and the agent has not answered:
+ * then it goes on until her next line once no agent is waiting. After 30 minutes it stops whatever happens.
  */
 export class SignalTyping {
-  private readonly options: { api: SignalApi; intervalMs: number; maxMs: number };
+  private readonly options: { api: SignalApi; waitingAgents: (since: string) => number; intervalMs: number; maxMs: number };
   private readonly unsubscribe: () => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private until = 0;
+  private since = '';
+  private forAgents = false;
 
   constructor(options: {
     loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
-    api: SignalApi; askedOnSignal: (eventId: string) => boolean; intervalMs?: number; maxMs?: number;
+    api: SignalApi; askedOnSignal: (eventId: string) => boolean;
+    /** How many agents asked at or after `since` (an ISO time) have not answered yet. */
+    waitingAgents?: (since: string) => number;
+    intervalMs?: number; maxMs?: number;
   }) {
-    this.options = { api: options.api, intervalMs: options.intervalMs ?? 10_000, maxMs: options.maxMs ?? 600_000 };
-    // ponytail: one turn's end stops it even if another message from the owner is still waiting; count turns if that shows.
+    this.options = { api: options.api, waitingAgents: options.waitingAgents ?? (() => 0),
+      intervalMs: options.intervalMs ?? 10_000, maxMs: options.maxMs ?? 1_800_000 };
+    // ponytail: agents are not told apart by the message that asked them; tie agent_tasks to the event if that shows.
     this.unsubscribe = options.loop.subscribe(({ type, payload }) => {
-      if (type === 'conversation.event.completed' && typeof payload.eventId === 'string' && options.askedOnSignal(payload.eventId)) this.end();
+      if (!this.timer) return;
+      if (type === 'conversation.event.completed' && typeof payload.eventId === 'string' && options.askedOnSignal(payload.eventId)) {
+        if (this.waiting()) this.forAgents = true; else this.end();
+      }
+      if (type === 'conversation.message' && payload.role === 'natsumi' && this.forAgents && !this.waiting()) this.end();
     });
   }
 
   start(): void {
     this.until = Date.now() + this.options.maxMs;
+    this.forAgents = false;
     if (this.timer) return;
+    this.since = new Date().toISOString();
     this.send();
     this.timer = setInterval(() => { if (Date.now() >= this.until) this.end(); else this.send(); }, this.options.intervalMs);
   }
@@ -259,10 +272,15 @@ export class SignalTyping {
     this.end();
   }
 
+  private waiting(): boolean {
+    try { return this.options.waitingAgents(this.since) > 0; } catch { return false; }
+  }
+
   private end(): void {
     if (!this.timer) return;
     clearInterval(this.timer);
     this.timer = undefined;
+    this.forAgents = false;
     this.send(true);
   }
 

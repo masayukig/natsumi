@@ -353,7 +353,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       const api = options.signal?.api ?? connectSignal(signalConfig);
       const askedOnSignal = (eventId: string) => askedOn(eventId) === 'signal';
       signalStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal }));
-      const typing = new SignalTyping({ loop: thinkingLoop, api, askedOnSignal });
+      const typing = new SignalTyping({ loop: thinkingLoop, api, askedOnSignal,
+        waitingAgents: since => (db!.prepare(`SELECT count(*) AS n FROM agent_tasks WHERE state = 'waiting' AND sent_at >= ?`)
+          .get(since) as { n: number }).n });
       signalStops.push(() => typing.stop());
       if (signalConfig.approvals && !theDove) log('signal: approvals are on, but there is no dove without slack; nothing to approve');
       const approvals = signalConfig.approvals && theDove
