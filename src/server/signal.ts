@@ -22,6 +22,8 @@ export interface SignalApi {
   read?(timestamp: number): Promise<void>;
   /** The bytes of a file the owner sent, by the id the daemon gave it. */
   attachment?(id: string): Promise<Buffer>;
+  /** Shows the owner that she is typing, or, with `stop`, that she has stopped. */
+  typing?(stop?: boolean): Promise<void>;
 }
 
 export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
@@ -43,6 +45,9 @@ export function connectSignal(config: { url: string; account: string; owner: str
       const body = await rpc('getAttachment', { id: attachmentId });
       if (typeof body.result?.data !== 'string') throw new Error('no data');
       return Buffer.from(body.result.data, 'base64');
+    },
+    async typing(stop) {
+      await rpc('sendTyping', { recipient: [config.owner], ...(stop ? { stop: true } : {}) });
     },
     async read(timestamp) {
       await rpc('sendReceipt', { recipient: config.owner, targetTimestamp: [timestamp], type: 'read' });
@@ -108,6 +113,8 @@ export interface SignalOwnerOptions {
   api: SignalApi; owner: string;
   say: (input: { requestId: string; text: string }) => void;
   approvals?: SignalApprovals;
+  /** Started for each message said to natsumi. */
+  typing?: SignalTyping;
   log?: (line: string) => void;
   /** `/work` as the server sees it. Files the owner sends are put under it, and natsumi is told where. */
   workDirectory?: string;
@@ -154,6 +161,7 @@ export class SignalOwner {
     if (text !== undefined && attachments.length === 0 && approvals && typeof quoted === 'number' && approvals.answer(quoted, text)) return;
     const timestamp = message.timestamp ?? envelope.timestamp;
     if (typeof timestamp === 'number') this.options.api.read?.(timestamp).catch(() => { /* only a read mark */ });
+    this.options.typing?.start();
     const say = (lines: string[]) => { this.options.say({ requestId: `signal:${String(timestamp)}`, text: [...text === undefined ? [] : [text], ...lines].join('\n') }); };
     if (attachments.length === 0) { say([]); return; }
     return this.bring(attachments, typeof timestamp === 'number' ? timestamp : Date.now()).then(say);
@@ -215,6 +223,52 @@ export class SignalOwner {
   }
 
   private log(line: string): void { this.options.log?.(`signal: ${line}`); }
+}
+
+/**
+ * Signal's "typing…" while natsumi works on what the owner said there, so the owner can tell she has not stopped. The
+ * app lets it go after about 15 seconds, so it is sent again every 10; it stops when a turn asked on Signal is done
+ * (replied, not replied or failed), and after ten minutes whatever happens.
+ */
+export class SignalTyping {
+  private readonly options: { api: SignalApi; intervalMs: number; maxMs: number };
+  private readonly unsubscribe: () => void;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private until = 0;
+
+  constructor(options: {
+    loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
+    api: SignalApi; askedOnSignal: (eventId: string) => boolean; intervalMs?: number; maxMs?: number;
+  }) {
+    this.options = { api: options.api, intervalMs: options.intervalMs ?? 10_000, maxMs: options.maxMs ?? 600_000 };
+    // ponytail: one turn's end stops it even if another message from the owner is still waiting; count turns if that shows.
+    this.unsubscribe = options.loop.subscribe(({ type, payload }) => {
+      if (type === 'conversation.event.completed' && typeof payload.eventId === 'string' && options.askedOnSignal(payload.eventId)) this.end();
+    });
+  }
+
+  start(): void {
+    this.until = Date.now() + this.options.maxMs;
+    if (this.timer) return;
+    this.send();
+    this.timer = setInterval(() => { if (Date.now() >= this.until) this.end(); else this.send(); }, this.options.intervalMs);
+  }
+
+  stop(): void {
+    this.unsubscribe();
+    this.end();
+  }
+
+  private end(): void {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = undefined;
+    this.send(true);
+  }
+
+  private send(stop?: boolean): void {
+    this.options.api.typing?.(stop).catch(() => { /* only a hint */ });
+  }
 }
 
 /**

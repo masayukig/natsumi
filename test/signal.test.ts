@@ -8,7 +8,7 @@ import { SlackDove } from '../src/server/dove.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
-import { connectSignal, relayToSignal, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
+import { connectSignal, relayToSignal, SignalApprovals, SignalOwner, SignalTyping, type SignalApi } from '../src/server/signal.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
@@ -38,6 +38,8 @@ class FakeSignal implements SignalApi {
   readMarks: number[] = [];
   private at = 1_790_000_000_000;
   async read(timestamp: number) { this.readMarks.push(timestamp); }
+  typings: boolean[] = [];
+  async typing(stop?: boolean) { this.typings.push(stop === true); }
   files = new Map<string, Buffer>();
   async attachment(id: string) {
     const data = this.files.get(id);
@@ -87,6 +89,32 @@ test('what the owner writes goes to say once per message and is marked read; oth
   event(text('こんにちは', { quote: { id: 123, author: BOT, text: '元の発言' } }));
   assert.deepEqual(said, [{ requestId: 'signal:1790940371225', text: '元気？' }, { requestId: 'signal:1790940371225', text: 'こんにちは' }]);
   assert.deepEqual(api.readMarks, [1_790_940_371_225, 1_790_940_371_225]);
+});
+
+test('she shows she is typing from a message on Signal until that turn is done, sent again meanwhile, and never past the limit', async () => {
+  const api = new FakeSignal();
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  const typing = new SignalTyping({ loop: { subscribe: l => { listener = l; return () => {}; } }, api,
+    askedOnSignal: eventId => eventId === 'event-signal', intervalMs: 10, maxMs: 1_000 });
+  const owner = new SignalOwner({ api, owner: OWNER, typing, say: () => {} });
+  owner.handle({ envelope: text('元気？'), account: BOT });
+  await until(() => api.typings.length >= 3);
+  const completed = (eventId: string) => listener({ type: 'conversation.event.completed', payload: { eventId, status: 'replied' } });
+  completed('event-mac');
+  assert.ok(!api.typings.includes(true));
+  completed('event-signal');
+  const shown = api.typings.length;
+  assert.equal(api.typings.at(-1), true);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(api.typings.length, shown);
+  const limited = new SignalTyping({ loop: { subscribe: () => () => {} }, api, askedOnSignal: () => false, intervalMs: 5, maxMs: 20 });
+  api.typings = [];
+  limited.start();
+  await until(() => api.typings.at(-1) === true);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(api.typings.filter(stop => stop).length, 1);
+  limited.stop();
+  typing.stop();
 });
 
 test('files the owner sends are put in /work/signal, never over one another, and natsumi is told where', async t => {
