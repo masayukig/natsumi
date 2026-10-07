@@ -8,7 +8,7 @@ import { SlackDove } from '../src/server/dove.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
-import { connectSignal, relayToSignal, SignalApprovals, SignalOwner, SignalTyping, type SignalApi } from '../src/server/signal.ts';
+import { connectSignal, OwnerTyping, relayToSignal, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
@@ -94,8 +94,8 @@ test('what the owner writes goes to say once per message and is marked read; oth
 test('she shows she is typing from a message on Signal until that turn is done, sent again meanwhile, and never past the limit', async () => {
   const api = new FakeSignal();
   let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
-  const typing = new SignalTyping({ loop: { subscribe: l => { listener = l; return () => {}; } }, api,
-    askedOnSignal: eventId => eventId === 'event-signal', intervalMs: 10, maxMs: 1_000 });
+  const typing = new OwnerTyping({ loop: { subscribe: l => { listener = l; return () => {}; } }, send: stop => api.typing(stop),
+    asked: eventId => eventId === 'event-signal', intervalMs: 10, maxMs: 1_000 });
   const owner = new SignalOwner({ api, owner: OWNER, typing, say: () => {} });
   owner.handle({ envelope: text('元気？'), account: BOT });
   await until(() => api.typings.length >= 3);
@@ -107,7 +107,7 @@ test('she shows she is typing from a message on Signal until that turn is done, 
   assert.equal(api.typings.at(-1), true);
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(api.typings.length, shown);
-  const limited = new SignalTyping({ loop: { subscribe: () => () => {} }, api, askedOnSignal: () => false, intervalMs: 5, maxMs: 20 });
+  const limited = new OwnerTyping({ loop: { subscribe: () => () => {} }, send: stop => api.typing(stop), asked: () => false, intervalMs: 5, maxMs: 20 });
   api.typings = [];
   limited.start();
   await until(() => api.typings.at(-1) === true);
@@ -121,8 +121,8 @@ test('when she asked an agent since the owner\'s message, typing goes on past th
   const api = new FakeSignal();
   let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
   let waiting = 1;
-  const typing = new SignalTyping({ loop: { subscribe: l => { listener = l; return () => {}; } }, api,
-    askedOnSignal: () => true, waitingAgents: () => waiting, intervalMs: 10, maxMs: 1_000 });
+  const typing = new OwnerTyping({ loop: { subscribe: l => { listener = l; return () => {}; } }, send: stop => api.typing(stop),
+    asked: () => true, waitingAgents: () => waiting, intervalMs: 10, maxMs: 1_000 });
   typing.start();
   const natsumi = () => listener({ type: 'conversation.message', payload: { role: 'natsumi', text: '…' } });
   natsumi(); // 「聞いています」 within the turn

@@ -36,8 +36,8 @@ import { JUDGE_METHODS, type JudgeClient, type JudgeMethod, type JudgeSlot } fro
 import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
-import { relayToOwner, SlackWorkspace } from './slack.ts';
-import { connectSignal, relayToSignal, SignalApprovals, SignalOwner, SignalTyping, type SignalApi } from './signal.ts';
+import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
+import { connectSignal, OwnerTyping, relayToSignal, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
@@ -171,7 +171,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let dove: SlackDove | undefined;
   const slackWorkspaces: SlackWorkspace[] = [];
   let signalOwner: SignalOwner | undefined;
-  const signalStops: (() => void)[] = [];
+  const ownerStops: (() => void)[] = [];
   const timers: NodeJS.Timeout[] = [];
   // Everything opened above, closed in the reverse order.
   const closeAll = async () => {
@@ -179,7 +179,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
     await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
     await signalOwner?.stop(); // Likewise for what the owner says on Signal (ADR F04).
-    signalStops.forEach(stop => stop());
+    ownerStops.forEach(stop => stop());
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     webNotifier?.close();
@@ -316,11 +316,25 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const askedOn = (eventId: string) => (db!.prepare(`SELECT m.device_id FROM loop_events e
       JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
       { device_id: string | null } | undefined)?.device_id;
+    // Fork: how many agents she asked since an owner message or a mention have not answered yet ("typing…" stays up).
+    const waitingAgents = (since: string) => (db!.prepare(`SELECT count(*) AS n FROM agent_tasks WHERE state = 'waiting' AND sent_at >= ?`)
+      .get(since) as { n: number }).n;
     if (archive && slackConfig && !thinkingLoop.unavailable) {
       const owner = slackConfig.owner;
       for (const { name, api, socket } of slackConnections) {
         // Fork (ADR F01): the owner talks with her in their channel, as they would from the Mac.
         const ownerHere = owner?.workspace === name ? owner : undefined;
+        // Fork: "typing…" under the owner's message (ADR F01) and under the mentions and DMs she was told of.
+        let typingAt: { channel: string; ts: string } | undefined;
+        const ownerTyping = ownerHere ? new OwnerTyping({ loop: thinkingLoop, waitingAgents, intervalMs: 90_000,
+          asked: eventId => askedOn(eventId) === 'slack',
+          send: stop => typingAt && api.setStatus?.(typingAt.channel, typingAt.ts, stop ? '' : 'is typing...') }) : undefined;
+        if (ownerTyping) ownerStops.push(() => ownerTyping.stop());
+        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents,
+          done: path => ['replied', 'no-reply', 'failed'].includes((db!.prepare(`SELECT e.state FROM source_attention a
+            JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = 'slack' AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`)
+            .get(path) as { state: string } | undefined)?.state ?? '') });
+        ownerStops.push(() => mentionTyping.stop());
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
             ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}),
@@ -333,9 +347,15 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
           maxImageBytes: slackConfig.maxImageBytes, now, log,
           attention: attention => { sources?.attention(attention); },
+          typing: (channel, threadTs, path) => mentionTyping.start(channel, threadTs, path),
           ...(ownerHere ? { owner: { userId: ownerHere.userId, channel: ownerHere.channel, say: ({ requestId, text }) => {
             const outcome = thinkingLoop.send({ requestId, deviceId: 'slack', text });
             if (outcome.kind !== 'accepted') log(`slack (${name}): the owner's message was not taken (${outcome.code})`);
+          }, typing: (channel, ts) => {
+            // A newer message moves it: the one under the older message is taken away first.
+            if (typingAt && typingAt.ts !== ts) void api.setStatus?.(typingAt.channel, typingAt.ts, '').catch(() => {});
+            typingAt = { channel, ts };
+            ownerTyping?.start();
           } } } : {}),
         });
         slackWorkspaces.push(workspace);
@@ -352,15 +372,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     if (signalConfig && !thinkingLoop.unavailable) {
       const api = options.signal?.api ?? connectSignal(signalConfig);
       const askedOnSignal = (eventId: string) => askedOn(eventId) === 'signal';
-      signalStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal }));
-      const typing = new SignalTyping({ loop: thinkingLoop, api, askedOnSignal,
-        waitingAgents: since => (db!.prepare(`SELECT count(*) AS n FROM agent_tasks WHERE state = 'waiting' AND sent_at >= ?`)
-          .get(since) as { n: number }).n });
-      signalStops.push(() => typing.stop());
+      ownerStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal }));
+      const typing = new OwnerTyping({ loop: thinkingLoop, send: stop => api.typing?.(stop), asked: askedOnSignal, waitingAgents });
+      ownerStops.push(() => typing.stop());
       if (signalConfig.approvals && !theDove) log('signal: approvals are on, but there is no dove without slack; nothing to approve');
       const approvals = signalConfig.approvals && theDove
         ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
-      if (approvals) signalStops.push(() => approvals.stop());
+      if (approvals) ownerStops.push(() => approvals.stop());
       signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, typing, ...(approvals ? { approvals } : {}),
         workDirectory: join(dataDirectory, WORK_DIRECTORY),
         say: ({ requestId, text }) => {

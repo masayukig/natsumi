@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
-import { relayToOwner, SlackWorkspace } from '../src/server/slack.ts';
+import { relayToOwner, SlackMentionTyping, SlackWorkspace } from '../src/server/slack.ts';
 import type { Attention } from '../src/server/sources.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
@@ -28,10 +28,12 @@ async function setup(t: test.TestContext) {
   slack.addChannel({ id: 'C2', name: 'dev', isIm: false });
   const told: Attention[] = [];
   const said: { requestId: string; text: string }[] = [];
+  const typing: string[] = [];
   const workspace = new SlackWorkspace({
     name: 'work', api: slack, socket: slack, archive, reaction: 'eyes', backfillDays: 3, maxImageBytes: 1024 * 1024, now: () => clock,
     attention: attention => { told.push(attention); },
-    owner: { userId: 'U1', channel: 'C1', say: input => { said.push(input); } },
+    owner: { userId: 'U1', channel: 'C1', say: input => { said.push(input); }, typing: (channel, ts) => { typing.push(`owner ${channel} ${ts}`); } },
+    typing: (channel, threadTs) => { typing.push(`mention ${channel} ${threadTs}`); },
   });
   await workspace.start();
   t.after(async () => {
@@ -39,7 +41,7 @@ async function setup(t: test.TestContext) {
     db.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { slack, workspace, archive, told, said };
+  return { slack, workspace, archive, told, said, typing };
 }
 
 function message(fields: Record<string, unknown>): Record<string, unknown> {
@@ -64,6 +66,7 @@ test('the owner in their channel, in a thread there and in the DM goes to the co
   ]);
   assert.deepEqual(f.told, []);
   assert.equal(f.slack.reactions.length, 3);
+  assert.deepEqual(f.typing, [`owner C1 ${ts}`, `owner C1 ${ts}`, `owner D1 ${tsAt('2026-09-25T05:34:00Z')}`], 'under the thread a reply would be in');
   assert.ok(f.archive.has('work', 'C1', ts), 'still written to the files');
 });
 
@@ -74,6 +77,35 @@ test('anyone else in the owner\'s channel, and the owner elsewhere, are what the
   await f.workspace.idle();
   assert.deepEqual(f.said, []);
   assert.deepEqual(f.told.map(attention => attention.kind), ['mention', 'mention']);
+  assert.deepEqual(f.typing, [`mention C1 ${tsAt(AT)}`, `mention C2 ${tsAt('2026-09-25T05:33:00Z')}`]);
+});
+
+test('typing under a mention is sent again until the turn that took it is done and no agent asked since is waiting, and never past the limit', async () => {
+  const slack = new FakeSlack();
+  let listener!: () => void;
+  let done = false;
+  let waiting = 1;
+  const typing = new SlackMentionTyping({ loop: { subscribe: l => { listener = l as () => void; return () => {}; } }, api: slack,
+    done: path => path === 'p' && done, waitingAgents: () => waiting, intervalMs: 10, maxMs: 1_000 });
+  typing.start('C2', '1.0', 'p');
+  await new Promise(resolve => setTimeout(resolve, 35));
+  listener();
+  assert.ok(slack.statuses.length >= 3 && slack.statuses.every(s => s.status !== ''), 'sent again while the turn runs');
+  done = true;
+  listener();
+  assert.notEqual(slack.statuses.at(-1)!.status, '', 'an agent is still waiting');
+  waiting = 0;
+  listener();
+  assert.deepEqual(slack.statuses.at(-1), { channel: 'C2', threadTs: '1.0', status: '' });
+  const count = slack.statuses.length;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(slack.statuses.length, count, 'nothing after it ended');
+  const limited = new SlackMentionTyping({ loop: { subscribe: () => () => {} }, api: slack, done: () => false, intervalMs: 5, maxMs: 20 });
+  limited.start('C2', '2.0', 'q');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(slack.statuses.filter(s => s.threadTs === '2.0').at(-1)!.status, '');
+  limited.stop();
+  typing.stop();
 });
 
 test('a reply to a message the owner sent from elsewhere is not posted; one to a message from Slack, a notice and a reply to none are', async () => {

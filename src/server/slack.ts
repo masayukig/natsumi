@@ -37,7 +37,11 @@ export interface SlackWorkspaceOptions {
    * to `say` as a message of the conversation, never told as an attention. `requestId` is the same for one message
    * however often it comes.
    */
-  owner?: { userId: string; channel: string; say: (input: { requestId: string; text: string }) => void };
+  owner?: { userId: string; channel: string; say: (input: { requestId: string; text: string }) => void;
+    /** Fork: told of each message handed to `say`, to show "typing…" under it. */
+    typing?: (channel: string, ts: string) => void };
+  /** Fork: told of each mention or DM told as an attention, with the thread a reply would go in, to show "typing…" there. */
+  typing?: (channel: string, threadTs: string, path: string) => void;
 }
 
 /**
@@ -222,6 +226,7 @@ export class SlackWorkspace {
     this.options.attention({ source: 'slack', kind, file: place.file, path: place.path,
       ...(place.images.length > 0 ? { images: place.images } : {}) });
     if (kind === 'thread-reply') return isNew;
+    this.options.typing?.(channel.channel_id, reply ?? message.ts, place.path);
     try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
       this.report('the reaction could not be added', error);
     }
@@ -254,6 +259,7 @@ export class SlackWorkspace {
     // The same mark as a mention's: one message is handed on once, whichever way and however often it comes.
     if (!this.options.archive.markForHer(this.options.name, channel.channel_id, message.ts)) return true;
     owner.say({ requestId: `slack:${channel.channel_id}:${message.ts}`, text });
+    owner.typing?.(channel.channel_id, message.threadTs ?? message.ts);
     try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
       this.report('the reaction could not be added', error);
     }
@@ -380,6 +386,76 @@ export class SlackWorkspace {
   }
 
   private log(line: string) { this.options.log?.(`slack (${this.options.name}): ${line}`); }
+}
+
+/**
+ * Fork (ADR F01): "typing…" under the threads of mentions and DMs she was told of, until the turn that took each is
+ * done (replied, not replied or failed) and no agent asked since is still waiting. Slack drops the status after 2
+ * minutes, so it is sent again every `intervalMs`; a post of hers in the thread takes it away on Slack's side too.
+ * After `maxMs` it stops whatever happens. An approval the dove waits for comes after the turn, so it is not covered.
+ */
+export class SlackMentionTyping {
+  private readonly shown = new Map<string, { channel: string; threadTs: string; path: string; since: string; until: number }>();
+  private readonly unsubscribe: () => void;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private readonly intervalMs: number;
+  private readonly maxMs: number;
+  private readonly options: { api: SlackApi; done: (path: string) => boolean; waitingAgents?: (since: string) => number };
+
+  constructor(options: {
+    loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
+    api: SlackApi;
+    /** Whether the turn that took the attention at `path` is over; false while it is not yet taken. */
+    done: (path: string) => boolean;
+    /** How many agents asked at or after `since` (an ISO time) have not answered yet. */
+    waitingAgents?: (since: string) => number;
+    intervalMs?: number; maxMs?: number;
+  }) {
+    this.options = options;
+    this.intervalMs = options.intervalMs ?? 90_000;
+    this.maxMs = options.maxMs ?? 600_000;
+    // ponytail: checks on every loop event; throttle if the queries show up.
+    this.unsubscribe = options.loop.subscribe(() => { if (this.shown.size > 0) this.check(); });
+  }
+
+  start(channel: string, threadTs: string, path: string): void {
+    this.shown.set(`${channel}:${threadTs}`, { channel, threadTs, path, since: new Date().toISOString(), until: Date.now() + this.maxMs });
+    this.send(channel, threadTs, true);
+    this.timer ??= setInterval(() => {
+      this.check();
+      for (const { channel, threadTs } of this.shown.values()) this.send(channel, threadTs, true);
+    }, this.intervalMs);
+  }
+
+  stop(): void {
+    this.unsubscribe();
+    for (const { channel, threadTs } of this.shown.values()) this.send(channel, threadTs, false);
+    this.shown.clear();
+    this.idle();
+  }
+
+  private check(): void {
+    for (const [key, shown] of this.shown) {
+      if (Date.now() < shown.until && !(this.safely(() => this.options.done(shown.path), false)
+        && this.safely(() => (this.options.waitingAgents?.(shown.since) ?? 0) === 0, true))) continue;
+      this.shown.delete(key);
+      this.send(shown.channel, shown.threadTs, false);
+    }
+    if (this.shown.size === 0) this.idle();
+  }
+
+  private idle(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  private safely(read: () => boolean, otherwise: boolean): boolean {
+    try { return read(); } catch { return otherwise; }
+  }
+
+  private send(channel: string, threadTs: string, on: boolean): void {
+    this.options.api.setStatus?.(channel, threadTs, on ? 'is typing...' : '').catch(() => { /* only a hint */ });
+  }
 }
 
 /**

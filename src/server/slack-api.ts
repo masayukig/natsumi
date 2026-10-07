@@ -53,6 +53,11 @@ export interface SlackApi {
   replies(channel: string, threadTs: string): Promise<SlackMessage[]>;
   userName(userId: string): Promise<string>;
   addReaction(channel: string, ts: string, name: string): Promise<void>;
+  /**
+   * Fork: "typing…" under the thread at `threadTs` (`assistant.threads.setStatus`, `chat:write` since 2026-03); an empty
+   * status takes it away. Slack drops it after 2 minutes, or when the bot posts in that thread.
+   */
+  setStatus?(channel: string, threadTs: string, status: string): Promise<void>;
   /** The names of the workspace's custom emoji, aliases included (`emoji.list`, which needs `emoji:read`). */
   customEmoji(): Promise<string[]>;
   /**
@@ -262,6 +267,10 @@ export function connectSlack({ botToken, appToken }: { botToken: string; appToke
         // Already there (a retry that raced the first try) is what was wanted.
         if ((error as SlackCallError).reason !== 'already_reacted') throw error;
       }
+    },
+    async setStatus(channel, threadTs, status) {
+      await calling('assistant.threads.setStatus', () => web.assistant.threads.setStatus({ channel_id: channel, thread_ts: threadTs, status,
+        ...(status ? { loading_messages: ['考え中…'] } : {}) }));
     },
     async customEmoji() {
       const answer = await calling('emoji.list', () => web.emoji.list());

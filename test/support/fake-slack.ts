@@ -140,6 +140,11 @@ export class FakeSlack implements SlackApi, SlackSocket {
     this.reactions.push({ channel, ts, name });
   }
 
+  readonly statuses: { channel: string; threadTs: string; status: string }[] = [];
+  async setStatus(channel: string, threadTs: string, status: string): Promise<void> {
+    this.statuses.push({ channel, threadTs, status });
+  }
+
   async customEmoji(): Promise<string[]> {
     this.emojiCalls += 1;
     this.check('customEmoji', '');
