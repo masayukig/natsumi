@@ -30,6 +30,20 @@
       <default>-1</default>
       <summary>Where she stands (-1: bottom right)</summary>
     </key>
+    <key name="hidden" type="b">
+      <default>false</default>
+      <summary>Keep her off the screen (talking to her brings her back)</summary>
+    </key>
+    <key name="fade-seconds" type="i">
+      <range min="0" max="7200"/>
+      <default>300</default>
+      <summary>Seconds without use before she goes see-through (0: never)</summary>
+    </key>
+    <key name="fade-opacity" type="i">
+      <range min="10" max="100"/>
+      <default>40</default>
+      <summary>How opaque she is while see-through, in percent</summary>
+    </key>
     <key name="talk" type="as">
       <default><![CDATA[['<Control><Alt>n']]]></default>
       <summary>Open the box to talk to her</summary>

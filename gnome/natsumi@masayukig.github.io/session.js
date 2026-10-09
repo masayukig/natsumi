@@ -297,7 +297,12 @@ export class Session {
 
     /** Reconnects now (after the machine wakes up, or from the menu). */
     reconnect() {
-        if (!this._token || this._ws) return;
+        if (this._ws) return;
+        // With auto-login the keyring is still locked when the shell starts, so the token may be there by now.
+        if (!this._token) {
+            this.start();
+            return;
+        }
         if (this._retry) GLib.source_remove(this._retry);
         this._retry = 0;
         this._failures = 0;
