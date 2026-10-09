@@ -41,7 +41,7 @@ export interface SlackWorkspaceOptions {
     /** Fork: told of each message handed to `say`, to show "typing…" under it. */
     typing?: (channel: string, ts: string) => void };
   /** Fork: told of each mention or DM told as an attention, with the thread a reply would go in, to show "typing…" there. */
-  typing?: (channel: string, threadTs: string, path: string) => void;
+  typing?: (channel: string, threadTs: string, place: AttentionPlace) => void;
 }
 
 /**
@@ -226,7 +226,7 @@ export class SlackWorkspace {
     this.options.attention({ source: 'slack', kind, file: place.file, path: place.path,
       ...(place.images.length > 0 ? { images: place.images } : {}) });
     if (kind === 'thread-reply') return isNew;
-    this.options.typing?.(channel.channel_id, reply ?? message.ts, place.path);
+    this.options.typing?.(channel.channel_id, reply ?? message.ts, { file: place.file, path: place.path });
     try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
       this.report('the reaction could not be added', error);
     }
@@ -394,19 +394,25 @@ export class SlackWorkspace {
  * minutes, so it is sent again every `intervalMs`; a post of hers in the thread takes it away on Slack's side too.
  * After `maxMs` it stops whatever happens. An approval the dove waits for comes after the turn, so it is not covered.
  */
+/** Where a mention's attention points: the day's file and the position in it. */
+type AttentionPlace = { file: string; path: string };
+
 export class SlackMentionTyping {
-  private readonly shown = new Map<string, { channel: string; threadTs: string; path: string; since: string; until: number }>();
+  private readonly shown = new Map<string, { channel: string; threadTs: string; place: AttentionPlace; since: string; until: number }>();
   private readonly unsubscribe: () => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly intervalMs: number;
   private readonly maxMs: number;
-  private readonly options: { api: SlackApi; done: (path: string) => boolean; waitingAgents?: (since: string) => number };
+  private readonly options: { api: SlackApi; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number };
 
   constructor(options: {
     loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
     api: SlackApi;
-    /** Whether the turn that took the attention at `path` is over; false while it is not yet taken. */
-    done: (path: string) => boolean;
+    /**
+     * Whether the turn that took the attention at `place` is over; false while it is not yet taken. The path alone is
+     * not enough: it is a position inside one day's file, so an older day's attention has the same one.
+     */
+    done: (place: AttentionPlace) => boolean;
     /** How many agents asked at or after `since` (an ISO time) have not answered yet. */
     waitingAgents?: (since: string) => number;
     intervalMs?: number; maxMs?: number;
@@ -418,8 +424,8 @@ export class SlackMentionTyping {
     this.unsubscribe = options.loop.subscribe(() => { if (this.shown.size > 0) this.check(); });
   }
 
-  start(channel: string, threadTs: string, path: string): void {
-    this.shown.set(`${channel}:${threadTs}`, { channel, threadTs, path, since: new Date().toISOString(), until: Date.now() + this.maxMs });
+  start(channel: string, threadTs: string, place: AttentionPlace): void {
+    this.shown.set(`${channel}:${threadTs}`, { channel, threadTs, place, since: new Date().toISOString(), until: Date.now() + this.maxMs });
     this.send(channel, threadTs, true);
     this.timer ??= setInterval(() => {
       this.check();
@@ -436,7 +442,7 @@ export class SlackMentionTyping {
 
   private check(): void {
     for (const [key, shown] of this.shown) {
-      if (Date.now() < shown.until && !(this.safely(() => this.options.done(shown.path), false)
+      if (Date.now() < shown.until && !(this.safely(() => this.options.done(shown.place), false)
         && this.safely(() => (this.options.waitingAgents?.(shown.since) ?? 0) === 0, true))) continue;
       this.shown.delete(key);
       this.send(shown.channel, shown.threadTs, false);

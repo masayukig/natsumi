@@ -331,9 +331,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           send: stop => typingAt && api.setStatus?.(typingAt.channel, typingAt.ts, stop ? '' : 'is typing...') }) : undefined;
         if (ownerTyping) ownerStops.push(() => ownerTyping.stop());
         const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents,
-          done: path => ['replied', 'no-reply', 'failed'].includes((db!.prepare(`SELECT e.state FROM source_attention a
-            JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = 'slack' AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`)
-            .get(path) as { state: string } | undefined)?.state ?? '') });
+          done: place => ['replied', 'no-reply', 'failed'].includes((db!.prepare(`SELECT e.state FROM source_attention a
+            JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = 'slack' AND a.file = ? AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`)
+            .get(place.file, place.path) as { state: string } | undefined)?.state ?? '') });
         ownerStops.push(() => mentionTyping.stop());
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
@@ -347,7 +347,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
           maxImageBytes: slackConfig.maxImageBytes, now, log,
           attention: attention => { sources?.attention(attention); },
-          typing: (channel, threadTs, path) => mentionTyping.start(channel, threadTs, path),
+          typing: (channel, threadTs, place) => mentionTyping.start(channel, threadTs, place),
           ...(ownerHere ? { owner: { userId: ownerHere.userId, channel: ownerHere.channel, say: ({ requestId, text }) => {
             const outcome = thinkingLoop.send({ requestId, deviceId: 'slack', text });
             if (outcome.kind !== 'accepted') log(`slack (${name}): the owner's message was not taken (${outcome.code})`);

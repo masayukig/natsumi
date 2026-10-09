@@ -86,8 +86,8 @@ test('typing under a mention is sent again until the turn that took it is done a
   let done = false;
   let waiting = 1;
   const typing = new SlackMentionTyping({ loop: { subscribe: l => { listener = l as () => void; return () => {}; } }, api: slack,
-    done: path => path === 'p' && done, waitingAgents: () => waiting, intervalMs: 10, maxMs: 1_000 });
-  typing.start('C2', '1.0', 'p');
+    done: place => place.file === 'f2' && place.path === 'p' && done, waitingAgents: () => waiting, intervalMs: 10, maxMs: 1_000 });
+  typing.start('C2', '1.0', { file: 'f2', path: 'p' });
   await new Promise(resolve => setTimeout(resolve, 35));
   listener();
   assert.ok(slack.statuses.length >= 3 && slack.statuses.every(s => s.status !== ''), 'sent again while the turn runs');
@@ -101,7 +101,7 @@ test('typing under a mention is sent again until the turn that took it is done a
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(slack.statuses.length, count, 'nothing after it ended');
   const limited = new SlackMentionTyping({ loop: { subscribe: () => () => {} }, api: slack, done: () => false, intervalMs: 5, maxMs: 20 });
-  limited.start('C2', '2.0', 'q');
+  limited.start('C2', '2.0', { file: 'f2', path: 'q' });
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(slack.statuses.filter(s => s.threadTs === '2.0').at(-1)!.status, '');
   limited.stop();
