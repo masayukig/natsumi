@@ -64,7 +64,7 @@ test('a valid config becomes a typed server config', () => {
     uploads: { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 },
     skills: { enabled: false },
     postbox: { enabled: true, minIntervalMinutes: 15 },
-    curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2, rewriteAllMaxChars: 100000,
+    curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 2, rewriteAllMaxChars: 100000,
       conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
   });
   const { clientSecretEnv: _, ...rest } = github();
@@ -762,13 +762,13 @@ test('the list of reactions is gone: a config that still has one is refused, and
 });
 
 test('the memory curator runs every night by default, on natsumi\'s route, with limits of its own (ADR 0055)', () => {
-  assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2,
+  assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 2,
     rewriteAllMaxChars: 100000, conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
   const { model: _, ...withoutModel } = pi();
   const withRoutes = { ...base(), pi: { ...withoutModel, routes, defaultRoute: 'local' } };
   assert.deepEqual(parseConfig({ ...withRoutes, curator: { route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 } }).curator,
-    { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, stopStartingAt: '05:30', rotateFiles: 1, rewriteAllMaxChars: 100000,
+    { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 1, rewriteAllMaxChars: 100000,
       conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   assert.equal(parseConfig({ ...base(), curator: { enabled: false } }).curator.enabled, false);
   rejects({ ...withRoutes, curator: { route: 'elsewhere' } }, 'curator.route', /pi\.routes/);
@@ -797,6 +797,15 @@ test('the curator begins no stage past a morning time, in the loop\'s time zone,
     /nightlyRotationAt/);
   assert.equal(parseConfig({ ...base(), loop: { nightlyRotationAt: false }, curator: { stopStartingAt: '04:00' } }).curator.stopStartingAt,
     '04:00');
+});
+
+test('a sleeping pill\'s curator begins no stage past minutes after the pill, 90 by default, or at any time with false (ADR 0077)', () => {
+  assert.equal(parseConfig(base()).curator.pillStopStartingAfterMinutes, 90);
+  assert.equal(parseConfig({ ...base(), curator: { pillStopStartingAfterMinutes: 30 } }).curator.pillStopStartingAfterMinutes, 30);
+  assert.equal(parseConfig({ ...base(), curator: { pillStopStartingAfterMinutes: false } }).curator.pillStopStartingAfterMinutes, false);
+  for (const minutes of [0, -5, 1.5, '90', true]) {
+    rejects({ ...base(), curator: { pillStopStartingAfterMinutes: minutes } }, 'curator.pillStopStartingAfterMinutes');
+  }
 });
 
 test('the conversation handed to the curator has a limit of its own, and 0 hands none (ADR 0068)', () => {
