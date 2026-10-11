@@ -1,7 +1,7 @@
 # 0003. 自発的支援と外部連携の境界
 
 - Date: 2026-09-14
-- Status: Accepted（長期記憶の Markdown の形とツールは [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で具体化、Wiki をマウントして読み書きし自動で commit/push する点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で置き換え）
+- Status: Accepted（長期記憶の Markdown の形とツールは [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で具体化、Wiki をマウントして読み書きし自動で commit/push する点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で置き換え。Gmail と Calendar を 15 分ごとに確認する点は、サーバーが定期確認を持たず、係のエージェントへの定期便として送る形に [ADR 0076](0076-a-postbox-for-requests-sent-on-a-schedule.md) で置き換え）
 
 ## Context
 
