@@ -37,7 +37,7 @@ import { SLACK_REGISTRATION, SLACK_SOURCE, SlackArchive } from './slack-archive.
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
-import { connectSignal, OwnerTyping, relayToSignal, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
+import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
@@ -372,14 +372,15 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     if (signalConfig && !thinkingLoop.unavailable) {
       const api = options.signal?.api ?? connectSignal(signalConfig);
       const askedOnSignal = (eventId: string) => askedOn(eventId) === 'signal';
-      ownerStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal }));
+      const sent = new SentLines();
+      ownerStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal, sent }));
       const typing = new OwnerTyping({ loop: thinkingLoop, send: stop => api.typing?.(stop), asked: askedOnSignal, waitingAgents });
       ownerStops.push(() => typing.stop());
       if (signalConfig.approvals && !theDove) log('signal: approvals are on, but there is no dove without slack; nothing to approve');
       const approvals = signalConfig.approvals && theDove
         ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
       if (approvals) ownerStops.push(() => approvals.stop());
-      signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, typing, ...(approvals ? { approvals } : {}),
+      signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, typing, sent, ...(approvals ? { approvals } : {}),
         workDirectory: join(dataDirectory, WORK_DIRECTORY),
         say: ({ requestId, text }) => {
           const outcome = thinkingLoop.send({ requestId, deviceId: 'signal', text });

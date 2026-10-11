@@ -8,7 +8,7 @@ import { SlackDove } from '../src/server/dove.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
-import { connectSignal, OwnerTyping, relayToSignal, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
+import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
@@ -84,11 +84,30 @@ test('what the owner writes goes to say once per message and is marked read; oth
   event({ sourceNumber: OWNER, timestamp: 1, receiptMessage: { when: 1, isDelivery: true, timestamps: [1] } });
   event({ sourceNumber: OWNER, timestamp: 2, typingMessage: { action: 'STARTED', timestamp: 2 } });
   event({ sourceNumber: OWNER, timestamp: 3, dataMessage: { timestamp: 3, message: null, isProfileKeyUpdate: true } });
-  event(reaction('👍', 123));
   // Without approvals a quoted reply is just something said.
   event(text('こんにちは', { quote: { id: 123, author: BOT, text: '元の発言' } }));
   assert.deepEqual(said, [{ requestId: 'signal:1790940371225', text: '元気？' }, { requestId: 'signal:1790940371225', text: 'こんにちは' }]);
   assert.deepEqual(api.readMarks, [1_790_940_371_225, 1_790_940_371_225]);
+});
+
+test('a reaction on her line is said to natsumi with the head of that line; one taken off is let go', async () => {
+  const said: { requestId: string; text: string }[] = [];
+  const api = new FakeSignal();
+  let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;
+  const sent = new SentLines(2);
+  relayToSignal({ loop: { subscribe: l => { listener = l; return () => {}; } }, api, images: { read: async () => undefined },
+    askedOnSignal: () => true, sent });
+  const owner = new SignalOwner({ api, owner: OWNER, sent, say: input => { said.push(input); } });
+  for (const line of ['おはよう', 'あ'.repeat(70), '三つ目']) listener({ type: 'conversation.message', payload: { role: 'natsumi', text: line } });
+  await until(() => api.sent.length === 3);
+  const [first, second] = api.sent.map(entry => entry.at);
+  owner.handle({ envelope: reaction('👍', second!) });
+  owner.handle({ envelope: reaction('👍', second!, true) });
+  owner.handle({ envelope: reaction('❤️', first!) }); // pushed out of the last two
+  assert.deepEqual(said, [
+    { requestId: `signal:reaction:${String(second)}`, text: `（Signal でリアクション: 「${'あ'.repeat(60)}…」 に 👍）` },
+    { requestId: `signal:reaction:${String(first)}`, text: '（Signal でリアクション: 以前のメッセージ に ❤️）' },
+  ]);
 });
 
 test('she shows she is typing from a message on Signal until that turn is done, sent again meanwhile, and never past the limit', async () => {
@@ -230,7 +249,7 @@ test('a draft is sent to the owner once; a 👍 on it sends the post, and a shor
   await f.approvals.idle();
   assert.equal(f.api.sent.length, 1);
   assert.match(f.api.sent[0]!.message, /承認待ちの投稿: work\/#dev への投稿\n返信先: 山田.*\n---\n大丈夫です\n---\n理由: 判定できなかった/);
-  f.owner.handle({ envelope: reaction('👍', f.api.sent[0]!.at + 1) }); // not our message: nothing
+  assert.throws(() => f.owner.handle({ envelope: reaction('👍', f.api.sent[0]!.at + 1) }), /not said/); // not an approval: to natsumi
   f.owner.handle({ envelope: reaction('👍', f.api.sent[0]!.at, true) }); // taken off: nothing
   f.owner.handle({ envelope: reaction('🎉', f.api.sent[0]!.at) }); // another emoji: nothing
   await f.settle();

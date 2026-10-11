@@ -101,6 +101,24 @@ export const SIGNAL_FILE_DIRECTORY = 'signal';
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
 
+/** How much of her line a reaction names. */
+const QUOTE_CHARS = 60;
+
+/**
+ * Her recent lines on Signal by their timestamp. ponytail: in memory and the last 500 only, so a reaction after a
+ * restart or on an old line says 以前のメッセージ; keep them in the state DB if that matters.
+ */
+export class SentLines {
+  private readonly lines = new Map<number, string>();
+  private readonly max: number;
+  constructor(max = 500) { this.max = max; }
+  add(at: number, text: string): void {
+    this.lines.set(at, text);
+    if (this.lines.size > this.max) this.lines.delete(this.lines.keys().next().value!);
+  }
+  get(at: number): string | undefined { return this.lines.get(at); }
+}
+
 /** The longest wait between tries to reach the daemon's event stream. */
 const MAX_BACKOFF_MS = 60_000;
 
@@ -113,6 +131,8 @@ export interface SignalOwnerOptions {
   api: SignalApi; owner: string;
   say: (input: { requestId: string; text: string }) => void;
   approvals?: SignalApprovals;
+  /** Her lines sent by `relayToSignal`, by Signal's timestamp, so a reaction can say what it was put on. */
+  sent?: SentLines;
   /** Started for each message said to natsumi. */
   typing?: OwnerTyping;
   log?: (line: string) => void;
@@ -149,9 +169,12 @@ export class SignalOwner {
     const { approvals } = this.options;
     if (message.reaction) {
       const { emoji, targetSentTimestamp, isRemove } = message.reaction;
-      if (approvals && isRemove !== true && typeof emoji === 'string' && typeof targetSentTimestamp === 'number') {
-        approvals.react(targetSentTimestamp, emoji);
-      }
+      if (isRemove === true || typeof emoji !== 'string' || typeof targetSentTimestamp !== 'number') return;
+      if (approvals?.react(targetSentTimestamp, emoji)) return;
+      // Any other reaction is said to her as a short line, with the head of what it was put on when it is known.
+      const line = this.options.sent?.get(targetSentTimestamp);
+      const on = line === undefined ? '以前のメッセージ' : `「${line.length > QUOTE_CHARS ? `${line.slice(0, QUOTE_CHARS)}…` : line}」`;
+      this.options.say({ requestId: `signal:reaction:${String(targetSentTimestamp)}`, text: `（Signal でリアクション: ${on} に ${emoji}）` });
       return;
     }
     const text = typeof message.message === 'string' && message.message.trim() !== '' ? message.message : undefined;
@@ -303,6 +326,7 @@ export function relayToSignal(options: {
   api: SignalApi;
   images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
   askedOnSignal: (eventId: string) => boolean;
+  sent?: SentLines;
   log?: (line: string) => void;
 }): () => void {
   let chain: Promise<void> = Promise.resolve();
@@ -318,11 +342,13 @@ export function relayToSignal(options: {
         if (read) attachments.push(`data:${read.mimeType};base64,${read.data.toString('base64')}`);
       }
       try {
-        await options.api.send(text, attachments);
+        const at = await options.api.send(text, attachments); // not inside sent?.add(…), which would skip the send
+        options.sent?.add(at, text);
       } catch (error) {
         if (attachments.length === 0) { options.log?.(`signal: sending to the owner failed (${describe(error)})`); return; }
         options.log?.(`signal: sending with images failed (${describe(error)}); sending the text alone`);
-        await options.api.send(text).catch(again => { options.log?.(`signal: sending to the owner failed (${describe(again)})`); });
+        await options.api.send(text).then(at => options.sent?.add(at, text),
+          again => { options.log?.(`signal: sending to the owner failed (${describe(again)})`); });
       }
     });
   });
@@ -384,10 +410,15 @@ export class SignalApprovals {
 
   stop(): void { this.unsubscribe(); }
 
-  /** A reaction by the owner on one of our messages. Anything but the three emoji is let go. */
-  react(sentAt: number, emoji: string): void {
+  /**
+   * A reaction by the owner. True when it is on an approval, so it is not also said to natsumi; there anything but the
+   * three emoji is let go.
+   */
+  react(sentAt: number, emoji: string): boolean {
+    if (!this.options.db.prepare('SELECT 1 FROM fork_signal_approval_messages WHERE sent_at = ?').get(sentAt)) return false;
     const decision = emoji.startsWith('👍') ? 'approve' : emoji.startsWith('👎') || emoji === '❌' ? 'reject' : undefined;
     if (decision) this.decide(sentAt, decision);
+    return true;
   }
 
   /** A quoted reply. True when it was an answer to an approval, so it is not also said to natsumi. */
