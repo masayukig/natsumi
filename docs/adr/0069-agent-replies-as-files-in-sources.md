@@ -1,7 +1,7 @@
 # 0069. 外のエージェントの返事は /sources にファイルで置き、sources_updated で知らせる
 
 - Date: 2026-10-05
-- Status: Accepted（「外から届くものは、可能な限り `sources_updated` に寄せる」の方針の例外として、本人がチャットで添えたファイルは置き場所だけを `/sources/uploads` に揃え、知らせは本人のメッセージで行うことを [ADR 0071](0071-attaching-files-to-a-chat-message.md) で追加、「まだ決めていないこと」のポッポさんの結果を `agent_reply` の出来事のまま残す点と、`agent_reply` の出来事の型を残す点は [ADR 0074](0074-asking-poppo-in-json-and-hearing-back-in-sources.md) で置き換え（ポッポさんの結果も `/sources/agents/poppo/` に置き、型はなくす）、「1 つのディレクトリの中で state は変わらない」の例外としてポッポさんの依頼のディレクトリを同 ADR で追加）
+- Status: Accepted（「外から届くものは、可能な限り `sources_updated` に寄せる」の方針の例外として、本人がチャットで添えたファイルは置き場所だけを `/sources/uploads` に揃え、知らせは本人のメッセージで行うことを [ADR 0071](0071-attaching-files-to-a-chat-message.md) で追加、「まだ決めていないこと」のポッポさんの結果を `agent_reply` の出来事のまま残す点と、`agent_reply` の出来事の型を残す点は [ADR 0074](0074-asking-poppo-in-json-and-hearing-back-in-sources.md) で置き換え（ポッポさんの結果も `/sources/agents/poppo/` に置き、型はなくす）、「1 つのディレクトリの中で state は変わらない」の例外としてポッポさんの依頼のディレクトリを同 ADR で追加。`/sources/agents/` に定期便の返事が入ること（既定はふつうの更新、中身の無い返事はディレクトリを残さない）は [ADR 0076](0076-a-postbox-for-requests-sent-on-a-schedule.md) で追加）
 
 ## Context
 
