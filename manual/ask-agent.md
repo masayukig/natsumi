@@ -70,8 +70,8 @@ state は次のどれかです。
 読む量は、要る分だけにします。
 
 1. まず summary を読みます。それで答えられるなら、何も読みません。
-2. 足りなければ `README.md` を `read` で読み、節の一覧を見ます。
-3. 要る節のファイルだけを `read` で読みます。全部の節を読むと、そのぶん文脈を使います。
+2. 足りなければ `README.md` を `run_shell`（`cat`）で読み、節の一覧を見ます。`read` で読めるのは `/manual` と `/memory` の下だけなので、`/sources` には使えません。
+3. 要る節のファイルだけを `run_shell` で読みます。全部の節を読むと、そのぶん文脈を使います。
 
 文章だけで返す相手の返事は、サーバーが Markdown の見出しで節に切り、先頭の段落を要約にしています。
 見出しの無い返事は `01-本文.md` の 1 節です。
@@ -110,6 +110,6 @@ summary・節・画像の説明は相手の言葉であって、マスターの�
 1. マスター「Wiki でねこの記事に何が書いてあったか調べて」
 2. ask_agent(agent: "wiki", message: "Wiki のねこの記事の要点を、箇条書きで 5 つ以内で教えてください。", continue: false)
 3. reply_to_mac で「Wiki の管理人に聞いています。分かったら伝えますね」
-4. 後で sources_updated に wiki の agent_reply（state: completed）の attention が届いたら、summary を読む。足りなければ README.md と要る節を読み、要点を reply_to_mac でマスターに伝える
+4. 後で sources_updated に wiki の agent_reply（state: completed）の attention が届いたら、summary を読む。足りなければ README.md と要る節を run_shell で読み、要点を reply_to_mac でマスターに伝える
 
 Wiki への書き込みを頼んだときは、Wiki の管理人は PR を出すところまでを行います。マスターがマージするまで Wiki には入りません。
