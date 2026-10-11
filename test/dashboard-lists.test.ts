@@ -23,8 +23,10 @@ function waits(overrides: Partial<Waits> = {}): Waits {
     nextRotationAt: '2026-01-01T19:00:00.000Z',
     agentTasks: [{ agent: 'wiki', taskId: 'task-1', state: 'input-required', sentAt: AT, createdAt: AT, updatedAt: AT },
       { agent: 'artist', taskId: 'task-2', state: 'gave-up', sentAt: AT, createdAt: AT, updatedAt: AT }],
-    rotations: [{ rotationId: 'rotation-1', state: 'failed', reason: 'handoff-not-committed', fromSessionFile: 'a.jsonl', toSessionFile: null,
-      createdAt: AT, updatedAt: AT }],
+    rotations: [{ rotationId: 'rotation-1', kind: 'night', state: 'failed', reason: 'handoff-not-committed', fromSessionFile: 'a.jsonl',
+      toSessionFile: null, createdAt: AT, updatedAt: AT },
+    { rotationId: 'rotation-2', kind: 'resleep', state: 'curated', reason: null, fromSessionFile: 'a.jsonl', toSessionFile: null, createdAt: AT,
+      updatedAt: AT }],
     ...overrides,
   };
 }
@@ -45,6 +47,10 @@ test('the failures and waits page has every section, links a failure to its turn
   assert.match(text, /input-required/);
   assert.match(text, /gave-up/);
   assert.match(text, /handoff-not-committed/);
+  // Each switch says what began it: the night, or a sleeping pill's kind (ADR 0077).
+  assert.match(text, /<th>種類<\/th>/);
+  assert.match(text, /<td><code>night<\/code><\/td>/);
+  assert.match(text, /<td><code>resleep<\/code><\/td><td><span class="ok">curated<\/span><\/td>/);
   assert.ok(!text.includes('<img src=x'), 'nothing is read as markup');
   assert.match(text, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(text, /aria-current="page">失敗と待ち/);

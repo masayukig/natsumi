@@ -414,7 +414,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       name: avatar.name, avatarId: avatar.id,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
-      isConnected: deviceId => connections.isConnected(deviceId), now });
+      pillStopStartingAfterMinutes: config.curator.pillStopStartingAfterMinutes, isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,

@@ -16,10 +16,11 @@ import {
   APPROVAL_STATES, findSelfCheck, listApprovals, listDovePosts, listSelfChecks, readDevices, readWaits, type ApprovalState,
 } from './dashboard-records.ts';
 import {
-  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, POSTBOX_PATH, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH,
+  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, POSTBOX_PATH, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH, SLEEP_PATH,
   signedInPage, signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
 import { statsPage, statsTokens } from './dashboard-charts.ts';
+import { sleepPage } from './dashboard-sleep.ts';
 import { readStats, statsPeriod } from './dashboard-stats.ts';
 import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
@@ -33,7 +34,8 @@ import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
 import { PostboxLedger } from './postbox.ts';
 import { checkHealth, readStatus } from './status.ts';
-import type { LoopDashboardState, TurnInProgress } from './thinking-loop.ts';
+import type { PillJudgement } from './sleeping-pill.ts';
+import type { LoopDashboardState, TakePillOutcome, TurnInProgress } from './thinking-loop.ts';
 import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } from './turn-log.ts';
 
 /**
@@ -42,9 +44,10 @@ import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } fr
  * The login is the app's GitHub login, ending with a session in the browser's cookie (ADR 0058, `browser/`), the one
  * the chat and the settings use too. A browser that still has the dashboard's cookie of before is moved to it here.
  *
- * Nothing here changes state but two POSTs whose Origin must be the public origin: the logout, and the owner's cancel
- * of one self-check (ADR 0064), made through the loop's own `SelfChecks.cancel`. The chat and the settings change state
- * over the WebSocket, not here (ADR 0058).
+ * Nothing here changes state but three POSTs whose Origin must be the public origin: the logout, the owner's cancel
+ * of one self-check (ADR 0064), made through the loop's own `SelfChecks.cancel`, and the sleeping pill (ADR 0077), given
+ * through the loop as the WebSocket's `sleep.take` gives it. The chat and the settings change state over the WebSocket,
+ * not here (ADR 0058).
  */
 
 /**
@@ -54,11 +57,16 @@ import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } fr
 export const DASHBOARD_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:",
   "connect-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"].join('; ');
 
-/** The loop as the dashboard uses it: reads of what it keeps, and the one change it takes, a self-check's cancel (ADR 0064). */
+/**
+ * The loop as the dashboard uses it: reads of what it keeps, and the two changes it takes, a self-check's cancel
+ * (ADR 0064) and the sleeping pill (ADR 0077).
+ */
 export interface DashboardLoop {
   dashboardState(): LoopDashboardState;
   turnInProgress(): TurnInProgress | undefined;
   cancelSelfCheck(checkId: string): ToolOutcome;
+  sleepStatus(): Promise<PillJudgement>;
+  takeSleepingPill(): Promise<TakePillOutcome>;
 }
 
 export interface DashboardOptions {
@@ -85,6 +93,8 @@ export interface DashboardOptions {
   timeZone: string;
   /** When the nightly switch runs (ADR 0009), or false when it is off; the failures and waits say when it is next. */
   nightlyRotationAt: string | false;
+  /** `curator.pillStopStartingAfterMinutes`, for the sleeping pill's page to say how long she would sleep (ADR 0077). */
+  pillStopStartingAfterMinutes?: number | false;
   /** Whether a device has a live connection now; the devices list shows it. */
   isConnected: (deviceId: string) => boolean;
   now: () => number;
@@ -146,6 +156,11 @@ export class Dashboard {
       if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
       return this.cancelCheck(request, response, check[1]!);
     }
+    // The page asks, and the same path takes the pill (ADR 0077).
+    if (path === SLEEP_PATH && method !== 'GET') {
+      if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'GET, POST' });
+      return this.takePill(request, response);
+    }
     if (method !== 'GET') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'GET' });
 
     // The one place the old cookie is still sent, and read, to be replaced by the new one.
@@ -169,6 +184,7 @@ export class Dashboard {
     if (path === WAITS_PATH) return send(response, 200, waitsPage(this.waits(), this.options.timeZone, this.options.avatarId), renewed);
     if (path === WAITS_LIVE_PATH) return send(response, 200, renderWaits(this.waits(), this.options.timeZone), renewed);
     if (path === CHECKS_PATH) return this.checks(response, url, renewed);
+    if (path === SLEEP_PATH) return this.sleep(response, url, renewed);
     if (check) {
       const booked = findSelfCheck(this.options.db, check[1]!);
       if (!booked) return send(response, 404, this.message('待っている予約ではありません', true), renewed);
@@ -226,6 +242,29 @@ export class Dashboard {
     const outcome = this.options.loop.cancelSelfCheck(checkId);
     if (!outcome.ok) return send(response, 409, this.message(outcome.text, true), renewed);
     response.writeHead(303, { location: `${CHECKS_PATH}?cancelled=${encodeURIComponent(checkId)}`, ...renewed }).end();
+  }
+
+  /** What a sleeping pill would do now, and the form that gives it; after a pill, a word on it (ADR 0077). */
+  private async sleep(response: ServerResponse, url: URL, headers: Headers): Promise<void> {
+    const taken = url.searchParams.get('taken');
+    const { loop } = this.options;
+    send(response, 200, sleepPage(await loop.sleepStatus(), { timeZone: this.options.timeZone, pillMinutes: this.options.pillStopStartingAfterMinutes ?? 90,
+      unavailable: loop.dashboardState().unavailable, ...(taken === 'new' || taken === 'joined' ? { taken } : {}), avatarId: this.options.avatarId }),
+    headers);
+  }
+
+  /**
+   * The owner's sleeping pill (ADR 0077), guarded as a self-check's cancel is: the Origin must be the public origin and
+   * the session live, and a POST never starts a login. Taken, it goes back to the page, which says so.
+   */
+  private async takePill(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, this.message('飲ませられませんでした'));
+    const session = this.options.browser.session(request, { legacy: true });
+    if (!session) return send(response, 403, this.message('ログインが切れました。もう一度開いてください'));
+    const renewed: Headers = { 'set-cookie': this.options.browser.renewed(session) };
+    const outcome = await this.options.loop.takeSleepingPill();
+    if (outcome.kind !== 'accepted') return send(response, 503, this.message('なつみがいま話せないので、飲ませていません', true), renewed);
+    response.writeHead(303, { location: `${SLEEP_PATH}?taken=${outcome.joined ? 'joined' : 'new'}`, ...renewed }).end();
   }
 
   /**
