@@ -299,3 +299,22 @@ test('the ledger keeps the last reply, and counts the failures in a row until on
   f.ledger.record('news', 'received', at + 60_000, at + 86_400_000);
   assert.equal(f.ledger.lastReceived('news'), at + 3 * 86_400_000);
 });
+
+test('the ledger keeps where the last reply was put under /sources; a run that put nothing leaves it where it was', async t => {
+  const f = await setup(t);
+  f.repository.files = [file('news', letter('to: news\ncron: "0 7 * * *"'))];
+  await f.postbox.tick();
+  const at = tokyo('2026-10-11 07:00');
+  const letterOf = () => f.ledger.list().find(entry => entry.name === 'news')!;
+  assert.equal(letterOf().lastReplyPath, undefined, 'nothing is put before the first reply');
+  f.ledger.record('news', 'waiting', at, at);
+  assert.equal(letterOf().lastReplyPath, undefined);
+  f.ledger.record('news', 'received', at + 60_000, at, '/sources/agents/news/20261010T220000Z-ab12');
+  assert.equal(letterOf().lastReplyPath, '/sources/agents/news/20261010T220000Z-ab12');
+  f.ledger.record('news', 'empty', at + 60_000, at + 86_400_000);
+  assert.equal(letterOf().lastReplyPath, '/sources/agents/news/20261010T220000Z-ab12', 'an empty reply puts no directory');
+  f.ledger.record('news', 'failed', at + 60_000, at + 2 * 86_400_000);
+  assert.equal(letterOf().lastReplyPath, '/sources/agents/news/20261010T220000Z-ab12', 'a failure that could not be put names none');
+  f.ledger.record('news', 'failed', at + 60_000, at + 3 * 86_400_000, '/sources/agents/news/20261013T220000Z-cd34');
+  assert.equal(letterOf().lastReplyPath, '/sources/agents/news/20261013T220000Z-cd34', 'a failure that was put is the last one put');
+});

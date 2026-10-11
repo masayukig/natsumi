@@ -274,9 +274,9 @@ export class AgentRequests {
       const place = task.place ? this.placeOf(task.place) : undefined;
       const made = place && task.request !== null ? { place, text: task.request, at: Date.parse(task.sent_at) } : undefined;
       delivered = await this.deliver({ agent: task.agent, state, reply, ...(handed ? { handed } : {}), ...(made ? { made } : {}), attention: true,
-        ...(letter ? { postbox: letter.name } : {}), rows: () => {
+        ...(letter ? { postbox: letter.name } : {}), rows: written => {
           update(null);
-          if (letter) this.options.postbox?.record(letter.name, POSTBOX_RESULT[state], this.options.now(), letter.sentAt);
+          if (letter) this.options.postbox?.record(letter.name, POSTBOX_RESULT[state], this.options.now(), letter.sentAt, written.path);
         } });
     }
     if (!delivered) this.log(`a2a: the reply of ${task.agent} could not be put in /sources; it is fetched again`);
@@ -346,7 +346,7 @@ export class AgentRequests {
   private async deliverRun(run: PostboxRun, agent: string, state: ReplyState, reply: Reply,
     handed: { url: string; files: AgentFile[] | undefined } | undefined, rows: (written: WrittenReply) => void, empty: () => void): Promise<boolean> {
     const ledger = this.options.postbox;
-    const record = (result: PostboxResult) => { ledger?.record(run.name, result, this.options.now(), run.at); };
+    const record = (result: PostboxResult, path?: string) => { ledger?.record(run.name, result, this.options.now(), run.at, path); };
     if (state === 'completed' && reply.form === 'data' && reply.reply.sections.length === 0 && (handed?.files ?? []).length === 0) {
       if (this.closed) return false;
       this.db.exec('BEGIN IMMEDIATE');
@@ -364,7 +364,7 @@ export class AgentRequests {
     const attention = state === 'input_required' || (state === 'completed' && (ledger?.notifies(run.name) ?? false))
       || (failed && (ledger?.failures(run.name) ?? 0) + 1 === POSTBOX_FAILURES_TOLD);
     return this.deliver({ agent, state, reply, ...(handed ? { handed } : {}), run, attention, postbox: run.name,
-      rows: written => { rows(written); record(POSTBOX_RESULT[state]); } });
+      rows: written => { rows(written); record(POSTBOX_RESULT[state], written.path); } });
   }
 
   /**

@@ -988,4 +988,13 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 32,
+    name: 'where a letter\'s last reply was put',
+    sql: `
+      -- The directory under /sources/agents the last reply of a letter's runs was put in, as the workspace names it, for
+      -- the dashboard to lead to (ADR 0054). A run that put none (an empty reply, or one that could not be put) leaves it.
+      ALTER TABLE postbox_letters ADD COLUMN last_reply_path TEXT;
+    `,
+  },
 ];

@@ -172,12 +172,14 @@ export interface LetterRecord {
   note?: string;
   failures: number;
   lastReceivedAt?: number;
+  /** Where the last reply put under /sources is, as the workspace names it. */
+  lastReplyPath?: string;
 }
 
 interface LetterRow {
   name: string; path: string; agent: string | null; cron: string | null; paused: number; notify: LetterNotify; problem: string | null;
   due_at: string | null; last_run_at: string | null; last_sent_at: string | null; last_result: LetterRecord['lastResult'] | null;
-  last_result_at: string | null; note: string | null; failures: number; last_received_at: string | null;
+  last_result_at: string | null; note: string | null; failures: number; last_received_at: string | null; last_reply_path: string | null;
 }
 
 /** A file of `postbox/` as HEAD holds it: its text, or why it is not a file that can be read. */
@@ -289,12 +291,14 @@ export class PostboxLedger {
 
   /**
    * How a run went, sent at `sentAt`: the result shown, a run that went well (an empty reply too) moving the last reply
-   * to when it was sent, never back, and the failures counted until one goes well. A letter no longer in HEAD has
-   * nothing to record. The caller's transaction holds it with the rows of the reply.
+   * to when it was sent, never back, and the failures counted until one goes well. `path` is where the reply was put
+   * under /sources, when it was put; a run that put nothing leaves the last one. A letter no longer in HEAD has nothing
+   * to record. The caller's transaction holds it with the rows of the reply.
    */
-  record(name: string, result: PostboxResult, at: number, sentAt: number): void {
+  record(name: string, result: PostboxResult, at: number, sentAt: number, path?: string): void {
     const iso = isoAt(at);
     const sent = isoAt(sentAt);
+    if (path !== undefined) this.db.prepare('UPDATE postbox_letters SET last_reply_path = ? WHERE name = ?').run(path, name);
     if (result === 'waiting') {
       this.db.prepare(`UPDATE postbox_letters SET last_sent_at = ?, last_result = 'waiting', last_result_at = ?, note = NULL, updated_at = ?
         WHERE name = ?`).run(sent, iso, iso, name);
@@ -319,6 +323,7 @@ export class PostboxLedger {
       ...optionalTime('nextAt', row.due_at), ...optionalTime('lastSentAt', row.last_sent_at),
       ...(row.last_result !== null ? { lastResult: row.last_result } : {}), ...optionalTime('lastResultAt', row.last_result_at),
       ...(row.note !== null ? { note: row.note } : {}), failures: row.failures, ...optionalTime('lastReceivedAt', row.last_received_at),
+      ...(row.last_reply_path !== null ? { lastReplyPath: row.last_reply_path } : {}),
     }));
   }
 

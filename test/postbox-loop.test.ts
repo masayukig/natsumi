@@ -139,6 +139,7 @@ test('an owner\'s letter is sent at its time with no turn of hers, and its reply
   assert.match(request, new RegExp(BODY));
   assert.match(await f.read(`${directory}/README.md`), /運用に関わるニュースが 1 件あります。/);
   assert.equal(f.letter('morning-news')!.lastResult, 'received');
+  assert.equal(f.letter('morning-news')!.lastReplyPath, `/sources/agents/news/${directory}`, 'where the reply was put, as the workspace names it');
 
   await run(f, loop, tokyo('2026-10-12 07:00'));
   assert.equal(f.agent.received[1]!.text, `${BODY}\n\n前回の受け取り: 2026-10-11T07:00:00+09:00 (JST)`);
@@ -173,6 +174,7 @@ test('an empty reply is told to nobody and leaves no directory, and still counts
   assert.equal(f.attentions(), 0);
   assert.equal(f.model.calls, 0);
   assert.equal(f.letter('morning-news')!.lastResult, 'empty');
+  assert.equal(f.letter('morning-news')!.lastReplyPath, undefined, 'an empty reply puts no directory to name');
 
   await run(f, loop, tokyo('2026-10-12 07:00'));
   assert.match(f.agent.received[1]!.text, /前回の受け取り: 2026-10-11T07:00:00\+09:00 \(JST\)$/);
@@ -206,6 +208,7 @@ test('failures are ordinary updates and do not move the last reply; the third in
   assert.deepEqual([told!.state, told!.postbox], ['failed', 'morning-news']);
   assert.equal(f.letter('morning-news')!.failures, 3);
   assert.equal((await f.directories()).length, 3, 'each failure is put, to be read');
+  assert.equal(f.letter('morning-news')!.lastReplyPath, `/sources/agents/news/${(await f.directories()).at(-1)}`, 'the last one put');
 });
 
 test('a letter that cannot reach its agent is put as a failure at once, and counted', async t => {
@@ -220,6 +223,7 @@ test('a letter that cannot reach its agent is put as a failure at once, and coun
   assert.ok(directory);
   assert.match(await f.read(`${directory}/README.md`), /failed/);
   assert.match(await f.read(`${directory}/request.md`), /postbox: morning-news/);
+  assert.equal(f.letter('morning-news')!.lastReplyPath, `/sources/agents/news/${directory}`);
   assert.equal(f.attentions(), 0);
   assert.equal(f.letter('morning-news')!.failures, 1);
 });
@@ -237,6 +241,12 @@ test('a question is told at once whatever the letter says; her answer with conti
   assert.deepEqual([question!.state, question!.postbox], ['input_required', 'morning-news']);
   assert.deepEqual([f.agent.received[1]!.contextId, f.agent.received[1]!.taskId], [task.contextId, task.id], 'her answer goes on with the run');
   assert.equal(f.letter('morning-news')!.lastResult, 'input-required');
+  // Her answer is put in a directory of its own at the same time, so the run's is told by its request.
+  const runs = [];
+  for (const name of await f.directories()) if ((await f.read(`${name}/request.md`)).includes('postbox: morning-news')) runs.push(name);
+  const [asked] = runs;
+  assert.equal(runs.length, 1);
+  assert.equal(f.letter('morning-news')!.lastReplyPath, `/sources/agents/news/${asked}`, 'the question was put, to be read');
 
   f.clock.now = tokyo('2026-10-11 07:30');
   f.agent.settle(task.id, 'completed', '国内のニュースが 1 件あります。');
@@ -246,6 +256,9 @@ test('a question is told at once whatever the letter says; her answer with conti
   assert.deepEqual([answered.state, answered.postbox], ['completed', 'morning-news'], 'the reply to her answer is hers, told at once');
   assert.equal(f.letter('morning-news')!.lastResult, 'received');
   assert.equal(f.letter('morning-news')!.lastReceivedAt, tokyo('2026-10-11 07:00'), 'the run\'s time, not the answer\'s');
+  const answeredIn = (await f.directories()).filter(name => name !== asked);
+  assert.equal(answeredIn.length, 1, 'her answer has a directory of its own');
+  assert.equal(f.letter('morning-news')!.lastReplyPath, `/sources/agents/news/${answeredIn[0]}`, 'the reply to her answer is the last one put');
 });
 
 test('her letter that would not be sent goes back at the end of the turn with the reason; a good one is read at once', async t => {
