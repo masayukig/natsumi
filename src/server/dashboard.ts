@@ -9,12 +9,14 @@ import {
   type SortKey,
 } from './dashboard-files.ts';
 import { directoryPage, filePage, filesIndexPage, refusedFilePage } from './dashboard-files-view.ts';
-import { approvalsPage, checkPage, checksPage, devicesPage, dovePage, memosPage, pageNumber, renderWaits, waitsPage } from './dashboard-lists.ts';
+import {
+  approvalsPage, checkPage, checksPage, devicesPage, dovePage, memosPage, pageNumber, postboxPage, renderWaits, waitsPage,
+} from './dashboard-lists.ts';
 import {
   APPROVAL_STATES, findSelfCheck, listApprovals, listDovePosts, listSelfChecks, readDevices, readWaits, type ApprovalState,
 } from './dashboard-records.ts';
 import {
-  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH,
+  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, POSTBOX_PATH, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH,
   signedInPage, signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
 import { statsPage, statsTokens } from './dashboard-charts.ts';
@@ -29,6 +31,7 @@ import { codeManualDirectory } from './manual.ts';
 import { AVATAR_MANUAL_DIRECTORY } from './avatar-manual.ts';
 import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
+import { PostboxLedger } from './postbox.ts';
 import { checkHealth, readStatus } from './status.ts';
 import type { LoopDashboardState, TurnInProgress } from './thinking-loop.ts';
 import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } from './turn-log.ts';
@@ -170,6 +173,10 @@ export class Dashboard {
       const booked = findSelfCheck(this.options.db, check[1]!);
       if (!booked) return send(response, 404, this.message('待っている予約ではありません', true), renewed);
       return send(response, 200, checkPage(booked, this.options.timeZone, this.options.avatarId), renewed);
+    }
+    if (path === POSTBOX_PATH) {
+      const letters = new PostboxLedger(this.options.db, this.options.now).list();
+      return send(response, 200, postboxPage(letters, this.options.timeZone, this.options.avatarId), renewed);
     }
     if (path === MEMOS_PATH) return this.memos(response, url, renewed);
     if (path === DOVE_PATH) return this.dove(response, url, renewed);

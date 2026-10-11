@@ -14,6 +14,8 @@ export interface Received {
   contextId: string;
   taskId: string;
   returnImmediately: boolean;
+  /** The message's metadata, as it arrived, when it had any. */
+  metadata?: Record<string, unknown>;
 }
 
 export type FakeTaskState = 'working' | 'completed' | 'failed' | 'input-required' | 'rejected';
@@ -250,7 +252,8 @@ export class FakeAgent {
 
   private sendMessage(message: Message, returnImmediately: boolean): Message | Task {
     const text = message.parts.map(part => part.content?.$case === 'text' ? part.content.value : '').join('');
-    this.received.push({ authorization: this.authorization, text, contextId: message.contextId, taskId: message.taskId, returnImmediately });
+    this.received.push({ authorization: this.authorization, text, contextId: message.contextId, taskId: message.taskId, returnImmediately,
+      ...(message.metadata ? { metadata: message.metadata } : {}) });
     // The SDK drops what the card does not name before the host sees it.
     const activates = (this.options.extensions ?? []).includes(REPLY_EXTENSION_URI)
       && (this.extensionsHeader ?? '').split(',').map(uri => uri.trim()).includes(REPLY_EXTENSION_URI);

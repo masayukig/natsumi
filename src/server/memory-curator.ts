@@ -19,6 +19,7 @@ import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWL
   curatorSystemPrompt } from './prompts.ts';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
+import { inPostbox, POSTBOX_DIRECTORY } from './postbox.ts';
 import { SKILLS_DIRECTORY } from './skills.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
 import type { TokenCounts, TurnPlace } from './turn-stats.ts';
@@ -43,11 +44,12 @@ const BRIEF_HEADING_CHARS = 80;
 
 /**
  * Whether the curator may rewrite a file's content: a topic file, never natsumi's own, the index, the diary, the
- * archive, which is only added to (ADR 0068), or her skills, whose shape is Pi's to read (ADR 0073).
+ * archive, which is only added to (ADR 0068), her skills, whose shape is Pi's to read (ADR 0073), or the postbox's
+ * letters, which say whom to ask and when rather than what she knows (ADR 0076).
  */
 export function isRewritable(path: string): boolean {
   return path.endsWith('.md') && !NATSUMI_ONLY_FILES.includes(path) && path !== INDEX_FILE && !inDiary(path) && !inArchive(path)
-    && !inSkills(path);
+    && !inSkills(path) && !inPostbox(path);
 }
 
 function inDiary(path: string): boolean {
@@ -255,14 +257,22 @@ function memoryMap(input: StageInput, archiving = false): string[] {
   const diary = input.files.filter(file => inDiary(file.path));
   const archive = input.files.filter(file => inArchive(file.path));
   const skills = input.files.filter(file => inSkills(file.path));
+  const letters = input.files.filter(file => inPostbox(file.path));
   let diaryShown = false;
   let archiveShown = false;
   let skillsShown = false;
+  let lettersShown = false;
   for (const file of input.files) {
     if (inSkills(file.path)) {
       if (skillsShown) continue;
       skillsShown = true;
       lines.push(`- ${SKILLS_DIRECTORY}/: ${skills.length} ファイル（${input.name}の skill、変えない）`);
+      continue;
+    }
+    if (inPostbox(file.path)) {
+      if (lettersShown) continue;
+      lettersShown = true;
+      lines.push(`- ${POSTBOX_DIRECTORY}/: ${letters.length} ファイル（郵便ポストの定期便、変えない）`);
       continue;
     }
     if (inArchive(file.path)) {

@@ -9,6 +9,7 @@ import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repos
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
+import { POSTBOX_DEFAULTS } from './postbox.ts';
 import { UPLOAD_DEFAULTS, type UploadLimits } from './uploads.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES,
@@ -408,6 +409,14 @@ const MAX_ROTATE_FILES = 10;
 /** Skills (ADR 0073): the owner's clone and her own, listed in her instructions. Off by default, read once at start. */
 export interface SkillsConfig { enabled: boolean }
 
+/**
+ * The postbox (ADR 0076): letters in memory's `postbox/`, sent on their cron with no turn of hers. `enabled: false` stops
+ * every letter at once; a letter whose runs come closer than `minIntervalMinutes` is not sent.
+ */
+export interface PostboxConfig { enabled: boolean; minIntervalMinutes: number }
+/** A floor past a day would refuse a daily letter, the one most letters are. */
+const MAX_POSTBOX_MIN_INTERVAL_MINUTES = 24 * 60;
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -422,6 +431,7 @@ export interface ServerConfig {
   uploads: UploadsConfig;
   curator: CuratorConfig;
   skills: SkillsConfig;
+  postbox: PostboxConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
   /** The tools this instance has of its own (ADR 0075). Absent when none is declared, so the tools stay as they were. */
@@ -500,6 +510,7 @@ const SECTIONS = {
   uploads: parseUploads,
   curator: parseCurator,
   skills: parseSkills,
+  postbox: parsePostbox,
   avatar: parseAvatar,
   tools: (value: unknown, path: string) => parseTools(value, path),
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
@@ -545,6 +556,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     uploads: SECTIONS.uploads(root.uploads ?? {}, 'uploads'),
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
     skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
+    postbox: SECTIONS.postbox(root.postbox ?? {}, 'postbox'),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
   const tools = root.tools === undefined ? [] : SECTIONS.tools(root.tools, 'tools');
@@ -1166,6 +1178,18 @@ function parseSkills(value: unknown, path: string): SkillsConfig {
   const enabled = skills.enabled ?? false;
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   return { enabled };
+}
+
+function parsePostbox(value: unknown, path: string): PostboxConfig {
+  const postbox = object(value, path);
+  onlyKeys(postbox, path, ['enabled', 'minIntervalMinutes']);
+  const enabled = postbox.enabled ?? POSTBOX_DEFAULTS.enabled;
+  if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
+  const floor = postbox.minIntervalMinutes ?? POSTBOX_DEFAULTS.minIntervalMinutes;
+  if (!positiveInteger(floor, 1) || (floor as number) > MAX_POSTBOX_MIN_INTERVAL_MINUTES) {
+    throw new ConfigError(`${path}.minIntervalMinutes`, `must be an integer from 1 to ${MAX_POSTBOX_MIN_INTERVAL_MINUTES}`);
+  }
+  return { enabled, minIntervalMinutes: floor as number };
 }
 
 function parseUploads(value: unknown, path: string): UploadsConfig {

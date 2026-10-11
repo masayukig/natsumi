@@ -635,3 +635,24 @@ test('schema 30 drops the dove\'s answers of before, closes any still waiting, a
   assert.deepEqual(plainRows(db.prepare('SELECT post_id, state FROM dove_posts').all()), [{ post_id: 'post-old', state: 'returned' }]);
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
 }));
+
+/**
+ * Schema 31 adds the postbox (ADR 0076): the agents' tasks name the letter a request was sent on, empty for every task
+ * from before, and each letter has a record of its own.
+ */
+test('schema 31 adds the postbox: tasks from before name no letter, and a letter is sendable or has its problem', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 30));
+  db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at)
+    VALUES ('wiki', 't1', 'c1', 'waiting', 'x', 'x', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 31)).applied, [31]);
+  assert.deepEqual(plainRows(db.prepare('SELECT postbox, postbox_sent_at FROM agent_tasks').all()), [{ postbox: null, postbox_sent_at: null }]);
+  const insert = db.prepare(`INSERT INTO postbox_letters (name, path, agent, cron, problem, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'x', 'x')`);
+  insert.run('morning-news', 'postbox/morning-news.md', 'news', '0 7 * * *', null);
+  insert.run('noisy', 'postbox/noisy.md', null, null, 'cron が短すぎます');
+  assert.throws(() => insert.run('broken', 'postbox/broken.md', null, null, null), /CHECK/);
+  assert.throws(() => db.prepare(`UPDATE postbox_letters SET last_result = 'lost' WHERE name = 'morning-news'`).run(), /CHECK/);
+  assert.deepEqual(plainRows(db.prepare('SELECT name, paused, notify, failures FROM postbox_letters ORDER BY name').all()), [
+    { name: 'morning-news', paused: 0, notify: 'update', failures: 0 },
+    { name: 'noisy', paused: 0, notify: 'update', failures: 0 },
+  ]);
+}));

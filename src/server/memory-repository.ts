@@ -4,6 +4,7 @@ import { runGit, type GitIdentity } from './git.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import { findControlStrings, findForeignScript, hasControlCharacters } from './output-checks.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
+import { inPostbox, POSTBOX_DIRECTORY, type CommittedLetterFile } from './postbox.ts';
 import { SKILL_MAX_CHARS, SKILLS_DIRECTORY, skillFileProblem } from './skills.ts';
 
 /**
@@ -109,6 +110,11 @@ export interface MemoryRepositoryOptions {
    * one, and never over one that is there. The template, named by the identity, when left out.
    */
   personality?: string;
+  /**
+   * Why a file of hers in `postbox/` is not a letter the server can send, or undefined when it is (ADR 0076). Without
+   * it the postbox's files are checked as any other file of memory.
+   */
+  checkLetter?: (path: string, text: string) => string | undefined;
   log?: (line: string) => void;
 }
 
@@ -421,6 +427,35 @@ export class MemoryRepository {
     await writeFile(join(this.directory, HANDOFF_FILE), handoffText(text) ?? HANDOFF_TEMPLATE, { mode: SHARED_FILE_MODE });
   }
 
+  /** The last commit, or undefined when there is none or it cannot be read: what the postbox looks at (ADR 0076). */
+  async headCommit(): Promise<string | undefined> {
+    const { code, stdout } = await this.git(['rev-parse', '--verify', '-q', 'HEAD'], { allowFailure: true });
+    return code === 0 ? stdout.trim() : undefined;
+  }
+
+  /**
+   * Every file the last commit holds in `postbox/`, as it was committed, never as the working tree has it (ADR 0076):
+   * the server sends only what passed a turn's check or what the owner committed. A symlink, or anything else that is
+   * not a file, is named with why it is no letter.
+   */
+  async committedPostbox(): Promise<CommittedLetterFile[]> {
+    const listed = await this.git(['ls-tree', '-r', '-z', 'HEAD', '--', POSTBOX_DIRECTORY], { allowFailure: true });
+    if (listed.code !== 0) return [];
+    const files: CommittedLetterFile[] = [];
+    for (const entry of listed.stdout.split('\0').filter(Boolean)) {
+      const tab = entry.indexOf('\t');
+      const [mode, type, object] = entry.slice(0, tab).split(' ');
+      const path = entry.slice(tab + 1);
+      if (mode === '120000') { files.push({ path, problem: 'symlink は記憶に置けません' }); continue; }
+      if (type !== 'blob') { files.push({ path, problem: '通常のファイルではありません' }); continue; }
+      const blob = await this.git(['cat-file', 'blob', object!], { allowFailure: true });
+      // git's text is read as UTF-8, and what was not is replaced: a letter is text, or it is no letter.
+      const text = blob.code === 0 && !/[\0\uFFFD]/.test(blob.stdout) ? blob.stdout : undefined;
+      files.push(text === undefined ? { path, problem: 'テキストのファイル（UTF-8）として読めません' } : { path, text });
+    }
+    return files;
+  }
+
   /** The commit the working tree was last brought level with: what a switch records as the handoff it started from. */
   async head(): Promise<string> {
     return (await this.git(['rev-parse', 'HEAD'])).stdout.trim();
@@ -511,6 +546,7 @@ export class MemoryRepository {
    */
   private inspectRemoval(path: string, writer: Writer): string | undefined {
     if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
+    if (writer === 'curator' && inPostbox(path)) return postboxRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は消すことも動かすこともできません`;
     if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
@@ -520,6 +556,7 @@ export class MemoryRepository {
   /** Why the changed file may not be committed, or undefined when it may. A removal goes through inspectRemoval. */
   private async inspect(path: string, writer: Writer): Promise<string | undefined> {
     if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
+    if (writer === 'curator' && inPostbox(path)) return postboxRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer !== 'curator' && path === INDEX_FILE) {
       return `${path} は記憶の整理係だけが書くファイルなので、あなたは書き換えられません（夜に整理係が書き直します）`;
@@ -529,7 +566,12 @@ export class MemoryRepository {
     }
     if (writer === 'curator' && NATSUMI_ONLY_FILES.includes(path)) return `${path} は${this.options.identity?.name ?? DEFAULT_SELF.name}自身のファイルなので、整理係は変えられません`;
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は変えられません`;
-    return this.inspectContent(path);
+    const content = await this.inspectContent(path);
+    if (content || !inPostbox(path) || !this.options.checkLetter) return content;
+    // A letter goes back as any file does when it would not be sent: the server sends only what is committed (ADR 0076).
+    let text: string;
+    try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
+    return this.options.checkLetter(path, text);
   }
 
   /** Why a changed file's contents may not be committed, whoever wrote it, or undefined when they may. */
@@ -653,6 +695,9 @@ function textOf(bytes: Buffer): string | undefined {
 const posixJoin = posix.join;
 
 const skillsRefusal = (path: string) => `${path} は ${SKILLS_DIRECTORY}/ の中の skill なので、整理係は変えることも動かすこともできません`;
+
+/** Why the curator's change to a letter is refused (ADR 0076). */
+const postboxRefusal = (path: string) => `${path} は ${POSTBOX_DIRECTORY}/ の中の定期便なので、整理係は変えることも動かすこともできません`;
 
 /** Whether a path is in the diary, or is the diary itself. */
 function inDiary(path: string): boolean {

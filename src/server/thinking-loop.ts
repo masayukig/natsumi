@@ -12,7 +12,7 @@ import type { ReplyPlace } from './agent-replies.ts';
 import { AgentRequests } from './agent-requests.ts';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
-import type { A2AConfig, CuratorConfig, DeclaredToolConfig, LoopConfig } from './config.ts';
+import type { A2AConfig, CuratorConfig, DeclaredToolConfig, LoopConfig, PostboxConfig } from './config.ts';
 import { createDeclaredTools } from './declared-tools.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
   type RotationRow } from './conversation-store.ts';
@@ -38,6 +38,7 @@ import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 import { piSkills, skillPlaces } from './skills.ts';
+import { checkLetter, Postbox, POSTBOX_DEFAULTS, PostboxLedger, type LetterRules } from './postbox.ts';
 import { parseView, viewImage } from './view.ts';
 import type { ShownAttachment } from '../shared/protocol/conversation.ts';
 
@@ -228,6 +229,11 @@ export interface LoopOptions {
   curator?: CuratorConfig;
   /** The outside agents natsumi may ask (ADR 0035). Without it `ask_agent` is still there, and refuses. */
   a2a?: A2AConfig;
+  /**
+   * The postbox (ADR 0076): the letters in memory's `postbox/`, checked at the end of her turns and sent on their cron by
+   * `tickPostbox`. On, with the floor of 15 minutes, when left out; with no agent configured every letter fails its check.
+   */
+  postbox?: PostboxConfig;
   /** Replaces the SDK client built from `a2a`. */
   a2aClient?: A2AClient;
   /**
@@ -362,6 +368,8 @@ export class ThinkingLoop {
   private avatar: { expression: Expression; by: 'server' | 'model'; changedAt: number };
   private readonly selfChecks: SelfChecks;
   private readonly agents: AgentRequests;
+  /** The letters of the postbox and their clock (ADR 0076). */
+  private readonly postbox: Postbox;
   /** When something last arrived or was last handled: the quiet interval before a ping counts from here (ADR 0014). */
   private activityAt: number;
   /** A nightly switch is under way; natsumi sleeps through it. */
@@ -413,10 +421,17 @@ export class ThinkingLoop {
     const loop = options.loop;
     // One directory, two ways in: the shell writes the files, and the repository is what commits them.
     const memoryDirectory = loop.memoryRepository ?? join(options.dataDirectory, 'memory');
+    const postbox = options.postbox ?? POSTBOX_DEFAULTS;
+    const letterRules = (): LetterRules => ({ agents: Object.keys(options.a2a?.agents ?? {}), minIntervalMinutes: postbox.minIntervalMinutes,
+      timeZone: loop.timeZone });
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
       alwaysMaxChars: loop.alwaysMemoryMaxChars, identity: gitIdentity(this.self),
       ...(options.personality !== undefined ? { personality: options.personality } : {}),
+      checkLetter: (path, text) => {
+        const checked = checkLetter(path, text, { ...letterRules(), now: this.now() });
+        return checked.ok ? undefined : checked.reason;
+      },
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);
@@ -442,12 +457,15 @@ export class ThinkingLoop {
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: loop.timeZone,
       awakeHours: options.settings ? () => options.settings!.awakeHours() : loop.awakeHours });
     const { a2a } = options;
+    const ledger = new PostboxLedger(options.db, this.now);
     this.agents = new AgentRequests({
       db: options.db, now: this.now, config: a2a,
       client: options.a2aClient ?? (a2a ? new SdkA2AClient({ tokenFile: a2a.tokenFile }) : undefined),
       ...(options.agentReplies ? { replies: options.agentReplies } : {}), log: line => this.log(line), images: this.images,
-      timeZone: loop.timeZone,
+      timeZone: loop.timeZone, postbox: ledger,
     });
+    this.postbox = new Postbox({ db: options.db, now: this.now, timeZone: loop.timeZone, enabled: postbox.enabled, rules: letterRules,
+      repository: this.memoryRepository, sender: this.agents, ledger, log: line => this.log(line) });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
     this.routes = options.routes ?? { defaultRoute: 'default', list: [{ name: 'default', target: options.target,
@@ -722,6 +740,15 @@ export class ThinkingLoop {
   pollAgents(): Promise<void> {
     if (this.unavailable) return Promise.resolve();
     return this.agents.poll();
+  }
+
+  /**
+   * One look at the postbox (ADR 0076), from the scheduler's tick whatever the hour: memory's HEAD read again when it
+   * moved, and each letter whose run has come sent once. No turn of hers is used, and no model is called.
+   */
+  tickPostbox(): Promise<void> {
+    if (this.unavailable) return Promise.resolve();
+    return this.postbox.tick();
   }
 
   /**
@@ -1034,7 +1061,7 @@ export class ThinkingLoop {
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, timeoutMs);
-    const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
+    const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice(), this.postbox.takeNotice()].filter(Boolean).join('\n\n');
     const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notices ? `\n\n${notices}` : '');
     const images = await this.eventImages(eventIds);
     try {
@@ -1194,7 +1221,10 @@ export class ThinkingLoop {
     } catch {
       // The error text is the git CLI's and never leaves the server.
       this.log('memory: the commit failed; the changes stay in the working tree');
+      return;
     }
+    // A letter she wrote is sent from the commit that took it in, not from the next minute's look (ADR 0076).
+    try { await this.postbox.reload(); } catch { this.log('postbox: memory could not be read after the commit'); }
   }
 
   /** The event kinds of a turn, in the names the model sees, for the machine-made commit message. */

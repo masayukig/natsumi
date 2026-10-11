@@ -950,4 +950,42 @@ export const MIGRATIONS: readonly Migration[] = [
       DROP TABLE dove_replies;
     `,
   },
+  {
+    version: 31,
+    name: 'the postbox',
+    sql: `
+      -- A request the postbox sent on a letter's cron (ADR 0076): the letter's name, and when that run was sent. sent_at
+      -- moves when natsumi answers the agent's question; postbox_sent_at stays the run's, which is what the letter's
+      -- last reply records when the exchange goes well. NULL for a task natsumi started.
+      ALTER TABLE agent_tasks ADD COLUMN postbox TEXT;
+      ALTER TABLE agent_tasks ADD COLUMN postbox_sent_at TEXT;
+      CREATE INDEX agent_tasks_by_postbox ON agent_tasks (postbox, state) WHERE postbox IS NOT NULL;
+
+      -- The letters in memory's postbox/ as HEAD last held them (ADR 0076), one a file, by its name. A letter that fails
+      -- the check has its reason in problem and is never sent. due_at is the next run to send; a run is claimed by moving
+      -- it on before the request goes, so no run is sent twice. last_received_at is when the last run that went well
+      -- was sent: the line every request ends with. failures counts those that failed or were given up on in a row.
+      -- A letter removed from HEAD loses its row, and with it its last reply.
+      CREATE TABLE postbox_letters (
+        name TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        agent TEXT,
+        cron TEXT,
+        paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+        notify TEXT NOT NULL DEFAULT 'update' CHECK (notify IN ('update', 'attention')),
+        problem TEXT,
+        due_at TEXT,
+        last_run_at TEXT,
+        last_sent_at TEXT,
+        last_result TEXT CHECK (last_result IN ('waiting', 'received', 'empty', 'failed', 'gave-up', 'input-required', 'skipped')),
+        last_result_at TEXT,
+        note TEXT,
+        failures INTEGER NOT NULL DEFAULT 0 CHECK (failures >= 0),
+        last_received_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (problem IS NOT NULL OR (agent IS NOT NULL AND cron IS NOT NULL))
+      ) STRICT;
+    `,
+  },
 ];
