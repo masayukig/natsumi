@@ -77,9 +77,14 @@ export interface CardSummary {
   skills: { name: string; description: string; examples: string[] }[];
 }
 
+/**
+ * A message to send: its text, where it goes on from, and the message's metadata, such as the postbox's (ADR 0076).
+ */
+export interface SendInput { text: string; contextId?: string; taskId?: string; metadata?: Record<string, unknown> }
+
 /** The calls the server makes to outside agents (ADR 0035). Tests stand a fake agent behind the real one. */
 export interface A2AClient {
-  send(url: string, input: { text: string; contextId?: string; taskId?: string }): Promise<SendResult>;
+  send(url: string, input: SendInput): Promise<SendResult>;
   getTask(url: string, taskId: string): Promise<TaskView>;
   card(url: string): Promise<CardSummary>;
   /** A file a task handed back, from the agent at `url` only, and no larger than `maxBytes`. */
@@ -117,12 +122,12 @@ export class SdkA2AClient implements A2AClient {
    * list of agents is reused; one that could not be had is asked for again, and the message goes plain until it is.
    * An answer to a question activates it as well; a fetch of the task needs nothing, for the task keeps it.
    */
-  async send(url: string, input: { text: string; contextId?: string; taskId?: string }): Promise<SendResult> {
+  async send(url: string, input: SendInput): Promise<SendResult> {
     const reply = await this.offersReplyAt(url);
     const message: Message = {
       messageId: randomUUID(), contextId: input.contextId ?? '', taskId: input.taskId ?? '', role: Role.ROLE_USER,
       parts: [{ content: { $case: 'text', value: input.text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
-      metadata: undefined, extensions: [], referenceTaskIds: [],
+      metadata: input.metadata, extensions: [], referenceTaskIds: [],
     };
     const result = await this.call(url, (client, signal) => client.sendMessage({
       tenant: '', message, metadata: undefined,
