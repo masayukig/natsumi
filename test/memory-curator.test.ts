@@ -23,7 +23,7 @@ async function withDb(body: (db: ReturnType<typeof openStateDatabase>, now: { at
 test('only topic files are rewritten: never her three files, the index, the diary, the archive or what is not Markdown', () => {
   for (const path of ['予定.md', '暮らし/予定.md', 'README.md', '暮らし/README.md']) assert.equal(isRewritable(path), true, path);
   for (const path of ['always.md', 'personality.md', 'handoff.md', 'INDEX.md', 'diary/2026-09-27.md', 'archive/2026-09.md', 'メモ.txt',
-    'skills/weekly-report/SKILL.md', 'skills/weekly-report/references/例.md']) {
+    'skills/weekly-report/SKILL.md', 'skills/weekly-report/references/例.md', 'postbox/morning-news.md']) {
     assert.equal(isRewritable(path), false, path);
   }
 });
@@ -154,6 +154,19 @@ test('every stage sees her skills as one line, and leaves them alone', () => {
     assert.match(text, /- skills\/: 2 ファイル（[^\n]*skill、変えない）/, name);
     assert.doesNotMatch(text, /- skills\/weekly-report/, name);
     assert.ok(!handled.some(path => path.startsWith('skills/')), name);
+  }
+});
+
+// ADR 0076: the postbox's letters say whom to ask and when; the curator sees that they are there and nothing more.
+test('every stage sees the postbox as one line, and leaves its letters alone', () => {
+  const letters = [{ path: 'postbox/morning-news.md', chars: 120, sections: sections(['', 3]) },
+    { path: 'postbox/inbox.md', chars: 80, sections: sections(['', 2]) }];
+  for (const name of ['knowledge', 'archive', 'structure', 'index']) {
+    const { text, handled } = stage(name).brief(input({ files: [...input().files, ...letters], rewriteAllMaxChars: 1_000_000,
+      date: '2026-10-11' }));
+    assert.match(text, /- postbox\/: 2 ファイル（郵便ポストの定期便、変えない）/, name);
+    assert.doesNotMatch(text, /- postbox\/morning-news/, name);
+    assert.ok(!handled.some(path => path.startsWith('postbox/')), name);
   }
 });
 

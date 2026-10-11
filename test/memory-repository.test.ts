@@ -11,7 +11,8 @@ import { SERVER_UMASK } from '../src/server/permissions.ts';
 // Fictional memories only.
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
 
-async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number; personality?: string; identity?: GitIdentity } = {}) {
+async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number; personality?: string; identity?: GitIdentity;
+  checkLetter?: (path: string, text: string) => string | undefined; } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-memory-repo-')));
   const data = join(root, 'data');
   const directory = join(data, 'memory');
@@ -980,6 +981,68 @@ test('the curator may not change, add or take away a skill: the whole stage is t
       assert.ok(outcome.rejected.some(file => file.path.startsWith('skills/') && /skill/.test(file.reason)), `${label}: ${JSON.stringify(outcome.rejected)}`);
       assert.equal(f.git('rev-parse', 'HEAD'), head, label);
       assert.equal(await f.read('skills/weekly-report/SKILL.md'), SKILL, label);
+    } finally { await f.cleanup(); }
+  }
+});
+
+// ADR 0076: her letters in postbox/ are checked as any file of memory, and then as letters; the curator keeps off them.
+const LETTER = '---\nto: news\ncron: "0 7 * * *"\n---\n今朝のニュースを選んでください。\n';
+
+test('a letter of hers that could not be sent goes back at the end of the turn, with the check\'s reason; a good one is committed', async () => {
+  const f = await setup({ checkLetter: (path, text) => text.includes('*/5') ? `${path} の cron が短すぎます` : undefined });
+  try {
+    await f.repository.initialize(undefined);
+    await mkdir(join(f.directory, 'postbox'));
+    await f.write('postbox/morning-news.md', LETTER);
+    await f.write('postbox/inbox.md', LETTER.replace('0 7 * * *', '*/5 * * * *'));
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    assert.deepEqual(outcome.files, ['postbox/morning-news.md']);
+    assert.deepEqual(outcome.reverted, [{ path: 'postbox/inbox.md', reason: 'postbox/inbox.md の cron が短すぎます' }]);
+    assert.equal(f.clean(), true);
+    // She may remove a letter: that is how one is stopped.
+    await rm(join(f.directory, 'postbox', 'morning-news.md'));
+    assert.deepEqual((await f.repository.commit({ event: 'mac_message' })).files, ['postbox/morning-news.md']);
+  } finally { await f.cleanup(); }
+});
+
+test('the postbox is read from HEAD alone: what is committed, never the working tree, and what is no file is named', async () => {
+  const f = await setup();
+  try {
+    await mkdir(join(f.directory, 'postbox', 'daily'), { recursive: true });
+    await f.write('postbox/morning-news.md', LETTER);
+    await f.write('postbox/daily/inbox.md', LETTER);
+    await symlink('morning-news.md', join(f.directory, 'postbox', 'link.md'));
+    await f.repository.initialize(undefined);
+    await f.write('postbox/morning-news.md', LETTER.replace('0 7', '0 8'));
+    await f.write('postbox/draft.md', LETTER);
+    const files = await f.repository.committedPostbox();
+    assert.deepEqual(files, [
+      { path: 'postbox/daily/inbox.md', text: LETTER },
+      { path: 'postbox/link.md', problem: 'symlink は記憶に置けません' },
+      { path: 'postbox/morning-news.md', text: LETTER },
+    ]);
+    assert.equal(await f.repository.headCommit(), f.git('rev-parse', 'HEAD'));
+  } finally { await f.cleanup(); }
+});
+
+test('the curator may not change, add or take away a letter: the whole stage is thrown away', async () => {
+  const cases: [string, (f: Awaited<ReturnType<typeof setup>>) => Promise<void>][] = [
+    ['a letter rewritten', f => f.write('postbox/morning-news.md', LETTER.replace('0 7', '0 8'))],
+    ['a letter removed', f => rm(join(f.directory, 'postbox', 'morning-news.md'))],
+    ['a letter added', f => f.write('postbox/new.md', LETTER)],
+  ];
+  for (const [label, act] of cases) {
+    const f = await setup();
+    try {
+      await mkdir(join(f.directory, 'postbox'));
+      await f.write('postbox/morning-news.md', LETTER);
+      await f.repository.initialize(undefined);
+      const head = f.git('rev-parse', 'HEAD');
+      await act(f);
+      const outcome = await f.repository.commitCuration({ message: '整理した' });
+      assert.equal(outcome.committed, false, label);
+      assert.ok(outcome.rejected.some(file => file.path.startsWith('postbox/') && /定期便/.test(file.reason)), `${label}: ${JSON.stringify(outcome.rejected)}`);
+      assert.equal(f.git('rev-parse', 'HEAD'), head, label);
     } finally { await f.cleanup(); }
   }
 });
