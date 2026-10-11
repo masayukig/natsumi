@@ -824,3 +824,35 @@ test('every page of the dashboard is headed by the ID of the avatar the server s
   await writeFile(join(dir, 'avatar.json'), JSON.stringify({ id: 'hana', name: 'はな' }));
   return { directory: dir };
 } }));
+
+// The postbox (ADR 0076): the owner sees each letter, how its last run went and when the next goes; nothing here stops one.
+test('the postbox page needs the cookie and shows each letter, its last run and its next, and why one is passed over', () => withFixture(async f => {
+  assertLoginAgain(await f.fetch('/dashboard/postbox'), f);
+  const cookie = await browserLogin(f);
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
+  try {
+    const insert = db.prepare(`INSERT INTO postbox_letters (name, path, agent, cron, paused, notify, problem, due_at, last_sent_at, last_result,
+      last_result_at, note, failures, last_received_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`);
+    insert.run('morning-news', 'postbox/morning-news.md', 'news', '0 7 * * *', 0, 'attention', null, '2026-01-02T07:00:00.000Z',
+      '2026-01-01T07:00:00.000Z', 'failed', '2026-01-01T07:01:00.000Z', null, 2, '2025-12-31T07:00:00.000Z');
+    insert.run('inbox', 'postbox/inbox.md', 'mail', '*/30 * * * *', 0, 'update', null, '2026-01-01T07:30:00.000Z',
+      '2026-01-01T06:30:00.000Z', 'skipped', '2026-01-01T07:00:00.000Z', '前の回の返事を待っているので、この回は送りませんでした', 0, null);
+    insert.run('weekly', 'postbox/weekly.md', 'news', '0 9 * * 1', 1, 'update', null, null, null, null, null, null, 0, null);
+    insert.run('noisy', 'postbox/noisy.md', null, null, 0, 'update', `cron の間隔が短すぎます ${HOSTILE}`, null, null, null, null, null, 0, null);
+  } finally { db.close(); }
+  const res = await f.fetch('/dashboard/postbox', withCookie(cookie));
+  assert.equal(res.status, 200, res.text);
+  assert.match(res.text, /<nav[^>]*>[\s\S]*定期便/);
+  assert.match(res.text, /morning-news/);
+  assert.match(res.text, /<code>0 7 \* \* \*<\/code>/);
+  assert.match(res.text, /失敗/);
+  assert.match(res.text, /2 回/);
+  assert.match(res.text, /2026-01-02 07:00/);
+  assert.match(res.text, /前の回の返事を待っている/);
+  assert.match(res.text, /止めている/);
+  assert.match(res.text, /cron の間隔が短すぎます &lt;img/);
+  assert.ok(!res.text.includes('<img src=x'));
+  const section = res.text.slice(res.text.indexOf('<section id="postbox">'), res.text.indexOf('</section>', res.text.indexOf('<section id="postbox">')));
+  assert.ok(!section.includes('<form'), 'the page only shows; letters are stopped by a commit');
+}));
