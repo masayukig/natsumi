@@ -60,6 +60,7 @@
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 120 }
   },
   "skills": { "enabled": false },
+  "postbox": { "enabled": true, "minIntervalMinutes": 15 },
   "tools": [],
   "avatar": { "id": "natsumi" }
 }

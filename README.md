@@ -76,6 +76,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      Pi の Codemode `codemode`（既定 off。下記「Codemode で作業環境の出力を絞る」）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
+   - `postbox`（省略可）: 記憶に置いた定期便をサーバーが cron で送る郵便ポストの設定です。下記「定期便を送る（郵便ポスト）」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
    - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
@@ -483,7 +484,7 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、予約、定期便、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
@@ -510,6 +511,9 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   - 予約した確認（self-check）の予定と理由、次の夜の切り替えの予定時刻（`loop.nightlyRotationAt`）。
   - 外のエージェントへの依頼。相手、状態（waiting・input-required・completed・failed・gave-up）、送った時刻と最後の変化。まだ続いているものが先です。
   - 夜の session の切り替えの結果と、失敗の理由。
+- 「定期便」（`/dashboard/postbox`）は、郵便ポストの定期便を名前の順に出します（[ADR 0076](docs/adr/0076-a-postbox-for-requests-sent-on-a-schedule.md)）。
+  名前、相手、cron、最後に送った時刻、その結果（返事を待っている・受け取り・中身なし・失敗・待つのをやめた・聞き返し・飛ばした）と飛ばした理由、
+  続けて失敗した回数、前回の受け取り、次に送る時刻です。検査に通らない定期便は、送らない理由を出します。表示だけで、止める操作はありません。
 - 「一行メモ」（`/dashboard/memos`）は、ターンの終わりに書いた一行メモを新しい順に 20 件ずつ、全文で出します。
   一覧は SQLite から作り、メモは session のファイルのうち、そのターンの位置の終わりの付近（最大 1MB）だけを読みます。
   位置を持つ前の「推定」のターンは、ファイルを先頭から探すことになるので一覧では読みません。そのターンの詳細で見られます。
@@ -739,6 +743,53 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
   取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
 - token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
+### 定期便を送る（郵便ポスト）
+
+外のエージェントへの決まった依頼を、記憶の `postbox/` に 1 通 1 ファイルで置いておくと、サーバーが cron どおりに送ります
+（[ADR 0076](docs/adr/0076-a-postbox-for-requests-sent-on-a-schedule.md)）。送るときに natsumi のターンは使わず、モデルも呼びません。
+`a2a` の設定が要ります。
+
+```markdown
+---
+to: news
+cron: "0 7 * * *"
+notify: attention
+---
+今朝のニュースから、ソフトウェアの開発と自宅のサーバーの運用に関わるものを選んでください。
+```
+
+- ファイル名（`.md` を除く。小文字の英数字とハイフン）が定期便の名前です。`to` は `a2a.agents` の名前、`cron` は 5 項目の cron 式で、
+  `loop.timeZone` で読みます。`paused: true` で止め、`notify: attention` で返事のたびにすぐ知らせます。本文が相手に渡す依頼です。
+- サーバーが読むのは、記憶の HEAD にコミットされた内容だけです。読み直すのは、ターンの終わりに記憶をコミットした直後、
+  1 分ごとの見回りで HEAD が変わっていたとき、起動したときです。作業ツリーは見張りません。
+- natsumi が書いた定期便は、ターンの終わりの検査（frontmatter が YAML として読める、知らない項目が無い、`to` が `a2a.agents` にある、
+  cron が読めて当てはまる時刻がある、回の間隔が下限以上、本文がある）に当たると、直前のコミットの状態に戻し、理由を次のターンで伝えます。
+  本人が ssh でコミットした定期便は、読むときに同じ検査をし、通らないものだけを送らずに飛ばします。理由は natsumi の次のターンの入力とダッシュボードに出します。
+- 時刻が来たら一度だけ送ります。送る前にその回を記録するので、再起動しても同じ回を二度送りません。止まっていた間に過ぎた回は、
+  何回分でも、起動後の最初の見回りで 1 回だけ送ります。前の回の返事を待っているうちに次の回が来たら、その回は送らずに飛ばします。
+- 依頼の本文の末尾に、前回うまく受け取った回を送った時刻を `前回の受け取り: 2026-10-11T07:00:00+09:00 (JST)` の 1 行で足し、
+  A2A の message の metadata にも `{"postbox": {"name": "<名前>", "lastReceivedAt": "<同じ時刻>"}}` で載せます。
+  時刻は `loop.timeZone` の ISO 8601（秒まで）で、括弧はそのタイムゾーンの略号（得られなければ IANA 名）です。
+  初回は行を足さず、`lastReceivedAt` を省きます。失敗した回では進めません。
+- 返事は `ask_agent` と同じく `sources/agents/<相手>/<送った UTC の日時>-<短い印>/` に置き、`request.md` に `postbox: <名前>` を書きます。
+  依頼のディレクトリは返事と一緒に作り、返事が来る前には作りません。知らせ方は次のとおりです。
+  - 中身のある返事は、既定ではふつうの更新（attention なし。awake hours の外なら朝に出ます）。`notify: attention` なら attention（`details` に `postbox`）。
+  - reply/v1 の DataPart で `sections` が空の返事は「中身なし」とし、知らせず、ディレクトリも残しません（うまく受け取った回として数えます）。
+    文章だけで返す相手の返事は、毎回置いて知らせます。
+  - 聞き返し（`input_required`）は常に attention で知らせます。natsumi が `ask_agent` の `continue: true` で答えられ、答えた後の返事がうまく受け取れたら、
+    その回を送った時刻で前回の受け取りを進めます。
+  - 失敗（`failed`）と待ちの上限切れ（`gave_up`。上限は `a2a.giveUpAfterHours`）はふつうの更新です。3 回続いたときだけ attention で知らせます。
+- 定期便ごとの記録（前回の受け取り、次の回、最後に送った時刻と結果、続けて失敗した回数）は `.natsumi/state.sqlite`（migration 31）に持ちます。
+  ファイルを消すと記録も消え、作り直した定期便は初回として送ります。
+- 夜の記憶の整理係は `postbox/` を変えません。
+
+| 設定 | 既定 | 中身 |
+| --- | --- | --- |
+| `postbox.enabled` | `true` | `false` にすると、どの定期便も送りません（緊急に全部を止めるとき）。定期便の読み込みと検査、ダッシュボードの表示は続けます |
+| `postbox.minIntervalMinutes` | 15 | cron の回の間隔の下限（分、1〜1440）。これより短い回のある定期便は、検査で戻すか送らずに飛ばします |
+
+止めるときは、ファイルを消すか `paused: true` にしてコミットします（natsumi に頼んでもかまいません）。ダッシュボードからは止められません。
 
 ### Slack を受け取る
 
