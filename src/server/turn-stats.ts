@@ -104,6 +104,17 @@ export class TurnStats {
       .get() as { started_at: string; turn_ms: number } | undefined;
     return row ? Date.parse(row.started_at) + row.turn_ms : undefined;
   }
+
+  /**
+   * The curator's stages that did not end ok, begun at or after a time, by the stage's name: what the sleeping pill
+   * shows as the night's failure (ADR 0077). A stage not begun for the deadline is one of them.
+   */
+  curatorFailuresSince(since: string): { stage: string; outcome: string; at: number }[] {
+    const rows = this.db.prepare(`SELECT event_kinds, outcome, started_at FROM turn_stats
+      WHERE kind = 'curator' AND outcome <> 'ok' AND started_at >= ? ORDER BY started_at DESC, rowid DESC`).all(since) as
+      { event_kinds: string; outcome: string; started_at: string }[];
+    return rows.map(row => ({ stage: row.event_kinds.replace(/^[^:]*:/, ''), outcome: row.outcome, at: Date.parse(row.started_at) }));
+  }
 }
 
 /** The value at a percentile, by nearest rank; undefined for no values. */

@@ -142,7 +142,8 @@ ${workspace}
 - ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time はマスターのタイムゾーンの今の時刻です。マスターに伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。
 - self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの check_id・reason・予定の時刻（scheduled_for）があります。繰り返しの予約には cron が付き、予約はそのまま次の時刻まで残ります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。繰り返しの予約は、過ぎた回がいくつあっても 1 回だけ届きます。
 - sources_updated: /sources の読みもの（Slack のチャンネルや、外のエージェントの返事など）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file がその場所で、path があれば、それが file の中の jq -s のパスです。kind の意味と読み方は読みものごとのマニュアル（Slack とポッポさんの結果なら /manual/slack.md、外のエージェントの返事の agent_reply なら /manual/ask-agent.md）にあります。agent_reply には、相手の名前（agent）・状態（state）・要約（summary）が付きます。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。
-- nightly_review: 一日の終わりの振り返りです。instructions に従います。マスターには何も送りません。`;
+- nightly_review: 一日の終わりの振り返りです。instructions に従います。マスターには何も送りません。
+- nap: マスターに寝かされた昼寝です。instructions に従います。マスターには何も送りません。`;
 
 /**
  * The system prompt from its parts, each already read and stripped of its opening heading: the base instruction with
@@ -232,12 +233,12 @@ export const NOTIFY_OWNER_DESCRIPTION = 'マスターに確かめてほしい相
 export const SET_MAC_AVATAR_EXPRESSION_DESCRIPTION = (expressions: readonly string[]) =>
   `マスターの Mac のデスクトップにいるあなたのアバターの表情を変える。候補: ${expressions.join(', ')}。`;
 
-export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。'
+export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）か昼寝（nap）でだけ使う。次の新しい思考の記録に引き継ぐメモを書く。'
   + '書いた内容は /memory/handoff.md になり、このターンの終わりにコミットされる。何度か呼ぶと最後のものが使われる。';
 
-export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。今夜の記憶の変更を自分の言葉で説明する。'
-  + 'この文がそのまま今夜のコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。'
-  + '書かなくても夜は終わるが、その場合の説明はサーバーが機械的に付ける。';
+export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）か昼寝（nap）でだけ使う。そのターンの記憶の変更を自分の言葉で説明する。'
+  + 'この文がそのままそのターンのコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。'
+  + '書かなくてもターンは終わるが、その場合の説明はサーバーが機械的に付ける。';
 
 export const SCHEDULE_SELF_CHECK_DESCRIPTION = '後で自分からもう一度確かめるための予約をする。時刻が来ると、reason を添えた self_check のイベントが届く。'
   + 'cron・at・in_minutes のどれか 1 つだけを指定する。'
@@ -298,6 +299,18 @@ export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思�
   + '・/work と /home/natsumi を片づける。ここは検査もコミットもされないので、残したいものがあれば /memory に移します。'
   + '全部をやる必要はありません。今夜できなかったことは引き継ぎに書いておいてください。明日の自分がそこから拾えます。'
   + '済んだら、ツールを呼ばずに終えてください。';
+
+/**
+ * The nap the owner's sleeping pill puts her into when the night is done (ADR 0077): the handoff alone, then a new
+ * session. Not the night's menu: the always-memory, the personality and the workspace are the night's to look at, so
+ * they are not offered here. The handoff is written as the night's is.
+ */
+export const NAP_INSTRUCTIONS = '昼寝です。マスターに寝かされました。起きると思考の記録が新しくなり、今の細かいやりとりは見えなくなります。'
+  + 'やることは 1 つだけです。'
+  + 'write_handoff_note で、起きた後の自分への引き継ぎを書くこと。対応中のこと、マスターの返事を待っていること、マスターの最近の様子など、記憶に書くほどではないが起きた後に知っておきたいことを短くまとめます。'
+  + '引き継ぎも、' + SUBJECT_AND_TIME
+  + 'マスターへの返事や知らせは送りません。'
+  + '書いたら、ツールを呼ばずに終えてください。';
 
 /**
  * What the server asks for once a turn has ended, in the same session (ADR 0047). One fixed text, both because it is
