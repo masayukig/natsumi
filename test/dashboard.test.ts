@@ -825,6 +825,38 @@ test('every page of the dashboard is headed by the ID of the avatar the server s
   return { directory: dir };
 } }));
 
+// What comes from outside is read as her other places are (ADR 0054, ADR 0069): one level at a time, never through a
+// symlink, and never above /sources.
+test('/sources is listed and its files shown, and nothing outside it is reached through it', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const reply = join(f.data, 'sources', 'agents', 'news', '20261010T220000Z-ab12');
+  await mkdir(reply, { recursive: true });
+  await writeFile(join(reply, 'README.md'), '# 架空のニュース\n\n<script>alert(1)</script>\n');
+  const secret = 'fixture-secret-under-natsumi';
+  await writeFile(join(f.data, '.natsumi', 'secret.txt'), secret);
+  await symlink(join(f.data, '.natsumi'), join(f.data, 'sources', 'state'));
+  const index = await f.fetch('/dashboard/files', withCookie(cookie));
+  assert.match(index.text, /href="\/dashboard\/files\/sources"/);
+  const top = await f.fetch('/dashboard/files/sources', withCookie(cookie));
+  assert.equal(top.status, 200, top.text);
+  assert.match(top.text, /href="\/dashboard\/files\/sources\/agents"/);
+  const listing = await f.fetch('/dashboard/files/sources/agents/news', withCookie(cookie));
+  assert.match(listing.text, /href="\/dashboard\/files\/sources\/agents\/news\/20261010T220000Z-ab12"/);
+  const readme = await f.fetch('/dashboard/files/sources/agents/news/20261010T220000Z-ab12/README.md', withCookie(cookie));
+  assert.equal(readme.status, 200, readme.text);
+  assert.match(readme.text, /<h1>架空のニュース<\/h1>/);
+  assert.doesNotMatch(readme.text, /<script>alert/);
+  for (const path of ['/dashboard/files/sources/state/secret.txt', '/dashboard/files/sources/state/secret.txt?download=1',
+    '/dashboard/files/sources/%2e%2e/.natsumi/secret.txt', '/dashboard/files/sources/..%2F.natsumi%2Fsecret.txt']) {
+    const res = await f.fetch(path, withCookie(cookie));
+    assert.equal(res.status, 404, path);
+    assert.ok(!res.text.includes(secret), path);
+  }
+  const raw = await rawGet(f, '/dashboard/files/sources/../.natsumi/secret.txt', cookie);
+  assert.equal(raw.status, 404);
+  assert.ok(!raw.body.includes(secret));
+}));
+
 // The postbox (ADR 0076): the owner sees each letter, how its last run went and when the next goes; nothing here stops one.
 test('the postbox page needs the cookie and shows each letter, its last run and its next, and why one is passed over', () => withFixture(async f => {
   assertLoginAgain(await f.fetch('/dashboard/postbox'), f);

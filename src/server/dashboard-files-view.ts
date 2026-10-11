@@ -23,6 +23,7 @@ const PLACE_NOTES = (name: string): Record<string, string> => ({
   '/manual': 'マニュアル',
   '/manual/agents': '頼める相手の一覧（サーバーが書くもの）',
   '/manual/avatar': '画像のページと画像生成の設定（サーバーがアバターから書くもの）',
+  '/sources': '外から届いたもの（頼んだ相手の返事や Slack など。サーバーが書くもの）',
 });
 
 /** The places, with her named by the avatar's display name (ADR 0057). */

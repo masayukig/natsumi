@@ -539,10 +539,10 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   - グラフはサーバーが SVG で描き、JS は使いません。点や棒に触れると値が出て、各グラフの下の「数値の表」に同じ数値があります。
   - ターンの無い刻みは値なしとして扱い、0 にはしません。線はそこで切れ、表では「—」と出します。
   - 集計は SQLite で行い、期間の行だけを `started_at` の索引で読みます。
-- 「ファイル」（`/dashboard/files`）は、なつみの作業環境の `/memory`・`/work`・`/home/natsumi`・`/manual`・`/manual/agents` の今の中身を、
+- 「ファイル」（`/dashboard/files`）は、なつみの作業環境の `/memory`・`/work`・`/home/natsumi`・`/manual`・`/manual/agents`・`/sources` の今の中身を、
   読み取り専用で見せます（[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。URL は `/dashboard/files` の後に作業環境のパスを続けた形です（`/dashboard/files/memory/always.md` など）。
   - 読む場所: `/memory` は記憶の repository（`loop.memoryRepository`、既定は data directory の `memory/`）、`/work` と `/home/natsumi` は data directory の `work/` と `home/`、
-    `/manual/agents` は data directory の `agents/` です。`/manual` は、コードに同梱の [manual/](manual/) を読みます。
+    `/manual/agents` は data directory の `agents/`、`/sources` は data directory の `sources/` です。`/manual` は、コードに同梱の [manual/](manual/) を読みます。
     image ではサーバーの `/app/manual`（作業環境の `/manual` と同じビルドから作ったもの）、チェックアウトから `--data-dir` を付けて起動したときは、そのチェックアウトの `manual/` です。設定では変えられません。
   - ディレクトリは 1 階層ずつ並べます。既定は名前順（ディレクトリが先）で、列見出しの「名前」「更新日時」「大きさ」で並べ替えます（`?sort=mtime&order=asc` など）。
     ディレクトリの大きさは数えません。1 つのディレクトリで並べるのは 2,000 件までです。
