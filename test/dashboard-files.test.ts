@@ -13,7 +13,7 @@ import {
 async function withRoots(fn: (roots: FileRoots, outside: string) => Promise<void>) {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-files-')));
   const roots: FileRoots = { memory: join(base, 'data/memory'), work: join(base, 'data/work'), home: join(base, 'data/home'),
-    manual: join(base, 'code/manual'), agents: join(base, 'data/agents'), avatar: join(base, 'data/avatar') };
+    manual: join(base, 'code/manual'), agents: join(base, 'data/agents'), avatar: join(base, 'data/avatar'), sources: join(base, 'data/sources') };
   for (const directory of Object.values(roots)) await mkdir(directory, { recursive: true });
   const outside = join(base, 'data/.natsumi');
   await mkdir(outside);
@@ -54,7 +54,7 @@ test('a path in the workspace becomes the URL of its place, and one outside ever
   assert.equal(filesUrl('/manual/agents/INDEX.md'), '/dashboard/files/manual/agents/INDEX.md');
   assert.equal(filesUrl('/home/natsumi'), '/dashboard/files/home/natsumi');
   assert.equal(filesUrl('/work/メモ.md'), '/dashboard/files/work/%E3%83%A1%E3%83%A2.md');
-  for (const path of ['/etc/passwd', '/sources/slack/a.jsonl', '/memoryx/a', '/work/../etc/passwd', 'work/a', '/home/other',
+  for (const path of ['/etc/passwd', '/sources.git/config', '/sourcesx/a', '/memoryx/a', '/work/../etc/passwd', 'work/a', '/home/other',
     '/memory/.git/config', '/memory/.git', '/work/a\u0000b']) {
     assert.equal(filesUrl(path), undefined, path);
   }
@@ -241,3 +241,39 @@ test('text cut at the limit is cut on a character, and says it was cut', () => {
 test('/manual/avatar is a place of its own, found before /manual', () => {
   assert.deepEqual(locate('/dashboard/files/manual/avatar/images.md'), { root: 'avatar', place: '/manual/avatar', segments: ['images.md'] });
 });
+
+// What comes from outside — the agents' replies, the Slack channels — is put under /sources (ADR 0069), and the owner
+// reads it here as she does: read-only, one level at a time, and never through a symlink.
+test('/sources is a place of its own, found by the path she knows it by', () => {
+  assert.deepEqual(locate('/dashboard/files/sources'), { root: 'sources', place: '/sources', segments: [] });
+  assert.deepEqual(locate('/dashboard/files/sources/agents/news/20261010T220000Z-ab12/README.md'),
+    { root: 'sources', place: '/sources', segments: ['agents', 'news', '20261010T220000Z-ab12', 'README.md'] });
+  assert.equal(filesUrl('/sources/agents/news/20261010T220000Z-ab12'), '/dashboard/files/sources/agents/news/20261010T220000Z-ab12');
+  assert.equal(filesUrl('/sources/slack/a.jsonl'), '/dashboard/files/sources/slack/a.jsonl');
+  for (const path of ['/dashboard/files/sources/..', '/dashboard/files/sources/../work', '/dashboard/files/sources/%2e%2e/.natsumi',
+    '/dashboard/files/sources/agents%2F..%2F..%2F.natsumi', '/dashboard/files/sourcesx', '/dashboard/files/sources.git/config']) {
+    assert.equal(locate(path), undefined, path);
+  }
+});
+
+test('/sources lists one level down and shows the head of a file, and never follows a symlink out of it', () => withRoots(async (roots, outside) => {
+  await mkdir(join(roots.sources, 'agents/news/20261010T220000Z-ab12'), { recursive: true });
+  await writeFile(join(roots.sources, 'agents/news/20261010T220000Z-ab12/README.md'), '# 返事\n\n架空のニュースが 1 件あります。\n');
+  await symlink(outside, join(roots.sources, 'agents/out'));
+  await symlink(join(outside, 'secret.txt'), join(roots.sources, 'secret-link'));
+  const top = await look(roots, at('/sources'));
+  assert.equal(top.kind, 'directory');
+  if (top.kind !== 'directory') return;
+  assert.deepEqual(listDirectory(top, { hidden: false, sort: 'name', order: 'asc' }).entries.map(entry => [entry.name, entry.type]),
+    [['agents', 'directory'], ['secret-link', 'symlink']]);
+  const agents = await look(roots, at('/sources/agents'));
+  assert.equal(agents.kind === 'directory' && agents.entries.find(entry => entry.name === 'out')?.target, outside);
+  const head = await readHead(roots, at('/sources/agents/news/20261010T220000Z-ab12/README.md'), TEXT_LIMIT);
+  assert.equal(head.kind === 'file' && head.head.toString(), '# 返事\n\n架空のニュースが 1 件あります。\n');
+  for (const path of ['/sources/agents/out', '/sources/agents/out/secret.txt', '/sources/secret-link']) {
+    const found = await look(roots, at(path));
+    assert.equal(found.kind === 'refused' && found.reason, 'symlink', path);
+    assert.equal((await readHead(roots, at(path), TEXT_LIMIT)).kind, 'refused', path);
+    assert.equal((await openFile(roots, at(path))).kind, 'refused', path);
+  }
+}));

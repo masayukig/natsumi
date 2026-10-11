@@ -825,6 +825,38 @@ test('every page of the dashboard is headed by the ID of the avatar the server s
   return { directory: dir };
 } }));
 
+// What comes from outside is read as her other places are (ADR 0054, ADR 0069): one level at a time, never through a
+// symlink, and never above /sources.
+test('/sources is listed and its files shown, and nothing outside it is reached through it', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const reply = join(f.data, 'sources', 'agents', 'news', '20261010T220000Z-ab12');
+  await mkdir(reply, { recursive: true });
+  await writeFile(join(reply, 'README.md'), '# 架空のニュース\n\n<script>alert(1)</script>\n');
+  const secret = 'fixture-secret-under-natsumi';
+  await writeFile(join(f.data, '.natsumi', 'secret.txt'), secret);
+  await symlink(join(f.data, '.natsumi'), join(f.data, 'sources', 'state'));
+  const index = await f.fetch('/dashboard/files', withCookie(cookie));
+  assert.match(index.text, /href="\/dashboard\/files\/sources"/);
+  const top = await f.fetch('/dashboard/files/sources', withCookie(cookie));
+  assert.equal(top.status, 200, top.text);
+  assert.match(top.text, /href="\/dashboard\/files\/sources\/agents"/);
+  const listing = await f.fetch('/dashboard/files/sources/agents/news', withCookie(cookie));
+  assert.match(listing.text, /href="\/dashboard\/files\/sources\/agents\/news\/20261010T220000Z-ab12"/);
+  const readme = await f.fetch('/dashboard/files/sources/agents/news/20261010T220000Z-ab12/README.md', withCookie(cookie));
+  assert.equal(readme.status, 200, readme.text);
+  assert.match(readme.text, /<h1>架空のニュース<\/h1>/);
+  assert.doesNotMatch(readme.text, /<script>alert/);
+  for (const path of ['/dashboard/files/sources/state/secret.txt', '/dashboard/files/sources/state/secret.txt?download=1',
+    '/dashboard/files/sources/%2e%2e/.natsumi/secret.txt', '/dashboard/files/sources/..%2F.natsumi%2Fsecret.txt']) {
+    const res = await f.fetch(path, withCookie(cookie));
+    assert.equal(res.status, 404, path);
+    assert.ok(!res.text.includes(secret), path);
+  }
+  const raw = await rawGet(f, '/dashboard/files/sources/../.natsumi/secret.txt', cookie);
+  assert.equal(raw.status, 404);
+  assert.ok(!raw.body.includes(secret));
+}));
+
 // The postbox (ADR 0076): the owner sees each letter, how its last run went and when the next goes; nothing here stops one.
 test('the postbox page needs the cookie and shows each letter, its last run and its next, and why one is passed over', () => withFixture(async f => {
   assertLoginAgain(await f.fetch('/dashboard/postbox'), f);
@@ -832,14 +864,15 @@ test('the postbox page needs the cookie and shows each letter, its last run and 
   const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'));
   try {
     const insert = db.prepare(`INSERT INTO postbox_letters (name, path, agent, cron, paused, notify, problem, due_at, last_sent_at, last_result,
-      last_result_at, note, failures, last_received_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`);
+      last_result_at, note, failures, last_received_at, last_reply_path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`);
     insert.run('morning-news', 'postbox/morning-news.md', 'news', '0 7 * * *', 0, 'attention', null, '2026-01-02T07:00:00.000Z',
-      '2026-01-01T07:00:00.000Z', 'failed', '2026-01-01T07:01:00.000Z', null, 2, '2025-12-31T07:00:00.000Z');
+      '2026-01-01T07:00:00.000Z', 'failed', '2026-01-01T07:01:00.000Z', null, 2, '2025-12-31T07:00:00.000Z',
+      '/sources/agents/news/20251231T220000Z-ab12');
     insert.run('inbox', 'postbox/inbox.md', 'mail', '*/30 * * * *', 0, 'update', null, '2026-01-01T07:30:00.000Z',
-      '2026-01-01T06:30:00.000Z', 'skipped', '2026-01-01T07:00:00.000Z', '前の回の返事を待っているので、この回は送りませんでした', 0, null);
-    insert.run('weekly', 'postbox/weekly.md', 'news', '0 9 * * 1', 1, 'update', null, null, null, null, null, null, 0, null);
-    insert.run('noisy', 'postbox/noisy.md', null, null, 0, 'update', `cron の間隔が短すぎます ${HOSTILE}`, null, null, null, null, null, 0, null);
+      '2026-01-01T06:30:00.000Z', 'skipped', '2026-01-01T07:00:00.000Z', '前の回の返事を待っているので、この回は送りませんでした', 0, null, null);
+    insert.run('weekly', 'postbox/weekly.md', 'news', '0 9 * * 1', 1, 'update', null, null, null, null, null, null, 0, null, null);
+    insert.run('noisy', 'postbox/noisy.md', null, null, 0, 'update', `cron の間隔が短すぎます ${HOSTILE}`, null, null, null, null, null, 0, null, null);
   } finally { db.close(); }
   const res = await f.fetch('/dashboard/postbox', withCookie(cookie));
   assert.equal(res.status, 200, res.text);
@@ -855,4 +888,9 @@ test('the postbox page needs the cookie and shows each letter, its last run and 
   assert.ok(!res.text.includes('<img src=x'));
   const section = res.text.slice(res.text.indexOf('<section id="postbox">'), res.text.indexOf('</section>', res.text.indexOf('<section id="postbox">')));
   assert.ok(!section.includes('<form'), 'the page only shows; letters are stopped by a commit');
+  // The last reply put under /sources is a link to it; a letter that has put none has no link.
+  const rows = section.split('<tr>');
+  const row = (name: string) => rows.find(text => text.includes(`<code>${name}</code>`)) ?? '';
+  assert.match(row('morning-news'), /<a href="\/dashboard\/files\/sources\/agents\/news\/20251231T220000Z-ab12">最後の返事<\/a>/);
+  for (const name of ['inbox', 'weekly', 'noisy']) assert.doesNotMatch(row(name), /\/dashboard\/files\/sources/, name);
 }));

@@ -514,6 +514,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
 - 「定期便」（`/dashboard/postbox`）は、郵便ポストの定期便を名前の順に出します（[ADR 0076](docs/adr/0076-a-postbox-for-requests-sent-on-a-schedule.md)）。
   名前、相手、cron、最後に送った時刻、その結果（返事を待っている・受け取り・中身なし・失敗・待つのをやめた・聞き返し・飛ばした）と飛ばした理由、
   続けて失敗した回数、前回の受け取り、次に送る時刻です。検査に通らない定期便は、送らない理由を出します。表示だけで、止める操作はありません。
+  最後に `/sources` に置いた返事があれば、その「最後の返事」のディレクトリへ「ファイル」でリンクします。
 - 「一行メモ」（`/dashboard/memos`）は、ターンの終わりに書いた一行メモを新しい順に 20 件ずつ、全文で出します。
   一覧は SQLite から作り、メモは session のファイルのうち、そのターンの位置の終わりの付近（最大 1MB）だけを読みます。
   位置を持つ前の「推定」のターンは、ファイルを先頭から探すことになるので一覧では読みません。そのターンの詳細で見られます。
@@ -539,10 +540,10 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   - グラフはサーバーが SVG で描き、JS は使いません。点や棒に触れると値が出て、各グラフの下の「数値の表」に同じ数値があります。
   - ターンの無い刻みは値なしとして扱い、0 にはしません。線はそこで切れ、表では「—」と出します。
   - 集計は SQLite で行い、期間の行だけを `started_at` の索引で読みます。
-- 「ファイル」（`/dashboard/files`）は、なつみの作業環境の `/memory`・`/work`・`/home/natsumi`・`/manual`・`/manual/agents` の今の中身を、
+- 「ファイル」（`/dashboard/files`）は、なつみの作業環境の `/memory`・`/work`・`/home/natsumi`・`/manual`・`/manual/agents`・`/sources` の今の中身を、
   読み取り専用で見せます（[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。URL は `/dashboard/files` の後に作業環境のパスを続けた形です（`/dashboard/files/memory/always.md` など）。
   - 読む場所: `/memory` は記憶の repository（`loop.memoryRepository`、既定は data directory の `memory/`）、`/work` と `/home/natsumi` は data directory の `work/` と `home/`、
-    `/manual/agents` は data directory の `agents/` です。`/manual` は、コードに同梱の [manual/](manual/) を読みます。
+    `/manual/agents` は data directory の `agents/`、`/sources` は data directory の `sources/` です。`/manual` は、コードに同梱の [manual/](manual/) を読みます。
     image ではサーバーの `/app/manual`（作業環境の `/manual` と同じビルドから作ったもの）、チェックアウトから `--data-dir` を付けて起動したときは、そのチェックアウトの `manual/` です。設定では変えられません。
   - ディレクトリは 1 階層ずつ並べます。既定は名前順（ディレクトリが先）で、列見出しの「名前」「更新日時」「大きさ」で並べ替えます（`?sort=mtime&order=asc` など）。
     ディレクトリの大きさは数えません。1 つのディレクトリで並べるのは 2,000 件までです。

@@ -1,3 +1,4 @@
+import { filesUrl } from './dashboard-files.ts';
 import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type BookedCheck, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, checkPath, CHECKS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
 import type { LetterRecord } from './postbox.ts';
@@ -143,7 +144,9 @@ export function postboxPage(letters: readonly LetterRecord[], timeZone: string, 
     if (!letter.lastResult) return html`<small>まだ送っていません</small>`;
     const words = LETTER_RESULTS[letter.lastResult];
     const bad = letter.lastResult === 'failed' || letter.lastResult === 'gave-up';
-    return html`${bad ? html`<span class="bad">${words}</span>` : words}${letter.note && html`<br><small>${letter.note}</small>`}`;
+    const reply = letter.lastReplyPath === undefined ? undefined : filesUrl(letter.lastReplyPath);
+    return html`${bad ? html`<span class="bad">${words}</span>` : words}${letter.note && html`<br><small>${letter.note}</small>`}${
+      reply && html`<br><a href="${reply}">最後の返事</a>`}`;
   };
   const next = (letter: LetterRecord) => letter.problem !== undefined ? html`<span class="bad">送りません</span><br><small>${letter.problem}</small>`
     : letter.paused ? html`<span class="note">止めている</span>` : at(letter.nextAt);

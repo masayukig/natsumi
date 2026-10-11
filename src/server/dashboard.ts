@@ -29,7 +29,7 @@ import type { ToolOutcome } from './loop-tools.ts';
 import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
 import { codeManualDirectory } from './manual.ts';
 import { AVATAR_MANUAL_DIRECTORY } from './avatar-manual.ts';
-import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
+import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
 import { PostboxLedger } from './postbox.ts';
 import { checkHealth, readStatus } from './status.ts';
@@ -335,7 +335,7 @@ export class Dashboard {
     return {
       memory: memoryDirectory, work: join(dataDirectory, WORK_DIRECTORY), home: join(dataDirectory, HOME_DIRECTORY),
       agents: join(dataDirectory, AGENT_LIST_DIRECTORY), avatar: join(dataDirectory, AVATAR_MANUAL_DIRECTORY),
-      manual: manualDirectory ?? await codeManualDirectory(),
+      sources: join(dataDirectory, SOURCES_DIRECTORY), manual: manualDirectory ?? await codeManualDirectory(),
     };
   }
 
