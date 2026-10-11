@@ -98,3 +98,13 @@ export function localParts(ms: number, timeZone: string): { year: number; month:
   const t = local(ms, timeZone);
   return { year: t.year, month: t.month, day: t.day };
 }
+
+/** An instant in the time zone to the second, with its offset: `2026-10-11T07:00:00+09:00` (ISO 8601). */
+export function localIso(ms: number, timeZone: string): string {
+  const t = local(ms, timeZone);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const minutes = Math.round(offset(ms, timeZone) / 60_000);
+  const sign = minutes < 0 ? '-' : '+';
+  const away = Math.abs(minutes);
+  return `${localDate(ms, timeZone)}T${pad(t.hour)}:${pad(t.minute)}:${pad(t.second)}${sign}${pad(Math.floor(away / 60))}:${pad(away % 60)}`;
+}
