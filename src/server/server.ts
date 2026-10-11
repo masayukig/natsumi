@@ -290,7 +290,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
       ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled, ...(config.tools ? { tools: config.tools } : {}),
-      ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
+      ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}), postbox: config.postbox,
       ...(config.a2a && agentPlace ? { agentReplies: agentPlace } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
     });

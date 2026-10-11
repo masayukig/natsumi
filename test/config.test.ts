@@ -63,6 +63,7 @@ test('a valid config becomes a typed server config', () => {
     sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 },
     uploads: { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 },
     skills: { enabled: false },
+    postbox: { enabled: true, minIntervalMinutes: 15 },
     curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2, rewriteAllMaxChars: 100000,
       conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
   });
@@ -592,6 +593,19 @@ test('skills are off unless the skills section switches them on (ADR 0073)', () 
   rejects({ ...base(), skills: { enabled: 'yes' } }, 'skills.enabled');
   rejects({ ...base(), skills: { enabled: true, directory: '/srv/skills' } }, 'skills.directory');
   rejects({ ...base(), skills: true }, 'skills');
+});
+
+test('the postbox sends unless switched off, and its letters run no more often than the floor (ADR 0076)', () => {
+  assert.deepEqual(parseConfig(base()).postbox, { enabled: true, minIntervalMinutes: 15 });
+  assert.deepEqual(parseConfig({ ...base(), postbox: { enabled: false } }).postbox, { enabled: false, minIntervalMinutes: 15 });
+  assert.deepEqual(parseConfig({ ...base(), postbox: { minIntervalMinutes: 60 } }).postbox, { enabled: true, minIntervalMinutes: 60 });
+  assert.deepEqual(parseConfig({ ...base(), postbox: { minIntervalMinutes: 1 } }).postbox, { enabled: true, minIntervalMinutes: 1 });
+  rejects({ ...base(), postbox: { enabled: 'no' } }, 'postbox.enabled');
+  rejects({ ...base(), postbox: { minIntervalMinutes: 0 } }, 'postbox.minIntervalMinutes');
+  rejects({ ...base(), postbox: { minIntervalMinutes: 7.5 } }, 'postbox.minIntervalMinutes');
+  rejects({ ...base(), postbox: { minIntervalMinutes: 24 * 60 + 1 } }, 'postbox.minIntervalMinutes');
+  rejects({ ...base(), postbox: { letters: 'postbox' } }, 'postbox.letters');
+  rejects({ ...base(), postbox: true }, 'postbox');
 });
 
 test('the Slack tokens are referenced by environment variable or file, never written in the config', () => {
