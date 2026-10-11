@@ -1,7 +1,7 @@
 # 0064. 自分で予約した確認を、本人がダッシュボードで見て 1 件ずつ取り消す
 
 - Date: 2026-09-30
-- Status: Accepted
+- Status: Accepted（ダッシュボードで状態を変える口に、同じ守りで睡眠薬を飲ませる POST を加え、同じ処理をクライアントの契約のコマンドにも置くことは [ADR 0077](0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) で追加）
 
 ## Context
 
