@@ -62,7 +62,7 @@ Bearer が無いときだけ、ブラウザのログインの cookie を見る�
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
 未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびと、定期的に期限を確かめる）。
-下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`・`settings.list`・`settings.set`・`settings.reset` は実装済みで、それ以外の command は
+下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`・`settings.list`・`settings.set`・`settings.reset`・`sleep.status`・`sleep.take` は実装済みで、それ以外の command は
 `command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
 会話の扱いの理由は [ADR 0008](adr/0008-single-thinking-loop-and-mac-conversation.md)、
 既読と知らせの確認の理由は [ADR 0013](adr/0013-read-state-on-the-server.md) にある。
@@ -104,6 +104,8 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `settings.list` | — | `command.accepted`（settings: 設定の一覧）、または `service.unavailable`。下記「実行中の設定」 |
 | `settings.set` | key（設定の名前）、value（値） | `command.accepted`（settings: 変えた後の一覧）、または unknown-setting / invalid-value / unknown-route / route-unavailable / judge-unavailable / invalid-request / `service.unavailable`。下記「実行中の設定」 |
 | `settings.reset` | key（設定の名前） | `command.accepted`（settings: 戻した後の一覧）、または unknown-setting / invalid-request / `service.unavailable`。下記「実行中の設定」 |
+| `sleep.status` | — | `command.accepted`（sleep: いま睡眠薬を飲ませると何をするかの判定）、または `service.unavailable`。下記「睡眠薬」 |
+| `sleep.take` | — | `command.accepted`（eventId、kind、joined）、または `service.unavailable`。下記「睡眠薬」 |
 
 | サーバー event | 内容 |
 | --- | --- |
@@ -132,7 +134,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
    サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
 3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
 4. 会話が使えない場合は `service.unavailable` が届く（deviceId と sessionExpiresAt も付く）。
-5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`・`settings.list`・`settings.set`・`settings.reset`）は `sync-required`、
+5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`・`settings.list`・`settings.set`・`settings.reset`・`sleep.status`・`sleep.take`）は `sync-required`、
    接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
 6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
 
@@ -203,6 +205,36 @@ natsumi の思考のモデルは、サーバーの設定に名前付きで並べ
 - すでに使っている経路を選び直しても受け付ける。何も変わらなければ `model.routes` は届かない。
 - 切り替えても会話の履歴（snapshot の messages）は変わらない。思考の記録も同じ session のまま続く。
 - 画面は、`current` を今の経路として示し、`chosen` が違うあいだは「次のターンから」と示すとよい。`ready` が false の経路は選べないように見せる。
+
+## 睡眠薬
+
+本人は natsumi に睡眠薬を飲ませて寝かせられる（[ADR 0077](adr/0077-a-sleeping-pill-to-make-up-for-a-missed-night.md)）。
+睡眠薬は 1 種類で、何をするかはサーバーが直近の夜の処理の欠けから決める。判定と実行はサーバーの 1 か所にあり、ダッシュボードの「睡眠薬」と同じものを呼ぶ。
+クライアントは判定を見せるだけで、自分では判定しない。
+
+`sleep.status` の答えの `sleep` は次の形である。時刻はすべて ISO 8601（UTC）。
+
+| 欄 | 内容 |
+| --- | --- |
+| `kind` | いま飲ませたら何をするか。`deep`（夜と同じ全部）・`resume`（残った引き継ぎから新しい session。整理係が済んでいなければ先に）・`resleep`（session はそのままで整理係だけ）・`nap`（昼寝。引き継ぎだけを書いて新しい session）・`none`（今の session が空なので何もしない） |
+| `night` | 判定に使った直近の夜の時刻。夜の切り替えをしない設定で、振り返りの記録も無ければ null |
+| `done` | 直近の夜の 3 つの部分が済んでいるか。`review`（振り返りの引き継ぎ）・`curator`（記憶の整理係。整理係が動かない設定では true）・`session`（新しい session） |
+| `lastFailure` | 直近の夜からの最も新しい失敗。無ければ null。切り替えの行なら `source: "rotation"` と `kind`（`night`・`deep`・`resume`・`resleep`・`nap`）・`state`・`reason`・`at`、整理係の工程なら `source: "curator"` と `stage`・`outcome`・`at` |
+| `inProgress` | 夜の切り替えか睡眠薬が待っている・走っているなら、その `kind`（`night`、決まっていない睡眠薬は `sleeping-pill`、走っている睡眠薬は `deep` などの種類）・`state`（`queued`・`running`）・`since`。無ければ null |
+
+```json
+{"kind":"resleep","night":"2026-01-01T17:00:00.000Z","done":{"review":true,"curator":false,"session":true},"lastFailure":{"source":"curator","stage":"structure","outcome":"skipped-deadline","at":"2026-01-01T20:30:00.000Z"},"inProgress":null}
+```
+
+- `sleep.take` は睡眠薬を飲ませ、寝た結果を待たずに `command.accepted` を返す。`eventId` は受け付けた出来事、`kind` は受け付けた時点の判定、`joined` は待っている・走っている夜の切り替えか睡眠薬に合流したかどうかである。
+  合流したときの `eventId` は、合流した先の出来事である。
+- 何をするかは、natsumi がその出来事を処理し始めるときに改めて決まる。会話の途中で飲ませたら、そのターンの後になる。その間に状態が変われば、答えの `kind` とは違うことをする。
+  何をしたかは、後の `sleep.status`（`inProgress` と `lastFailure`）で見る。
+- 二重に送っても合流するので、二重には寝ない。`requestId` で重複を見分けることはしない。
+- natsumi が話せない間は、どちらも `service.unavailable` を返す。
+- 寝ている間と起きたことは、`avatar.expression`（`sleepy`、起きると待っているメッセージがあれば `thinking`、無ければ `neutral`）で届く。睡眠薬のための新しいイベントは無い。
+  寝ている間に送ったメッセージは受け付けられ、起きた後に処理される。
+- 睡眠薬を飲ませても、natsumi から本人へは何も送らない。
 
 ## 実行中の設定
 
@@ -730,6 +762,7 @@ Pi の `calendar_propose` ツール呼び出しは承認待ちの作成要求に
 - `settings.*` は本物と同じ規則で答え、ログアウト（`POST /auth/logout`、または同じオリジンからの `POST /dashboard/logout`）で config の値に戻る。
 - `POST /v1/uploads` と `GET /v1/uploads/<uploadId>` を本物と同じ形で答える。ファイルはメモリにだけ持つ。
 - 束は `--bundle` のディレクトリ（省略すると本物と同じ場所）から配る。
+- `sleep.status`・`sleep.take` は実装していない（`command.rejected`（`unsupported`）を返す）。
 
 ## 通知と定期処理
 
