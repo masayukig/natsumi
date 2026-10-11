@@ -3,10 +3,11 @@ import type { DatabaseSync } from 'node:sqlite';
 import { shownImage, type ShownImage } from './images.ts';
 import type { Expression } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
+import type { RotationKind, RotationRecord } from './sleeping-pill.ts';
 
 /** The kinds of event the loop takes. The column is free text in SQLite; these are the only values written. */
 export type EventKind = 'mac-message' | 'nightly-review' | 'ping' | 'self-check' | 'agent-reply' | 'slack-mention'
-  | 'sources-updated';
+  | 'sources-updated' | 'sleeping-pill';
 
 /** How far an event got. Mirrors the CHECK on `loop_events.state`. */
 export type EventState = 'queued' | 'processing' | 'replied' | 'no-reply' | 'failed';
@@ -242,10 +243,36 @@ export class ConversationStore {
       .run(`conversation-${randomUUID()}`, sessionId, sessionFile, this.iso());
   }
 
-  /** The nightly review already waiting or running, so a second call joins it instead of raising another. */
-  pendingRotation(): string | undefined {
-    return (this.db.prepare(`SELECT event_id FROM loop_events WHERE kind = 'nightly-review' AND state IN ('queued', 'processing')`)
-      .get() as { event_id: string } | undefined)?.event_id;
+  /**
+   * The nightly reviews and sleeping pills waiting or running, oldest first, for a second call to join one instead of
+   * raising another (ADR 0077). Two at most: a pill under way, and the night that came meanwhile and waits behind it.
+   */
+  pendingRotations(): { eventId: string; kind: 'nightly-review' | 'sleeping-pill'; state: EventState; createdAt: string }[] {
+    const rows = this.db.prepare(`SELECT event_id, kind, state, created_at FROM loop_events
+      WHERE kind IN ('nightly-review', 'sleeping-pill') AND state IN ('queued', 'processing') ORDER BY created_at, rowid`).all() as
+      { event_id: string; kind: 'nightly-review' | 'sleeping-pill'; state: EventState; created_at: string }[];
+    return rows.map(row => ({ eventId: row.event_id, kind: row.kind, state: row.state, createdAt: row.created_at }));
+  }
+
+  /** When the newest switch that began with a review was made: the night, when there is no switching time (ADR 0077). */
+  latestReviewedRotationAt(): number | undefined {
+    const row = this.db.prepare(`SELECT created_at FROM session_rotations WHERE kind IN ('night', 'deep')
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`).get() as { created_at: string } | undefined;
+    return row ? Date.parse(row.created_at) : undefined;
+  }
+
+  /** The switches made at or after a time, newest first, as the sleeping pill's judgement reads them (ADR 0077). */
+  rotationsSince(since: string): RotationRecord[] {
+    const rows = this.db.prepare(`SELECT kind, state, reason, handoff_commit, created_at, updated_at FROM session_rotations
+      WHERE created_at >= ? ORDER BY created_at DESC, rowid DESC`).all(since) as
+      { kind: RotationKind; state: string; reason: string | null; handoff_commit: string | null; created_at: string; updated_at: string }[];
+    return rows.map(row => ({ kind: row.kind, state: row.state, reason: row.reason, handoffCommit: row.handoff_commit !== null,
+      createdAt: Date.parse(row.created_at), updatedAt: Date.parse(row.updated_at) }));
+  }
+
+  /** What the switch an event began did, once it has its row. */
+  rotationKindOf(eventId: string): RotationKind | undefined {
+    return (this.db.prepare('SELECT kind FROM session_rotations WHERE event_id = ?').get(eventId) as { kind: RotationKind } | undefined)?.kind;
   }
 
   /**
@@ -276,12 +303,17 @@ export class ConversationStore {
       RotationRow | undefined;
   }
 
+  /**
+   * A switch begins: with its review (`reviewing`), from a handoff already there (a resume, `switching`), or with the
+   * curator alone (a resleep, `curating`).
+   */
   insertRotation(rotation: { rotationId: string; eventId: string; conversationId: string;
-    fromSessionId: string; fromSessionFile: string }): void {
+    fromSessionId: string; fromSessionFile: string; kind?: RotationKind; state?: 'reviewing' | 'switching' | 'curating' }): void {
     const now = this.iso();
-    this.db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'reviewing', ?, ?)`)
-      .run(rotation.rotationId, rotation.eventId, rotation.conversationId, rotation.fromSessionId, rotation.fromSessionFile, now, now);
+    this.db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, kind, state,
+      created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(rotation.rotationId, rotation.eventId, rotation.conversationId, rotation.fromSessionId, rotation.fromSessionFile,
+        rotation.kind ?? 'night', rotation.state ?? 'reviewing', now, now);
   }
 
   setRotation(rotationId: string, state: string, reason?: string): void {
@@ -318,12 +350,13 @@ export class ConversationStore {
   }
 
   /**
-   * Reviews stopped before their handoff was committed, and switches that no longer start from the current session,
-   * have failed. Returns how many were closed.
+   * Reviews stopped before their handoff was committed, switches that no longer start from the current session, and a
+   * resleep's curator a stop cut off, have failed. Returns how many were closed.
    */
   closeInterruptedReviews(sessionId: string | null): number {
     const closed = this.db.prepare(`UPDATE session_rotations SET state = 'failed', reason = 'interrupted', updated_at = ?
-      WHERE state IN ('reviewing', 'switching') AND (handoff_commit IS NULL OR from_session_id IS NOT ?)`).run(this.iso(), sessionId);
+      WHERE state = 'curating' OR (state IN ('reviewing', 'switching') AND (handoff_commit IS NULL OR from_session_id IS NOT ?))`)
+      .run(this.iso(), sessionId);
     return Number(closed.changes);
   }
 

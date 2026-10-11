@@ -36,7 +36,8 @@ export interface PendingApproval {
 export interface BookedCheck { checkId: string; reason: string; cron: string | null; dueAt: string; createdAt: string }
 export interface AgentTask { agent: string; taskId: string; state: string; sentAt: string; createdAt: string; updatedAt: string }
 export interface Rotation {
-  rotationId: string; state: string; reason: string | null; fromSessionFile: string; toSessionFile: string | null; createdAt: string; updatedAt: string;
+  /** What began it (ADR 0077): the night, or a sleeping pill's kind. */
+  rotationId: string; kind: string; state: string; reason: string | null; fromSessionFile: string; toSessionFile: string | null; createdAt: string; updatedAt: string;
 }
 
 export interface Waits {
@@ -73,9 +74,9 @@ export function readWaits(db: DatabaseSync, options: { now: number; nightlyRotat
   const agentTasks = all<Record<string, string>>(`SELECT agent, task_id, state, sent_at, created_at, updated_at FROM agent_tasks
     ORDER BY state IN ('waiting', 'input-required') DESC, updated_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
     .map(row => ({ agent: row.agent!, taskId: row.task_id!, state: row.state!, sentAt: row.sent_at!, createdAt: row.created_at!, updatedAt: row.updated_at! }));
-  const rotations = all<Record<string, string | null>>(`SELECT rotation_id, state, reason, from_session_file, to_session_file, created_at, updated_at
+  const rotations = all<Record<string, string | null>>(`SELECT rotation_id, kind, state, reason, from_session_file, to_session_file, created_at, updated_at
     FROM session_rotations ORDER BY created_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
-    .map(row => ({ rotationId: row.rotation_id!, state: row.state!, reason: row.reason ?? null, fromSessionFile: row.from_session_file!,
+    .map(row => ({ rotationId: row.rotation_id!, kind: row.kind!, state: row.state!, reason: row.reason ?? null, fromSessionFile: row.from_session_file!,
       toSessionFile: row.to_session_file ?? null, createdAt: row.created_at!, updatedAt: row.updated_at! }));
   const nextRotationAt = options.nightlyRotationAt === false ? null
     : isoAt(nextOccurrence(options.now, options.nightlyRotationAt, options.timeZone));

@@ -656,3 +656,43 @@ test('schema 31 adds the postbox: tasks from before name no letter, and a letter
     { name: 'noisy', paused: 0, notify: 'update', failures: 0 },
   ]);
 }));
+
+/**
+ * Schema 33 tells the rows of `session_rotations` apart by what began them (ADR 0077): the night's switch, or a sleeping
+ * pill's kind. Every row from before was a night's. A resleep does not switch, and ends `curated`, while it runs `curating`.
+ */
+test('schema 33 gives each switch its kind, the night\'s for every row from before, and lets a resleep end curated', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 32));
+  db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
+    .run('conversation-1', 'session-now', 'now.jsonl', '2026-03-01T00:00:00.000Z');
+  const event = db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES (?, ?, 'no-reply', 'x', 'x')`);
+  event.run('event-night', 'nightly-review');
+  event.run('event-failed', 'nightly-review');
+  db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, handoff_commit,
+    to_session_id, to_session_file, reason, created_at, updated_at) VALUES (?, ?, 'conversation-1', ?, ?, ?, ?, ?, ?, ?, 'x', 'x')`)
+    .run('rotation-night', 'event-night', 'old', 'old.jsonl', 'switched', 'abc123', 'session-now', 'now.jsonl', null);
+  db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, reason,
+    created_at, updated_at) VALUES ('rotation-failed', 'event-failed', 'conversation-1', 'old', 'old.jsonl', 'failed', 'no-handoff', 'x', 'x')`).run();
+
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 33)).applied, [33]);
+
+  assert.deepEqual(plainRows(db.prepare(`SELECT rotation_id, kind, state, handoff_commit, to_session_id, reason FROM session_rotations
+    ORDER BY rotation_id`).all()), [
+    { rotation_id: 'rotation-failed', kind: 'night', state: 'failed', handoff_commit: null, to_session_id: null, reason: 'no-handoff' },
+    { rotation_id: 'rotation-night', kind: 'night', state: 'switched', handoff_commit: 'abc123', to_session_id: 'session-now', reason: null },
+  ]);
+  const insert = db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, kind,
+    state, created_at, updated_at) VALUES (?, ?, 'conversation-1', 'now', 'now.jsonl', ?, ?, 'x', 'x')`);
+  const pills: [string, string, string][] = [['pill-1', 'resleep', 'curating'], ['pill-2', 'resleep', 'curated'], ['pill-3', 'nap', 'reviewing'],
+    ['pill-4', 'resume', 'switching'], ['pill-5', 'deep', 'failed']];
+  for (const [id, kind, state] of pills) {
+    event.run(`event-${id}`, 'sleeping-pill');
+    insert.run(id, `event-${id}`, kind, state);
+  }
+  event.run('event-bad', 'sleeping-pill');
+  assert.throws(() => insert.run('bad-kind', 'event-bad', 'siesta', 'failed'), /CHECK/, 'a kind that is not one of the five');
+  assert.throws(() => insert.run('bad-curated', 'event-bad', 'night', 'curated'), /CHECK/, 'only a resleep ends curated');
+  assert.throws(() => insert.run('bad-state', 'event-bad', 'resleep', 'dozing'), /CHECK/);
+  // The CHECK of before still holds: a finished switch names the session it went to.
+  assert.throws(() => insert.run('bad-switch', 'event-bad', 'nap', 'switched'), /CHECK/);
+}));

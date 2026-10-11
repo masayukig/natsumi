@@ -24,6 +24,8 @@ export const DOVE_PATH = '/dashboard/dove';
 export const DEVICES_PATH = '/dashboard/devices';
 export const STATS_PATH = '/dashboard/stats';
 export const APPROVALS_PATH = '/dashboard/approvals';
+/** The sleeping pill (ADR 0077): what it would do now, and the form that gives it, posted to the same path. */
+export const SLEEP_PATH = '/dashboard/sleep';
 /** The postbox's letters (ADR 0076), shown and never changed. */
 export const POSTBOX_PATH = '/dashboard/postbox';
 /** The fragments the script refreshes: without a live session they answer 401, as the script cannot follow a login. */
@@ -40,6 +42,7 @@ const SECTIONS: { label: string; href?: string }[] = [
   { label: 'ターン', href: TURNS_PATH },
   { label: '失敗と待ち', href: WAITS_PATH },
   { label: '予約', href: CHECKS_PATH },
+  { label: '睡眠薬', href: SLEEP_PATH },
   { label: '定期便', href: POSTBOX_PATH },
   { label: '一行メモ', href: MEMOS_PATH },
   { label: 'ポッポさん', href: DOVE_PATH },

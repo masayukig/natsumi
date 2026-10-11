@@ -894,3 +894,47 @@ test('the postbox page needs the cookie and shows each letter, its last run and 
   assert.match(row('morning-news'), /<a href="\/dashboard\/files\/sources\/agents\/news\/20251231T220000Z-ab12">最後の返事<\/a>/);
   for (const name of ['inbox', 'weekly', 'noisy']) assert.doesNotMatch(row(name), /\/dashboard\/files\/sources/, name);
 }));
+
+// The sleeping pill (ADR 0077): a page that asks first, and a POST guarded as a booking's cancel is.
+
+function pillEvents(f: Fixture): number {
+  const db = new DatabaseSync(join(f.data, '.natsumi', 'state.sqlite'), { readOnly: true });
+  try { return (db.prepare(`SELECT count(*) AS n FROM loop_events WHERE kind = 'sleeping-pill'`).get() as { n: number }).n; } finally { db.close(); }
+}
+
+test('the sleeping pill\'s page shows what a pill would do, and its form gives one, back to the page with a word', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const status = await f.fetch('/dashboard', withCookie(cookie));
+  assert.match(status.text, /<a href="\/dashboard\/checks">予約<\/a><\/li><li><a href="\/dashboard\/sleep">睡眠薬<\/a>/);
+  const ask = await f.fetch('/dashboard/sleep', withCookie(cookie));
+  assert.equal(ask.status, 200, ask.text);
+  assert.match(ask.text, /<code>none<\/code>/, 'nothing has been said yet');
+  assert.match(ask.text, /<form method="post" action="\/dashboard\/sleep">/);
+  assert.equal(pillEvents(f), 0, 'opening the page gives nothing');
+
+  const res = await f.fetch('/dashboard/sleep', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }));
+  assert.equal(res.status, 303, res.text);
+  assert.equal(res.headers.get('location'), '/dashboard/sleep?taken=new');
+  assert.equal(pillEvents(f), 1);
+  const after = await f.fetch('/dashboard/sleep?taken=new', withCookie(cookie));
+  assert.match(after.text, /睡眠薬を飲ませました/);
+  assertNoLeaks(f);
+}));
+
+test('a pill without the public origin as its Origin, or without the session, is refused and gives nothing; only GET and POST are taken', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  for (const headers of [{}, { origin: 'https://attacker.example.test' }, { origin: 'null' }] as Record<string, string>[]) {
+    const res = await f.fetch('/dashboard/sleep', withCookie(cookie, { method: 'POST', headers }));
+    assert.equal(res.status, 403, JSON.stringify(headers));
+  }
+  const anonymous = await f.fetch('/dashboard/sleep', { method: 'POST', headers: { origin: PUBLIC_ORIGIN } });
+  assert.equal(anonymous.status, 403, 'no session, no pill; and no login is started from a POST');
+  const stale = await f.fetch('/dashboard/sleep', withCookie('not-a-session', { method: 'POST', headers: { origin: PUBLIC_ORIGIN } }));
+  assert.equal(stale.status, 403);
+  for (const method of ['PUT', 'DELETE']) {
+    const res = await f.fetch('/dashboard/sleep', withCookie(cookie, { method, headers: { origin: PUBLIC_ORIGIN } }));
+    assert.equal(res.status, 405, method);
+    assert.equal(res.headers.get('allow'), 'GET, POST');
+  }
+  assert.equal(pillEvents(f), 0);
+}));

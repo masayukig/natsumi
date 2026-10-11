@@ -54,6 +54,7 @@
     "modelCalls": 100,
     "timeoutMinutes": 60,
     "stopStartingAt": "05:30",
+    "pillStopStartingAfterMinutes": 90,
     "rotateFiles": 2,
     "rewriteAllMaxChars": 100000,
     "conversationMaxChars": 30000,

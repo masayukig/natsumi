@@ -77,10 +77,10 @@ ${table(html`<th>相手</th><th>状態</th><th>送った時刻</th><th>最後の
 <td>${task.agent}</td><td>${agentState(task.state)}</td><td>${at(task.sentAt)}</td><td>${at(task.updatedAt)}</td>
 <td><code>${task.taskId}</code></td></tr>`), '外のエージェントへの依頼はありません。')}
 
-<h3>夜の切り替え</h3>
-${table(html`<th>時刻</th><th>結果</th><th>理由</th><th>記録</th>`, waits.rotations.map(rotation => html`<tr>
-<td>${at(rotation.createdAt)}</td><td>${rotation.state === 'switched' ? html`<span class="ok">switched</span>`
-    : rotation.state === 'failed' ? html`<span class="bad">failed</span>` : rotation.state}</td>
+<h3>夜の切り替えと睡眠薬</h3>
+${table(html`<th>時刻</th><th>種類</th><th>結果</th><th>理由</th><th>記録</th>`, waits.rotations.map(rotation => html`<tr>
+<td>${at(rotation.createdAt)}</td><td><code>${rotation.kind}</code></td><td>${rotation.state === 'switched' || rotation.state === 'curated'
+    ? html`<span class="ok">${rotation.state}</span>` : rotation.state === 'failed' ? html`<span class="bad">failed</span>` : rotation.state}</td>
 <td>${rotation.reason ?? ''}</td><td><code>${rotation.fromSessionFile}</code>${rotation.toSessionFile && html` → <code>${rotation.toSessionFile}</code>`}</td>
 </tr>`), 'まだ夜の切り替えはありません。')}
 </section>`;

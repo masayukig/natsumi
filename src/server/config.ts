@@ -376,6 +376,12 @@ export interface CuratorConfig {
    * False for none.
    */
   stopStartingAt: string | false;
+  /**
+   * The deadline of a sleeping pill's curator (ADR 0077): past this many minutes after the pill was taken, no further
+   * stage begins. A stage under way runs to its own limits, as at night. False for none. The night keeps
+   * `stopStartingAt`.
+   */
+  pillStopStartingAfterMinutes: number | false;
   /** Files handed over each night in turn, besides the ones that changed that day, those left longest first. */
   rotateFiles: number;
   /**
@@ -401,8 +407,8 @@ export interface CuratorConfig {
  */
 export const DEFAULT_CURATOR_CODEMODE: CodemodeConfig = { enabled: false, workspaceTools: 'direct', nestedCalls: 120 };
 
-export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2,
-  rewriteAllMaxChars: 100_000, conversationMaxChars: 30_000, codemode: DEFAULT_CURATOR_CODEMODE };
+export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30',
+  pillStopStartingAfterMinutes: 90, rotateFiles: 2, rewriteAllMaxChars: 100_000, conversationMaxChars: 30_000, codemode: DEFAULT_CURATOR_CODEMODE };
 /** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
 const MAX_ROTATE_FILES = 10;
 
@@ -965,8 +971,8 @@ function parseSlack(value: unknown, path: string): SlackConfig {
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
   const curator = object(value, path);
-  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'stopStartingAt', 'rotateFiles', 'rewriteAllMaxChars', 'conversationMaxChars',
-    'codemode']);
+  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'stopStartingAt', 'pillStopStartingAfterMinutes', 'rotateFiles', 'rewriteAllMaxChars',
+    'conversationMaxChars', 'codemode']);
   const enabled = curator.enabled ?? CURATOR_DEFAULTS.enabled;
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
@@ -979,6 +985,10 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   if (stopStartingAt !== false && (typeof stopStartingAt !== 'string' || !TIME_OF_DAY.test(stopStartingAt))) {
     throw new ConfigError(`${path}.stopStartingAt`, 'must be a 24-hour HH:MM time, or false');
   }
+  const pillMinutes = curator.pillStopStartingAfterMinutes ?? CURATOR_DEFAULTS.pillStopStartingAfterMinutes;
+  if (pillMinutes !== false && !positiveInteger(pillMinutes, 1)) {
+    throw new ConfigError(`${path}.pillStopStartingAfterMinutes`, 'must be a positive integer of minutes, or false');
+  }
   const files = curator.rotateFiles ?? CURATOR_DEFAULTS.rotateFiles;
   if (!positiveInteger(files, 0) || (files as number) > MAX_ROTATE_FILES) {
     throw new ConfigError(`${path}.rotateFiles`, `must be an integer from 0 to ${MAX_ROTATE_FILES}`);
@@ -988,7 +998,7 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   const conversation = curator.conversationMaxChars ?? CURATOR_DEFAULTS.conversationMaxChars;
   if (!positiveInteger(conversation, 0)) throw new ConfigError(`${path}.conversationMaxChars`, 'must be an integer of 0 or more');
   return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
-    stopStartingAt, rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, conversationMaxChars: conversation as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
+    stopStartingAt, pillStopStartingAfterMinutes: pillMinutes as number | false, rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, conversationMaxChars: conversation as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
 }
 
 function parseCodemode(value: unknown, path: string, defaults: CodemodeConfig): CodemodeConfig {

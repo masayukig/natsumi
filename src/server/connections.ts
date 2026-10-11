@@ -18,10 +18,11 @@ export const CLOSE_TOO_SLOW = 4002;
 
 /** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
-  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
+  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset',
+  'sleep.status', 'sleep.take']);
 /** Commands that act for a device, and so need `session.sync` first and the connection's own device ID. */
 const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide',
-  'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset']);
+  'model.list', 'model.use', 'settings.list', 'settings.set', 'settings.reset', 'sleep.status', 'sleep.take']);
 const DECISIONS = new Set(['approve', 'edit', 'reject']);
 
 /**
@@ -77,6 +78,10 @@ export interface HubLoop {
   routeStatus(): object;
   /** Chooses the route the next turn is on (ADR 0046). */
   chooseRoute(input: { route: string; deviceId: string }): Promise<RelayedOutcome>;
+  /** What a sleeping pill would do now (ADR 0077); the hub passes it on whole. */
+  sleepStatus(): Promise<object>;
+  /** Gives natsumi a sleeping pill (ADR 0077): the event, the judgement's kind as it was taken, and whether it joined one. */
+  takeSleepingPill(): Promise<{ kind: 'accepted'; eventId: string; pill: string; joined: boolean } | { kind: 'unavailable'; code: string }>;
 }
 
 /** Where a device asks to be pushed while it is away (ADR 0029, ADR 0070). Kept whether or not APNs is configured. */
@@ -298,6 +303,18 @@ export class ConnectionHub {
           () => reject('invalid-request'));
         return;
       }
+      case 'sleep.status': {
+        const { loop } = this.options;
+        if (loop.unavailable) return stream!.publish('service.unavailable', { code: loop.unavailable }, id);
+        void loop.sleepStatus().then(sleep => stream!.publish('command.accepted', { sleep }, id), () => reject('invalid-request'));
+        return;
+      }
+      case 'sleep.take':
+        // Taken twice, it joins the first: no requestId is needed to keep her from sleeping twice (ADR 0077).
+        void this.options.loop.takeSleepingPill().then(outcome => outcome.kind === 'accepted'
+          ? stream!.publish('command.accepted', { eventId: outcome.eventId, kind: outcome.pill, joined: outcome.joined }, id)
+          : stream!.publish('service.unavailable', { code: outcome.code }, id), () => reject('invalid-request'));
+        return;
       case 'settings.list':
       case 'settings.set':
       case 'settings.reset': {

@@ -997,4 +997,42 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE postbox_letters ADD COLUMN last_reply_path TEXT;
     `,
   },
+  {
+    version: 33,
+    name: 'kinds of session rotation',
+    sql: `
+      -- What began each switch (ADR 0077): the night (the scheduler's, or the server's rotateSession), or the owner's
+      -- sleeping pill, by what it did: the night in full (deep), the new session from the handoff left (resume), the
+      -- curator alone (resleep), or a nap. Every row from before was a night's. A resleep keeps its session, so it never
+      -- switches: it is curating while the curator runs, and ends curated, or failed. A column's CHECK changes only by
+      -- rebuilding the table, so it is made again as it was, and every row carried over as it stands.
+      CREATE TABLE session_rotations_new (
+        rotation_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE REFERENCES loop_events (event_id),
+        conversation_id TEXT NOT NULL REFERENCES conversations (conversation_id),
+        from_session_id TEXT NOT NULL,
+        from_session_file TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'night' CHECK (kind IN ('night', 'deep', 'resume', 'resleep', 'nap')),
+        state TEXT NOT NULL CHECK (state IN ('reviewing', 'switching', 'switched', 'curating', 'curated', 'failed')),
+        -- The commit of handoff.md the new session's instructions were built from: the review's, or for a resume the
+        -- commit in hand when its session was made. NULL on the rows made before the file existed, on a switch that has
+        -- not written its handoff yet, and on a resleep.
+        handoff_commit TEXT,
+        to_session_id TEXT UNIQUE,
+        to_session_file TEXT UNIQUE,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (state <> 'switched' OR (to_session_id IS NOT NULL AND to_session_file IS NOT NULL)),
+        CHECK (state NOT IN ('curating', 'curated') OR kind = 'resleep')
+      ) STRICT;
+      INSERT INTO session_rotations_new (rotation_id, event_id, conversation_id, from_session_id, from_session_file, kind,
+        state, handoff_commit, to_session_id, to_session_file, reason, created_at, updated_at)
+        SELECT rotation_id, event_id, conversation_id, from_session_id, from_session_file, 'night',
+          state, handoff_commit, to_session_id, to_session_file, reason, created_at, updated_at FROM session_rotations;
+      DROP TABLE session_rotations;
+      ALTER TABLE session_rotations_new RENAME TO session_rotations;
+      CREATE INDEX session_rotations_by_creation ON session_rotations (created_at);
+    `,
+  },
 ];
