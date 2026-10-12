@@ -86,10 +86,28 @@ test('the curator\'s base counts from the second its commit was made in, as git 
   assert.equal(judgePill(facts({ ...off, curatorBaseAt: AFTER - 1000 })).done.curator, false);
 });
 
-test('an empty session does nothing, whatever the night left', () => {
-  const judged = judgePill(facts({ sessionEmpty: true, rotations: [], sessionStartedAt: BEFORE, curatorBaseAt: BEFORE }));
-  assert.equal(judged.kind, 'none');
-  assert.deepEqual(judged.done, { review: false, curator: false, session: false });
+test('an empty session still sleeps again for a curator the night left: resleep, with no turn of hers to review or nap in', () => {
+  const empty = { sessionEmpty: true, curatorBaseAt: BEFORE };
+  const switched = judgePill(facts(empty));
+  assert.equal(switched.kind, 'resleep', 'just switched, the curator past its deadline');
+  assert.deepEqual(switched.done, { review: true, curator: false, session: true });
+  const unreviewed = judgePill(facts({ ...empty, rotations: [], sessionStartedAt: BEFORE }));
+  assert.equal(unreviewed.kind, 'resleep', 'no review either: still the curator alone');
+  assert.deepEqual(unreviewed.done, { review: false, curator: false, session: false });
+});
+
+test('an empty session with the curator done does nothing: none, where it would review or nap', () => {
+  const done = judgePill(facts({ sessionEmpty: true }));
+  assert.equal(done.kind, 'none');
+  assert.deepEqual(done.done, { review: true, curator: true, session: true });
+  assert.equal(judgePill(facts({ sessionEmpty: true, rotations: [], sessionStartedAt: BEFORE })).kind, 'none', 'no review, curator done');
+  assert.equal(judgePill(facts({ sessionEmpty: true, curatorRuns: false, curatorBaseAt: undefined })).kind, 'none', 'no curator to run');
+});
+
+test('an empty session still resumes from a handoff left, whether the curator ran or not', () => {
+  const failed = rotation({ state: 'failed', reason: 'session-create-failed' });
+  assert.equal(judgePill(facts({ sessionEmpty: true, rotations: [failed], sessionStartedAt: BEFORE })).kind, 'resume');
+  assert.equal(judgePill(facts({ sessionEmpty: true, rotations: [failed], sessionStartedAt: BEFORE, curatorBaseAt: BEFORE })).kind, 'resume');
 });
 
 test('without a switching time, the newest review decides: none at all is deep, a failed one is deep, a whole one is a nap', () => {

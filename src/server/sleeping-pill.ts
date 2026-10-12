@@ -6,7 +6,7 @@ import { isoAt, previousOccurrence } from './nightly.ts';
  * a table or looks at the clock.
  */
 
-/** What a pill does: the night in full, its new session, its curator alone, a nap, or nothing for an empty session. */
+/** What a pill does: the night in full, its new session, its curator alone, a nap, or nothing left for an empty session. */
 export type PillKind = 'deep' | 'resume' | 'resleep' | 'nap' | 'none';
 
 /** The kinds of row in `session_rotations`: the scheduled night (and the server's own `rotateSession`), or a pill's. */
@@ -81,7 +81,7 @@ export function nightOf(now: number, nightlyRotationAt: string | false, timeZone
 /**
  * The night's parts that are missing decide the pill (ADR 0077): no handoff is the night in full, no new session is
  * that session (with the curator first if it is missing too), no curator is the curator alone, and nothing missing is a
- * nap. An empty session does nothing, as the night does not.
+ * nap. An empty session has no turn of hers to review or nap in: there, the curator alone if it is missing, or nothing.
  */
 export function judgePill(facts: PillFacts): PillJudgement {
   const night = nightOf(facts.now, facts.nightlyRotationAt, facts.timeZone, facts.latestReviewAt);
@@ -91,8 +91,10 @@ export function judgePill(facts: PillFacts): PillJudgement {
   // git keeps a commit's time to the second, so a base made in the night's own second counts.
   const curator = !facts.curatorRuns
     || (night !== undefined && facts.curatorBaseAt !== undefined && facts.curatorBaseAt >= Math.floor(night / 1000) * 1000);
-  const kind: PillKind = facts.sessionEmpty ? 'none' : !review ? 'deep' : !session ? 'resume' : !curator ? 'resleep' : 'nap';
-  return { kind, night: night === undefined ? null : isoAt(night), done: { review, curator, session },
+  const kind: PillKind = !review ? 'deep' : !session ? 'resume' : !curator ? 'resleep' : 'nap';
+  // An empty session gives her no turn to review or nap in; what the night left for the curator is still there.
+  const empty: PillKind = kind !== 'deep' && kind !== 'nap' ? kind : curator ? 'none' : 'resleep';
+  return { kind: facts.sessionEmpty ? empty : kind, night: night === undefined ? null : isoAt(night), done: { review, curator, session },
     lastFailure: night === undefined ? null : lastFailure(since, facts.curatorFailures.filter(failure => failure.at >= night)),
     inProgress: facts.inProgress };
 }

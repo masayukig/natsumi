@@ -1371,7 +1371,8 @@ export class ThinkingLoop {
 
   /**
    * The owner's sleeping pill, as its turn begins (ADR 0077): judged now, not as it was taken, and run as the judgement
-   * says. A pill on an empty session does nothing and leaves no row, as the night does not switch one.
+   * says. A pill on an empty session with nothing left for the curator does nothing and leaves no row, as the night does
+   * not switch one.
    */
   private async runPill(eventId: string, turnId: string): Promise<void> {
     const judged = await this.sleepStatus();

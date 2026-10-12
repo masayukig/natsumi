@@ -32,7 +32,7 @@ export function sleepPage(judgement: PillJudgement, options: SleepPageOptions): 
       : `先に${curator}を走らせてから、`}夜に書いた引き継ぎから新しい session を作ります。${waits}`,
     resleep: `直近の夜の記憶の整理係が済んでいません。session はそのままで、${curator}だけを走らせます。${waits}`,
     nap: `直近の夜は全部済んでいます。引き継ぎだけを書いて、新しい session に移ります。整理係は走りません。昼寝のターンの間、マスターのメッセージは待たせます。`,
-    none: '今の session にはまだ何もないので、飲ませても何もしません。',
+    none: '今の session にはまだ何もなく、直近の夜の記憶の整理係も済んでいるので、飲ませても何もしません。',
   };
   const part = (done: boolean) => done ? html`<span class="ok">済み</span>` : html`<span class="bad">まだ</span>`;
   const failure = judgement.lastFailure;
