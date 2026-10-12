@@ -623,3 +623,63 @@ test('an attention outside the directories of its source is let go when recorded
   assert.equal(f.sources.recordAttention({ source: 'agents', kind: 'agent_reply', file: '/sources/chat/work/dm/a.jsonl' }), false);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM source_attention').get()!.n, 0);
 });
+
+// A source may say a directory is not news as it stands: her own request to an outside agent, or the past of a Slack
+// channel filled in as she joins it. What comes into it later is.
+test('a directory taken in by its source is not shown as it stood, and what comes into it later is', async t => {
+  const f = await setup(t);
+  f.sources.register({ name: 'agents', depth: 2 });
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('agents/wiki/20260927T010000Z-ab12/request.md', '# 依頼\n');
+  // Another directory appearing at the same time is not swept in with it.
+  await f.write('chat/work/new/a.jsonl', '{"text":"同じ頃の発言"}\n');
+  await f.sources.takeIn('/sources/agents/wiki/20260927T010000Z-ab12');
+  assert.equal(f.sources.deadline('agents/wiki/20260927T010000Z-ab12'), undefined);
+  f.advance(90 * MINUTE);
+  await f.sources.tick();
+  const { line } = await f.take();
+  assert.deepEqual((line!.changed as { dir: string }[]).map(entry => entry.dir), ['/sources/chat/work/new']);
+  await f.write('agents/wiki/20260927T010000Z-ab12/README.md', '# 返事\n');
+  await f.sources.tick();
+  f.advance(10 * MINUTE);
+  const { line: reply } = await f.take();
+  assert.deepEqual(reply!.changed, [{ dir: '/sources/agents/wiki/20260927T010000Z-ab12',
+    files: ['/sources/agents/wiki/20260927T010000Z-ab12/README.md'], writes: 1,
+    diff: 'sources-diff /sources/agents/wiki/20260927T010000Z-ab12' }]);
+});
+
+test('a directory a look has already drawn a wait for is still taken in whole, its wait and writes dropped', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('chat/work/new/2026-07-01.jsonl', '{"text":"埋めた昔の発言"}\n');
+  await f.sources.tick();
+  assert.ok(f.sources.deadline('chat/work/new'));
+  await f.write('chat/work/new/2026-07-02.jsonl', '{"text":"もう一日"}\n');
+  await f.sources.takeIn('/sources/chat/work/new');
+  assert.equal(f.sources.deadline('chat/work/new'), undefined);
+  f.advance(90 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 0);
+  assert.equal((await f.take()).ready, false);
+  const tracked = (await run('git', ['--git-dir', f.gitDirectory, 'ls-tree', '-r', '--name-only', 'HEAD'])).stdout;
+  assert.match(tracked, /2026-07-02\.jsonl/, 'committed, so its ref stands where it is now');
+});
+
+test('only a directory of a source can be taken in', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('chat/work/new/a.jsonl', '{"text":"x"}\n');
+  await f.sources.takeIn('/sources/chat/work');
+  await f.sources.takeIn('/sources/chat/work/new/a.jsonl');
+  await f.sources.takeIn('/elsewhere/chat/work/new');
+  await f.sources.tick();
+  f.advance(10 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 1);
+});

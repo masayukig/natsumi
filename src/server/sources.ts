@@ -18,7 +18,7 @@ import { imageType, SOURCES_PATH } from './view.ts';
  * raises one, and the rest wait for the morning.
  *
  * A directory there before the server started is taken in silently; one that appears while it runs is a change like
- * any other, and is shown whole. A commit is made only when an event is made (and as the server starts, or for the
+ * any other, and is shown whole, unless its source takes it in as not news (`takeIn`). A commit is made only when an event is made (and as the server starts, or for the
  * very first directory, to take it in). Each directory's last look is its ref `refs/seen/<dir>`, and the one before it
  * `refs/before/<dir>`, which is what `sources-diff` shows. The history is cut back to a few days every night.
  */
@@ -221,6 +221,35 @@ export class Sources {
 
   /** Asks the loop for a `sources_updated` event, for the attentions recorded so far. */
   notify(): void { this.raiseEvent?.(); }
+
+  /**
+   * Takes one directory (a path under `/sources`, at its source's depth) in silently as it stands now, for what its
+   * source knows is not news: her own request to an outside agent, or the past of a Slack channel filled in as she
+   * joins it. What is in it is committed and its ref placed there; a wait drawn for it, and its writes, are dropped.
+   * What comes into it later is shown as any change is. Any other directory that appeared meanwhile is not swept in.
+   */
+  takeIn(path: string): Promise<void> {
+    return this.serialize(async () => {
+      // Before the start, the start takes in whatever is there.
+      if (!this.prepared) return;
+      const relative = path.startsWith(`${SOURCES_PATH}/`) ? posix.normalize(path.slice(SOURCES_PATH.length + 1)) : undefined;
+      const dir = relative === undefined ? undefined : this.unitOf(`${relative}/-`);
+      if (!dir || dir !== relative) {
+        this.log(`a directory to take in was let go: it is not one of a source's directories`);
+        return;
+      }
+      await this.scan();
+      // The others get their refs before the commit, as at a turn's beginning.
+      await this.takeInNew(false);
+      const head = await this.commit();
+      if (!head) return;
+      await this.git(['update-ref', seenRef(dir), head]);
+      this.checked.set(dir, this.options.now());
+      this.pending.delete(dir);
+      this.deadlines.delete(dir);
+      this.unshown.delete(dir);
+    });
+  }
 
   /** The mean wait of a directory now, from its writes in the window. */
   mean(dir: string): number {

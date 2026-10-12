@@ -47,6 +47,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   const sourcesDirectory = join(data, 'sources');
   const opened: ThinkingLoop[] = [];
   const logs: string[] = [];
+  let opening: Sources | undefined;
   const f = {
     agent, model, logs, clock, db, tokenFile, root, work: join(data, 'work'), replies: join(sourcesDirectory, 'agents'),
     gitDirectory: join(data, 'sources.git'),
@@ -55,6 +56,7 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
         awakeHours: LOOP_DEFAULTS.awakeHours, activity: SOURCES_DEFAULTS.activity, historyDays: 7, now: () => clock.now });
       sources.register(AGENTS_REGISTRATION);
       await sources.prepare();
+      opening = sources;
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 6, timeZone: 'Asia/Tokyo' }, now: () => clock.now,
@@ -75,6 +77,8 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
     /** A file of a reply, by the path the attention names it with. */
     read(path: string) { return readFile(join(sourcesDirectory, path.slice('/sources/'.length)), 'utf8'); },
     list(path: string) { return readdir(join(sourcesDirectory, path.slice('/sources/'.length))); },
+    /** The sources of the loop opened last. */
+    get sources() { return opening!; },
   };
   t.after(async () => {
     for (const loop of opened) await loop.close();
@@ -246,6 +250,31 @@ test('a finished task is put under /sources/agents and reaches her as an attenti
   await loop.pollAgents();
   assert.equal(f.agent.polls.length, 2, 'a settled task is not fetched again');
   assert.deepEqual({ ...f.db.prepare('SELECT count(*) AS n FROM agent_replies').get() }, { n: 0 });
+});
+
+// ADR 0069: the request is hers and tells her nothing, however long its reply takes; the reply comes with its files.
+test('a request waiting for its reply is never shown as an update of its own, and its reply shows only what came', async t => {
+  const f = await setup(t);
+  // The history has begun before it, as it has on a server that has run a while.
+  await mkdir(join(f.replies, 'wiki', '20260901T000000Z-0000'), { recursive: true });
+  await writeFile(join(f.replies, 'wiki', '20260901T000000Z-0000', 'request.md'), '# 依頼\n');
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'ねこの記事を要約して', false));
+  await turn(f, loop);
+  const calls = f.model.calls;
+  await f.sources.tick();
+  f.clock.now += 90 * 60_000;
+  await f.sources.tick();
+  await loop.idle();
+  assert.equal(f.model.calls, calls, 'the request alone raises nothing');
+
+  f.agent.settle(f.agent.lastTask().id, 'completed', 'ねこは液体です。');
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  const [reply] = replies(f.model);
+  const changed = lines(f.model, 'sources_updated').flatMap(line => line.changed as { dir: string; files: string[] }[]);
+  assert.deepEqual(changed.map(entry => entry.files), [[reply!.file]], 'the reply\'s README, not the request again');
 });
 
 test('a question from the agent is answered with continue: true, on the same task; continue: false starts afresh', async t => {

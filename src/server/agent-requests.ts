@@ -137,7 +137,7 @@ export class AgentRequests {
     }
 
     // The request's directory is made before it is sent, so its reply has somewhere to go however soon it comes. It
-    // tells her nothing: the request is hers.
+    // tells her nothing: the request is hers, and the sources take it in as it stands.
     const how: RequestKind = to.taskId ? 'answer' : to.contextId ? 'continue' : 'new';
     const at = this.options.now();
     let made: MadeRequest;
@@ -148,6 +148,9 @@ export class AgentRequests {
     } catch {
       this.log(`a2a: the request to ${agent} could not be put in /sources`);
       return refuse(`依頼を ${AGENTS_PATH} に置けませんでした。急ぎならマスターに伝えてください。`);
+    }
+    try { await this.options.replies.takeIn(made.place.path); } catch {
+      this.log(`a2a: the request to ${agent} could not be taken in by the sources; it may be shown as an update`);
     }
 
     let sent: SendResult;
