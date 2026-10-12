@@ -14,18 +14,20 @@ import { startFakeRunner, type FakeRunner } from './support/fake-runner.ts';
  * The fake runner runs on this machine, where /manual and /memory do not exist, so the workspace's two places are
  * directories here and every command has them spelled out. What the tool sends is otherwise run as it is.
  */
-async function setup() {
+async function setup(options: { skills?: boolean } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-read-')));
   await mkdir(join(root, 'manual'));
   await mkdir(join(root, 'memory'));
   await mkdir(join(root, 'work'));
+  await mkdir(join(root, 'skills'));
   const runner: FakeRunner = await startFakeRunner({ dir: join(root, 'work') });
   const shell = new WorkspaceShell({ socketPath: runner.path });
   const sent: string[] = [];
   const tool = workspaceReadTool(command => {
     sent.push(command);
-    return shell.capture(command.replaceAll("'/manual/", `'${root}/manual/`).replaceAll("'/memory/", `'${root}/memory/`));
-  });
+    return shell.capture(command.replaceAll("'/manual/", `'${root}/manual/`).replaceAll("'/memory/", `'${root}/memory/`)
+      .replaceAll("'/skills/", `'${root}/skills/`));
+  }, options);
   const read = async (params: { path: string; offset?: number; limit?: number }) => {
     try {
       const result = await tool.execute('call-1', params, undefined, undefined, undefined as never);
@@ -134,4 +136,26 @@ test('the description is the fixed Japanese one, naming the limit the tool enfor
     assert.equal(f.tool.description, READ_DESCRIPTION);
     assert.ok(READ_DESCRIPTION.includes(`${READ_MAX_LINES} 行`));
   } finally { await f.cleanup(); }
+});
+
+// ADR 0073: with skills on, the owner's skills are read where the list in her instructions puts them.
+test('/skills is read only when skills are on, and the refusal names it then', async () => {
+  const off = await setup();
+  try {
+    await writeFile(join(off.root, 'skills', 'SKILL.md'), '# 手順\n');
+    const outcome = await off.read({ path: '/skills/SKILL.md' });
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.text, /\/manual と \/memory の下/);
+    assert.deepEqual(off.sent, []);
+  } finally { await off.cleanup(); }
+  const on = await setup({ skills: true });
+  try {
+    await mkdir(join(on.root, 'skills', 'weekly-report'));
+    await writeFile(join(on.root, 'skills', 'weekly-report', 'SKILL.md'), '# 週報\n手順\n');
+    assert.deepEqual(await on.read({ path: '/skills/weekly-report/SKILL.md' }), { ok: true, text: '# 週報\n手順\n' });
+    const outside = await on.read({ path: '/work/draft.md' });
+    assert.equal(outside.ok, false);
+    assert.match(outside.text, /\/manual・\/memory・\/skills の下/);
+    assert.equal((await on.read({ path: '/skills' })).ok, false);
+  } finally { await on.cleanup(); }
 });

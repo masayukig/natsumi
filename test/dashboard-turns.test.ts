@@ -163,3 +163,22 @@ test('a file tool’s path inside her places links to the file as it is now, and
   assert.doesNotMatch(text, /shell\.md"|result\.md"|x\.md"/, 'nor a path in a command, a result or another tool');
   assert.ok(!text.includes('<img src=x'));
 });
+
+// ADR 0075: a call to a tool the config declares is marked as one, by what its result recorded, success or failure.
+test('a declared tool’s call is marked as declared in the config; a built-in one is not', () => {
+  const r = new SessionRecord('declared');
+  const at = (seconds: number) => new Date(Date.parse('2026-01-01T00:00:00.000Z') + seconds * 1_000).toISOString();
+  r.events(at(0), [{ type: 'mac_message', received_at: at(0), text: '天気は？' }]);
+  r.assistant(at(1), [{ type: 'toolCall', id: 'd1', name: 'weather', arguments: { city: '東京' } },
+    { type: 'toolCall', id: 'd2', name: 'weather', arguments: { city: '大阪' } },
+    { type: 'toolCall', id: 'b1', name: 'run_shell', arguments: { command: 'date' } }]);
+  r.message(at(2), { role: 'toolResult', toolCallId: 'd1', toolName: 'weather', isError: false, details: { declared: true },
+    content: [{ type: 'text', text: '晴れ' }] });
+  r.message(at(2), { role: 'toolResult', toolCallId: 'd2', toolName: 'weather', isError: true, details: { declared: true },
+    content: [{ type: 'text', text: 'ツールは終了コード 2 で失敗しました。' }] });
+  r.toolResult(at(2), 'b1', 'run_shell', '2026');
+  const entries = r.lines.slice(1).map(line => JSON.parse(line) as RecordEntry);
+  const text = turnPage({ row: row(), reading: { found: true, estimated: false, sessionFile: 'a.jsonl', entries } }, ZONE).text;
+  assert.equal(text.match(/<strong>weather<\/strong> <small class="declared">config で宣言したツール<\/small>/g)?.length, 2);
+  assert.match(text, /<strong>run_shell<\/strong><\/p>/);
+});

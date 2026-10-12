@@ -588,6 +588,7 @@ class FakeLoop implements ScheduledLoop {
   lastActivityAt = 0;
   startedAt: number | undefined = undefined;
   rotations = 0;
+  tickPostbox?: () => Promise<void>;
   private waiting: ((outcome: { result: string; reason?: string }) => void)[] = [];
   relaxExpression(): void {}
   deliverDueSelfChecks(): boolean { return false; }
@@ -740,4 +741,29 @@ test('a booking reads the awake hours in force when it is made (ADR 0058)', asyn
     f.at('2026-09-17 23:31');
     assert.deepEqual(checks.due().map(check => check.reason).sort(), ['一件目', '二件目'], 'what is due is the same whatever the hours');
   } finally { await f.cleanup(); }
+});
+
+test('the postbox is looked at on every tick, at night and in the middle of a turn too, one look at a time (ADR 0076)', async () => {
+  const loop = new FakeLoop();
+  let looks = 0;
+  let finish: (() => void) | undefined;
+  loop.tickPostbox = () => { looks += 1; return new Promise<void>(resolve => { finish = resolve; }); };
+  const logs: string[] = [];
+  const scheduler = new Scheduler({ loop, now: () => tokyo('2026-09-18 03:00'), timeZone: TZ, awakeHours: AWAKE, pingIntervalMinutes: false,
+    expressionResetMinutes: 3, nightlyRotationAt: false, log: line => { logs.push(line); } });
+  loop.quiet = false;
+  scheduler.tick();
+  assert.equal(looks, 1);
+  scheduler.tick();
+  assert.equal(looks, 1, 'still looking: the next tick does not start another');
+  finish!();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  scheduler.tick();
+  assert.equal(looks, 2);
+  loop.tickPostbox = () => Promise.reject(new Error('git'));
+  finish!();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  scheduler.tick();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(logs, ['postbox: a look failed']);
 });

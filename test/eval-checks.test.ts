@@ -4,7 +4,7 @@ import { judgeChecks, type Judge } from '../src/eval/checks.ts';
 import { parseCheck } from '../src/eval/scene.ts';
 import type { RunRecord } from '../src/eval/record.ts';
 
-const DOVE_MESSAGE = '返信先: work/#dev 2026-09-27 14:32:05 田中\n種類: 投稿\n---\n見ました！';
+const DOVE_MESSAGE = JSON.stringify({ kind: 'post', to: { file: '/sources/slack/work/dev/2026-09-27.jsonl', path: '.[36]' }, text: '見ました！' });
 
 function record(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -62,8 +62,10 @@ test('a file counts as read through read or through a shell command that names i
 });
 
 test('a request to another agent is matched by the agent, the message and where it replies to', async () => {
-  assert.equal((await judge({ asked: { agent: 'poppo', replyTo: 'work/#dev 2026-09-27 14:32:05 田中' } })).pass, true);
-  assert.equal((await judge({ asked: { agent: 'poppo', replyTo: 'work/#dev 2026-09-27 14:30:00 田中' } })).pass, false);
+  const file = '/sources/slack/work/dev/2026-09-27.jsonl';
+  assert.equal((await judge({ asked: { agent: 'poppo', to: { file, path: '.[36]' } } })).pass, true);
+  assert.equal((await judge({ asked: { agent: 'poppo', to: { file, path: '.[35]' } } })).pass, false);
+  assert.equal((await judge({ asked: { agent: 'poppo', to: { file: '/sources/slack/work/dev' } } })).pass, false);
   assert.equal((await judge({ asked: { agent: 'poppo', message: '見ました' } })).pass, true);
   assert.equal((await judge({ asked: { agent: 'scholar' } })).pass, false);
 });

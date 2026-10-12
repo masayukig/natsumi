@@ -20,12 +20,18 @@ const STDERR_CHARS = 2000;
 /** `loop.shellWaitSeconds`: longer than the runner's own response limit, so its answer always arrives. */
 export const DEFAULT_SHELL_WAIT_SECONDS = 75;
 const MAX_ANSWER_BYTES = 1024 * 1024;
+/** The runner's `MaxRequestBytes`: a request line longer than this is refused there, so it is refused here first. */
+const MAX_REQUEST_BYTES = 64 * 1024;
+/** How much longer than a declared tool's timeout its answer is waited for: the runner answers once it has stopped it. */
+const TOOL_ANSWER_GRACE_MS = 15_000;
 
 /** bash and the C library say this when pids run out; the answer then points at `ps` and `kill`. */
 const OUT_OF_PROCESSES = /fork|Resource temporarily unavailable|Cannot allocate memory/i;
 
 interface RunnerAnswer {
   exitCode: number | null;
+  /** A declared tool ran past its timeout and was stopped (ADR 0075). */
+  timedOut?: boolean;
   signal?: string | null;
   stdout: string;
   stderr: string;
@@ -50,6 +56,9 @@ export interface WorkspaceShellOptions {
   /** What changed in the memory repository, as one line, or an empty string. Asked after every command that ran. */
   memoryChanges?: () => Promise<string>;
 }
+
+/** One call of a declared tool (ADR 0075): its argv as declared, the model's arguments as JSON, and its limits. */
+export interface ToolRequest { argv: string[]; input: string; timeoutSeconds: number; maxOutputChars: number }
 
 /** A command the server itself sends, answered with its raw output rather than a sentence for natsumi. */
 export type Capture =
@@ -80,6 +89,35 @@ export class WorkspaceShell {
     const run = this.tail.then(() => this.captureNow(command), () => this.captureNow(command));
     this.tail = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * A declared tool (ADR 0075), in the same line as her commands. Its stdout is the result as it came, cut at the tool's
+   * limit; anything else — an exit code other than 0, its timeout, a signal — is a failure. No memory line is added: the
+   * result is the tool's output and nothing else.
+   */
+  runTool(request: ToolRequest): Promise<ToolOutcome> {
+    const run = this.tail.then(() => this.runToolNow(request), () => this.runToolNow(request));
+    this.tail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async runToolNow({ argv, input, timeoutSeconds, maxOutputChars }: ToolRequest): Promise<ToolOutcome> {
+    const line = JSON.stringify({ argv, stdin: input, timeoutSeconds, ...(this.options.timeZone ? { timeZone: this.options.timeZone } : {}) });
+    if (Buffer.byteLength(line) + 1 > MAX_REQUEST_BYTES) {
+      return { ok: false, text: `引数が大きすぎます（JSON で ${MAX_REQUEST_BYTES / 1024} KiB まで）。実行していません。` };
+    }
+    const exchange = await exchangeLine(this.options.socketPath, line, timeoutSeconds * 1000 + TOOL_ANSWER_GRACE_MS);
+    switch (exchange.kind) {
+      case 'answer': return describeTool(exchange.answer, timeoutSeconds, maxOutputChars);
+      // A runner from before ADR 0075 reads no argv, and finds the command it looks for empty.
+      case 'refused': return { ok: false, text: exchange.error === 'command is empty'
+        ? `${RUNNER}がこのツールの要求の形を知りません。作業環境の image がサーバーより古いようです。ツールは実行していません。`
+        : `${RUNNER}がツールの要求を受け付けませんでした（${exchange.error}）。` };
+      case 'unreachable': return { ok: false, text: `${RUNNER}に接続できません。ツールは実行していません。` };
+      case 'no-answer': return { ok: false, text: `${RUNNER}から応答がありません。ツールが動いたかは分かりません。` };
+      case 'unreadable': return { ok: false, text: `${RUNNER}の応答を読めませんでした。` };
+    }
   }
 
   private async captureNow(command: string): Promise<Capture> {
@@ -134,6 +172,11 @@ export class WorkspaceShell {
 }
 
 function ask(socketPath: string, command: string, timeZone: string | undefined, timeoutMs: number): Promise<Exchange> {
+  return exchangeLine(socketPath, JSON.stringify({ command, ...(timeZone ? { timeZone } : {}) }), timeoutMs);
+}
+
+/** One request line to the runner and its one answer line. */
+function exchangeLine(socketPath: string, request: string, timeoutMs: number): Promise<Exchange> {
   return new Promise(resolve => {
     let settled = false;
     let connected = false;
@@ -150,7 +193,7 @@ function ask(socketPath: string, command: string, timeZone: string | undefined, 
     const timer = setTimeout(() => finish({ kind: 'no-answer' }), timeoutMs);
     socket.on('connect', () => {
       connected = true;
-      socket.write(`${JSON.stringify({ command, ...(timeZone ? { timeZone } : {}) })}\n`);
+      socket.write(`${request}\n`);
     });
     socket.on('data', chunk => {
       size += chunk.length;
@@ -209,6 +252,24 @@ function describe(answer: RunnerAnswer): ToolOutcome {
   const running = answer.running ?? 0;
   if (running > 0) lines.push(`まだ動いているコマンドが ${running} 個あります。要らなくなったら ps で見て kill してください。`);
   return { ok, text: lines.join('\n') };
+}
+
+/** A declared tool's answer: its stdout alone when it succeeded, and what went wrong when it did not (ADR 0075). */
+function describeTool(answer: RunnerAnswer, timeoutSeconds: number, maxOutputChars: number): ToolOutcome {
+  const stdout = cut(answer.stdout, maxOutputChars);
+  const long = stdout.cut || answer.stdoutTruncated ? `（出力が長いので先頭の ${maxOutputChars} 文字だけを返しています）` : '';
+  if (!answer.timedOut && !answer.stillRunning && answer.exitCode === 0) {
+    if (stdout.text === '') return { ok: true, text: long || '（出力は空でした）' };
+    return { ok: true, text: long ? `${stdout.text}\n${long}` : stdout.text };
+  }
+  const lines = [answer.timedOut || answer.stillRunning ? `ツールが ${timeoutSeconds} 秒で終わらなかったので止めました。`
+    : answer.exitCode === null ? `ツールはシグナル（${answer.signal ?? '不明'}）で止まりました。`
+    : `ツールは終了コード ${answer.exitCode} で失敗しました。`];
+  if (stdout.text !== '') lines.push(`標準出力:\n${stdout.text}`);
+  if (long) lines.push(long);
+  const stderr = cut(answer.stderr, STDERR_CHARS);
+  if (stderr.text !== '') lines.push(`標準エラー出力:\n${stderr.text}`);
+  return { ok: false, text: lines.join('\n') };
 }
 
 function cut(text: string, max: number): { text: string; cut: boolean } {

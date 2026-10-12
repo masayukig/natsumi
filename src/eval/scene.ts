@@ -261,10 +261,15 @@ export function parseCheck(raw: unknown, where: string): Check {
     }
     case 'asked': {
       const asked = object(value, at);
-      onlyKeys(asked, at, ['agent', 'message', 'replyTo']);
+      onlyKeys(asked, at, ['agent', 'message', 'to']);
       if (asked.agent !== undefined) text(asked.agent, `${at}.agent`);
       if (asked.message !== undefined) regex(asked.message, `${at}.message`);
-      if (asked.replyTo !== undefined) text(asked.replyTo, `${at}.replyTo`);
+      if (asked.to !== undefined) {
+        const to = object(asked.to, `${at}.to`);
+        onlyKeys(to, `${at}.to`, ['file', 'path']);
+        text(to.file, `${at}.to.file`);
+        if (to.path !== undefined) text(to.path, `${at}.to.path`);
+      }
       break;
     }
   }

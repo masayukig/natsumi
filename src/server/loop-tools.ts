@@ -43,6 +43,8 @@ export interface LoopToolHost {
   runShell?(command: string): Outcome;
   /** The runner's raw answer, for `read` (ADR 0047). Present exactly when `runShell` is. */
   capture?: RunnerCapture;
+  /** Whether `read` reads the owner's skills in /skills too (ADR 0073). Its description stays as it is either way. */
+  skills?: boolean;
 }
 
 /**
@@ -144,6 +146,6 @@ export function createLoopTools(host: LoopToolHost) {
     }),
     // After ask_agent for the same reason: every definition before it stays where it was on the prefix (ADR 0047).
     // search_memory after read, likewise (ADR 0055).
-    ...(host.capture ? [workspaceReadTool(host.capture), searchMemoryTool(host.capture)] : []),
+    ...(host.capture ? [workspaceReadTool(host.capture, { skills: host.skills === true }), searchMemoryTool(host.capture)] : []),
   ];
 }

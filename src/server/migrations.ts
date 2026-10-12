@@ -912,4 +912,127 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX uploads_unsent ON uploads (created_at) WHERE message_id IS NULL;
     `,
   },
+  {
+    version: 29,
+    name: 'the dove\'s requests and results in sources',
+    sql: `
+      -- Where each request to the dove was put under /sources/agents/poppo as it was taken (ADR 0074), as the workspace
+      -- names it: request.json is there, and its results go beside it. NULL for one taken before they were kept, which
+      -- gets its directory when its next result comes.
+      ALTER TABLE dove_posts ADD COLUMN place TEXT;
+
+      -- What became of each request, in the order it came: one line each of the directory's results.jsonl, written
+      -- again from here, and told to natsumi by an attention. told is 1 once the line is written and the attention
+      -- recorded, in the same transaction as the attention, so a result is told once however often it is written.
+      -- posted_ts is natsumi's own post when one was sent with a ts (an upload has none), to name its line in the record.
+      CREATE TABLE dove_results (
+        result_id INTEGER PRIMARY KEY,
+        post_id TEXT NOT NULL REFERENCES dove_posts (post_id),
+        result TEXT NOT NULL CHECK (result IN ('sent', 'reacted', 'to_owner', 'returned', 'rejected', 'expired', 'not_sent')),
+        text TEXT NOT NULL,
+        posted_ts TEXT,
+        told INTEGER NOT NULL DEFAULT 0 CHECK (told IN (0, 1)),
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX dove_results_by_post ON dove_results (post_id, result_id);
+      CREATE INDEX dove_results_untold ON dove_results (told) WHERE told = 0;
+    `,
+  },
+  {
+    version: 30,
+    name: 'no dove answers as events',
+    sql: `
+      -- The dove's answers as events (schema 14) are gone: what comes of a request is told by the sources (ADR 0074),
+      -- and none was left in the queue when this was taken. One still waiting would have no line to be made into. The
+      -- events that carried them stay, as they ended.
+      UPDATE loop_events SET state = 'no-reply', reason = 'superseded', updated_at = created_at
+        WHERE kind = 'dove-reply' AND state IN ('queued', 'processing');
+      DROP TABLE dove_replies;
+    `,
+  },
+  {
+    version: 31,
+    name: 'the postbox',
+    sql: `
+      -- A request the postbox sent on a letter's cron (ADR 0076): the letter's name, and when that run was sent. sent_at
+      -- moves when natsumi answers the agent's question; postbox_sent_at stays the run's, which is what the letter's
+      -- last reply records when the exchange goes well. NULL for a task natsumi started.
+      ALTER TABLE agent_tasks ADD COLUMN postbox TEXT;
+      ALTER TABLE agent_tasks ADD COLUMN postbox_sent_at TEXT;
+      CREATE INDEX agent_tasks_by_postbox ON agent_tasks (postbox, state) WHERE postbox IS NOT NULL;
+
+      -- The letters in memory's postbox/ as HEAD last held them (ADR 0076), one a file, by its name. A letter that fails
+      -- the check has its reason in problem and is never sent. due_at is the next run to send; a run is claimed by moving
+      -- it on before the request goes, so no run is sent twice. last_received_at is when the last run that went well
+      -- was sent: the line every request ends with. failures counts those that failed or were given up on in a row.
+      -- A letter removed from HEAD loses its row, and with it its last reply.
+      CREATE TABLE postbox_letters (
+        name TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        agent TEXT,
+        cron TEXT,
+        paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+        notify TEXT NOT NULL DEFAULT 'update' CHECK (notify IN ('update', 'attention')),
+        problem TEXT,
+        due_at TEXT,
+        last_run_at TEXT,
+        last_sent_at TEXT,
+        last_result TEXT CHECK (last_result IN ('waiting', 'received', 'empty', 'failed', 'gave-up', 'input-required', 'skipped')),
+        last_result_at TEXT,
+        note TEXT,
+        failures INTEGER NOT NULL DEFAULT 0 CHECK (failures >= 0),
+        last_received_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (problem IS NOT NULL OR (agent IS NOT NULL AND cron IS NOT NULL))
+      ) STRICT;
+    `,
+  },
+  {
+    version: 32,
+    name: 'where a letter\'s last reply was put',
+    sql: `
+      -- The directory under /sources/agents the last reply of a letter's runs was put in, as the workspace names it, for
+      -- the dashboard to lead to (ADR 0054). A run that put none (an empty reply, or one that could not be put) leaves it.
+      ALTER TABLE postbox_letters ADD COLUMN last_reply_path TEXT;
+    `,
+  },
+  {
+    version: 33,
+    name: 'kinds of session rotation',
+    sql: `
+      -- What began each switch (ADR 0077): the night (the scheduler's, or the server's rotateSession), or the owner's
+      -- sleeping pill, by what it did: the night in full (deep), the new session from the handoff left (resume), the
+      -- curator alone (resleep), or a nap. Every row from before was a night's. A resleep keeps its session, so it never
+      -- switches: it is curating while the curator runs, and ends curated, or failed. A column's CHECK changes only by
+      -- rebuilding the table, so it is made again as it was, and every row carried over as it stands.
+      CREATE TABLE session_rotations_new (
+        rotation_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE REFERENCES loop_events (event_id),
+        conversation_id TEXT NOT NULL REFERENCES conversations (conversation_id),
+        from_session_id TEXT NOT NULL,
+        from_session_file TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'night' CHECK (kind IN ('night', 'deep', 'resume', 'resleep', 'nap')),
+        state TEXT NOT NULL CHECK (state IN ('reviewing', 'switching', 'switched', 'curating', 'curated', 'failed')),
+        -- The commit of handoff.md the new session's instructions were built from: the review's, or for a resume the
+        -- commit in hand when its session was made. NULL on the rows made before the file existed, on a switch that has
+        -- not written its handoff yet, and on a resleep.
+        handoff_commit TEXT,
+        to_session_id TEXT UNIQUE,
+        to_session_file TEXT UNIQUE,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (state <> 'switched' OR (to_session_id IS NOT NULL AND to_session_file IS NOT NULL)),
+        CHECK (state NOT IN ('curating', 'curated') OR kind = 'resleep')
+      ) STRICT;
+      INSERT INTO session_rotations_new (rotation_id, event_id, conversation_id, from_session_id, from_session_file, kind,
+        state, handoff_commit, to_session_id, to_session_file, reason, created_at, updated_at)
+        SELECT rotation_id, event_id, conversation_id, from_session_id, from_session_file, 'night',
+          state, handoff_commit, to_session_id, to_session_file, reason, created_at, updated_at FROM session_rotations;
+      DROP TABLE session_rotations;
+      ALTER TABLE session_rotations_new RENAME TO session_rotations;
+      CREATE INDEX session_rotations_by_creation ON session_rotations (created_at);
+    `,
+  },
 ];

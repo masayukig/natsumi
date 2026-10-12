@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { AgentSession, createAgentSession, DefaultResourceLoader, type ExtensionFactory, ModelRuntime,
+import { AgentSession, createAgentSession, DefaultResourceLoader, type ExtensionFactory, type LoadSkillsResult, ModelRuntime,
   SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 
 /** A model inside Pi. Choosing one selects where Pi sends requests; it is not a backend switch. */
@@ -7,6 +7,13 @@ export interface PiTarget { provider: string; model: string }
 
 type CreateOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 export type PiThinkingLevel = NonNullable<CreateOptions['thinkingLevel']>;
+
+/**
+ * Skills from these directories alone, in this order: Pi keeps the first skill of a name. Pi's discovery stays off, so
+ * nothing in the agent or the working directory is loaded (ADR 0004, ADR 0073). `settle` turns the skills as Pi loaded
+ * them into the ones the session lists; it is called once, when the session is made, and the list stays as it is.
+ */
+export interface PiSkills { directories: string[]; settle: (loaded: LoadSkillsResult) => LoadSkillsResult }
 
 /** A saved session could not be restored. It is never replaced by a new session. */
 export class PiSessionRestoreError extends Error {
@@ -37,6 +44,8 @@ export interface PiSessionOptions {
    * in the agent or data directory is ever loaded as one (ADR 0004, ADR 0047).
    */
   extensions?: ExtensionFactory[];
+  /** Without it, no skill is loaded at all (ADR 0004). */
+  skills?: PiSkills;
 }
 
 /**
@@ -73,6 +82,7 @@ export async function openPiSession(options: PiSessionOptions): Promise<AgentSes
   });
   const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
     noExtensions: true, extensionFactories: options.extensions ?? [], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    ...(options.skills ? { additionalSkillPaths: options.skills.directories, skillsOverride: options.skills.settle } : {}),
     systemPrompt: options.systemPrompt,
   });
   await resourceLoader.reload();

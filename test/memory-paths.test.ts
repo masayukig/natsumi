@@ -126,6 +126,28 @@ test('after a stage, the server rewrites the old paths in its own commit, in nat
   }
 });
 
+// ADR 0073: the curator never touches her skills, but a link in one still follows a topic it moved.
+test('a link in her skill follows a moved topic, and the skill keeps its shape', async () => {
+  const f = await setup();
+  try {
+    await f.write('予定.md', LONG('予定'));
+    const skill = (to: string) => `---\nname: dentist\ndescription: 歯医者の予約を取るときの手順\n---\n\n# 歯医者\n\n- [予定](${to}) を見る\n`;
+    await f.write('skills/dentist/SKILL.md', skill('../../予定.md'));
+    await f.repository.initialize(undefined);
+    const before = f.git('rev-parse', 'HEAD');
+    await mkdir(join(f.directory, 'life'));
+    await rename(join(f.directory, '予定.md'), join(f.directory, 'life/予定.md'));
+    assert.equal((await f.repository.commitCuration({ message: '予定を life/ に動かした' })).committed, true);
+
+    const rewrite = await rewriteMovedPaths(f.repository, { before, merged: moves(), event: 'memory_curator:structure:paths' });
+
+    assert.ok(rewrite);
+    assert.deepEqual(rewrite.reverted, []);
+    assert.equal(await f.read('skills/dentist/SKILL.md'), skill('../../life/予定.md'));
+    assert.deepEqual(rewrite.files, ['skills/dentist/SKILL.md']);
+  } finally { await f.cleanup(); }
+});
+
 test('a stage that moved nothing rewrites nothing and makes no commit', async () => {
   const f = await setup();
   try {

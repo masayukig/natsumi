@@ -19,7 +19,8 @@ const skip = (await goAvailable()) ? false : 'go is not installed, so the runner
 // A scene that reads the workspace's paths (/manual, /memory, /sources) needs them laid out, which only bubblewrap does.
 const sandboxed = skip || ((await bwrapAvailable()) ? false : 'bubblewrap cannot make a sandbox here');
 
-const DOVE_REQUEST = '返信先: work/#dev 2026-09-27 14:32:05 田中\n種類: 投稿\n表情: happy\n---\nデプロイは毎週木曜だそうです！';
+const DOVE_REQUEST = JSON.stringify({ kind: 'post', to: { file: '/sources/slack/work/dev/2026-09-27.jsonl', path: '.[36]' }, face: 'happy',
+  text: 'デプロイは毎週木曜だそうです！' });
 
 /** Asks the Wiki keeper and the dove, hears back from both, and tells the owner what the keeper said. */
 const FOLLOWED = `
@@ -41,7 +42,7 @@ dryRun:
   - text: 返事を待つ。
   - calls:
       - { tool: reply_to_mac, args: { text: 毎週木曜だって！, expression: happy } }
-  - text: ポッポさんの返事を読んだ。
+  - text: ポッポさんの返事も読んだ。
 checks:
   - { id: listed, output: FIXTURE-CARD }
   - { id: told, reply: 木曜 }
@@ -67,22 +68,25 @@ test('a followed scene hands the actors\' replies back as events, turn after tur
     const [condition] = await scene(root, 'followed', FOLLOWED);
     const record = await runCondition(condition!, { run: 1, dryRun: true, repository: REPOSITORY, work: join(root, 'work'), runner });
     assert.equal(record.outcome, 'ok', record.error);
-    // The ask, the keeper's answer, and the dove's.
-    assert.equal(record.turns, 3);
-    // The keeper's answer is put under /sources and told by its attention (ADR 0069); the dove's is still an agent_reply.
-    const attentionOf = (event: Record<string, unknown>) =>
-      (event.changed as { attention?: Record<string, unknown>[] }[] | undefined)?.flatMap(entry => entry.attention ?? [])[0];
-    assert.deepEqual(record.events.map(event => [event.type, event.agent ?? attentionOf(event)?.agent ?? event.text]), [
-      ['mac_message', 'デプロイっていつだっけ？'], ['sources_updated', 'wiki-keeper'], ['agent_reply', 'poppo']]);
-    const keeper = attentionOf(record.events[1]!)!;
+    // The ask, and the keeper's answer with the dove's.
+    assert.equal(record.turns, 2);
+    // Both are put under /sources and told by their attentions, in one event (ADR 0069, ADR 0074).
+    const attentions = (event: Record<string, unknown>) =>
+      (event.changed as { attention?: Record<string, unknown>[] }[] | undefined)?.flatMap(entry => entry.attention ?? []) ?? [];
+    assert.deepEqual(record.events.map(event => event.type), ['mac_message', 'sources_updated']);
+    const told = attentions(record.events[1]!);
+    const keeper = told.find(attention => attention.agent === 'wiki-keeper')!;
     assert.equal(keeper.kind, 'agent_reply');
     assert.equal(keeper.state, 'completed');
     assert.match(String(keeper.summary), /FIXTURE-KEEPER-REPLY/);
     assert.match(String(keeper.file), /^\/sources\/agents\/wiki-keeper\/.*\/README\.md$/);
-    const dove = record.events[2]!;
-    assert.equal(dove.result, 'returned');
-    assert.equal(dove.reply_to, 'work/#dev 2026-09-27 14:32:05 田中');
-    assert.match(String(dove.text), /FIXTURE-DOVE-REPLY/);
+    const dove = told.find(attention => attention.agent === 'poppo')!;
+    assert.equal(dove.kind, 'agent_reply');
+    assert.equal(dove.state, 'returned');
+    assert.match(String(dove.summary), /FIXTURE-DOVE-REPLY/);
+    assert.match(String(dove.file), /^\/sources\/agents\/poppo\/.*\/results\.jsonl$/);
+    assert.equal(dove.path, '.[0]');
+    assert.equal(dove.request, 'デプロイは毎週木曜だそうです！');
     // Neither event names a task, a context or an ID (ADR 0024).
     assert.ok(!JSON.stringify(record.events).includes('actor-task'));
     // The two asks of one call run side by side, so they are compared by agent, not in the order they were recorded.
@@ -92,8 +96,8 @@ test('a followed scene hands the actors\' replies back as events, turn after tur
     assert.equal(actors[1]!.result, 'returned');
     assert.deepEqual(record.replies.map(reply => reply.text), ['毎週木曜だって！']);
     assert.deepEqual(record.checks.map(check => [check.id, check.pass]), [['listed', true], ['told', true], ['asked-keeper', true]]);
-    // The numbers are those of all the turns: two calls in the first, two in the second, one in the third.
-    assert.equal(record.modelCalls, 5);
+    // The numbers are those of all the turns: two calls in each.
+    assert.equal(record.modelCalls, 4);
   });
 });
 

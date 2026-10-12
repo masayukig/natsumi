@@ -108,7 +108,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     const t0 = Date.now();
     const now = scene.time === undefined ? Date.now : () => scene.time! + (Date.now() - t0);
     // Who stands in for the outside agents and the dove, reached only through the loop's injection points (ADR 0052).
-    const stage = new Stage({ actors: scene.actors, dryRun: options.dryRun, ...(options.actor ? { model: options.actor } : {}) });
+    const stage = new Stage({ actors: scene.actors, dryRun: options.dryRun, timeZone: scene.timeZone, now,
+      ...(options.actor ? { model: options.actor } : {}) });
     const a2a = stage.a2aConfig();
     // What the server writes on every start, as it would with Slack configured or not (ADR 0036, ADR 0040).
     await writeAgentList({ directory: join(data, AGENT_LIST_DIRECTORY), config: a2a, client: stage.client, now: now(),
@@ -187,18 +188,20 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     };
 
     // An event line written in the scene goes in through the loop's side for outside events, as the branch has it. The
-    // actors' replies are put under /sources and told by their attention, through the server's own sources (ADR 0069).
+    // actors' replies and the dove's results are put under /sources and told by their attention, through the server's
+    // own sources (ADR 0069, ADR 0074).
     let rawLine: Record<string, unknown> = {};
     let sceneLineWaiting = false;
     const sceneEvents = new Set<string>();
     const lineOf = (receivedAt: string) => ({ received_at: receivedAt, ...rawLine });
     let replies: Sources | undefined;
-    if (a2a) {
+    if (a2a || scene.dove) {
       replies = new Sources({ db, directory: join(data, SOURCES_DIRECTORY), gitDirectory: join(data, SOURCES_GIT_DIRECTORY),
         timeZone: scene.timeZone, awakeHours: LOOP_DEFAULTS.awakeHours, activity: SOURCES_DEFAULTS.activity,
         historyDays: SOURCES_DEFAULTS.historyDays, now });
       replies.register(AGENTS_REGISTRATION);
       await replies.prepare();
+      stage.dovePlace = replyPlaceOf(replies, join(data, SOURCES_DIRECTORY));
     }
     const sources: SourceEvents = {
       take: async eventId => {
@@ -222,7 +225,7 @@ export async function runCondition(condition: Condition, options: RunOptions): P
         ...(limits.modelCalls === undefined ? {} : { eventModelCalls: limits.modelCalls }),
         ...(limits.minutes === undefined ? {} : { eventTimeoutMinutes: limits.minutes }) },
       ...(a2a ? { a2a, a2aClient: stage.client } : {}),
-      ...(replies ? { agentReplies: replyPlaceOf(replies, join(data, SOURCES_DIRECTORY)) } : {}),
+      ...(a2a && replies ? { agentReplies: replyPlaceOf(replies, join(data, SOURCES_DIRECTORY)) } : {}),
       ...(scene.dove ? { dove: stage.dove } : {}),
       sources,
     } as LoopOptions;
@@ -277,9 +280,8 @@ export async function runCondition(condition: Condition, options: RunOptions): P
     // waiting or the turns run out (ADR 0052).
     while (scene.follow && stage.hasPending() && rows().length < scene.follow.maxTurns) {
       stage.turn = rows().length + 1;
-      const doveLines = await stage.answerPending();
+      await stage.answerPending();
       await loop.pollAgents();
-      for (const line of doveLines) loop.raise('dove-reply', eventId => stage.bindDoveLine(eventId, line));
       await loop.idle();
     }
     phase.now = 'after';

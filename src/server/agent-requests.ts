@@ -4,14 +4,16 @@ import type { DatabaseSync } from 'node:sqlite';
 import { A2ACallError, type A2AClient, type AgentFile, type AgentTaskState, type SendResult } from './a2a-client.ts';
 import { bringAgentImages, discardBrought, type BroughtImages } from './agent-files.ts';
 import {
-  AGENTS_PATH, AGENTS_SOURCE, checkReplyData, clampSummary, firstLine, parseReplyData, replyFromText, undoReply, writeAgentReply,
-  writeAgentRequest, type ReplyData, type ReplyForm, type ReplyPlace, type ReplyState, type RequestKind, type RequestPlace, type WrittenReply,
+  AGENTS_PATH, AGENTS_SOURCE, checkReplyData, clampSummary, firstLine, makeReplyDirectory, parseReplyData, replyFromText, undoReply,
+  writeAgentReply, writeAgentRequest, writeRequestFile, type ReplyData, type ReplyForm, type ReplyPlace, type ReplyState, type RequestKind,
+  type RequestPlace, type WrittenReply,
 } from './agent-replies.ts';
 import type { A2AConfig } from './config.ts';
 import type { ImageStore } from './images.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
+import { POSTBOX_FAILURES_TOLD, receivedLine, receivedStamp, type PostboxLedger, type PostboxResult, type PostboxSend } from './postbox.ts';
 
 /** The longest answer a legacy event carries. A longer one is cut, and the event says so. */
 export const MAX_AGENT_REPLY_CHARS = 8000;
@@ -31,7 +33,10 @@ interface ReplyFiles { images: { path: string; description: string }[]; not_take
 
 interface TaskRow {
   agent: string; task_id: string; context_id: string; state: string; sent_at: string; place: string | null; request: string | null;
+  /** The letter a request of the postbox was sent on, and when that run was sent (ADR 0076). */
+  postbox: string | null; postbox_sent_at: string | null;
 }
+const TASK_COLUMNS = 'agent, task_id, context_id, state, sent_at, place, request, postbox, postbox_sent_at';
 interface ContextRow { agent: string; context_id: string; task_id: string | null; place: string | null }
 
 /** A request as it was made: where it was put, what it said, and when. */
@@ -39,6 +44,31 @@ interface MadeRequest { place: RequestPlace; text: string; at: number }
 
 /** A reply to put, which shape it was put from, and the agent's data as it came when it sent some. */
 interface Reply { reply: ReplyData; form: ReplyForm; data?: unknown }
+
+/** A run of a letter as it was sent (ADR 0076): its name, every word sent, and when. */
+interface PostboxRun { name: string; text: string; at: number }
+
+/** How a reply is put and told: where, what rows go with it, and whether it is told at once. */
+interface Delivery {
+  agent: string;
+  state: ReplyState;
+  reply: Reply;
+  handed?: { url: string; files: AgentFile[] | undefined };
+  /** The request's directory, made when it was asked; a reply goes into it. */
+  made?: MadeRequest;
+  /** A run of the postbox, whose directory is made with its reply: one that comes back empty leaves none (ADR 0076). */
+  run?: PostboxRun;
+  /** Told by an attention at once, or left to the sources as an ordinary update (ADR 0053, ADR 0076). */
+  attention: boolean;
+  /** The letter a reply of the postbox's came for, which its attention names. */
+  postbox?: string;
+  /** The caller's rows, written in the same transaction as the attention, with the reply as it was put. */
+  rows: (written: WrittenReply) => void;
+}
+
+const POSTBOX_RESULT: Record<ReplyState, PostboxResult> = {
+  completed: 'received', failed: 'failed', input_required: 'input-required', gave_up: 'gave-up',
+};
 
 export interface AgentRequestsOptions {
   db: DatabaseSync;
@@ -52,6 +82,8 @@ export interface AgentRequestsOptions {
   images?: ImageStore;
   /** The owner's time zone, in which the time of a request is written. UTC when omitted. */
   timeZone?: string;
+  /** The record of the postbox's letters (ADR 0076), told how each run went. Without it the postbox sends nothing. */
+  postbox?: PostboxLedger;
   log?: (line: string) => void;
 }
 
@@ -105,7 +137,7 @@ export class AgentRequests {
     }
 
     // The request's directory is made before it is sent, so its reply has somewhere to go however soon it comes. It
-    // tells her nothing: the request is hers.
+    // tells her nothing: the request is hers, and the sources take it in as it stands.
     const how: RequestKind = to.taskId ? 'answer' : to.contextId ? 'continue' : 'new';
     const at = this.options.now();
     let made: MadeRequest;
@@ -116,6 +148,9 @@ export class AgentRequests {
     } catch {
       this.log(`a2a: the request to ${agent} could not be put in /sources`);
       return refuse(`依頼を ${AGENTS_PATH} に置けませんでした。急ぎならマスターに伝えてください。`);
+    }
+    try { await this.options.replies.takeIn(made.place.path); } catch {
+      this.log(`a2a: the request to ${agent} could not be taken in by the sources; it may be shown as an update`);
     }
 
     let sent: SendResult;
@@ -174,8 +209,8 @@ export class AgentRequests {
     const { config, client } = this.options;
     if (!config || !client || !this.options.replies || this.closed) return;
     const limitMs = config.giveUpAfterHours * 3_600_000;
-    const waiting = this.db.prepare(`SELECT agent, task_id, context_id, state, sent_at, place, request FROM agent_tasks
-      WHERE state = 'waiting' ORDER BY sent_at`).all() as unknown as TaskRow[];
+    const waiting = this.db.prepare(`SELECT ${TASK_COLUMNS} FROM agent_tasks WHERE state = 'waiting' ORDER BY sent_at`)
+      .all() as unknown as TaskRow[];
     for (const task of waiting) {
       if (this.closed) return;
       if (this.options.now() - Date.parse(task.sent_at) >= limitMs) {
@@ -218,41 +253,158 @@ export class AgentRequests {
    * A task has ended, or is asking: its reply is put under /sources/agents with the images it handed back, and its
    * state and the attention that tells her are written together. A reply that cannot be put is left for the next
    * round, which fetches the task again.
+   *
+   * A request of the postbox's that she has not answered gets its directory now, with its reply, and is told as its
+   * letter says (ADR 0076); one she answered went on as hers, and is told as every reply to her is. Either way, how the
+   * run went is recorded for its letter.
    */
   private async settle(task: TaskRow, state: ReplyState, reply: Reply, handed?: { url: string; files: AgentFile[] | undefined }):
     Promise<void> {
-    const place = task.place ? this.placeOf(task.place) : undefined;
-    const made = place && task.request !== null ? { place, text: task.request, at: Date.parse(task.sent_at) } : undefined;
-    const delivered = await this.deliver(task.agent, state, reply, handed, made, () => {
-      this.db.prepare(`UPDATE agent_tasks SET state = ?, updated_at = ? WHERE agent = ? AND task_id = ?`)
-        .run(TASK_END[state], this.iso(), task.agent, task.task_id);
-    });
+    const update = (path: string | null) => {
+      this.db.prepare(`UPDATE agent_tasks SET state = ?, place = coalesce(?, place), updated_at = ? WHERE agent = ? AND task_id = ?`)
+        .run(TASK_END[state], path, this.iso(), task.agent, task.task_id);
+    };
+    const letter = task.postbox !== null && task.postbox_sent_at !== null ? { name: task.postbox, sentAt: Date.parse(task.postbox_sent_at) } : undefined;
+    let delivered: boolean;
+    if (letter && task.place === null) {
+      const run = { name: letter.name, text: task.request ?? '', at: letter.sentAt };
+      delivered = await this.deliverRun(run, task.agent, state, reply, handed, written => {
+        update(state === 'input_required' ? written.path : null);
+        // A question is hers to answer with continue, as every exchange's is: the run becomes her latest one with the agent.
+        if (state === 'input_required') this.remember(task.agent, task.context_id, task.task_id, written.path);
+      }, () => { update(null); });
+    } else {
+      const place = task.place ? this.placeOf(task.place) : undefined;
+      const made = place && task.request !== null ? { place, text: task.request, at: Date.parse(task.sent_at) } : undefined;
+      delivered = await this.deliver({ agent: task.agent, state, reply, ...(handed ? { handed } : {}), ...(made ? { made } : {}), attention: true,
+        ...(letter ? { postbox: letter.name } : {}), rows: written => {
+          update(null);
+          if (letter) this.options.postbox?.record(letter.name, POSTBOX_RESULT[state], this.options.now(), letter.sentAt, written.path);
+        } });
+    }
     if (!delivered) this.log(`a2a: the reply of ${task.agent} could not be put in /sources; it is fetched again`);
   }
 
   /**
-   * Puts a reply under /sources/agents, then records the caller's rows, the images' copies and the attention in one
-   * transaction, and asks for the event. Whatever fails leaves nothing behind: no files, no copies, no rows.
+   * Sends a run of a letter (ADR 0076): the letter's words, a line on when the last run that went well was sent, and
+   * the same in the message's metadata. What it starts is fetched by the rounds as any task is; a send that fails is
+   * put as a failed reply at once. How it went is recorded for the letter; nothing throws at the postbox.
    */
-  private async deliver(agent: string, state: ReplyState, { reply, form, data }: Reply, handed: { url: string; files: AgentFile[] | undefined } | undefined,
-    made: MadeRequest | undefined, rows: () => void): Promise<boolean> {
+  async sendPostbox(input: PostboxSend): Promise<void> {
+    const { config, client } = this.options;
+    const ledger = this.options.postbox;
+    if (!ledger) return;
+    const timeZone = this.options.timeZone ?? 'UTC';
+    const last = input.lastReceivedAt === undefined ? undefined : receivedStamp(input.lastReceivedAt, timeZone);
+    const text = input.lastReceivedAt === undefined ? input.body : `${input.body}\n\n${receivedLine(input.lastReceivedAt, timeZone)}`;
+    const metadata = { postbox: { name: input.name, ...(last ? { lastReceivedAt: last.iso } : {}) } };
+    const run: PostboxRun = { name: input.name, text, at: input.at };
+    const target = config?.agents[input.agent];
+    const fail = async (summary: string) => {
+      if (!await this.deliverRun(run, input.agent, 'failed', { reply: serverReply(summary), form: 'text' }, undefined, () => {}, () => {})) {
+        // Nothing could be put; the run is still counted, so a postbox that cannot write is seen to fail.
+        ledger.record(input.name, 'failed', this.options.now(), input.at);
+      }
+    };
+    if (!config || !client || !target || !this.options.replies) {
+      await fail('定期便を送れませんでした（この相手に頼む設定がありません）。');
+      return;
+    }
+    let sent: SendResult;
+    try {
+      sent = await client.send(target.url, { text, metadata });
+    } catch (error) {
+      const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
+      this.log(`a2a: the letter ${input.name} could not be sent to ${input.agent} (${kind})`);
+      await fail(kind === 'refused' ? `「${input.agent}」が定期便を受け付けませんでした。` : `「${input.agent}」につながらないので、定期便を送れませんでした。`);
+      return;
+    }
+    if (this.closed) return;
+    if (sent.kind === 'message') {
+      if (!await this.deliverRun(run, input.agent, 'completed', fromText('completed', sent.text), undefined, () => {}, () => {})) {
+        this.log(`a2a: the reply of ${input.agent} could not be put in /sources`);
+      }
+      return;
+    }
+    const now = this.iso();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, place, request, postbox, postbox_sent_at, created_at,
+        updated_at) VALUES (?, ?, ?, 'waiting', ?, NULL, ?, ?, ?, ?, ?)`)
+        .run(input.agent, sent.taskId, sent.contextId, isoAt(input.at), text, input.name, isoAt(input.at), now, now);
+      ledger.record(input.name, 'waiting', this.options.now(), input.at);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Puts the reply of a run of a letter, with its request, into a directory made for both, and records how the run
+   * went. It is told at once when it asks a question, when its letter says so, or when it is the third failure in a
+   * row; otherwise it is left to the sources as an ordinary update. A reply of data with no section is empty: nothing
+   * is put, nothing told, and the run counts as one that went well (ADR 0076).
+   */
+  private async deliverRun(run: PostboxRun, agent: string, state: ReplyState, reply: Reply,
+    handed: { url: string; files: AgentFile[] | undefined } | undefined, rows: (written: WrittenReply) => void, empty: () => void): Promise<boolean> {
+    const ledger = this.options.postbox;
+    const record = (result: PostboxResult, path?: string) => { ledger?.record(run.name, result, this.options.now(), run.at, path); };
+    if (state === 'completed' && reply.form === 'data' && reply.reply.sections.length === 0 && (handed?.files ?? []).length === 0) {
+      if (this.closed) return false;
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        empty();
+        record('empty');
+        this.db.exec('COMMIT');
+      } catch {
+        if (this.db.isTransaction) this.db.exec('ROLLBACK');
+        return false;
+      }
+      return true;
+    }
+    const failed = state === 'failed' || state === 'gave_up';
+    const attention = state === 'input_required' || (state === 'completed' && (ledger?.notifies(run.name) ?? false))
+      || (failed && (ledger?.failures(run.name) ?? 0) + 1 === POSTBOX_FAILURES_TOLD);
+    return this.deliver({ agent, state, reply, ...(handed ? { handed } : {}), run, attention, postbox: run.name,
+      rows: written => { rows(written); record(POSTBOX_RESULT[state], written.path); } });
+  }
+
+  /**
+   * Puts a reply under /sources/agents, then records the caller's rows, the images' copies and the attention in one
+   * transaction, and asks for the event. Whatever fails leaves nothing behind: no files, no copies, no rows. A reply
+   * that is not told at once is left for the sources to show as an ordinary update (ADR 0076).
+   */
+  private async deliver(delivery: Delivery): Promise<boolean> {
+    const { agent, state, reply: { reply, form, data }, handed, made, run } = delivery;
     const place = this.options.replies;
     if (!place || this.closed) return false;
     const { client, images } = this.options;
     let brought: BroughtImages | undefined;
     const files = handed?.files ?? [];
+    const bring = files.length > 0 && client && images && handed ? {
+      bring: async (directory: string, path: string) => {
+        brought = await bringAgentImages({ url: handed.url, files, client, directory, path, imageDirectory: images.directory });
+        this.log(`a2a: brought ${brought.images.length} image(s) from ${agent}${brought.notTaken.length ? `, ${brought.notTaken.length} not taken` : ''}`);
+        return brought;
+      },
+    } : {};
+    const common = { directory: place.directory, agent, state, at: this.options.now(), reply, form, ...(data !== undefined ? { data } : {}), ...bring };
     let written: WrittenReply;
     try {
-      written = await writeAgentReply({ directory: place.directory, agent, state, at: this.options.now(), reply, form,
-        ...(data !== undefined ? { data } : {}),
-        ...(made ? { place: made.place, request: { text: made.text, askedAt: this.localTime(made.at) } } : {}),
-        ...(files.length > 0 && client && images && handed ? {
-          bring: async (directory: string, path: string) => {
-            brought = await bringAgentImages({ url: handed.url, files, client, directory, path, imageDirectory: images.directory });
-            this.log(`a2a: brought ${brought.images.length} image(s) from ${agent}${brought.notTaken.length ? `, ${brought.notTaken.length} not taken` : ''}`);
-            return brought;
-          },
-        } : {}) });
+      if (run) {
+        // A run's request and its reply are made together, so a run that comes back empty leaves nothing behind.
+        const askedAt = this.localTime(run.at);
+        let inner: WrittenReply | undefined;
+        const directory = await makeReplyDirectory(place.directory, agent, run.at, async (temporary, path) => {
+          await writeRequestFile(temporary, { agent, askedAt, text: run.text, how: 'new', postbox: run.name });
+          inner = await writeAgentReply({ ...common, place: { path, directory: temporary }, request: { text: run.text, askedAt } });
+        });
+        written = { ...inner!, directory: directory.directory, created: true };
+      } else {
+        written = await writeAgentReply({ ...common,
+          ...(made ? { place: made.place, request: { text: made.text, askedAt: this.localTime(made.at) } } : {}) });
+      }
     } catch {
       if (brought) await discardBrought(brought);
       return false;
@@ -264,35 +416,34 @@ export class AgentRequests {
     // The task is fetched again after the restart, and is put again.
     if (this.closed) { await undo(); return false; }
     const imageCount = written.images.length;
+    const asked = made ?? run;
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      rows();
+      delivery.rows(written);
       if (brought) this.options.images?.record(brought.taken, this.iso());
-      const recorded = place.record({ source: AGENTS_SOURCE, kind: 'agent_reply', file: written.readme,
-        details: { agent, state, summary: clampSummary(reply.summary), ...(imageCount > 0 ? { images: imageCount } : {}),
-          ...(made ? { request: firstLine(made.text), asked_at: this.localTime(made.at) } : {}) } });
-      if (!recorded) throw new Error('the attention was let go');
+      if (delivery.attention) {
+        const recorded = place.record({ source: AGENTS_SOURCE, kind: 'agent_reply', file: written.readme,
+          details: { agent, state, summary: clampSummary(reply.summary), ...(imageCount > 0 ? { images: imageCount } : {}),
+            ...(asked ? { request: firstLine(asked.text), asked_at: this.localTime(asked.at) } : {}),
+            ...(delivery.postbox !== undefined ? { postbox: delivery.postbox } : {}) } });
+        if (!recorded) throw new Error('the attention was let go');
+      }
       this.db.exec('COMMIT');
     } catch {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       await undo();
       return false;
     }
-    place.notify();
+    if (delivery.attention) place.notify();
     return true;
   }
 
   /** What a send started: the agent's latest exchange, and the task to fetch or the answer that already came. */
   private async record(agent: string, sent: SendResult, made: MadeRequest): Promise<void> {
     const now = this.iso();
-    const remember = () => {
-      this.db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, place, updated_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (agent) DO UPDATE SET context_id = excluded.context_id, task_id = excluded.task_id, place = excluded.place,
-          updated_at = excluded.updated_at`)
-        .run(agent, sent.contextId, sent.kind === 'task' ? sent.taskId : null, made.place.path, now);
-    };
+    const remember = () => { this.remember(agent, sent.contextId, sent.kind === 'task' ? sent.taskId : null, made.place.path); };
     if (sent.kind === 'message') {
-      if (!await this.deliver(agent, 'completed', fromText('completed', sent.text), undefined, made, remember)) {
+      if (!await this.deliver({ agent, state: 'completed', reply: fromText('completed', sent.text), made, attention: true, rows: remember })) {
         // The answer is lost, and the exchange is still remembered, so she can go on with it.
         this.log(`a2a: the reply of ${agent} could not be put in /sources`);
         remember();
@@ -316,6 +467,14 @@ export class AgentRequests {
     }
   }
 
+  /** The agent's latest exchange, which `continue` goes on with. */
+  private remember(agent: string, contextId: string, taskId: string | null, place: string): void {
+    this.db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, place, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (agent) DO UPDATE SET context_id = excluded.context_id, task_id = excluded.task_id, place = excluded.place,
+        updated_at = excluded.updated_at`)
+      .run(agent, contextId, taskId, place, this.iso());
+  }
+
   /**
    * A finished task's reply from its data, put as it is when it keeps the reply extension's schema (ADR 0069). Data
    * that does not is kept as it came, and the text is read instead; the log says why, and never what.
@@ -332,7 +491,7 @@ export class AgentRequests {
   }
 
   private task(agent: string, taskId: string): TaskRow | undefined {
-    return this.db.prepare('SELECT agent, task_id, context_id, state, sent_at, place, request FROM agent_tasks WHERE agent = ? AND task_id = ?')
+    return this.db.prepare(`SELECT ${TASK_COLUMNS} FROM agent_tasks WHERE agent = ? AND task_id = ?`)
       .get(agent, taskId) as TaskRow | undefined;
   }
 

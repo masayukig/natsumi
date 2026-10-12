@@ -10,7 +10,7 @@ import type { CuratorConfig } from './config.ts';
 import { readConversation, type Conversation } from './curator-conversation.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { memoryPath, rewriteMovedPaths, type PathRewrite } from './memory-paths.ts';
-import { ARCHIVE_DIRECTORY, DIARY_DIRECTORY, INDEX_FILE, NATSUMI_ONLY_FILES, type ArchivePlan, type MemoryFile, type MemoryRepository,
+import { ARCHIVE_DIRECTORY, DIARY_DIRECTORY, INDEX_FILE, inSkills, NATSUMI_ONLY_FILES, type ArchivePlan, type MemoryFile, type MemoryRepository,
   type RevertedFile } from './memory-repository.ts';
 import { isoAt, localDate, localDateTime, nextOccurrence, previousOccurrence } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -19,6 +19,8 @@ import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWL
   curatorSystemPrompt } from './prompts.ts';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
+import { inPostbox, POSTBOX_DIRECTORY } from './postbox.ts';
+import { SKILLS_DIRECTORY } from './skills.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
 import type { TokenCounts, TurnPlace } from './turn-stats.ts';
 
@@ -41,11 +43,13 @@ export const BRIEF_SECTIONS_PER_FILE = 30;
 const BRIEF_HEADING_CHARS = 80;
 
 /**
- * Whether the curator may rewrite a file's content: a topic file, never natsumi's own, the index, the diary or the
- * archive, which is only added to (ADR 0068).
+ * Whether the curator may rewrite a file's content: a topic file, never natsumi's own, the index, the diary, the
+ * archive, which is only added to (ADR 0068), her skills, whose shape is Pi's to read (ADR 0073), or the postbox's
+ * letters, which say whom to ask and when rather than what she knows (ADR 0076).
  */
 export function isRewritable(path: string): boolean {
-  return path.endsWith('.md') && !NATSUMI_ONLY_FILES.includes(path) && path !== INDEX_FILE && !inDiary(path) && !inArchive(path);
+  return path.endsWith('.md') && !NATSUMI_ONLY_FILES.includes(path) && path !== INDEX_FILE && !inDiary(path) && !inArchive(path)
+    && !inSkills(path) && !inPostbox(path);
 }
 
 function inDiary(path: string): boolean {
@@ -252,9 +256,25 @@ function memoryMap(input: StageInput, archiving = false): string[] {
   const day = (iso: string) => localDate(Date.parse(iso), input.timeZone);
   const diary = input.files.filter(file => inDiary(file.path));
   const archive = input.files.filter(file => inArchive(file.path));
+  const skills = input.files.filter(file => inSkills(file.path));
+  const letters = input.files.filter(file => inPostbox(file.path));
   let diaryShown = false;
   let archiveShown = false;
+  let skillsShown = false;
+  let lettersShown = false;
   for (const file of input.files) {
+    if (inSkills(file.path)) {
+      if (skillsShown) continue;
+      skillsShown = true;
+      lines.push(`- ${SKILLS_DIRECTORY}/: ${skills.length} ファイル（${input.name}の skill、変えない）`);
+      continue;
+    }
+    if (inPostbox(file.path)) {
+      if (lettersShown) continue;
+      lettersShown = true;
+      lines.push(`- ${POSTBOX_DIRECTORY}/: ${letters.length} ファイル（郵便ポストの定期便、変えない）`);
+      continue;
+    }
     if (inArchive(file.path)) {
       if (archiving) { lines.push(`- ${file.path}（${file.chars} 文字）`); continue; }
       if (archiveShown) continue;

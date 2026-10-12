@@ -1,7 +1,7 @@
 # 0040. ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう
 
 - Date: 2026-09-26
-- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え、依頼の見出しの `画像` と、判定にも承認にも通さない画像だけの投稿は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加、判定が使い回す pi の設定は既定の経路のものに固定し、経路の切り替えで変わらないことは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で具体化、Slack のアイコンの置き場所は [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) でアバターのディレクトリの `slack/` に置き換え、判定の方式を 1 つ選ぶ点・しきい値を 1 組持つ点・問題点を 6 つとする点は [ADR 0059](0059-two-judges-side-by-side-and-fewer-issues.md) で置き換え（2 つの方式を同時に掛けて両方を記録し、採用する方で決め、答えなければもう一方で決める。しきい値は判定ごと、問題点は 5 つ）、判定なしの理由を記録に残すことは同 ADR で追加）
+- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え、依頼の見出しの `画像` と、判定にも承認にも通さない画像だけの投稿は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加、判定が使い回す pi の設定は既定の経路のものに固定し、経路の切り替えで変わらないことは [ADR 0046](0046-named-model-routes-switched-by-hand.md) で具体化、Slack のアイコンの置き場所は [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) でアバターのディレクトリの `slack/` に置き換え、判定の方式を 1 つ選ぶ点・しきい値を 1 組持つ点・問題点を 6 つとする点は [ADR 0059](0059-two-judges-side-by-side-and-fewer-issues.md) で置き換え（2 つの方式を同時に掛けて両方を記録し、採用する方で決め、答えなければもう一方で決める。しきい値は判定ごと、問題点は 5 つ）、判定なしの理由を記録に残すことは同 ADR で追加、結果を `agent_reply` の出来事で返す点と、見出しの検査と時刻と発言者による返信先の突き合わせは [ADR 0074](0074-asking-poppo-in-json-and-hearing-back-in-sources.md) で置き換え（結果は `/sources/agents/poppo/` に置いて `sources_updated` の attention で知らせ、依頼は JSON の欄の検査と `{file, path}` の指定））
 
 ## Context
 

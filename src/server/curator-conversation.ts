@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { DOVE_NAME } from './dove.ts';
 import { parseDoveRequest } from './dove-request.ts';
+import { SLACK_PATH } from './slack-archive.ts';
 import { localDateTime } from './nightly.ts';
 
 /**
@@ -74,15 +75,35 @@ export function conversationLines(entries: readonly unknown[], window: Conversat
   return lines.sort((a, b) => a.at - b.at);
 }
 
+/** The channel a request to the dove goes to, as she names it: `/sources/slack/work/dev/…` is `work/#dev`. */
+function channelOf(file: string): string {
+  const [workspace = '', directory = ''] = file.slice(SLACK_PATH.length + 1).split('/');
+  return `${workspace}/${directory.startsWith('@') ? directory : `#${directory}`}`;
+}
+
+/**
+ * A post asked in the form before ADR 0074 (`返信先:` and `種類: 投稿` headings, then `---` and the body), which a session
+ * of that time still holds. The dove takes it no more; the curator still reads what was said.
+ */
+function earlierPost(message: string, her: string): string | undefined {
+  const lines = message.replace(/\r\n?/g, '\n').split('\n');
+  const separator = lines.findIndex(line => line.trim() === '---');
+  if (separator < 0) return undefined;
+  const heading = (name: string) => lines.slice(0, separator).find(line => line.startsWith(`${name}:`))?.slice(name.length + 1).trim();
+  const body = lines.slice(separator + 1).join('\n').trim();
+  if (heading('種類') !== '投稿' || body === '') return undefined;
+  return `${her} → Slack ${heading('返信先') ?? ''}: ${indent(body)}`;
+}
+
 function toolLine(name: string, args: Record<string, unknown>, her: string): string | undefined {
   const text = typeof args.text === 'string' ? args.text : undefined;
   if (name === 'reply_to_mac' && text) return `${her} → マスター: ${indent(text)}`;
   if (name === 'notify_owner' && text) return `${her} → マスター（知らせ）: ${indent(text)}`;
   if (name === 'ask_agent' && args.agent === DOVE_NAME && typeof args.message === 'string') {
     const parsed = parseDoveRequest(args.message);
-    if (!parsed.ok || parsed.request.kind !== 'post' || parsed.request.body === '') return undefined;
-    const target = args.message.replace(/\r\n?/g, '\n').split('\n').find(line => line.startsWith('返信先:'))?.slice('返信先:'.length).trim();
-    return `${her} → Slack ${target}: ${indent(parsed.request.body)}`;
+    if (!parsed.ok) return earlierPost(args.message, her);
+    if (parsed.request.kind !== 'post' || parsed.request.body === '') return undefined;
+    return `${her} → Slack ${channelOf(parsed.request.to.file)}: ${indent(parsed.request.body)}`;
   }
   if (name === 'read' && typeof args.path === 'string' && args.path.startsWith(MEMORY_PREFIX)) {
     return `${her}が記憶を読んだ: ${args.path.slice(MEMORY_PREFIX.length)}`;

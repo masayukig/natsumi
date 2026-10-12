@@ -1,9 +1,11 @@
-import { copyFile, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, lstat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, join, posix } from 'node:path';
 import { runGit, type GitIdentity } from './git.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import { findControlStrings, findForeignScript, hasControlCharacters } from './output-checks.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
+import { inPostbox, POSTBOX_DIRECTORY, type CommittedLetterFile } from './postbox.ts';
+import { SKILL_MAX_CHARS, SKILLS_DIRECTORY, skillFileProblem } from './skills.ts';
 
 /**
  * Memory as a git repository (ADR 0018): everything natsumi is made of — her memories, the always-memory, her
@@ -108,6 +110,11 @@ export interface MemoryRepositoryOptions {
    * one, and never over one that is there. The template, named by the identity, when left out.
    */
   personality?: string;
+  /**
+   * Why a file of hers in `postbox/` is not a letter the server can send, or undefined when it is (ADR 0076). Without
+   * it the postbox's files are checked as any other file of memory.
+   */
+  checkLetter?: (path: string, text: string) => string | undefined;
   log?: (line: string) => void;
 }
 
@@ -420,6 +427,35 @@ export class MemoryRepository {
     await writeFile(join(this.directory, HANDOFF_FILE), handoffText(text) ?? HANDOFF_TEMPLATE, { mode: SHARED_FILE_MODE });
   }
 
+  /** The last commit, or undefined when there is none or it cannot be read: what the postbox looks at (ADR 0076). */
+  async headCommit(): Promise<string | undefined> {
+    const { code, stdout } = await this.git(['rev-parse', '--verify', '-q', 'HEAD'], { allowFailure: true });
+    return code === 0 ? stdout.trim() : undefined;
+  }
+
+  /**
+   * Every file the last commit holds in `postbox/`, as it was committed, never as the working tree has it (ADR 0076):
+   * the server sends only what passed a turn's check or what the owner committed. A symlink, or anything else that is
+   * not a file, is named with why it is no letter.
+   */
+  async committedPostbox(): Promise<CommittedLetterFile[]> {
+    const listed = await this.git(['ls-tree', '-r', '-z', 'HEAD', '--', POSTBOX_DIRECTORY], { allowFailure: true });
+    if (listed.code !== 0) return [];
+    const files: CommittedLetterFile[] = [];
+    for (const entry of listed.stdout.split('\0').filter(Boolean)) {
+      const tab = entry.indexOf('\t');
+      const [mode, type, object] = entry.slice(0, tab).split(' ');
+      const path = entry.slice(tab + 1);
+      if (mode === '120000') { files.push({ path, problem: 'symlink は記憶に置けません' }); continue; }
+      if (type !== 'blob') { files.push({ path, problem: '通常のファイルではありません' }); continue; }
+      const blob = await this.git(['cat-file', 'blob', object!], { allowFailure: true });
+      // git's text is read as UTF-8, and what was not is replaced: a letter is text, or it is no letter.
+      const text = blob.code === 0 && !/[\0\uFFFD]/.test(blob.stdout) ? blob.stdout : undefined;
+      files.push(text === undefined ? { path, problem: 'テキストのファイル（UTF-8）として読めません' } : { path, text });
+    }
+    return files;
+  }
+
   /** The commit the working tree was last brought level with: what a switch records as the handoff it started from. */
   async head(): Promise<string> {
     return (await this.git(['rev-parse', 'HEAD'])).stdout.trim();
@@ -509,6 +545,8 @@ export class MemoryRepository {
    * assumes, with nobody told. A rename reaches here as the removal half, and is put back the same way.
    */
   private inspectRemoval(path: string, writer: Writer): string | undefined {
+    if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
+    if (writer === 'curator' && inPostbox(path)) return postboxRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は消すことも動かすこともできません`;
     if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
@@ -517,6 +555,8 @@ export class MemoryRepository {
 
   /** Why the changed file may not be committed, or undefined when it may. A removal goes through inspectRemoval. */
   private async inspect(path: string, writer: Writer): Promise<string | undefined> {
+    if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
+    if (writer === 'curator' && inPostbox(path)) return postboxRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer !== 'curator' && path === INDEX_FILE) {
       return `${path} は記憶の整理係だけが書くファイルなので、あなたは書き換えられません（夜に整理係が書き直します）`;
@@ -526,7 +566,12 @@ export class MemoryRepository {
     }
     if (writer === 'curator' && NATSUMI_ONLY_FILES.includes(path)) return `${path} は${this.options.identity?.name ?? DEFAULT_SELF.name}自身のファイルなので、整理係は変えられません`;
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は変えられません`;
-    return this.inspectContent(path);
+    const content = await this.inspectContent(path);
+    if (content || !inPostbox(path) || !this.options.checkLetter) return content;
+    // A letter goes back as any file does when it would not be sent: the server sends only what is committed (ADR 0076).
+    let text: string;
+    try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
+    return this.options.checkLetter(path, text);
   }
 
   /** Why a changed file's contents may not be committed, whoever wrote it, or undefined when they may. */
@@ -535,9 +580,23 @@ export class MemoryRepository {
     try { info = await lstat(join(this.directory, path)); } catch { return undefined; }
     if (info.isSymbolicLink()) return 'symlink は記憶に置けません';
     if (!info.isFile()) return '通常のファイルではありません';
-    if (!path.endsWith('.md')) return '.md 以外のファイルは記憶に置けません';
+    // A skill of hers may carry scripts and data as well, inside its own directory and as text (ADR 0073).
+    const skill = skillDirectoryOf(path);
+    const markdown = path.endsWith('.md');
+    if (!markdown && !inSkills(path)) return '.md 以外のファイルは記憶に置けません';
+    if (!markdown && !(skill && await this.isFile(posixJoin(skill, 'SKILL.md')))) {
+      return `.md 以外のファイルは、skill のディレクトリ（SKILL.md のある ${SKILLS_DIRECTORY}/<名前>/）の中にだけ置けます`;
+    }
     let text: string;
-    try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
+    if (markdown) {
+      try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
+    } else {
+      let bytes: Buffer;
+      try { bytes = await readFile(join(this.directory, path)); } catch { return '読めないファイルです'; }
+      const decoded = textOf(bytes);
+      if (decoded === undefined) return 'テキストのファイル（UTF-8）ではありません。バイナリは置けません';
+      text = decoded;
+    }
     if (text.trim() === '') return '中身が空です';
     if (path === ALWAYS_FILE && [...text].length > this.alwaysMaxChars) {
       return `毎回のプロンプトに入る常時記憶の上限（${this.alwaysMaxChars} 文字）を超えています`;
@@ -548,7 +607,35 @@ export class MemoryRepository {
     if (hasControlCharacters(text)) return '制御文字が含まれています';
     const foreign = findForeignScript(text);
     if (foreign.length > 0) return `日本語以外の文字（${foreign.join(' ')}）が含まれています`;
+    // A skill Pi would not load is one she would never see listed, and never hear why (ADR 0073).
+    if (inSkills(path) && basename(path) === 'SKILL.md') {
+      const problem = skillFileProblem(join(this.directory, path));
+      if (problem) return problem;
+    }
+    // SKILL.md itself is spared, so that the skill's own page never goes back for the files beside it.
+    if (skill && basename(path) !== 'SKILL.md' && await this.charsUnder(skill) > SKILL_MAX_CHARS) {
+      return `skill 全体（${skill}/ の下のファイルの合計）の上限（${SKILL_MAX_CHARS} 文字）を超えています`;
+    }
     return undefined;
+  }
+
+  private async isFile(path: string): Promise<boolean> {
+    try { return (await lstat(join(this.directory, path))).isFile(); } catch { return false; }
+  }
+
+  /** The characters of every regular file under a directory of the working tree, as text. */
+  private async charsUnder(directory: string): Promise<number> {
+    let total = 0;
+    let entries;
+    try { entries = await readdir(join(this.directory, directory), { withFileTypes: true }); } catch { return 0; }
+    for (const entry of entries) {
+      const path = posixJoin(directory, entry.name);
+      if (entry.isDirectory()) total += await this.charsUnder(path);
+      else if (entry.isFile()) {
+        try { total += [...(await readFile(join(this.directory, path), 'utf8'))].length; } catch { /* unreadable counts as nothing */ }
+      }
+    }
+    return total;
   }
 
   /** Back to the last commit, or removed when the last commit did not have it. */
@@ -586,6 +673,31 @@ function inArchive(path: string): boolean {
 /** Why natsumi's change to the archive goes back. */
 const archiveRefusal = (path: string) =>
   `${path} は古い記憶（${ARCHIVE_DIRECTORY}/）なので、記憶の整理係だけが書きます。あなたは書き換えられません`;
+
+/** Whether a path is in her skills, or is their directory itself (ADR 0073). */
+export function inSkills(path: string): boolean {
+  return path === SKILLS_DIRECTORY || path.startsWith(`${SKILLS_DIRECTORY}/`);
+}
+
+/** The skill directory a path is inside, `skills/<name>`, or undefined for one directly in `skills/` or outside it. */
+function skillDirectoryOf(path: string): string | undefined {
+  const parts = path.split('/');
+  return parts[0] === SKILLS_DIRECTORY && parts.length >= 3 ? `${parts[0]}/${parts[1]}` : undefined;
+}
+
+/** A file's bytes as UTF-8 text, or undefined for what is not: a NUL byte, or bytes UTF-8 cannot read. */
+function textOf(bytes: Buffer): string | undefined {
+  if (bytes.includes(0)) return undefined;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return undefined; }
+}
+
+/** Why the curator's change to a skill is refused. */
+const posixJoin = posix.join;
+
+const skillsRefusal = (path: string) => `${path} は ${SKILLS_DIRECTORY}/ の中の skill なので、整理係は変えることも動かすこともできません`;
+
+/** Why the curator's change to a letter is refused (ADR 0076). */
+const postboxRefusal = (path: string) => `${path} は ${POSTBOX_DIRECTORY}/ の中の定期便なので、整理係は変えることも動かすこともできません`;
 
 /** Whether a path is in the diary, or is the diary itself. */
 function inDiary(path: string): boolean {

@@ -11,7 +11,8 @@ import { SERVER_UMASK } from '../src/server/permissions.ts';
 // Fictional memories only.
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
 
-async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number; personality?: string; identity?: GitIdentity } = {}) {
+async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number; personality?: string; identity?: GitIdentity;
+  checkLetter?: (path: string, text: string) => string | undefined; } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-memory-repo-')));
   const data = join(root, 'data');
   const directory = join(data, 'memory');
@@ -860,4 +861,188 @@ test('a commit is dated by when it was made, and one the history does not hold h
     assert.equal(await f.repository.commitTime('0000000000000000000000000000000000000000'), undefined);
     assert.equal(await f.repository.commitTime(undefined), undefined);
   } finally { await f.cleanup(); }
+});
+
+// ADR 0073: her skills live in memory's skills/, ride its commits, and are kept out of the curator's hands.
+
+const SKILL = '---\nname: weekly-report\ndescription: 週報をまとめるときの手順\n---\n\n# 週報\n\n- 月曜に先週の日記を読む\n';
+
+test('a skill she writes is committed with memory, by day as well as by night', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    await mkdir(join(f.directory, 'skills', 'weekly-report', 'references'), { recursive: true });
+    await f.write('skills/weekly-report/SKILL.md', SKILL);
+    await f.write('skills/weekly-report/references/例.md', '# 例\n\n- 先週の例\n');
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    assert.equal(outcome.committed, true);
+    assert.deepEqual(outcome.reverted, []);
+    assert.deepEqual(outcome.files.sort(), ['skills/weekly-report/SKILL.md', 'skills/weekly-report/references/例.md']);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('a SKILL.md Pi could not load goes back with the reason', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    for (const name of ['no-description', 'no-frontmatter', 'Bad_Name', 'good']) await mkdir(join(f.directory, 'skills', name), { recursive: true });
+    await f.write('skills/no-description/SKILL.md', '---\nname: no-description\n---\n\n# 手順\n\n- 一つ目\n');
+    await f.write('skills/no-frontmatter/SKILL.md', '# 手順\n\n- 一つ目\n');
+    await f.write('skills/Bad_Name/SKILL.md', '---\nname: Bad_Name\ndescription: 名前の形が違う手順\n---\n\n# 手順\n');
+    await f.write('skills/good/SKILL.md', '---\nname: good\ndescription: 正しい手順\n---\n\n# 手順\n');
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    const reasons = Object.fromEntries(outcome.reverted.map(file => [file.path, file.reason]));
+    assert.deepEqual(Object.keys(reasons).sort(),
+      ['skills/Bad_Name/SKILL.md', 'skills/no-description/SKILL.md', 'skills/no-frontmatter/SKILL.md']);
+    assert.match(reasons['skills/no-description/SKILL.md']!, /skill/);
+    assert.match(reasons['skills/no-description/SKILL.md']!, /description/);
+    assert.match(reasons['skills/no-frontmatter/SKILL.md']!, /description/);
+    assert.match(reasons['skills/Bad_Name/SKILL.md']!, /name/);
+    assert.deepEqual(outcome.files, ['skills/good/SKILL.md']);
+  } finally { await f.cleanup(); }
+});
+
+// Q14 of the grill: a skill of hers may carry scripts and data, as text, inside its own directory and nowhere else.
+const REPORT_SKILL = '---\nname: report\ndescription: 集計して報告する手順\n---\n\n# 報告\n\n- bash scripts/collect.sh を動かす\n';
+
+test('scripts and data in her skill\'s directory are committed, as long as they are text', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    await mkdir(join(f.directory, 'skills', 'report', 'scripts'), { recursive: true });
+    await mkdir(join(f.directory, 'skills', 'report', 'references'), { recursive: true });
+    await f.write('skills/report/SKILL.md', REPORT_SKILL);
+    await f.write('skills/report/scripts/collect.sh', '#!/bin/bash\nset -eu\n\tls /memory/diary | wc -l\n');
+    await f.write('skills/report/scripts/sum.py', 'import sys\nprint(sum(int(x) for x in sys.stdin))\n');
+    await f.write('skills/report/references/columns.csv', '日付,件数\n2026-10-01,3\n');
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    assert.deepEqual(outcome.reverted, []);
+    assert.deepEqual(outcome.files.sort(), ['skills/report/SKILL.md', 'skills/report/references/columns.csv',
+      'skills/report/scripts/collect.sh', 'skills/report/scripts/sum.py']);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('what is not Markdown goes back outside a skill\'s directory, as binary, through a symlink, or past the limits', async () => {
+  const f = await setup({ fileMaxChars: 40_000 });
+  try {
+    await f.repository.initialize(undefined);
+    await mkdir(join(f.directory, 'skills', 'report', 'scripts'), { recursive: true });
+    await mkdir(join(f.directory, 'skills', 'big', 'data'), { recursive: true });
+    await mkdir(join(f.directory, 'skills', 'no-skill'), { recursive: true });
+    await f.write('skills/report/SKILL.md', REPORT_SKILL);
+    await f.write('skills/report/scripts/nul.bin', 'abc\u0000def\n');
+    await writeFile(join(f.directory, 'skills', 'report', 'scripts', 'latin1.txt'), Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]));
+    await f.write('skills/report/scripts/long.sh', `# ${'a'.repeat(40_001)}\n`);
+    await symlink('/etc/hostname', join(f.directory, 'skills', 'report', 'scripts', 'link.sh'));
+    await f.write('skills/loose.sh', 'echo 直下\n');
+    await f.write('skills/no-skill/run.sh', 'echo SKILL.md が無い\n');
+    await f.write('memo.txt', '記憶のほかの場所\n');
+    // A skill as a whole: every file is within its own limit, and together they are past the skill's.
+    await f.write('skills/big/SKILL.md', '---\nname: big\ndescription: 大きい手順\n---\n\n# 大きい\n');
+    for (const name of ['a', 'b', 'c']) await f.write(`skills/big/data/${name}.csv`, `${'x'.repeat(35_000)}\n`);
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    const reasons = Object.fromEntries(outcome.reverted.map(file => [file.path, file.reason]));
+    assert.match(reasons['skills/report/scripts/nul.bin']!, /テキスト/);
+    assert.match(reasons['skills/report/scripts/latin1.txt']!, /テキスト/);
+    assert.match(reasons['skills/report/scripts/long.sh']!, /40000/);
+    assert.match(reasons['skills/report/scripts/link.sh']!, /symlink/);
+    assert.match(reasons['skills/loose.sh']!, /SKILL\.md/);
+    assert.match(reasons['skills/no-skill/run.sh']!, /SKILL\.md/);
+    assert.match(reasons['memo.txt']!, /\.md/);
+    // Checked in path order, each against the skill as the files before it left it: the first goes back, the rest fit.
+    assert.match(reasons['skills/big/data/a.csv']!, /100000/);
+    assert.deepEqual(outcome.files.sort(), ['skills/big/SKILL.md', 'skills/big/data/b.csv', 'skills/big/data/c.csv', 'skills/report/SKILL.md']);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('the curator may not change, add or take away a skill: the whole stage is thrown away', async () => {
+  const cases: [string, (f: Awaited<ReturnType<typeof setup>>) => Promise<void>][] = [
+    ['a skill rewritten', f => f.write('skills/weekly-report/SKILL.md', SKILL.replace('月曜', '火曜'))],
+    ['a skill removed', f => rm(join(f.directory, 'skills', 'weekly-report'), { recursive: true })],
+    ['a skill added', async f => {
+      await mkdir(join(f.directory, 'skills', 'new-one'));
+      await f.write('skills/new-one/SKILL.md', SKILL.replace('weekly-report', 'new-one'));
+    }],
+    ['a skill moved out', f => rename(join(f.directory, 'skills', 'weekly-report', 'SKILL.md'), join(f.directory, '週報.md'))],
+  ];
+  for (const [label, act] of cases) {
+    const f = await setup();
+    try {
+      await mkdir(join(f.directory, 'skills', 'weekly-report'), { recursive: true });
+      await f.write('skills/weekly-report/SKILL.md', SKILL);
+      await f.repository.initialize(undefined);
+      const head = f.git('rev-parse', 'HEAD');
+      await act(f);
+      const outcome = await f.repository.commitCuration({ message: '整理した' });
+      assert.equal(outcome.committed, false, label);
+      assert.ok(outcome.rejected.some(file => file.path.startsWith('skills/') && /skill/.test(file.reason)), `${label}: ${JSON.stringify(outcome.rejected)}`);
+      assert.equal(f.git('rev-parse', 'HEAD'), head, label);
+      assert.equal(await f.read('skills/weekly-report/SKILL.md'), SKILL, label);
+    } finally { await f.cleanup(); }
+  }
+});
+
+// ADR 0076: her letters in postbox/ are checked as any file of memory, and then as letters; the curator keeps off them.
+const LETTER = '---\nto: news\ncron: "0 7 * * *"\n---\n今朝のニュースを選んでください。\n';
+
+test('a letter of hers that could not be sent goes back at the end of the turn, with the check\'s reason; a good one is committed', async () => {
+  const f = await setup({ checkLetter: (path, text) => text.includes('*/5') ? `${path} の cron が短すぎます` : undefined });
+  try {
+    await f.repository.initialize(undefined);
+    await mkdir(join(f.directory, 'postbox'));
+    await f.write('postbox/morning-news.md', LETTER);
+    await f.write('postbox/inbox.md', LETTER.replace('0 7 * * *', '*/5 * * * *'));
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    assert.deepEqual(outcome.files, ['postbox/morning-news.md']);
+    assert.deepEqual(outcome.reverted, [{ path: 'postbox/inbox.md', reason: 'postbox/inbox.md の cron が短すぎます' }]);
+    assert.equal(f.clean(), true);
+    // She may remove a letter: that is how one is stopped.
+    await rm(join(f.directory, 'postbox', 'morning-news.md'));
+    assert.deepEqual((await f.repository.commit({ event: 'mac_message' })).files, ['postbox/morning-news.md']);
+  } finally { await f.cleanup(); }
+});
+
+test('the postbox is read from HEAD alone: what is committed, never the working tree, and what is no file is named', async () => {
+  const f = await setup();
+  try {
+    await mkdir(join(f.directory, 'postbox', 'daily'), { recursive: true });
+    await f.write('postbox/morning-news.md', LETTER);
+    await f.write('postbox/daily/inbox.md', LETTER);
+    await symlink('morning-news.md', join(f.directory, 'postbox', 'link.md'));
+    await f.repository.initialize(undefined);
+    await f.write('postbox/morning-news.md', LETTER.replace('0 7', '0 8'));
+    await f.write('postbox/draft.md', LETTER);
+    const files = await f.repository.committedPostbox();
+    assert.deepEqual(files, [
+      { path: 'postbox/daily/inbox.md', text: LETTER },
+      { path: 'postbox/link.md', problem: 'symlink は記憶に置けません' },
+      { path: 'postbox/morning-news.md', text: LETTER },
+    ]);
+    assert.equal(await f.repository.headCommit(), f.git('rev-parse', 'HEAD'));
+  } finally { await f.cleanup(); }
+});
+
+test('the curator may not change, add or take away a letter: the whole stage is thrown away', async () => {
+  const cases: [string, (f: Awaited<ReturnType<typeof setup>>) => Promise<void>][] = [
+    ['a letter rewritten', f => f.write('postbox/morning-news.md', LETTER.replace('0 7', '0 8'))],
+    ['a letter removed', f => rm(join(f.directory, 'postbox', 'morning-news.md'))],
+    ['a letter added', f => f.write('postbox/new.md', LETTER)],
+  ];
+  for (const [label, act] of cases) {
+    const f = await setup();
+    try {
+      await mkdir(join(f.directory, 'postbox'));
+      await f.write('postbox/morning-news.md', LETTER);
+      await f.repository.initialize(undefined);
+      const head = f.git('rev-parse', 'HEAD');
+      await act(f);
+      const outcome = await f.repository.commitCuration({ message: '整理した' });
+      assert.equal(outcome.committed, false, label);
+      assert.ok(outcome.rejected.some(file => file.path.startsWith('postbox/') && /定期便/.test(file.reason)), `${label}: ${JSON.stringify(outcome.rejected)}`);
+      assert.equal(f.git('rev-parse', 'HEAD'), head, label);
+    } finally { await f.cleanup(); }
+  }
 });

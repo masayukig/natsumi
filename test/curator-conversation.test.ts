@@ -37,8 +37,10 @@ function day(): unknown[] {
       { type: 'sources_updated', received_at: '2026-10-04T00:59:00.000Z', changed: [{ dir: 'slack/work/dev', files: ['2026-10-04.jsonl'] }] },
       { type: 'agent_reply', received_at: '2026-10-04T00:58:00.000Z', agent: 'wiki-keeper', status: 'completed', text: 'Wiki を直しました' }),
     assistant('2026-10-04T01:00:05.000Z',
-      toolCall('ask_agent', { agent: 'poppo', message: '返信先: work/#dev 2026-10-04 09:58:00 山田\n種類: 投稿\n---\nおはようございます、確認します' }),
-      toolCall('ask_agent', { agent: 'poppo', message: '返信先: work/#dev 2026-10-04 09:58:00 山田\n種類: リアクション\n---\neyes' }),
+      toolCall('ask_agent', { agent: 'poppo', message: JSON.stringify({ kind: 'post', to: { file: '/sources/slack/work/dev/2026-10-04.jsonl', path: '.[3]' },
+        text: 'おはようございます、確認します' }) }),
+      toolCall('ask_agent', { agent: 'poppo', message: JSON.stringify({ kind: 'reaction', to: { file: '/sources/slack/work/dev/2026-10-04.jsonl', path: '.[3]' },
+        emoji: 'eyes' }) }),
       toolCall('ask_agent', { agent: 'wiki-keeper', message: '歯医者のページを直して' }),
       toolCall('read', { path: 'notes.txt' }),
       toolCall('read', { path: '/manual/slack.md' })),
@@ -59,7 +61,7 @@ test('the owner\'s words, natsumi\'s answers and her posts to Slack, with what s
     '[10-04 08:10] なつみが記憶を探した: 「歯医者」',
     '[10-04 08:10] なつみが記憶を読んだ: 予定.md',
     '[10-04 08:10] なつみ → マスター: 14時ですね。\n  直しておきました！',
-    '[10-04 10:00] なつみ → Slack work/#dev 2026-10-04 09:58:00 山田: おはようございます、確認します',
+    '[10-04 10:00] なつみ → Slack work/#dev: おはようございます、確認します',
     '[10-04 11:59] Slack work/#dev 山田: なつみさん、資料ありがとう',
     '[10-04 12:00] なつみ → マスター（知らせ）: 山田さんからお礼が届きました',
     '[10-04 12:00] なつみが記憶を探した: 「山田」（仕事）',
@@ -75,7 +77,18 @@ test('the owner\'s words, natsumi\'s answers and her posts to Slack, with what s
 test('only what falls between the last night the curator succeeded and tonight is taken', () => {
   const lines = conversationLines(day(), { since: Date.parse('2026-10-04T00:00:00.000Z'), until: Date.parse('2026-10-04T02:00:00.000Z'),
     timeZone: 'Asia/Tokyo', name: 'なつみ' });
-  assert.deepEqual(lines.map(line => line.text), ['[10-04 10:00] なつみ → Slack work/#dev 2026-10-04 09:58:00 山田: おはようございます、確認します']);
+  assert.deepEqual(lines.map(line => line.text), ['[10-04 10:00] なつみ → Slack work/#dev: おはようございます、確認します']);
+});
+
+test('a post to Slack asked in the form before ADR 0074 is still read from a session of that time', () => {
+  const entries = [
+    assistant('2026-10-04T01:00:00.000Z', toolCall('ask_agent', { agent: 'poppo',
+      message: '返信先: work/#dev 2026-10-04 09:58:00 山田\n種類: 投稿\n表情: happy\n---\nおはようございます、\n確認します' }),
+      toolCall('ask_agent', { agent: 'poppo', message: '返信先: work/#dev 2026-10-04 09:58:00 山田\n種類: リアクション\n---\neyes' })),
+  ];
+  const lines = conversationLines(entries, { since: Date.parse('2026-10-04T00:00:00.000Z'), until: Date.parse('2026-10-04T02:00:00.000Z'),
+    timeZone: 'Asia/Tokyo', name: 'なつみ' });
+  assert.deepEqual(lines.map(line => line.text), ['[10-04 10:00] なつみ → Slack work/#dev 2026-10-04 09:58:00 山田: おはようございます、\n  確認します']);
 });
 
 test('past the limit the oldest lines are dropped, and how many is told; a single line longer than the limit is cut short', () => {

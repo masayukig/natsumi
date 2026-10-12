@@ -34,3 +34,25 @@ Codemode は既定で off で、off のときは上の 2 つから何も変わ�
   スクリプトからだけ呼べるツールの宣言を載せる。その文面は Pi が組むので、Pi の更新でも動きうる。
 - codemode は最後に並ぶ。`direct` では作業環境のツールも宣言に残り、`codemode` では宣言から外れて
   codemode の説明の中にだけ現れる。
+
+## skills を on にしたとき（ADR 0073）
+
+`with-workspace-skills.json` は、`skills.enabled` を true にしたときの system prompt とツールである。
+data directory の `skills/`（本人の skill）と記憶の `skills/`（なつみの skill）に固定の skill を 1 つずつ置いて測っている。
+skill は他の場合にも置いてあり、off のときは上の fixture から何も変わらないこと（一覧が入らないこと）も、それで確かめている。
+
+- 作業環境の節の中に、skill の置き場所と書き方の節（`### skill`）が入る。
+- `systemPrompt` の末尾に、Pi が足す skill の一覧（`<skills>`）が入る。パスは作業環境から見たもの（`/skills/...`・`/memory/skills/...`）で、
+  本人の分が先に並ぶ。一覧の前置きの英文は Pi が組むので、Pi の更新でも動きうる。
+- ツールの定義は skills off のときと同じである。`read` の説明は変えず、`/skills` を読めるのは実行のときの検査だけで決まる。
+
+## config で tools を宣言したとき（ADR 0075）
+
+`with-workspace-tools.json`（Codemode off）と `with-workspace-tools-codemode.json`（Codemode on）は、config の
+`tools` に固定のツールを 2 つ（`direct` の `weather` と、`codemode` の `count_words`）宣言したときのツールである。
+tools を書かない config では、上の fixture から何も変わらない。
+
+- 宣言したツールは、組み込みのツールのすべての後ろに、宣言した順で並ぶ。`description` と `parameters` は書いたとおりに載る。
+- system prompt は宣言の有無で変わらない（テストで突き合わせている）。
+- Codemode が off のときは、`exposure` に関わらず、すべてモデルに宣言される（組み込みのツールと同じ）。
+  on のときは、`direct` は宣言に残って呼び方の文が足され、`codemode` は宣言から外れて codemode の説明の中にだけ現れる。

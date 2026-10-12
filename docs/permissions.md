@@ -45,6 +45,14 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 なつみが読んだ記憶のパスと探した言葉。`curator.conversationMaxChars` まで）も送られます。
 本人のエンドポイントの外の経路（ChatGPT Plus など、`compatible` を持たない経路）を選ぶと、記憶と会話の本文がそこへ出ます。`/settings` の画面は、そうした経路に印を付け、次の夜がそこで動くときはそう示します。
 
+skills を on にすると（`skills.enabled`、[ADR 0073](adr/0073-skills-from-the-owner-and-her-own.md)）、本人の skill（本人の private リポジトリの clone）と
+なつみの skill の名前・説明が system prompt に入り、なつみが `read` で読んだ本文と一緒に、思考ループのモデルの接続先へ送られます。
+サーバーは本人の skill のリポジトリを取りに行きません。clone を更新するのは本人で、そのための GitHub への道は、サーバーではなく出口の proxy の中継にあります（下の「作業環境」）。
+
+config で宣言したツール（`tools`、[ADR 0075](adr/0075-tools-declared-in-the-config.md)）のために、サーバーは外へ要求を出しません。
+道具は作業環境の中で動くので、上の表も、サーバーの外向きの許可リストも増えません。宣言の `description` と `parameters` はツールの定義として、
+道具の出力はツールの結果として、思考ループのモデルの接続先へ送られます。
+
 サーバーは記憶の git を push しません（push するのは本人です）。Google などほかの外部サービスには、今はつなぎません。
 
 ### Slack の scope
@@ -82,16 +90,17 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | `GET /auth/github/callback` | GitHub から戻るブラウザ | サーバーの state。code を交換し、数値 ID が `github.allowedUserId` と一致するときだけ通します | アプリのログインなら、60 秒で切れる 1 回限りの login code を付けた、アプリの URL scheme への redirect。ブラウザのログインなら、セッションの cookie を付けた同じオリジンのページを返し、そこからログインを始めたページ（コードに固定の `/`・`/settings`・`/dashboard` のどれか）へ移ります（`SameSite=Strict` の cookie は GitHub から戻る redirect では送られないため） | [0002](adr/0002-client-events-and-approvals.md)、[0006](adr/0006-github-login-and-transport.md)、[0049](adr/0049-a-read-only-dashboard-in-the-browser.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `POST /auth/session` | アプリ | login code と PKCE の verifier | セッション（256 ビットの bearer token。最後に使ってから 30 日で切れ、使うたびに延びます） | [0006](adr/0006-github-login-and-transport.md)、[0030](adr/0030-a-session-that-lasts-while-it-is-used.md) |
 | `POST /auth/logout` | アプリ | bearer token | セッションを失効させ、そのセッションの WebSocket を閉じます | [0006](adr/0006-github-login-and-transport.md) |
-| `/v1/ws`（WebSocket） | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。Origin があれば `publicOrigin` と一致すること。bearer が無いときだけセッションの cookie を見て、それは Origin が `publicOrigin` のときだけ受け付けます（Origin が無い・違えば 403）。bearer があれば cookie は見ません | 会話、承認、実行中の設定の読み書き、iPhone の通知の登録（cookie でつないだ接続からは断ります）。つなぐたびにセッションが延びます | [0006](adr/0006-github-login-and-transport.md)、[0029](adr/0029-push-notifications-on-the-iphone.md)、[0041](adr/0041-approving-slack-posts-on-the-iphone.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
+| `/v1/ws`（WebSocket） | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。Origin があれば `publicOrigin` と一致すること。bearer が無いときだけセッションの cookie を見て、それは Origin が `publicOrigin` のときだけ受け付けます（Origin が無い・違えば 403）。bearer があれば cookie は見ません | 会話、承認、実行中の設定の読み書き、睡眠薬の判定の読み取りと飲ませること（`sleep.status`・`sleep.take`）、iPhone の通知の登録（cookie でつないだ接続からは断ります）。つなぐたびにセッションが延びます | [0006](adr/0006-github-login-and-transport.md)、[0029](adr/0029-push-notifications-on-the-iphone.md)、[0041](adr/0041-approving-slack-posts-on-the-iphone.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md)、[0077](adr/0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) |
 | `GET /v1/images/<imageId>` | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。bearer が無ければセッションの cookie（GET だけで状態を変えず、`SameSite=Strict` なので別のサイトからは cookie が付きません）。セッションを確かめてから画像を探します | サーバーが写し取った画像（承認待ちの `images` と会話の返事の画像）。使うたびにセッションが延びます | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `POST /v1/uploads`（チャットのファイルの添付） | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。bearer が無ければセッションの cookie で、Origin が `publicOrigin` のときだけ受け付けます（無い・違えば 403）。使うたびにセッションが延びます | 本文のファイルを 1 つ、`.natsumi/uploads/` に書いてから data directory の `sources/uploads/<UTC の日時>-<16 進 4 桁>/<名前>` に移します。1 ファイル `uploads.maxFileBytes`（既定 25MB）まで。超えれば 413 で断り、何も残しません。どのメッセージにも付かなかったものは 1 日で消します | [0071](adr/0071-attaching-files-to-a-chat-message.md) |
 | `GET /v1/uploads/<uploadId>` | アプリと本人のブラウザ | 上の `GET /v1/images/<imageId>` と同じ（bearer、無ければ cookie） | 本人のメッセージに付いたファイルだけ。PNG・JPEG・WebP はその種類で、ほかは `application/octet-stream` と `Content-Disposition: attachment` で返します。どちらも `nosniff` と `Content-Security-Policy: sandbox` を付けます | [0071](adr/0071-attaching-files-to-a-chat-message.md) |
 | `GET /`・`GET /settings` | 本人のブラウザ | セッションの cookie。無ければ GitHub のログインから始め、済むと開いたページに戻ります | JS の束を読み込むだけの HTML（個人データを含みません。画面は束が WebSocket で組みます）。束が無ければその旨の文だけ。CSP は `script-src 'self'`・`connect-src 'self'` と `publicOrigin` の wss・`frame-ancestors 'none'` です | [0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `GET /app/<ファイル名>` | 本人のブラウザ | なし | ブラウザの画面の JS の束と style（`.js`・`.css`・`.map`、名前だけでディレクトリは持てません）。公開のリポジトリのコードをビルドしたもので、秘密も個人データも含みません | [0058](adr/0058-settings-and-chat-in-the-browser.md) |
-| `/dashboard` の下（画面・自動更新・画像） | 本人のブラウザ | セッションの cookie（`natsumi_session`。`HttpOnly`・`Secure`・`SameSite=Strict`・`Path=/`。`allowedUserId` のセッションだけ。`Secure` は `publicOrigin` が https のときに付け、http が許される loopback の試験でだけ外れます）。以前の cookie（`natsumi_dashboard`、`Path=/dashboard`）はここでだけ 1 度受け付け、新しい cookie に移し替えます。無ければ GitHub のログインから始めます。読み取り専用で、状態を変える操作はありません（例外は下のログアウトと予約した確認の取り消し） | ターンの一覧と、思考・ツールの引数と結果・返事・一行メモの全文、画像、いまの状態、失敗と待ち、統計のグラフ、一行メモ・ポッポさん・承認の履歴・端末の一覧。ターンの中身は、Pi の session のファイル（`pi.sessionDirectory` の中だけ）から、`turn_stats` の位置の分だけを読みます。画像はそこに入っているもののうち PNG・JPEG・GIF・WebP だけを、ページに埋め込まず `/dashboard/turns/<ターン>/images/<番号>` で返します。一行メモの一覧は、各ターンの位置の終わりの付近（最大 1MB）だけを読みます。失敗と待ち（失敗した出来事、承認待ちの下書き、予約した確認の理由、外のエージェントへの依頼、夜の切り替え）、予約した確認の一覧（繰り返しの cron 式、次の時刻、理由、check_id）、ポッポさんへの依頼の下書きと送った文・判定、承認の履歴（承認を求めた文と投稿先、判定、本人の決定と直した文、決めた端末の ID、送った結果）、端末とログインのセッションの一覧は、`.natsumi/state.sqlite` から読みます。統計のグラフは、`.natsumi/state.sqlite` の `turn_stats` の数値（時間・回数・tokens・outcome）だけを、期間（最長 30 日）の分だけ集計します。セッションの token のハッシュ、push の device token と公開鍵は読み出しません。HTML はすべてエスケープし、CSP は `script-src 'self'`・`frame-ancestors 'none'` です | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md)、[0064](adr/0064-cancelling-a-self-check-from-the-dashboard.md) |
-| `GET /dashboard/files` の下（なつみのファイル） | 本人のブラウザ | 上の `/dashboard` の下と同じセッションの cookie。読み取り専用で、書き込み・削除などの操作はありません | なつみの作業環境の `/memory`（記憶の repository）・`/work`・`/home/natsumi`（data directory の `work/`・`home/`）・`/manual`（コードに同梱の `manual/`）・`/manual/agents`（data directory の `agents/`）の今の中身。ディレクトリは 1 階層ずつの一覧、ファイルはテキストの先頭（1 MiB まで）・画像（PNG・JPEG・GIF・WebP を中身で見分け、`?image=1` で返します）・種類と大きさで出し、どのファイルも `?download=1` で全体を `Content-Disposition: attachment`・`application/octet-stream`・`nosniff` で返します。`/home/natsumi` の設定のファイルなど、なつみが作ったものはすべて見えます。symlink はたどらず（パスの途中の symlink も断ります）、`..` やエンコードした区切りでこれらの場所の外には出られません。data directory のほかの場所（`.natsumi/`・`sources/` など）、Pi の状態領域、秘密のファイルは読みません。`/memory` の `.git` は出しません。Markdown は生の HTML を通さずに整形し、リンクは `http`・`https` と同じ場所の中への相対パスだけを残します | [0054](adr/0054-her-files-on-the-dashboard.md) |
+| `/dashboard` の下（画面・自動更新・画像） | 本人のブラウザ | セッションの cookie（`natsumi_session`。`HttpOnly`・`Secure`・`SameSite=Strict`・`Path=/`。`allowedUserId` のセッションだけ。`Secure` は `publicOrigin` が https のときに付け、http が許される loopback の試験でだけ外れます）。以前の cookie（`natsumi_dashboard`、`Path=/dashboard`）はここでだけ 1 度受け付け、新しい cookie に移し替えます。無ければ GitHub のログインから始めます。読み取り専用で、状態を変える操作はありません（例外は下のログアウトと予約した確認の取り消しと睡眠薬） | ターンの一覧と、思考・ツールの引数と結果・返事・一行メモの全文、画像、いまの状態、失敗と待ち、統計のグラフ、一行メモ・ポッポさん・承認の履歴・端末の一覧。ターンの中身は、Pi の session のファイル（`pi.sessionDirectory` の中だけ）から、`turn_stats` の位置の分だけを読みます。画像はそこに入っているもののうち PNG・JPEG・GIF・WebP だけを、ページに埋め込まず `/dashboard/turns/<ターン>/images/<番号>` で返します。一行メモの一覧は、各ターンの位置の終わりの付近（最大 1MB）だけを読みます。失敗と待ち（失敗した出来事、承認待ちの下書き、予約した確認の理由、外のエージェントへの依頼、夜の切り替え）、予約した確認の一覧（繰り返しの cron 式、次の時刻、理由、check_id）、ポッポさんへの依頼の下書きと送った文・判定、承認の履歴（承認を求めた文と投稿先、判定、本人の決定と直した文、決めた端末の ID、送った結果）、端末とログインのセッションの一覧は、`.natsumi/state.sqlite` から読みます。統計のグラフは、`.natsumi/state.sqlite` の `turn_stats` の数値（時間・回数・tokens・outcome）だけを、期間（最長 30 日）の分だけ集計します。セッションの token のハッシュ、push の device token と公開鍵は読み出しません。HTML はすべてエスケープし、CSP は `script-src 'self'`・`frame-ancestors 'none'` です | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md)、[0064](adr/0064-cancelling-a-self-check-from-the-dashboard.md) |
+| `GET /dashboard/files` の下（なつみのファイル） | 本人のブラウザ | 上の `/dashboard` の下と同じセッションの cookie。読み取り専用で、書き込み・削除などの操作はありません | なつみの作業環境の `/memory`（記憶の repository）・`/work`・`/home/natsumi`（data directory の `work/`・`home/`）・`/manual`（コードに同梱の `manual/`）・`/manual/agents`（data directory の `agents/`）・`/sources`（data directory の `sources/`。外のエージェントの返事や Slack など、外から届いたもの）の今の中身。ディレクトリは 1 階層ずつの一覧、ファイルはテキストの先頭（1 MiB まで）・画像（PNG・JPEG・GIF・WebP を中身で見分け、`?image=1` で返します）・種類と大きさで出し、どのファイルも `?download=1` で全体を `Content-Disposition: attachment`・`application/octet-stream`・`nosniff` で返します。`/home/natsumi` の設定のファイルなど、なつみが作ったものはすべて見えます。symlink はたどらず（パスの途中の symlink も断ります）、`..` やエンコードした区切りでこれらの場所の外には出られません。data directory のほかの場所（`.natsumi/`・`sources.git/` など）、Pi の状態領域、秘密のファイルは読みません。`/memory` の `.git` は出しません。Markdown は生の HTML を通さずに整形し、リンクは `http`・`https` と同じ場所の中への相対パスだけを残します | [0054](adr/0054-her-files-on-the-dashboard.md) |
 | `POST` のログアウト（`/dashboard` の下） | 本人のブラウザ | セッションの cookie と、Origin ヘッダーが `publicOrigin` と一致すること（CSRF を Origin の照合と `SameSite=Strict` で防ぎます）。Origin が無いか一致しなければ断ります | そのブラウザのセッションだけを失効させ、cookie（新旧とも）を消します。ほかのセッションには触りません | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `POST /dashboard/checks/<check_id>/cancel`（予約した確認の取り消し） | 本人のブラウザ | 上のログアウトと同じ。生きているセッションの cookie と、Origin ヘッダーが `publicOrigin` と一致すること。どちらかが欠ければ 403 で断り、ログインは始めません。POST だけを受けます | 待っている予約 1 件を、natsumi の `cancel_self_check` と同じ処理で「取り消し」にします（行は消しません）。前に、その予約を出して尋ねるページ（`GET /dashboard/checks/<check_id>`）を通ります。ほかの予約と、ほかの状態には触りません | [0064](adr/0064-cancelling-a-self-check-from-the-dashboard.md) |
+| `POST /dashboard/sleep`（睡眠薬） | 本人のブラウザ | 上の予約した確認の取り消しと同じ。生きているセッションの cookie と、Origin ヘッダーが `publicOrigin` と一致すること。どちらかが欠ければ 403 で断り、ログインは始めません。`GET`（いま飲ませると何をするかを出すページ。何も変えません）と `POST` だけを受けます | natsumi に睡眠薬を飲ませます。思考ループの出来事を 1 つ積むか、待っている・走っている夜の切り替えか睡眠薬に合流します。何をするか（夜と同じ振り返り・記憶の整理係・新しい session、またはそのうち欠けた部分、昼寝）はサーバーが直近の夜の記録から決めます。前に、判定を出して尋ねるページ（`GET /dashboard/sleep`）を通ります。ほかの状態には触りません | [0077](adr/0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) |
 | `GET /dashboard/static/`（CSS と JS）、`GET /dashboard/signed-out` | 本人のブラウザ | なし | 同梱のスタイルシートと自動更新のスクリプト、ログアウト後の案内だけ。個人データは含みません | [0049](adr/0049-a-read-only-dashboard-in-the-browser.md) |
 | `GET /avatar/<表情>.png` | Slack（投稿のアイコンを取りに来る） | なし | 同梱の表情の画像だけ | [0040](adr/0040-the-dove-sends-what-the-judge-passes.md) |
 | ACME の HTTP-01（`listen.tls.acme.httpPort`、既定 80） | CA | なし | 発行中の challenge への応答（`/.well-known/acme-challenge/`）と、`publicOrigin` の https への redirect だけ。ログイン・API・WebSocket にはつながりません | [0007](adr/0007-acme-and-fixed-ipv6.md) |
@@ -103,14 +112,26 @@ Slack は Socket Mode で natsumi から外へつなぐので、Slack から届�
 作業環境（natsumi-workspace）は、秘密を持たず、外へ出られません。サーバーとは Unix ソケットの runner だけでつながり、つなぐのはサーバーの側です
 （[ADR 0019](adr/0019-a-workspace-not-a-memory-tool.md)、[ADR 0034](adr/0034-an-allow-list-for-the-way-out.md)）。
 Docker では `network_mode: none`、Kubernetes では作業環境の UID の外向きを全部拒否します。
+sshd でログインする本人が skill の clone を `git pull` するときは、同じ Pod の出口の proxy にある loopback の中継を通ります
+（[ADR 0073](adr/0073-skills-from-the-owner-and-her-own.md)）。中継の行き先は GitHub の ssh に固定です。loopback なので作業環境からも届きますが、
+作業環境には GitHub の鍵も agent のソケットも置かないので、届いても読み書きはできません。中継の設定は環境の設定にあります。
 
 なつみのツールのうち作業環境に届くのは `run_shell`・`read`・`search_memory` の 3 つで、どれもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)、[ADR 0055](adr/0055-a-memory-curator-at-night.md)）。
-`read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
+`read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。skills が on のときは `/skills` の下も読みます。
 `search_memory` は `rg` を決まったオプションで `/memory` の下にだけ掛けます。検索語とパスはオプションとして解釈されない形で渡し、パスは `/memory` の外を指せません。
 夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール、まとめて消したファイルの行き先を伝えるツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、当たれば理由を伝えて 1 度だけ直させ、それでも当たればその工程の変更をすべて捨てます（前の工程のコミットは残ります。[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
 `/memory/archive/` を書けるのは係の古い記憶の工程だけで、今月のファイルへの追記と、サーバーがその夜に決めたまとめ直しのほかは検査で拒みます。なつみのターンで変わっていれば戻します。
 係の工程がファイルを改名・移動・統合したときは、その工程のコミットの後に、サーバー自身が `always.md`・`handoff.md`・`personality.md`・`INDEX.md` の中の古いパスと、すべてのファイルのリンクを置き換えてコミットします。係がなつみのファイルを変えられないことは変わりません。置き換えは runner を通らず、外にも何も送りません。
 サーバーのコンテナのファイル（ログインのファイルや secret）は、どちらからも見えません。Pi の組み込みの bash・edit・write・grep・find・ls は有効にしません。
+
+config で宣言したツール（[ADR 0075](adr/0075-tools-declared-in-the-config.md)）も、この runner を通ります。
+
+- runner は宣言の argv（プログラムは `/tools` の下に限ります）を bash を通さずに起動し、モデルの引数の JSON を標準入力に渡します。
+  作業ディレクトリ・環境変数・UID・閉じ込めは `run_shell` のコマンドと同じで、作業環境の権限より強くなりません。
+- `timeoutSeconds`（60 秒まで）を過ぎるか、プログラムが終わると、runner はそのプロセスのグループを止めます。
+- 道具の出口は作業環境のもの（上の段落の中継）のままです。秘密は作業環境に置かないので、秘密の要る API は道具から呼べません。
+- 道具はなつみの session にだけ渡し、記憶の整理係には渡しません。Codemode が on のときにスクリプトから呼べるかは、宣言の `exposure` で config を書く人が決めます
+  （既定はモデルが直接だけ）。外へ作用する道具をスクリプトに渡すと、スクリプトの条件分岐で作用が出たり出なかったりします。
 
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
 
@@ -122,11 +143,20 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 
 読み取り専用で見せるものもあります。
 
-- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
-  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事、ポッポさんへの依頼とその結果）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
+  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)、[ADR 0074](adr/0074-asking-poppo-in-json-and-hearing-back-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
   なつみは `reply_to_mac` でそこから見せられます（サーバーが写しを取って見せます）。
 - `/sources/uploads`: 本人がチャットでメッセージに添えたファイル（[ADR 0071](adr/0071-attaching-files-to-a-chat-message.md)）。ディレクトリは 0750、ファイルは 0640 で、
   作業環境のグループは読めるだけです。渡されたときのまま残り、なつみからは書き換えも削除もできません。サーバーも送ったものは消しません。
   `/sources` の履歴（下の `/sources.git`）からは外していて、`sources-diff` にも `sources_updated` にも出ません。なつみは、それを付けたメッセージで置き場所を知ります。
 - `/sources.git`: `/sources` の履歴。data directory の `sources.git/` で、作業環境の `sources-diff` が読みます。commit と ref を動かすのはサーバーだけで、
   作業環境からは書けません。中身は `/sources` と同じ読みものの、数日分の差分です（[ADR 0050](adr/0050-telling-of-source-updates-with-one-event.md)）。
+- `/skills`: 本人の skill の clone。data directory の `skills/` です（[ADR 0073](adr/0073-skills-from-the-owner-and-her-own.md)）。作業環境からは読み取り専用で、
+  書くのは sshd でログインした本人だけです（sshd のコンテナには読み書きできるようにマウントします）。サーバーは data directory を作るときに空のディレクトリ（2770）を作り、
+  skills が on のときだけ、session を作るたびに中の `SKILL.md` を読みます。中身はサーバーが取りに行かず、本人が `git pull` で更新します。
+  なつみの skill は記憶の下の `/memory/skills` にあり、記憶と同じ検査とコミットに乗ります。記憶の整理係はそこを変えられません。
+  skill のディレクトリの中には、スクリプトなど `.md` 以外のテキストのファイルも置けます（バイナリは不可、1 つの skill で合計 100,000 文字まで）。
+  動かすのはなつみで、作業環境の中で `run_shell` から動かします。サーバーは動かしません。外へ届く口は作業環境のもの（上の段落の 2 つの中継）から広がりません。
+  サーバーは skill を探すとき symlink をたどった先の skill を一覧に入れません。作業環境から同じパスで読めず、サーバーだけが読める場所を指しうるためです。
+- `/tools`: config で宣言したツールの本体（[ADR 0075](adr/0075-tools-declared-in-the-config.md)）。Kubernetes ではインスタンスごとの ConfigMap を作業環境のコンテナにだけ、
+  読み取り専用で mount します。なつみからは書き換えられないので、自分の道具を変えることはできません。中身は環境の設定（公開しないリポジトリ）にあります。

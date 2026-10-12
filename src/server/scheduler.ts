@@ -243,6 +243,8 @@ export interface ScheduledLoop {
   sessionStartedAt(): number | undefined;
   /** Reviews the day and switches to a new session. Queues the review and resolves once the switch has ended. */
   rotate(): Promise<{ result: string; reason?: string }>;
+  /** One look at the postbox (ADR 0076): its letters are sent whatever the hour and however busy the loop is. */
+  tickPostbox?(): Promise<void>;
 }
 
 export interface SchedulerOptions {
@@ -263,7 +265,7 @@ export interface SchedulerOptions {
 /**
  * Looks at the clock and raises the loop's own events: the nightly session switch (ADR 0009) whatever the hour, then
  * due self-checks and a ping after a quiet interval (ADR 0014), those two only in the awake hours and only when the
- * loop is quiet.
+ * loop is quiet. The sources (ADR 0050) and the postbox (ADR 0076) are looked at on every tick.
  */
 export class Scheduler {
   private readonly options: SchedulerOptions;
@@ -275,6 +277,8 @@ export class Scheduler {
   private switching = false;
   /** A look at the sources still going is not joined by another. */
   private lookingAtSources = false;
+  /** Nor is a look at the postbox. */
+  private lookingAtPostbox = false;
 
   constructor(options: SchedulerOptions) {
     this.options = options;
@@ -302,6 +306,7 @@ export class Scheduler {
     // The switch happens in the night, outside the awake hours, and waits for no quiet: it is looked at before both.
     this.switchSession(now);
     this.lookAtSources();
+    this.lookAtPostbox();
     if (!loop.quiet || !isAwake(now, current(awakeHours), timeZone)) return undefined;
     if (loop.deliverDueSelfChecks()) return 'self-check';
     const interval = current(pingIntervalMinutes);
@@ -334,6 +339,14 @@ export class Scheduler {
     if (!sources || this.lookingAtSources) return;
     this.lookingAtSources = true;
     void sources.tick().catch(() => { log?.('sources: a look failed'); }).finally(() => { this.lookingAtSources = false; });
+  }
+
+  /** The postbox sends at night too: the replies wait for the morning as every ordinary update does (ADR 0076). */
+  private lookAtPostbox(): void {
+    const { loop, log } = this.options;
+    if (!loop.tickPostbox || this.lookingAtPostbox) return;
+    this.lookingAtPostbox = true;
+    void loop.tickPostbox().catch(() => { log?.('postbox: a look failed'); }).finally(() => { this.lookingAtPostbox = false; });
   }
 
   private safeTick() {

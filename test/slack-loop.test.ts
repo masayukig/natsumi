@@ -46,16 +46,12 @@ class FakeSources {
   async images() { return [{ type: 'image' as const, mimeType: 'image/png', data: DECODABLE_PNG.toString('base64') }]; }
 }
 
-/** A dove that takes every request and answers with the line the test put in for each event. */
+/** A dove that takes every request. */
 class FakeDove {
   readonly asked: string[] = [];
-  readonly lines = new Map<string, Record<string, unknown>>();
   ask(message: string) {
     this.asked.push(message);
     return { ok: true, text: 'ポッポさんが投稿の依頼を受け付けました。' };
-  }
-  takeEventLine(eventId: string, receivedAt: string) {
-    return { ...this.lines.get(eventId) ?? { type: 'agent_reply', agent: 'poppo' }, received_at: receivedAt };
   }
 }
 
@@ -180,22 +176,13 @@ test('natsumi has no tool that posts to Slack: a post is a request to the dove t
   f.loop.ping();
   const first = await f.model.next();
   for (const name of [...LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME]) assert.doesNotMatch(name, /slack|post|chat|reaction|dove|poppo/i, name);
-  first.call('ask_agent', { agent: 'poppo', message: '返信先: work/#dev\n種類: 投稿\n---\nおはよう', continue: false });
+  first.call('ask_agent', { agent: 'poppo', message: '{"kind":"post","to":{"file":"/sources/slack/work/dev"},"text":"おはよう"}', continue: false });
   first.finish();
   const second = await f.model.next();
   const result = second.context.messages.find(message => message.role === 'toolResult') as { content: { text?: string }[]; isError?: boolean };
   assert.equal(result.isError, false);
   assert.match(result.content[0]!.text!, /ポッポさん/);
-  assert.deepEqual(f.dove.asked, ['返信先: work/#dev\n種類: 投稿\n---\nおはよう']);
+  assert.deepEqual(f.dove.asked, ['{"kind":"post","to":{"file":"/sources/slack/work/dev"},"text":"おはよう"}']);
   second.finish();
-  await f.loop.idle();
-});
-
-test('the dove\'s answer is an event of its own, read from the dove', async t => {
-  const f = await setup(t);
-  f.loop.raise('dove-reply', eventId => { f.dove.lines.set(eventId, { type: 'agent_reply', agent: 'poppo', result: 'sent', text: 'ポッポ！' }); });
-  const context = await until(() => f.model.contexts[0]);
-  const prompt = textOf(userMessages(context).at(-1)!);
-  assert.match(prompt, /"type":"agent_reply","agent":"poppo","result":"sent","text":"ポッポ！"/);
   await f.loop.idle();
 });

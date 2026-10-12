@@ -62,7 +62,9 @@ test('a valid config becomes a typed server config', () => {
     loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
     sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 },
     uploads: { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 },
-    curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2, rewriteAllMaxChars: 100000,
+    skills: { enabled: false },
+    postbox: { enabled: true, minIntervalMinutes: 15 },
+    curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 2, rewriteAllMaxChars: 100000,
       conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
   });
   const { clientSecretEnv: _, ...rest } = github();
@@ -584,6 +586,28 @@ test('the uploads section holds the files of the chat to a size and a count, 25M
   rejects({ ...base(), uploads: { keepDays: 3 } }, 'uploads.keepDays');
 });
 
+test('skills are off unless the skills section switches them on (ADR 0073)', () => {
+  assert.deepEqual(parseConfig(base()).skills, { enabled: false });
+  assert.deepEqual(parseConfig({ ...base(), skills: {} }).skills, { enabled: false });
+  assert.deepEqual(parseConfig({ ...base(), skills: { enabled: true } }).skills, { enabled: true });
+  rejects({ ...base(), skills: { enabled: 'yes' } }, 'skills.enabled');
+  rejects({ ...base(), skills: { enabled: true, directory: '/srv/skills' } }, 'skills.directory');
+  rejects({ ...base(), skills: true }, 'skills');
+});
+
+test('the postbox sends unless switched off, and its letters run no more often than the floor (ADR 0076)', () => {
+  assert.deepEqual(parseConfig(base()).postbox, { enabled: true, minIntervalMinutes: 15 });
+  assert.deepEqual(parseConfig({ ...base(), postbox: { enabled: false } }).postbox, { enabled: false, minIntervalMinutes: 15 });
+  assert.deepEqual(parseConfig({ ...base(), postbox: { minIntervalMinutes: 60 } }).postbox, { enabled: true, minIntervalMinutes: 60 });
+  assert.deepEqual(parseConfig({ ...base(), postbox: { minIntervalMinutes: 1 } }).postbox, { enabled: true, minIntervalMinutes: 1 });
+  rejects({ ...base(), postbox: { enabled: 'no' } }, 'postbox.enabled');
+  rejects({ ...base(), postbox: { minIntervalMinutes: 0 } }, 'postbox.minIntervalMinutes');
+  rejects({ ...base(), postbox: { minIntervalMinutes: 7.5 } }, 'postbox.minIntervalMinutes');
+  rejects({ ...base(), postbox: { minIntervalMinutes: 24 * 60 + 1 } }, 'postbox.minIntervalMinutes');
+  rejects({ ...base(), postbox: { letters: 'postbox' } }, 'postbox.letters');
+  rejects({ ...base(), postbox: true }, 'postbox');
+});
+
 test('the Slack tokens are referenced by environment variable or file, never written in the config', () => {
   const workspace = (value: unknown) => ({ ...base(), slack: { workspaces: { work: value } } });
   rejects(workspace({ appTokenEnv: 'APP' }), 'slack.workspaces.work.botTokenEnv', /required/);
@@ -777,13 +801,13 @@ test('the list of reactions is gone: a config that still has one is refused, and
 });
 
 test('the memory curator runs every night by default, on natsumi\'s route, with limits of its own (ADR 0055)', () => {
-  assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2,
+  assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 2,
     rewriteAllMaxChars: 100000, conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
   const { model: _, ...withoutModel } = pi();
   const withRoutes = { ...base(), pi: { ...withoutModel, routes, defaultRoute: 'local' } };
   assert.deepEqual(parseConfig({ ...withRoutes, curator: { route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 } }).curator,
-    { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, stopStartingAt: '05:30', rotateFiles: 1, rewriteAllMaxChars: 100000,
+    { enabled: true, route: 'plus', modelCalls: 80, timeoutMinutes: 45, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 1, rewriteAllMaxChars: 100000,
       conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
   assert.equal(parseConfig({ ...base(), curator: { enabled: false } }).curator.enabled, false);
   rejects({ ...withRoutes, curator: { route: 'elsewhere' } }, 'curator.route', /pi\.routes/);
@@ -827,8 +851,120 @@ test('the curator begins no stage past a morning time, in the loop\'s time zone,
     '04:00');
 });
 
+test('a sleeping pill\'s curator begins no stage past minutes after the pill, 90 by default, or at any time with false (ADR 0077)', () => {
+  assert.equal(parseConfig(base()).curator.pillStopStartingAfterMinutes, 90);
+  assert.equal(parseConfig({ ...base(), curator: { pillStopStartingAfterMinutes: 30 } }).curator.pillStopStartingAfterMinutes, 30);
+  assert.equal(parseConfig({ ...base(), curator: { pillStopStartingAfterMinutes: false } }).curator.pillStopStartingAfterMinutes, false);
+  for (const minutes of [0, -5, 1.5, '90', true]) {
+    rejects({ ...base(), curator: { pillStopStartingAfterMinutes: minutes } }, 'curator.pillStopStartingAfterMinutes');
+  }
+});
+
 test('the conversation handed to the curator has a limit of its own, and 0 hands none (ADR 0068)', () => {
   assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 50000 } }).curator.conversationMaxChars, 50000);
   assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 0 } }).curator.conversationMaxChars, 0);
   for (const chars of [-1, 1.5, '30000']) rejects({ ...base(), curator: { conversationMaxChars: chars } }, 'curator.conversationMaxChars');
+});
+
+// ADR 0075: the tools an instance has of its own, declared at the top of the config and checked at start.
+const workspaceLoop = () => ({ workspaceSocket: '/run/natsumi-workspace/runner.sock' });
+const weather = () => ({
+  name: 'weather',
+  description: '天気を調べる。',
+  parameters: { type: 'object', properties: { city: { type: 'string', description: '都市の名前' } }, required: ['city'] },
+  command: ['/tools/weather.py', '--units', 'metric'],
+});
+const withTools = (...tools: unknown[]) => ({ ...base(), loop: workspaceLoop(), tools });
+
+test('no tools section declares no tools, and leaves the config as it was', () => {
+  assert.equal(parseConfig(base()).tools, undefined);
+  assert.equal(parseConfig({ ...base(), tools: [] }).tools, undefined);
+});
+
+test('a declared tool takes its defaults: model-only, 30 seconds and 8000 characters', () => {
+  assert.deepEqual(parseConfig(withTools(weather())).tools, [{
+    name: 'weather', description: '天気を調べる。',
+    parameters: { type: 'object', properties: { city: { type: 'string', description: '都市の名前' } }, required: ['city'] },
+    exposure: 'model-only', command: ['/tools/weather.py', '--units', 'metric'], timeoutSeconds: 30, maxOutputChars: 8000,
+  }]);
+});
+
+test('a declared tool may set its exposure, timeout and output limit within their bounds', () => {
+  const [tool] = parseConfig(withTools({ ...weather(), exposure: 'codemode', timeoutSeconds: 60, maxOutputChars: 20000 })).tools!;
+  assert.equal(tool!.exposure, 'codemode');
+  assert.equal(tool!.timeoutSeconds, 60);
+  assert.equal(tool!.maxOutputChars, 20000);
+  assert.equal(parseConfig(withTools({ ...weather(), exposure: 'direct' })).tools![0]!.exposure, 'direct');
+  rejects(withTools({ ...weather(), exposure: 'only' }), 'tools[0].exposure');
+  rejects(withTools({ ...weather(), timeoutSeconds: 0 }), 'tools[0].timeoutSeconds');
+  rejects(withTools({ ...weather(), timeoutSeconds: 61 }), 'tools[0].timeoutSeconds');
+  rejects(withTools({ ...weather(), timeoutSeconds: 1.5 }), 'tools[0].timeoutSeconds');
+  rejects(withTools({ ...weather(), maxOutputChars: 0 }), 'tools[0].maxOutputChars');
+  rejects(withTools({ ...weather(), maxOutputChars: 20001 }), 'tools[0].maxOutputChars');
+});
+
+test('parameters left out take no arguments', () => {
+  const { parameters: _, ...rest } = weather();
+  assert.deepEqual(parseConfig(withTools(rest)).tools![0]!.parameters, { type: 'object', properties: {} });
+});
+
+test('a declared tool needs the workspace runner, a list and known keys', () => {
+  rejects({ ...base(), tools: [weather()] }, 'tools', /workspaceSocket/);
+  rejects({ ...base(), loop: workspaceLoop(), tools: weather() }, 'tools');
+  rejects(withTools('weather'), 'tools[0]');
+  rejects(withTools({ ...weather(), url: 'https://example.test' }), 'tools[0].url', /unknown/);
+  rejects(withTools({ ...weather(), description: '' }), 'tools[0].description');
+  const { command: _, ...noCommand } = weather();
+  rejects(withTools(noCommand), 'tools[0].command');
+});
+
+test('a declared tool may not take a name already given, nor one a model would not accept', () => {
+  for (const name of ['run_shell', 'read', 'search_memory', 'reply_to_mac', 'notify_owner', 'ask_agent', 'codemode', 'bash', 'write', 'edit']) {
+    rejects(withTools({ ...weather(), name }), 'tools[0].name', /already/);
+  }
+  rejects(withTools(weather(), weather()), 'tools[1].name', /already/);
+  for (const name of ['', '1st', 'has space', 'ドット', 'a'.repeat(65)]) rejects(withTools({ ...weather(), name }), 'tools[0].name');
+  assert.equal(parseConfig(withTools({ ...weather(), name: 'Look-up_2' })).tools![0]!.name, 'Look-up_2');
+});
+
+test('the program of a declared tool lies under /tools, where she cannot write', () => {
+  for (const command of [[], ['weather.py'], ['/memory/weather.py'], ['/tools'], ['/tools/'], ['/tools/../memory/x'], ['/tools/./x'],
+    ['/toolsx/x'], ['/tools/x', ''], ['/tools/x', 3], ['/tools/x', 'a\u0000b'], '/tools/x']) {
+    rejects(withTools({ ...weather(), command }), 'tools[0].command', undefined);
+  }
+  assert.deepEqual(parseConfig(withTools({ ...weather(), command: ['/tools/sub/run', '--x'] })).tools![0]!.command, ['/tools/sub/run', '--x']);
+});
+
+test('the parameters are a JSON Schema of objects, strings, numbers, booleans, enums and arrays only', () => {
+  const schema = (parameters: unknown) => withTools({ ...weather(), parameters });
+  const accepted = {
+    type: 'object', description: '引数',
+    properties: {
+      city: { type: 'string', enum: ['Tokyo', 'Osaka'] },
+      days: { type: 'number', enum: [1, 3, 7] },
+      hourly: { type: 'boolean' },
+      tags: { type: 'array', items: { type: 'string' } },
+      where: { type: 'object', properties: { lat: { type: 'number' } }, required: ['lat'], additionalProperties: false },
+    },
+    required: ['city'], additionalProperties: false,
+  };
+  assert.deepEqual(parseConfig(schema(accepted)).tools![0]!.parameters, accepted);
+  rejects(schema({ type: 'string' }), 'tools[0].parameters.type', /object/);
+  rejects(schema({ type: 'object', properties: { n: { type: 'integer' } } }), 'tools[0].parameters.properties.n.type');
+  rejects(schema({ type: 'object', properties: { n: { type: 'null' } } }), 'tools[0].parameters.properties.n.type');
+  rejects(schema({ type: 'object', properties: { n: { anyOf: [{ type: 'string' }] } } }), 'tools[0].parameters.properties.n.anyOf');
+  rejects(schema({ type: 'object', properties: { n: { type: 'string', pattern: '^a' } } }), 'tools[0].parameters.properties.n.pattern');
+  rejects(schema({ type: 'object', properties: { n: { type: 'array' } } }), 'tools[0].parameters.properties.n.items');
+  rejects(schema({ type: 'object', properties: { n: { type: 'string', enum: [] } } }), 'tools[0].parameters.properties.n.enum');
+  rejects(schema({ type: 'object', properties: { n: { type: 'string', enum: ['a', 1] } } }), 'tools[0].parameters.properties.n.enum');
+  rejects(schema({ type: 'object', properties: { n: { type: 'boolean', enum: [true] } } }), 'tools[0].parameters.properties.n.enum');
+  rejects(schema({ type: 'object', properties: {}, required: ['missing'] }), 'tools[0].parameters.required');
+  rejects(schema({ type: 'object', additionalProperties: {} }), 'tools[0].parameters.additionalProperties');
+  rejects(schema({ type: 'object', properties: { $ref: { type: 'string' } } }), 'tools[0].parameters.properties.$ref');
+});
+
+test('a parameter named like a file or a secret is a name, not a secret reference', () => {
+  const parameters = { type: 'object', properties: { outputFile: { type: 'string' }, tokenEnv: { type: 'string' }, password: { type: 'string' } } };
+  assert.deepEqual(parseConfig(withTools({ ...weather(), parameters })).tools![0]!.parameters, parameters);
+  rejects(withTools({ ...weather(), command: ['/tools/x', 'sk-abcdef'] }), 'tools[0].command[1]', /secrets/);
 });

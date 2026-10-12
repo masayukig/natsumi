@@ -169,7 +169,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let certificates: CertificateManager | undefined;
   let scheduler: Scheduler | undefined;
   let dove: SlackDove | undefined;
-  const slackWorkspaces: SlackWorkspace[] = [];
+  const slackWorkspaces = new Map<string, SlackWorkspace>();
   let signalOwner: SignalOwner | undefined;
   const ownerStops: (() => void)[] = [];
   const timers: NodeJS.Timeout[] = [];
@@ -177,7 +177,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const closeAll = async () => {
     timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
-    await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
+    await Promise.all([...slackWorkspaces.values()].map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
     await signalOwner?.stop(); // Likewise for what the owner says on Signal (ADR F04).
     ownerStops.forEach(stop => stop());
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
@@ -243,13 +243,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
-    // the outside agents (ADR 0069). A history that cannot be kept leaves her the files and no events, and no agent can
-    // be asked; the server still starts.
+    // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
+    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts.
     let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
-    if (config.a2a) sources?.register(AGENTS_REGISTRATION);
+    if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -257,9 +257,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const connector = options.slack?.connector ?? connectSlack;
     const slackConnections = archive ? slackTokens.map(({ name, botToken, appToken }) => ({ name, ...connector({ botToken, appToken }) })) : [];
 
-    // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its answers
-    // are raised into the loop, which is opened next with the dove as one of the agents she can ask.
-    let raiseInto: ThinkingLoop | undefined;
+    // Where the requests to the agents and the dove, and what comes of them, are put under sources/agents (ADR 0069,
+    // ADR 0074), told to her by their attentions.
+    const agentPlace = sources ? replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) : undefined;
+    // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its results
+    // are put under sources/agents/poppo (ADR 0074); the loop is opened next with the dove as one of the agents she can ask.
     const theDove = dove = archive && slackConfig ? new SlackDove({
       db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
       judges: judgeSlots(slackConfig.judge, judgeKeys, options.judge?.clients), judgeChoice: () => settings.judges(),
@@ -267,8 +269,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
       publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
       ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR F01)
-      images,
-      now, log, raise: record => raiseInto?.raise('dove-reply', record),
+      images, timeZone: config.loop.timeZone, ...(agentPlace ? { place: agentPlace } : {}),
+      // Her own post goes into the record through its workspace's connection, in turn with what Slack sends.
+      recordOwn: (workspace, channelId, post) => slackWorkspaces.get(workspace)?.recordOwn(channelId, post) ?? Promise.resolve(),
+      now, log,
     }) : undefined;
     if (slackConfig) {
       const configured = JUDGE_METHODS.filter(method => slackConfig.judge?.[method]);
@@ -281,6 +285,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const manualIndex = await readManualIndex(await codeManualDirectory());
     if (!manualIndex) log('manual: INDEX.md could not be read; the instructions point at /manual/INDEX.md instead');
 
+    // The tools this instance declares (ADR 0075), named once so the log shows which ones the sessions were given.
+    if (config.tools) log(`tools: ${config.tools.map(tool => tool.name).join(', ')} declared in the config`);
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
@@ -292,15 +298,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
       ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
-      ...(manualIndex ? { manualIndex } : {}),
-      ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
-      ...(config.a2a && sources ? { agentReplies: replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) } : {}),
+      ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled, ...(config.tools ? { tools: config.tools } : {}),
+      ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}), postbox: config.postbox,
+      ...(config.a2a && agentPlace ? { agentReplies: agentPlace } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
       ...(config.signal ? { ownerOnSignal: true } : {}),
       tellCutShort: true,
     });
-    raiseInto = thinkingLoop;
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
     if (theDove) {
       // What a previous process left on its way, and the approvals whose time ran out while it was stopped.
@@ -357,8 +362,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
             typingAt = { channel, ts };
             ownerTyping?.start();
           } } } : {}),
+          takeIn: async path => { await sources?.takeIn(path); },
         });
-        slackWorkspaces.push(workspace);
+        slackWorkspaces.set(name, workspace);
         void workspace.start().then(
           () => { log(`slack (${name}): connecting`); },
           () => { log(`slack (${name}): could not start; check the tokens and the App's settings`); },
@@ -484,7 +490,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       name: avatar.name, avatarId: avatar.id,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
-      isConnected: deviceId => connections.isConnected(deviceId), now });
+      pillStopStartingAfterMinutes: config.curator.pillStopStartingAfterMinutes, isConnected: deviceId => connections.isConnected(deviceId), now });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,

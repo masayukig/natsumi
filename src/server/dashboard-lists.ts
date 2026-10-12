@@ -1,5 +1,7 @@
+import { filesUrl } from './dashboard-files.ts';
 import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type BookedCheck, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, checkPath, CHECKS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
+import type { LetterRecord } from './postbox.ts';
 import { html, type Html } from './html.ts';
 import type { Placement } from './judge.ts';
 import { DEFAULT_SELF } from './prompts.ts';
@@ -75,10 +77,10 @@ ${table(html`<th>相手</th><th>状態</th><th>送った時刻</th><th>最後の
 <td>${task.agent}</td><td>${agentState(task.state)}</td><td>${at(task.sentAt)}</td><td>${at(task.updatedAt)}</td>
 <td><code>${task.taskId}</code></td></tr>`), '外のエージェントへの依頼はありません。')}
 
-<h3>夜の切り替え</h3>
-${table(html`<th>時刻</th><th>結果</th><th>理由</th><th>記録</th>`, waits.rotations.map(rotation => html`<tr>
-<td>${at(rotation.createdAt)}</td><td>${rotation.state === 'switched' ? html`<span class="ok">switched</span>`
-    : rotation.state === 'failed' ? html`<span class="bad">failed</span>` : rotation.state}</td>
+<h3>夜の切り替えと睡眠薬</h3>
+${table(html`<th>時刻</th><th>種類</th><th>結果</th><th>理由</th><th>記録</th>`, waits.rotations.map(rotation => html`<tr>
+<td>${at(rotation.createdAt)}</td><td><code>${rotation.kind}</code></td><td>${rotation.state === 'switched' || rotation.state === 'curated'
+    ? html`<span class="ok">${rotation.state}</span>` : rotation.state === 'failed' ? html`<span class="bad">failed</span>` : rotation.state}</td>
 <td>${rotation.reason ?? ''}</td><td><code>${rotation.fromSessionFile}</code>${rotation.toSessionFile && html` → <code>${rotation.toSessionFile}</code>`}</td>
 </tr>`), 'まだ夜の切り替えはありません。')}
 </section>`;
@@ -125,6 +127,41 @@ export function checkPage(check: BookedCheck, timeZone: string, avatarId?: strin
 <p><a href="${CHECKS_PATH}">やめる</a></p>
 </section>`;
   return page('予約の削除', main, { signedIn: true, current: '予約', avatarId });
+}
+
+const LETTER_RESULTS: Record<NonNullable<LetterRecord['lastResult']>, string> = {
+  waiting: '返事を待っている', received: '受け取り', empty: '中身なし', failed: '失敗', 'gave-up': '待つのをやめた（失敗）',
+  'input-required': '聞き返し', skipped: '飛ばした',
+};
+
+/**
+ * The postbox's letters (ADR 0076), by name: whom and when each asks, how its last run went, and when the next goes. A
+ * letter that fails the check shows why; the page stops nothing, for a letter is stopped by a commit to memory.
+ */
+export function postboxPage(letters: readonly LetterRecord[], timeZone: string, avatarId?: string): Html {
+  const at = (ms: number | undefined) => ms === undefined ? '—' : localTime(new Date(ms).toISOString(), timeZone);
+  const result = (letter: LetterRecord) => {
+    if (!letter.lastResult) return html`<small>まだ送っていません</small>`;
+    const words = LETTER_RESULTS[letter.lastResult];
+    const bad = letter.lastResult === 'failed' || letter.lastResult === 'gave-up';
+    const reply = letter.lastReplyPath === undefined ? undefined : filesUrl(letter.lastReplyPath);
+    return html`${bad ? html`<span class="bad">${words}</span>` : words}${letter.note && html`<br><small>${letter.note}</small>`}${
+      reply && html`<br><a href="${reply}">最後の返事</a>`}`;
+  };
+  const next = (letter: LetterRecord) => letter.problem !== undefined ? html`<span class="bad">送りません</span><br><small>${letter.problem}</small>`
+    : letter.paused ? html`<span class="note">止めている</span>` : at(letter.nextAt);
+  const main = html`<section id="postbox">
+<h2>定期便</h2>
+<p><small>記憶の postbox/ にコミットされた定期便です。時刻は ${timeZone} です。止めるときは、ファイルを消すか paused: true にしてコミットします
+（なつみに頼んでもかまいません）。全部を止めるときは、サーバーの設定を postbox.enabled: false にします。</small></p>
+${table(html`<th>名前</th><th>相手</th><th>cron</th><th>最後に送った時刻</th><th>結果</th><th>続けて失敗</th><th>前回の受け取り</th><th>次に送る時刻</th>`,
+    letters.map(letter => html`<tr>
+<td><code>${letter.name}</code>${letter.notify === 'attention' && html`<br><small>すぐ知らせる</small>`}</td><td>${letter.to ?? '—'}</td>
+<td>${letter.cron ? html`<code>${letter.cron}</code>` : '—'}</td><td>${at(letter.lastSentAt)}</td><td>${result(letter)}</td>
+<td>${letter.failures > 0 ? html`<span class="bad">${letter.failures} 回</span>` : '0 回'}</td><td>${at(letter.lastReceivedAt)}</td>
+<td>${next(letter)}</td></tr>`), '定期便はありません。')}
+</section>`;
+  return page('定期便', main, { signedIn: true, current: '定期便', avatarId });
 }
 
 function agentState(state: string): Html {

@@ -136,12 +136,21 @@ services:
         volume:
           subpath: sources.git
           nocopy: true
+      # The owner's skills, a clone the owner keeps in the data directory's skills/ (ADR 0073). Read-only: they are the
+      # owner's. Listed in her instructions only with skills.enabled in the config; her own are in /memory/skills.
+      - type: volume
+        source: natsumi-data
+        target: /skills
+        read_only: true
+        volume:
+          subpath: skills
+          nocopy: true
       - type: volume
         source: natsumi-workspace-socket
         target: /run/natsumi-workspace
         volume:
           nocopy: true
-    # natsumi creates memory/, work/, home/, agents/, sources/ and sources.git/ in the data directory on its first start.
+    # natsumi creates memory/, work/, home/, agents/, sources/, sources.git/ and skills/ in the data directory on its first start.
     depends_on:
       natsumi:
         condition: service_healthy

@@ -14,13 +14,14 @@ function entry(overrides: Partial<ListedEntry>): ListedEntry {
   return { name: 'a.txt', type: 'file', size: 999, mtimeMs: Date.parse('2026-01-01T00:00:00Z'), ...overrides };
 }
 
-test('the first page lists the five places', () => {
+test('the first page lists the places', () => {
   const text = filesIndexPage().text;
   for (const href of ['/dashboard/files/memory', '/dashboard/files/work', '/dashboard/files/home/natsumi', '/dashboard/files/manual',
-    '/dashboard/files/manual/agents']) {
+    '/dashboard/files/manual/agents', '/dashboard/files/sources']) {
     assert.match(text, new RegExp(`href="${href}"`), href);
   }
   assert.match(text, /aria-current="page"[^>]*>ファイル/, 'the navigation has the files');
+  assert.match(text, /<code>\/sources<\/code><\/a> <small>外から届いたもの/, 'what came from outside, with a note of its own');
 });
 
 test('a directory shows a breadcrumb, sortable headings, and each entry with its size and time, escaped', () => {

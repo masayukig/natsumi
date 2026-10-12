@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, posix } from 'node:path';
 import { COMPATIBLE_MAX_TOKENS, COMPATIBLE_PROVIDER, DEFAULT_CONTEXT_WINDOW, PI_CONTEXT_SAFETY_TOKENS } from '../pi/compatible.ts';
 import { isLoopbackHost } from '../pi/loopback.ts';
 // The only thing this file takes from the server modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
@@ -9,6 +9,7 @@ import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repos
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
+import { POSTBOX_DEFAULTS } from './postbox.ts';
 import { UPLOAD_DEFAULTS, type UploadLimits } from './uploads.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES,
@@ -386,6 +387,12 @@ export interface CuratorConfig {
    * False for none.
    */
   stopStartingAt: string | false;
+  /**
+   * The deadline of a sleeping pill's curator (ADR 0077): past this many minutes after the pill was taken, no further
+   * stage begins. A stage under way runs to its own limits, as at night. False for none. The night keeps
+   * `stopStartingAt`.
+   */
+  pillStopStartingAfterMinutes: number | false;
   /** Files handed over each night in turn, besides the ones that changed that day, those left longest first. */
   rotateFiles: number;
   /**
@@ -411,10 +418,21 @@ export interface CuratorConfig {
  */
 export const DEFAULT_CURATOR_CODEMODE: CodemodeConfig = { enabled: false, workspaceTools: 'direct', nestedCalls: 120 };
 
-export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2,
-  rewriteAllMaxChars: 100_000, conversationMaxChars: 30_000, codemode: DEFAULT_CURATOR_CODEMODE };
+export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30',
+  pillStopStartingAfterMinutes: 90, rotateFiles: 2, rewriteAllMaxChars: 100_000, conversationMaxChars: 30_000, codemode: DEFAULT_CURATOR_CODEMODE };
 /** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
 const MAX_ROTATE_FILES = 10;
+
+/** Skills (ADR 0073): the owner's clone and her own, listed in her instructions. Off by default, read once at start. */
+export interface SkillsConfig { enabled: boolean }
+
+/**
+ * The postbox (ADR 0076): letters in memory's `postbox/`, sent on their cron with no turn of hers. `enabled: false` stops
+ * every letter at once; a letter whose runs come closer than `minIntervalMinutes` is not sent.
+ */
+export interface PostboxConfig { enabled: boolean; minIntervalMinutes: number }
+/** A floor past a day would refuse a daily letter, the one most letters are. */
+const MAX_POSTBOX_MIN_INTERVAL_MINUTES = 24 * 60;
 
 export interface ServerConfig {
   pi: PiConfig;
@@ -431,9 +449,55 @@ export interface ServerConfig {
   sources: SourcesConfig;
   uploads: UploadsConfig;
   curator: CuratorConfig;
+  skills: SkillsConfig;
+  postbox: PostboxConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
+  /** The tools this instance has of its own (ADR 0075). Absent when none is declared, so the tools stay as they were. */
+  tools?: DeclaredToolConfig[];
 }
+
+/**
+ * A tool declared in the config (ADR 0075): a program under /tools that the workspace runner starts with the model's
+ * arguments, as JSON, on its stdin. Its stdout is the result; an exit code other than 0, or the timeout, is a failure.
+ */
+export interface DeclaredToolConfig {
+  name: string;
+  /** Shown to the model as it is written, and so on the prefix. */
+  description: string;
+  /** The JSON Schema of the arguments, an object of the types {@link parseToolParameters} allows. */
+  parameters: Record<string, unknown>;
+  /** How Codemode reaches it, when Codemode is on (ADR 0066). */
+  exposure: ToolExposure;
+  /** The program, an absolute path under /tools, and its fixed arguments. No shell runs it. */
+  command: string[];
+  timeoutSeconds: number;
+  /** The most characters of stdout the model is given. */
+  maxOutputChars: number;
+}
+
+export type ToolExposure = 'model-only' | 'direct' | 'codemode';
+const TOOL_EXPOSURES: readonly ToolExposure[] = ['model-only', 'direct', 'codemode'];
+export const TOOL_DEFAULTS = { exposure: 'model-only', timeoutSeconds: 30, maxOutputChars: 8000 } as const;
+/** The runner's own response limit: a tool holds the runner no longer than a command can. */
+export const MAX_TOOL_TIMEOUT_SECONDS = 60;
+/** About what the runner keeps of one stream (64 KiB), in Japanese. */
+export const MAX_TOOL_OUTPUT_CHARS = 20000;
+/** Where the programs are: mounted read-only into the workspace, so she cannot rewrite her own tools. */
+export const TOOLS_DIRECTORY = '/tools';
+/**
+ * The names a declared tool cannot take: natsumi's own tools, `codemode`, and Pi's built-in ones, which the allowlist
+ * would otherwise switch on. `test/declared-tools.test.ts` holds it to what `createLoopTools` registers.
+ */
+export const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(['run_shell', 'read', 'search_memory', 'reply_to_mac',
+  'notify_owner', 'set_mac_avatar_expression', 'write_handoff_note', 'write_change_note', 'schedule_self_check',
+  'list_self_checks', 'cancel_self_check', 'ask_agent', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
+/** What model providers take as a function name. */
+const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+const SCHEMA_TYPES = ['object', 'string', 'number', 'boolean', 'array'];
+/** Deep enough for an object of arrays of objects, and no deeper than a model fills in reliably. */
+const MAX_SCHEMA_DEPTH = 6;
 
 /**
  * A built-in avatar by its ID, or one added by the absolute path of its directory: one or the other, read once at start.
@@ -465,7 +529,10 @@ const SECTIONS = {
   sources: parseSources,
   uploads: parseUploads,
   curator: parseCurator,
+  skills: parseSkills,
+  postbox: parsePostbox,
   avatar: parseAvatar,
+  tools: (value: unknown, path: string) => parseTools(value, path),
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -487,7 +554,9 @@ export async function loadConfig(file: string): Promise<ServerConfig> {
 
 export function parseConfig(raw: unknown): ServerConfig {
   const root = object(raw, 'config');
-  refuseSecrets(root, '');
+  // A tool's parameters name the model's arguments; a property called `outputFile` is not a secret reference.
+  refuseSecrets({ ...root, tools: undefined }, '');
+  refuseSecretValues(root.tools, 'tools');
   for (const key of Object.keys(root)) {
     if (MOVED[key]) throw new ConfigError(key, MOVED[key]);
     if (!(key in SECTIONS)) throw new ConfigError(key, 'unknown setting');
@@ -507,8 +576,15 @@ export function parseConfig(raw: unknown): ServerConfig {
     sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
     uploads: SECTIONS.uploads(root.uploads ?? {}, 'uploads'),
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
+    skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
+    postbox: SECTIONS.postbox(root.postbox ?? {}, 'postbox'),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
+  const tools = root.tools === undefined ? [] : SECTIONS.tools(root.tools, 'tools');
+  if (tools.length > 0) {
+    if (config.loop.workspaceSocket === undefined) throw new ConfigError('tools', 'need loop.workspaceSocket: the workspace runner runs them');
+    config.tools = tools;
+  }
   if (config.curator.route !== undefined && !config.pi.routes.some(route => route.name === config.curator.route)) {
     throw new ConfigError('curator.route', 'must be one of pi.routes');
   }
@@ -973,8 +1049,8 @@ function parseSignal(value: unknown, path: string): SignalConfig {
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
   const curator = object(value, path);
-  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'stopStartingAt', 'rotateFiles', 'rewriteAllMaxChars', 'conversationMaxChars',
-    'codemode']);
+  onlyKeys(curator, path, ['enabled', 'route', 'modelCalls', 'timeoutMinutes', 'stopStartingAt', 'pillStopStartingAfterMinutes', 'rotateFiles', 'rewriteAllMaxChars',
+    'conversationMaxChars', 'codemode']);
   const enabled = curator.enabled ?? CURATOR_DEFAULTS.enabled;
   if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
   const route = curator.route === undefined ? undefined : nonEmptyString(curator.route, `${path}.route`);
@@ -987,6 +1063,10 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   if (stopStartingAt !== false && (typeof stopStartingAt !== 'string' || !TIME_OF_DAY.test(stopStartingAt))) {
     throw new ConfigError(`${path}.stopStartingAt`, 'must be a 24-hour HH:MM time, or false');
   }
+  const pillMinutes = curator.pillStopStartingAfterMinutes ?? CURATOR_DEFAULTS.pillStopStartingAfterMinutes;
+  if (pillMinutes !== false && !positiveInteger(pillMinutes, 1)) {
+    throw new ConfigError(`${path}.pillStopStartingAfterMinutes`, 'must be a positive integer of minutes, or false');
+  }
   const files = curator.rotateFiles ?? CURATOR_DEFAULTS.rotateFiles;
   if (!positiveInteger(files, 0) || (files as number) > MAX_ROTATE_FILES) {
     throw new ConfigError(`${path}.rotateFiles`, `must be an integer from 0 to ${MAX_ROTATE_FILES}`);
@@ -996,7 +1076,7 @@ function parseCurator(value: unknown, path: string): CuratorConfig {
   const conversation = curator.conversationMaxChars ?? CURATOR_DEFAULTS.conversationMaxChars;
   if (!positiveInteger(conversation, 0)) throw new ConfigError(`${path}.conversationMaxChars`, 'must be an integer of 0 or more');
   return { enabled, ...(route === undefined ? {} : { route }), modelCalls: calls as number, timeoutMinutes: minutes as number,
-    stopStartingAt, rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, conversationMaxChars: conversation as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
+    stopStartingAt, pillStopStartingAfterMinutes: pillMinutes as number | false, rotateFiles: files as number, rewriteAllMaxChars: rewriteAll as number, conversationMaxChars: conversation as number, codemode: parseCodemode(curator.codemode ?? {}, `${path}.codemode`, CURATOR_DEFAULTS.codemode) };
 }
 
 function parseCodemode(value: unknown, path: string, defaults: CodemodeConfig): CodemodeConfig {
@@ -1011,6 +1091,120 @@ function parseCodemode(value: unknown, path: string, defaults: CodemodeConfig): 
   const nestedCalls = codemode.nestedCalls ?? defaults.nestedCalls;
   if (!positiveInteger(nestedCalls, 1)) throw new ConfigError(`${path}.nestedCalls`, 'must be a positive integer');
   return { enabled, workspaceTools, nestedCalls: nestedCalls as number };
+}
+
+function parseTools(value: unknown, path: string): DeclaredToolConfig[] {
+  if (!Array.isArray(value)) throw new ConfigError(path, 'must be a list of tools');
+  const names = new Set<string>();
+  return value.map((entry, index) => {
+    const toolPath = `${path}[${index}]`;
+    const tool = parseTool(entry, toolPath);
+    if (RESERVED_TOOL_NAMES.has(tool.name) || names.has(tool.name)) throw new ConfigError(`${toolPath}.name`, 'is already a tool\'s name');
+    names.add(tool.name);
+    return tool;
+  });
+}
+
+function parseTool(value: unknown, path: string): DeclaredToolConfig {
+  const tool = object(value, path);
+  onlyKeys(tool, path, ['name', 'description', 'parameters', 'exposure', 'command', 'timeoutSeconds', 'maxOutputChars']);
+  const name = required(tool, 'name', path);
+  if (typeof name !== 'string' || !TOOL_NAME.test(name)) {
+    throw new ConfigError(`${path}.name`, 'must be a letter and then up to 63 letters, digits, _ or -');
+  }
+  const description = nonEmptyString(required(tool, 'description', path), `${path}.description`);
+  const parameters = tool.parameters === undefined ? { type: 'object', properties: {} } : parseToolParameters(tool.parameters, `${path}.parameters`);
+  const exposure = tool.exposure ?? TOOL_DEFAULTS.exposure;
+  if (!TOOL_EXPOSURES.includes(exposure as ToolExposure)) throw new ConfigError(`${path}.exposure`, 'must be "model-only", "direct" or "codemode"');
+  const command = parseToolCommand(required(tool, 'command', path), `${path}.command`);
+  const timeoutSeconds = tool.timeoutSeconds ?? TOOL_DEFAULTS.timeoutSeconds;
+  if (!Number.isInteger(timeoutSeconds) || (timeoutSeconds as number) < 1 || (timeoutSeconds as number) > MAX_TOOL_TIMEOUT_SECONDS) {
+    throw new ConfigError(`${path}.timeoutSeconds`, `must be a whole number of seconds from 1 to ${MAX_TOOL_TIMEOUT_SECONDS}`);
+  }
+  const maxOutputChars = tool.maxOutputChars ?? TOOL_DEFAULTS.maxOutputChars;
+  if (!Number.isInteger(maxOutputChars) || (maxOutputChars as number) < 1 || (maxOutputChars as number) > MAX_TOOL_OUTPUT_CHARS) {
+    throw new ConfigError(`${path}.maxOutputChars`, `must be an integer from 1 to ${MAX_TOOL_OUTPUT_CHARS}`);
+  }
+  return { name, description, parameters, exposure: exposure as ToolExposure, command,
+    timeoutSeconds: timeoutSeconds as number, maxOutputChars: maxOutputChars as number };
+}
+
+/** A program under /tools, as a normalized absolute path, then its fixed arguments. */
+function parseToolCommand(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ConfigError(path, 'must be a list: the program, then its arguments');
+  value.forEach((arg, index) => {
+    if (typeof arg !== 'string' || arg === '' || arg.includes('\u0000')) throw new ConfigError(path, `[${index}] must be a non-empty string without NUL`);
+  });
+  const program = value[0] as string;
+  if (!program.startsWith(`${TOOLS_DIRECTORY}/`) || posix.normalize(program) !== program || program.endsWith('/')
+    || program.split('/').some(part => part === '.' || part === '..')) {
+    throw new ConfigError(path, `the program must be a file under ${TOOLS_DIRECTORY}, as an absolute path`);
+  }
+  return value as string[];
+}
+
+/**
+ * The JSON Schema of a tool's arguments, kept to what every model provider takes and Pi checks the same way: objects,
+ * strings, numbers, booleans, enums of strings or numbers, and arrays of one item schema. The top is an object.
+ */
+export function parseToolParameters(value: unknown, path: string): Record<string, unknown> {
+  const schema = parseSchemaNode(value, path, 0);
+  if (schema.type !== 'object') throw new ConfigError(`${path}.type`, 'must be "object" at the top');
+  return schema;
+}
+
+function parseSchemaNode(value: unknown, path: string, depth: number): Record<string, unknown> {
+  if (depth > MAX_SCHEMA_DEPTH) throw new ConfigError(path, `nests deeper than ${MAX_SCHEMA_DEPTH}`);
+  const node = object(value, path);
+  for (const key of Object.keys(node)) {
+    if (!['type', 'description', 'enum', 'properties', 'required', 'items', 'additionalProperties'].includes(key)) {
+      throw new ConfigError(`${path}.${key}`, 'is not one of the JSON Schema keywords a tool may use');
+    }
+  }
+  const type = node.type;
+  if (typeof type !== 'string' || !SCHEMA_TYPES.includes(type)) {
+    throw new ConfigError(`${path}.type`, `must be one of ${SCHEMA_TYPES.join(', ')}`);
+  }
+  const allowed = (key: string, types: string[]) => {
+    if (node[key] !== undefined && !types.includes(type)) throw new ConfigError(`${path}.${key}`, `is not for type ${type}`);
+  };
+  allowed('enum', ['string', 'number']);
+  allowed('properties', ['object']);
+  allowed('required', ['object']);
+  allowed('additionalProperties', ['object']);
+  allowed('items', ['array']);
+  const out: Record<string, unknown> = { type };
+  if (node.description !== undefined) out.description = nonEmptyString(node.description, `${path}.description`);
+  if (node.enum !== undefined) {
+    const values = node.enum;
+    if (!Array.isArray(values) || values.length === 0 || values.some(item => typeof item !== type)
+      || new Set(values).size !== values.length) {
+      throw new ConfigError(`${path}.enum`, `must be a list of distinct ${type}s`);
+    }
+    out.enum = values;
+  }
+  if (type === 'object') {
+    const properties = object(node.properties ?? {}, `${path}.properties`);
+    const parsed: Record<string, unknown> = {};
+    for (const [name, child] of Object.entries(properties)) {
+      if (!PROPERTY_NAME.test(name)) throw new ConfigError(`${path}.properties.${name}`, 'must be a plain name');
+      parsed[name] = parseSchemaNode(child, `${path}.properties.${name}`, depth + 1);
+    }
+    out.properties = parsed;
+    if (node.required !== undefined) {
+      const names = node.required;
+      if (!Array.isArray(names) || names.some(name => typeof name !== 'string' || !(name in parsed)) || new Set(names).size !== names.length) {
+        throw new ConfigError(`${path}.required`, 'must list distinct names of its properties');
+      }
+      out.required = names;
+    }
+    if (node.additionalProperties !== undefined) {
+      if (typeof node.additionalProperties !== 'boolean') throw new ConfigError(`${path}.additionalProperties`, 'must be true or false');
+      out.additionalProperties = node.additionalProperties;
+    }
+  }
+  if (type === 'array') out.items = parseSchemaNode(required(node, 'items', path), `${path}.items`, depth + 1);
+  return out;
 }
 
 function parseAvatar(value: unknown, path: string): AvatarConfig {
@@ -1064,6 +1258,26 @@ function parseSources(value: unknown, path: string): SourcesConfig {
   }
   return { activity: { k, minMinutes: least as number, maxMinutes: most as number, windowMinutes: window as number,
     quietMeanMinutes: quiet as number }, historyDays: days as number };
+}
+
+function parseSkills(value: unknown, path: string): SkillsConfig {
+  const skills = object(value, path);
+  onlyKeys(skills, path, ['enabled']);
+  const enabled = skills.enabled ?? false;
+  if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
+  return { enabled };
+}
+
+function parsePostbox(value: unknown, path: string): PostboxConfig {
+  const postbox = object(value, path);
+  onlyKeys(postbox, path, ['enabled', 'minIntervalMinutes']);
+  const enabled = postbox.enabled ?? POSTBOX_DEFAULTS.enabled;
+  if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
+  const floor = postbox.minIntervalMinutes ?? POSTBOX_DEFAULTS.minIntervalMinutes;
+  if (!positiveInteger(floor, 1) || (floor as number) > MAX_POSTBOX_MIN_INTERVAL_MINUTES) {
+    throw new ConfigError(`${path}.minIntervalMinutes`, `must be an integer from 1 to ${MAX_POSTBOX_MIN_INTERVAL_MINUTES}`);
+  }
+  return { enabled, minIntervalMinutes: floor as number };
 }
 
 function parseUploads(value: unknown, path: string): UploadsConfig {
@@ -1367,6 +1581,15 @@ function refuseSecrets(value: unknown, path: string): void {
     return;
   }
   if (typeof value === 'string' && SECRET_VALUE.test(value)) throw leaked(path, 'reference it by environment variable or secret file');
+}
+
+function refuseSecretValues(value: unknown, path: string): void {
+  if (Array.isArray(value)) { value.forEach((item, i) => refuseSecretValues(item, `${path}[${i}]`)); return; }
+  if (typeof value === 'object' && value !== null) {
+    for (const [key, child] of Object.entries(value)) refuseSecretValues(child, `${path}.${key}`);
+    return;
+  }
+  if (typeof value === 'string' && SECRET_VALUE.test(value)) throw leaked(path, 'keep it out of the tool\'s declaration');
 }
 
 function leaked(path: string, hint: string): ConfigError {

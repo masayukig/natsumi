@@ -1,100 +1,100 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseDoveRequest, parseReference } from '../src/server/dove-request.ts';
+import { parseDoveRequest } from '../src/server/dove-request.ts';
 
 /**
- * What natsumi writes to the dove (ADR 0039, ADR 0040): headings, then `---` and the body. A request out of shape is
- * turned back before anything is judged or sent, with a sentence she can act on.
+ * What natsumi writes to the dove (ADR 0074): one JSON object in `message`, with `kind`, `to`, and the fields its kind
+ * needs. A request out of shape is turned back before anything is judged or sent, with a sentence that names the field
+ * and says what to fix.
  */
 
-test('a post to a message: the reference, the kind, the feeling and the body', () => {
-  const parsed = parseDoveRequest('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: 投稿\n表情: happy\n---\nおつかれさまです。\n明日やります。');
-  assert.deepEqual(parsed, { ok: true, request: {
-    target: { workspace: 'work', channel: '#dev', at: { date: '2026-09-25', time: '14:32:05' }, speaker: '山田' },
-    kind: 'post', expression: 'happy', body: 'おつかれさまです。\n明日やります。',
-  } });
+const MESSAGE = { file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[12]' };
+const CHANNEL = { file: '/sources/slack/work/dev' };
+const json = (value: unknown) => JSON.stringify(value);
+
+test('a post to a message: where it goes, the feeling and the text', () => {
+  const parsed = parseDoveRequest(json({ kind: 'post', to: MESSAGE, face: 'happy', text: 'おつかれさまです。\n明日やります。' }));
+  assert.deepEqual(parsed, { ok: true, request: { kind: 'post', to: MESSAGE, expression: 'happy', body: 'おつかれさまです。\n明日やります。' } });
 });
 
-test('a post to a channel, without a feeling, and full-width colons are read as colons', () => {
-  const parsed = parseDoveRequest('返信先：work/#dev\n種類：投稿\n---\nおはようございます');
-  assert.deepEqual(parsed, { ok: true, request: { target: { workspace: 'work', channel: '#dev' }, kind: 'post', body: 'おはようございます' } });
+test('a post to a channel, without a feeling, and the JSON may be wrapped in spaces and lines', () => {
+  const parsed = parseDoveRequest(`\n  ${json({ kind: 'post', to: CHANNEL, text: 'おはようございます' })}\n`);
+  assert.deepEqual(parsed, { ok: true, request: { kind: 'post', to: CHANNEL, body: 'おはようございます' } });
 });
 
-test('a reaction names the emoji as its body, with or without colons', () => {
-  const parsed = parseDoveRequest('返信先: work/@佐藤 2026-09-25 09:00:00 佐藤\n種類: リアクション\n---\n:+1:');
-  assert.deepEqual(parsed, { ok: true, request: {
-    target: { workspace: 'work', channel: '@佐藤', at: { date: '2026-09-25', time: '09:00:00' }, speaker: '佐藤' }, kind: 'reaction', body: '+1',
-  } });
-});
-
-test('a reaction may name a skin tone or a custom emoji of any letters, and the colons around it are dropped', () => {
-  const body = (text: string) => {
-    const parsed = parseDoveRequest(`返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n${text}`);
+test('a reaction names the emoji, with or without colons, a skin tone or a custom one of any letters', () => {
+  const emoji = (name: string) => {
+    const parsed = parseDoveRequest(json({ kind: 'reaction', to: MESSAGE, emoji: name }));
     return parsed.ok ? parsed.request.body : parsed.text;
   };
-  assert.equal(body(':thumbsup::skin-tone-2:'), 'thumbsup::skin-tone-2');
-  assert.equal(body('thumbsup::skin-tone-2'), 'thumbsup::skin-tone-2');
-  assert.equal(body(':了解:'), '了解');
-  assert.equal(body('looks-good'), 'looks-good');
+  assert.deepEqual(parseDoveRequest(json({ kind: 'reaction', to: MESSAGE, emoji: ':+1:' })),
+    { ok: true, request: { kind: 'reaction', to: MESSAGE, body: '+1' } });
+  assert.equal(emoji(':thumbsup::skin-tone-2:'), 'thumbsup::skin-tone-2');
+  assert.equal(emoji('thumbsup::skin-tone-2'), 'thumbsup::skin-tone-2');
+  assert.equal(emoji(':了解:'), '了解');
+  assert.equal(emoji('looks-good'), 'looks-good');
 });
 
-test('a speaker whose name has spaces is kept whole', () => {
-  assert.deepEqual(parseReference('work/#dev 2026-09-25 14:32:05 Taro Yamada'),
-    { workspace: 'work', channel: '#dev', at: { date: '2026-09-25', time: '14:32:05' }, speaker: 'Taro Yamada' });
+// ADR 0044: `images` names images under /work, in order; with images the text may be left out.
+test('images are named in the order written, and the text becomes their comment', () => {
+  const parsed = parseDoveRequest(json({ kind: 'post', to: CHANNEL, text: '描いたよ', images: ['/work/images/cat.png', '/work/images/dog.webp'] }));
+  assert.deepEqual(parsed, { ok: true, request: { kind: 'post', to: CHANNEL, body: '描いたよ',
+    images: ['/work/images/cat.png', '/work/images/dog.webp'] } });
 });
 
-test('how the message begins may follow the speaker, to tell apart two messages of the same second', () => {
-  assert.deepEqual(parseReference('work/#dev 2026-09-25 14:32:05 山田 「もう一つの」'),
-    { workspace: 'work', channel: '#dev', at: { date: '2026-09-25', time: '14:32:05' }, speaker: '山田', begins: 'もう一つの' });
-});
-
-for (const [name, message, pattern] of [
-  ['no separator', '返信先: work/#dev\n種類: 投稿\nこんにちは', /---/],
-  ['no reference', '種類: 投稿\n---\nこんにちは', /返信先/],
-  ['no kind', '返信先: work/#dev\n---\nこんにちは', /種類/],
-  ['an unknown kind', '返信先: work/#dev\n種類: 画像\n---\nこんにちは', /投稿.*リアクション/],
-  ['an unknown heading', '返信先: work/#dev\n種類: 投稿\n宛先: 山田\n---\nこんにちは', /宛先/],
-  ['a heading twice', '返信先: work/#dev\n返信先: work/#random\n種類: 投稿\n---\nこんにちは', /返信先/],
-  ['an unknown feeling', '返信先: work/#dev\n種類: 投稿\n表情: angry\n---\nこんにちは', /表情/],
-  ['a reference without a channel', '返信先: work\n種類: 投稿\n---\nこんにちは', /work\/#dev/],
-  ['a reference with the time cut to minutes', '返信先: work/#dev 2026-09-25 14:32 山田\n種類: 投稿\n---\nこんにちは', /秒/],
-  ['a reference with a time and no speaker', '返信先: work/#dev 2026-09-25 14:32:05\n種類: 投稿\n---\nこんにちは', /発言者/],
-  ['an empty body', '返信先: work/#dev\n種類: 投稿\n---\n  \n', /本文/],
-  ['a reaction with two emoji', '返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n+1 eyes', /絵文字/],
-  ['a reaction with two emoji side by side', '返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n:+1::eyes:', /絵文字/],
-  ['a reaction to a channel', '返信先: work/#dev\n種類: リアクション\n---\n+1', /発言/],
-] as const) {
-  test(`${name} is turned back with what to fix`, () => {
-    const parsed = parseDoveRequest(message);
-    assert.equal(parsed.ok, false);
-    assert.match((parsed as { text: string }).text, pattern);
-    assert.match((parsed as { text: string }).text, /^頼んでいません。/);
-  });
-}
-
-// ADR 0044: `画像:` names an image under /work, one line each; with images the body may be left out.
-test('images are named one line each, in the order written, and the body becomes their comment', () => {
-  const parsed = parseDoveRequest('返信先: work/#dev\n種類: 投稿\n画像: /work/images/cat.png\n画像：/work/images/dog.webp\n---\n描いたよ');
-  assert.deepEqual(parsed, { ok: true, request: {
-    target: { workspace: 'work', channel: '#dev' }, kind: 'post', body: '描いたよ', images: ['/work/images/cat.png', '/work/images/dog.webp'],
-  } });
-});
-
-test('with an image the body may be empty, and the separator may even be the last line', () => {
-  for (const message of ['返信先: work/#dev\n種類: 投稿\n画像: /work/cat.png\n---\n', '返信先: work/#dev\n種類: 投稿\n画像: /work/cat.png\n---']) {
-    assert.deepEqual(parseDoveRequest(message), { ok: true, request: {
-      target: { workspace: 'work', channel: '#dev' }, kind: 'post', body: '', images: ['/work/cat.png'] } });
+test('with an image the text may be left out or empty, and an empty list of images is no images', () => {
+  for (const request of [{ kind: 'post', to: CHANNEL, images: ['/work/cat.png'] }, { kind: 'post', to: CHANNEL, text: '', images: ['/work/cat.png'] }]) {
+    assert.deepEqual(parseDoveRequest(json(request)), { ok: true, request: { kind: 'post', to: CHANNEL, body: '', images: ['/work/cat.png'] } });
   }
+  assert.deepEqual(parseDoveRequest(json({ kind: 'post', to: CHANNEL, text: 'こんにちは', images: [] })),
+    { ok: true, request: { kind: 'post', to: CHANNEL, body: 'こんにちは' } });
 });
 
-for (const [name, message, pattern] of [
-  ['an image with no path', '返信先: work/#dev\n種類: 投稿\n画像:\n---\nこんにちは', /画像/],
-  ['an image on a relative path', '返信先: work/#dev\n種類: 投稿\n画像: images/cat.png\n---\nこんにちは', /\/work\//],
-  ['an image on a reaction', '返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n画像: /work/cat.png\n---\n+1', /リアクション/],
-  ['neither an image nor a body', '返信先: work/#dev\n種類: 投稿\n---\n', /本文/],
+test('a request that is not JSON is turned back to the manual, and the old form with headings is named as gone', () => {
+  for (const message of ['こんにちは', '{"kind": "post",', '']) {
+    const parsed = parseDoveRequest(message);
+    assert.equal(parsed.ok, false, message);
+    assert.match((parsed as { text: string }).text, /^頼んでいません。/);
+    assert.match((parsed as { text: string }).text, /JSON/);
+    assert.match((parsed as { text: string }).text, /\/manual\/slack\.md/);
+  }
+  const old = parseDoveRequest('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: 投稿\n---\nおつかれさまです。');
+  assert.equal(old.ok, false);
+  assert.match((old as { text: string }).text, /見出し/);
+  assert.match((old as { text: string }).text, /\/manual\/slack\.md/);
+});
+
+for (const [name, request, pattern] of [
+  ['an array', [], /オブジェクト/],
+  ['a string', 'post', /オブジェクト/],
+  ['an unknown field', { kind: 'post', to: CHANNEL, text: 'こんにちは', channel: 'work/#dev' }, /「channel」.*kind・to・face・text・emoji・images/],
+  ['no kind', { to: CHANNEL, text: 'こんにちは' }, /kind.*post.*reaction/],
+  ['an unknown kind', { kind: '投稿', to: CHANNEL, text: 'こんにちは' }, /kind.*「投稿」.*post.*reaction/],
+  ['no to', { kind: 'post', text: 'こんにちは' }, /to/],
+  ['a to that is a string', { kind: 'post', to: 'work/#dev 2026-09-25 14:32:05 山田', text: 'こんにちは' }, /to.*file/],
+  ['a to with no file', { kind: 'post', to: { path: '.[12]' }, text: 'こんにちは' }, /to\.file/],
+  ['a to with a file that is not a string', { kind: 'post', to: { file: 12 }, text: 'こんにちは' }, /to\.file/],
+  ['a to with an unknown field', { kind: 'post', to: { ...MESSAGE, at: '14:32:05' }, text: 'こんにちは' }, /to.*「at」/],
+  ['a path not in the form of a line', { kind: 'post', to: { file: MESSAGE.file, path: '12' }, text: 'こんにちは' }, /to\.path.*\.\[12\]/],
+  ['a path of a range', { kind: 'post', to: { file: MESSAGE.file, path: '.[8:13]' }, text: 'こんにちは' }, /to\.path/],
+  ['an unknown feeling', { kind: 'post', to: CHANNEL, face: 'angry', text: 'こんにちは' }, /face.*「angry」.*neutral/],
+  ['a text that is not a string', { kind: 'post', to: CHANNEL, text: ['こんにちは'] }, /text/],
+  ['a post with neither text nor images', { kind: 'post', to: CHANNEL }, /text/],
+  ['a post with blank text and no images', { kind: 'post', to: CHANNEL, text: '  \n' }, /text/],
+  ['a post with an emoji', { kind: 'post', to: MESSAGE, text: 'こんにちは', emoji: '+1' }, /emoji.*reaction/],
+  ['images that are not a list', { kind: 'post', to: CHANNEL, images: '/work/cat.png' }, /images/],
+  ['an image with no path', { kind: 'post', to: CHANNEL, images: [''] }, /images/],
+  ['an image on a relative path', { kind: 'post', to: CHANNEL, images: ['images/cat.png'] }, /\/work\//],
+  ['a reaction with no emoji', { kind: 'reaction', to: MESSAGE }, /emoji/],
+  ['a reaction with two emoji', { kind: 'reaction', to: MESSAGE, emoji: '+1 eyes' }, /emoji.*1 つ/],
+  ['a reaction with two emoji side by side', { kind: 'reaction', to: MESSAGE, emoji: ':+1::eyes:' }, /emoji.*1 つ/],
+  ['a reaction with text', { kind: 'reaction', to: MESSAGE, emoji: '+1', text: 'いいね' }, /リアクション.*text/],
+  ['a reaction with images', { kind: 'reaction', to: MESSAGE, emoji: '+1', images: ['/work/cat.png'] }, /リアクション.*images/],
+  ['a reaction with a feeling', { kind: 'reaction', to: MESSAGE, emoji: '+1', face: 'happy' }, /リアクション.*face/],
+  ['a reaction to a channel', { kind: 'reaction', to: CHANNEL, emoji: '+1' }, /発言.*path/],
 ] as const) {
   test(`${name} is turned back with what to fix`, () => {
-    const parsed = parseDoveRequest(message);
+    const parsed = parseDoveRequest(json(request));
     assert.equal(parsed.ok, false);
     assert.match((parsed as { text: string }).text, pattern);
     assert.match((parsed as { text: string }).text, /^頼んでいません。/);

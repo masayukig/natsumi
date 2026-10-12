@@ -1,6 +1,6 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ArchivedMessage, ArchivedReaction, ChannelRow, Reactor, SlackArchive } from './slack-archive.ts';
+import { SLACK_PATH, type ArchivedMessage, type ArchivedReaction, type ChannelRow, type Reactor, type SlackArchive } from './slack-archive.ts';
 import type { Attention } from './sources.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
 import { postWithImages } from './slack-images.ts';
@@ -26,6 +26,11 @@ export interface SlackWorkspaceOptions {
   socket: SlackSocket;
   archive: SlackArchive;
   attention: TellAttention;
+  /**
+   * Takes a channel's directory (as the workspace names it) in as it stands, as not news: the past filled in as she
+   * joins it (ADR 0050). What comes after is news.
+   */
+  takeIn?: (path: string) => Promise<void>;
   /** Put on a mention or a DM as it arrives, by the server alone (ADR 0039). */
   reaction: string;
   backfillDays: number;
@@ -86,6 +91,22 @@ export class SlackWorkspace {
     this.stopped = true;
     try { await this.options.socket.stop(); } catch { /* going away either way */ }
     await this.idle();
+  }
+
+  /**
+   * Records natsumi's own post as the dove sends it (ADR 0074), in turn with what Slack sends, so a result can name its
+   * line at once. Slack telling of it afterwards finds it recorded and adds no line. Before the connection knows who
+   * she is, nothing is recorded, and Slack's own telling records it.
+   */
+  recordOwn(channelId: string, post: { ts: string; threadTs?: string; text: string }): Promise<void> {
+    const recorded = this.chain.then(async () => {
+      const self = this.self;
+      if (this.stopped || !self) return;
+      await this.receive(await this.channel(channelId), { ts: post.ts, ...(post.threadTs ? { threadTs: post.threadTs } : {}),
+        user: self.userId, ...(self.botId ? { botId: self.botId } : {}), text: post.text, files: [] }, { live: true, mayRaise: false });
+    });
+    this.chain = recorded.catch(() => undefined);
+    return recorded;
   }
 
   /** Resolves once everything received so far has been handled. */
@@ -192,7 +213,16 @@ export class SlackWorkspace {
         if (await this.fillInOne(channel, reply, how)) filled += 1;
       }
     }
+    // A first fill-in is the past, and not news. The live events wait behind it, so what they write comes after.
+    if (cursor === undefined) await this.takeIn(channel);
     return filled;
+  }
+
+  /** A channel's directory taken in by the sources as it stands. One that cannot be is shown as an update instead. */
+  private async takeIn(channel: ChannelRow): Promise<void> {
+    try { await this.options.takeIn?.(`${SLACK_PATH}/${this.options.name}/${channel.directory}`); } catch (error) {
+      this.report('a channel filled in could not be taken in by the sources', error);
+    }
   }
 
   /** One message of a fill-in: one that cannot be recorded is logged and passed over. */

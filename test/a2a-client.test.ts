@@ -33,6 +33,14 @@ test('a message goes to the configured URL with the token as a bearer, and retur
     returnImmediately: true }]);
 });
 
+// ADR 0076: a request of the postbox names its letter and its last reply in the message's metadata.
+test('a message carries the metadata it is given, as it was given', async t => {
+  const { agent, client } = await setup(t);
+  const metadata = { postbox: { name: 'morning-news', lastReceivedAt: '2026-10-11T07:00:00+09:00' } };
+  await client.send(agent.url, { text: '今朝のニュース', metadata });
+  assert.deepEqual(agent.received[0]!.metadata, metadata);
+});
+
 // ADR 0033: a projected token is replaced while the server runs, so it is read from the file on every call.
 test('the token is read from its file again for every call', async t => {
   const { agent, client, tokenFile } = await setup(t);

@@ -141,6 +141,11 @@ function steps(turnId: string, entries: RecordEntry[], timeZone: string): Html {
           if (!result) return html`<p><small>結果はこのターンの記録にありません</small></p>`;
           shown.add(result);
           return toolResult(result, images(result));
+        }, block => {
+          // What `DECLARED_TOOL_DETAILS` puts in a declared tool's every result, so the mark holds after the config changes.
+          const result = typeof block.id === 'string' ? results.get(block.id) : undefined;
+          const details = (result?.message as Message | undefined)?.details as { declared?: unknown } | undefined;
+          return details?.declared === true;
         });
         return reply;
       }
@@ -182,7 +187,7 @@ ${after && html`<p><small>サーバーからの知らせ</small></p><pre>${after
 ${images}</div>`;
 }
 
-function assistant(message: Message, heading: string, at: Html, resultOf: (block: Block) => Html): Html {
+function assistant(message: Message, heading: string, at: Html, resultOf: (block: Block) => Html, declared: (block: Block) => boolean): Html {
   const content = Array.isArray(message.content) ? message.content as Block[] : [];
   const usage = message.usage as { input?: number; cacheRead?: number; cacheWrite?: number; output?: number } | undefined;
   const stop = typeof message.stopReason === 'string' ? message.stopReason : '';
@@ -199,7 +204,8 @@ ${content.map(block => {
     }
     if (block.type === 'text') return html`<div class="prose said">${String(block.text ?? '')}</div>`;
     if (block.type === 'toolCall') {
-      return html`<div class="call"><p><strong>${String(block.name)}</strong></p><pre>${json(block.arguments ?? {})}</pre>${fileLink(block)}${resultOf(block)}</div>`;
+      const mark = declared(block) && html` <small class="declared">config で宣言したツール</small>`;
+      return html`<div class="call"><p><strong>${String(block.name)}</strong>${mark}</p><pre>${json(block.arguments ?? {})}</pre>${fileLink(block)}${resultOf(block)}</div>`;
     }
     return html`<pre>${json(block)}</pre>`;
   })}</div>`;

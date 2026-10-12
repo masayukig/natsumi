@@ -261,8 +261,8 @@ test('the nightly switches are listed newest first with how each ended and why i
     rotation('rotation-old', 'switched', -DAY, null, 'b.jsonl');
     rotation('rotation-new', 'failed', 0, 'handoff-not-committed', null);
     const { rotations } = readWaits(f.db, options);
-    assert.deepEqual(rotations.map(item => [item.rotationId, item.state, item.reason, item.toSessionFile]),
-      [['rotation-new', 'failed', 'handoff-not-committed', null], ['rotation-old', 'switched', null, 'b.jsonl']]);
+    assert.deepEqual(rotations.map(item => [item.rotationId, item.kind, item.state, item.reason, item.toSessionFile]),
+      [['rotation-new', 'night', 'failed', 'handoff-not-committed', null], ['rotation-old', 'night', 'switched', null, 'b.jsonl']]);
   } finally { await f.cleanup(); }
 });
 

@@ -1,7 +1,7 @@
 import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { ParsedReference } from './dove-request.ts';
+import type { DoveTarget } from './dove-request.ts';
 import { isoAt } from './nightly.ts';
 import { writeFileAtomically } from './paths.ts';
 import type { SourceRegistration } from './sources.ts';
@@ -17,7 +17,8 @@ import { SOURCES_PATH } from './view.ts';
  *
  * The core of the sources notices the files change (ADR 0050). A message for her — a real mention, a DM, or a reply in
  * a thread she spoke in (ADR 0053) — is told to it as an attention, with the line it is on. No Slack ID (ts, channel, user) is ever written where she reads it
- * (ADR 0024): a message is named by its workspace, channel, local time to the second, and speaker.
+ * (ADR 0024): a message is named by its file and the `jq -s` path of its line, as she reads it and as she names it to
+ * the dove (ADR 0074).
  */
 
 export const SLACK_SOURCE = 'slack';
@@ -55,8 +56,8 @@ export interface Reactor { userId: string; name: string; countable: boolean }
 export interface ArchivedReaction { name: string; people: Reactor[]; others: number }
 
 /**
- * A reference natsumi wrote, matched against the record (ADR 0040): the channel, and the message when one was named.
- * The Slack IDs stay on the server's side of it.
+ * Where natsumi asked the dove to go, matched against the record (ADR 0040, ADR 0074): the channel, and the message
+ * when one was named. The Slack IDs stay on the server's side of it.
  */
 export interface ResolvedTarget {
   workspace: string;
@@ -80,8 +81,11 @@ interface MessageRow {
   files: string; edited: number; deleted: number; file_date: string; line: number;
 }
 
+/** Where a message is as natsumi reads it: its day's file and the `jq -s` path of its line. */
+export interface MessageLine { file: string; path: string }
+
 /** A message for her, as the core is told of it: the file and the `jq -s` path of its line, and its images. */
-export interface ForHer { file: string; path: string; images: string[] }
+export interface ForHer extends MessageLine { images: string[] }
 
 export interface SlackArchiveOptions {
   db: DatabaseSync;
@@ -234,49 +238,65 @@ export class SlackArchive {
    */
   markForHer(workspace: string, channelId: string, ts: string): ForHer | undefined {
     const row = this.row(workspace, channelId, ts);
-    const channel = this.channel(workspace, channelId);
-    if (!row || !channel) return undefined;
+    const line = this.lineOf(workspace, channelId, ts);
+    if (!row || !line) return undefined;
     const { changes } = this.db.prepare(`INSERT INTO slack_attention (workspace, channel_id, ts, created_at) VALUES (?, ?, ?, ?)
       ON CONFLICT DO NOTHING`).run(workspace, channelId, ts, this.iso());
     if (Number(changes) === 0) return undefined;
-    const { index } = this.db.prepare(`SELECT COUNT(*) AS "index" FROM slack_messages WHERE workspace = ? AND channel_id = ? AND file_date = ?
-      AND (line < ? OR (line = ? AND CAST(ts AS REAL) < CAST(? AS REAL)))`)
-      .get(workspace, channelId, row.file_date, row.line, row.line, row.ts) as { index: number };
-    return {
-      file: `${SLACK_PATH}/${workspace}/${channel.directory}/${row.file_date}.jsonl`, path: `.[${index}]`,
-      images: fetched(parseFiles(row.files)).images,
-    };
+    return { ...line, images: fetched(parseFiles(row.files)).images };
   }
 
   /**
-   * Finds what a reference names: a channel by its label, and a message by its local date, time to the second, and
-   * speaker. A message that is not there, or more than one that fit, is a sentence saying so; the second lists how
-   * each begins so natsumi can tell them apart, and never their ts (ADR 0024).
+   * Where a recorded message is as natsumi reads it: its day's file and the `jq -s` path of its line. A line is its
+   * place among its day's, which never moves (ADR 0050).
    */
-  resolve(reference: ParsedReference): { ok: true; target: ResolvedTarget } | { ok: false; text: string } {
-    const channel = this.db.prepare('SELECT * FROM slack_channels WHERE workspace = ? AND label = ?').get(reference.workspace, reference.channel) as
-      ChannelRow | undefined;
-    const where = `${reference.workspace}/${reference.channel}`;
-    if (!channel) return { ok: false, text: `チャンネル ${where} の記録がありません。/sources/slack/INDEX.md にあるチャンネルの名前で書いてください。` };
-    const target: ResolvedTarget = { workspace: reference.workspace, channelId: channel.channel_id, label: `${reference.workspace}/${channel.label}` };
-    if (!reference.at) return { ok: true, target };
-    const { date, time } = reference.at;
-    const guess = Date.parse(`${date}T${time}Z`) / 1000;
-    if (Number.isNaN(guess)) return { ok: false, text: `${date} ${time} は日付と時刻として読めません。` };
-    // Every time zone is within a day of UTC, so the local second is somewhere in these two days.
-    const rows = (this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0
-      AND CAST(ts AS REAL) BETWEEN ? AND ? ORDER BY CAST(ts AS REAL)`)
-      .all(reference.workspace, channel.channel_id, guess - 86_400, guess + 86_400) as unknown as MessageRow[])
-      .filter(row => row.speaker === reference.speaker && (({ date: d, time: t }) => d === date && t === time)(this.local(row.ts)))
-      .filter(row => reference.begins === undefined || oneLine(row.text).startsWith(reference.begins));
-    const named = `${where} ${date} ${time} ${reference.speaker}${reference.begins === undefined ? '' : ` 「${reference.begins}」`}`;
-    if (rows.length === 0) return { ok: false, text: `${named} の発言が記録に見つかりません。ファイルの行の at（日付と時刻）と from（発言者）を、そのまま写してください。` };
-    if (rows.length > 1) {
-      const heads = rows.map(row => `「${cut(oneLine(row.text), 30)}」`).join('、');
-      return { ok: false, text: `${named} の発言が ${rows.length} 件あり、どれか決められません（${heads}）。`
-        + `返信先の最後に、返したい発言の書き出しを「」で添えてください（例: ${named} 「${cut(oneLine(rows[0]!.text), 10).replace(/…$/, '')}」）。` };
+  lineOf(workspace: string, channelId: string, ts: string): MessageLine | undefined {
+    const row = this.row(workspace, channelId, ts);
+    const channel = this.channel(workspace, channelId);
+    if (!row || !channel) return undefined;
+    const { index } = this.db.prepare(`SELECT COUNT(*) AS "index" FROM slack_messages WHERE workspace = ? AND channel_id = ? AND file_date = ?
+      AND (line < ? OR (line = ? AND CAST(ts AS REAL) < CAST(? AS REAL)))`)
+      .get(workspace, channelId, row.file_date, row.line, row.line, row.ts) as { index: number };
+    return { file: `${SLACK_PATH}/${workspace}/${channel.directory}/${row.file_date}.jsonl`, path: `.[${index}]` };
+  }
+
+  /**
+   * Finds what natsumi named for the dove (ADR 0074): a channel by its directory, or a message by its day's file and the
+   * `jq -s` path of its line, as she reads them. Anything else, or anything the record does not have, is a sentence
+   * saying what to write instead, which never names a ts (ADR 0024).
+   */
+  resolve(to: DoveTarget): { ok: true; target: ResolvedTarget } | { ok: false; text: string } {
+    const refuse = (text: string) => ({ ok: false as const, text });
+    const where = `to.file には、${SLACK_PATH} の下のチャンネルのディレクトリ（例: ${SLACK_PATH}/work/dev）か、`
+      + `その中の日付のファイル（例: ${SLACK_PATH}/work/dev/2026-09-25.jsonl）を書いてください。`;
+    const relative = to.file.startsWith(`${SLACK_PATH}/`) ? to.file.slice(SLACK_PATH.length + 1).replace(/\/+$/, '') : undefined;
+    const parts = relative?.split('/') ?? [];
+    if (relative === undefined || parts.some(part => part === '' || part === '.' || part === '..')) {
+      return refuse(`to.file「${to.file}」は Slack の記録（${SLACK_PATH}）の外です。${where}`);
     }
-    const row = rows[0]!;
+    const day = parts.length === 3 && /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(parts[2]!) ? parts[2]!.slice(0, -'.jsonl'.length) : undefined;
+    if (parts.length !== 2 && !day) return refuse(`to.file「${to.file}」は、チャンネルのディレクトリでも日付のファイルでもありません。${where}`);
+    const [workspace, directory] = parts as [string, string];
+    const channelPath = `${SLACK_PATH}/${workspace}/${directory}`;
+    const channel = this.db.prepare('SELECT * FROM slack_channels WHERE workspace = ? AND directory = ?').get(workspace, directory) as
+      ChannelRow | undefined;
+    if (!channel) return refuse(`チャンネル ${channelPath} の記録がありません。${SLACK_PATH}/INDEX.md にあるチャンネルのディレクトリを書いてください。`);
+    const target: ResolvedTarget = { workspace, channelId: channel.channel_id, label: `${workspace}/${channel.label}` };
+    if (!day) {
+      if (to.path !== undefined) {
+        return refuse(`チャンネルのディレクトリに path は付けません。発言に返すなら、to.file にその発言のある日のファイル（${channelPath}/<日付>.jsonl）を書いてください。`);
+      }
+      return { ok: true, target };
+    }
+    if (to.path === undefined) {
+      return refuse(`発言に返すなら、to.path にその行の場所（例: ".[12]"）を書いてください。チャンネルそのものに投稿するなら、to.file にチャンネルのディレクトリ（${channelPath}）を書きます。`);
+    }
+    const index = Number(/^\.\[(\d+)\]$/.exec(to.path)?.[1] ?? Number.NaN);
+    const row = Number.isSafeInteger(index) ? this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND file_date = ?
+      ORDER BY line, CAST(ts AS REAL) LIMIT 1 OFFSET ?`).get(workspace, channel.channel_id, day, index) as MessageRow | undefined : undefined;
+    if (!row) return refuse(`${to.file} に ${to.path} の行はありません。行の番号は 0 から数えます。ファイルの行か、出来事の attention の file と path を、そのまま写してください。`);
+    if (row.deleted) return refuse(`${to.file} の ${to.path} の発言は消されています。`);
+    const { date, time } = this.local(row.ts);
     return { ok: true, target: { ...target, message: { ts: row.ts, ...(row.thread_ts ? { threadTs: row.thread_ts } : {}), speaker: row.speaker,
       at: `${date} ${time}`, text: row.text } } };
   }

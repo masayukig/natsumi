@@ -17,9 +17,10 @@ import { imageType, SOURCES_PATH } from './view.ts';
  * mean that shortens as it gets busier. Out of the awake hours only what a source marked as for her (an attention)
  * raises one, and the rest wait for the morning.
  *
- * A commit is made only when an event is made (and when a directory is first seen, to take it in silently). Each
- * directory's last look is its ref `refs/seen/<dir>`, and the one before it `refs/before/<dir>`, which is what
- * `sources-diff` shows. The history is cut back to a few days every night.
+ * A directory there before the server started is taken in silently; one that appears while it runs is a change like
+ * any other, and is shown whole, unless its source takes it in as not news (`takeIn`). A commit is made only when an event is made (and as the server starts, or for the
+ * very first directory, to take it in). Each directory's last look is its ref `refs/seen/<dir>`, and the one before it
+ * `refs/before/<dir>`, which is what `sources-diff` shows. The history is cut back to a few days every night.
  */
 
 export const SOURCES_DEFAULTS = {
@@ -221,6 +222,35 @@ export class Sources {
   /** Asks the loop for a `sources_updated` event, for the attentions recorded so far. */
   notify(): void { this.raiseEvent?.(); }
 
+  /**
+   * Takes one directory (a path under `/sources`, at its source's depth) in silently as it stands now, for what its
+   * source knows is not news: her own request to an outside agent, or the past of a Slack channel filled in as she
+   * joins it. What is in it is committed and its ref placed there; a wait drawn for it, and its writes, are dropped.
+   * What comes into it later is shown as any change is. Any other directory that appeared meanwhile is not swept in.
+   */
+  takeIn(path: string): Promise<void> {
+    return this.serialize(async () => {
+      // Before the start, the start takes in whatever is there.
+      if (!this.prepared) return;
+      const relative = path.startsWith(`${SOURCES_PATH}/`) ? posix.normalize(path.slice(SOURCES_PATH.length + 1)) : undefined;
+      const dir = relative === undefined ? undefined : this.unitOf(`${relative}/-`);
+      if (!dir || dir !== relative) {
+        this.log(`a directory to take in was let go: it is not one of a source's directories`);
+        return;
+      }
+      await this.scan();
+      // The others get their refs before the commit, as at a turn's beginning.
+      await this.takeInNew(false);
+      const head = await this.commit();
+      if (!head) return;
+      await this.git(['update-ref', seenRef(dir), head]);
+      this.checked.set(dir, this.options.now());
+      this.pending.delete(dir);
+      this.deadlines.delete(dir);
+      this.unshown.delete(dir);
+    });
+  }
+
   /** The mean wait of a directory now, from its writes in the window. */
   mean(dir: string): number {
     const { k, minMinutes, windowMinutes, quietMeanMinutes } = this.options.activity;
@@ -242,8 +272,9 @@ export class Sources {
     return this.serialize(async () => {
       if (!this.prepared) return false;
       await this.scan();
+      // Before the commit, so a directory that appears now gets its ref where it is not yet.
+      await this.takeInNew(false);
       const head = await this.commit();
-      await this.takeInNew(false, head);
       if (!head) return false;
       const now = this.options.now();
       const awake = isAwake(now, current(this.options.awakeHours), this.options.timeZone);
@@ -384,13 +415,16 @@ export class Sources {
   }
 
   /**
-   * Gives a ref to every directory that has none, at the current commit, so its past is never shown as news. When one
-   * waits that is not committed yet, a commit is made for it first.
+   * Gives a ref to every directory that has none. As the server starts (`all`), what is there is committed and every
+   * directory gets its ref at that commit, so its past is never shown as news. While it runs, a directory that appears
+   * gets its ref at the last commit, which it is not in yet (it waits uncommitted): it is shown whole when its wait is
+   * up, as any change is. Only with no commit yet is it committed and taken in silently, having nothing to stand before.
    */
-  private async takeInNew(all: boolean, known?: string): Promise<void> {
+  private async takeInNew(all: boolean): Promise<void> {
     const fresh = [...this.pending].filter(dir => !this.checked.has(dir));
     if (!all && fresh.length === 0) return;
-    const head = known ?? await this.commit();
+    const before = all ? undefined : await this.head();
+    const head = before ?? await this.commit();
     if (!head) return;
     const dirs = all
       ? new Set((await this.git(['ls-tree', '-r', '-z', '--name-only', head])).stdout.split('\0').flatMap(path => this.unitOf(path) ?? []))
@@ -400,6 +434,11 @@ export class Sources {
       if (this.checked.has(dir)) continue;
       await this.git(['update-ref', seenRef(dir), head]);
       this.checked.set(dir, now);
+      if (before) {
+        // Its writes stay counted, and its wait is drawn now that it has a ref.
+        this.mark(dir);
+        continue;
+      }
       this.pending.delete(dir);
       this.deadlines.delete(dir);
       this.unshown.delete(dir);
@@ -439,7 +478,7 @@ export class Sources {
 
   /**
    * Marks a directory as having something not shown. The first change after its last look draws its wait; a directory
-   * with no ref yet is taken in silently instead, and draws none.
+   * with no ref yet draws none until `takeInNew` gives it one.
    */
   private mark(dir: string): void {
     this.pending.add(dir);

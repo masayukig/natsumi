@@ -1,4 +1,4 @@
-# 描いた絵を本人に見せる（reply_to_mac の images）・Slack に出す（ポッポさんへの依頼の 画像:）ときに、
+# 描いた絵を本人に見せる（reply_to_mac の images）・Slack に出す（ポッポさんへの依頼の images）ときに、
 # /manual/avatar/images.md の手順を守るか。マニュアルを刈り込む前後で比べるための場面。人物と会話はすべて架空。
 #
 # 絵は少し前に描いた体で、setup が /work/images に小さな PNG を置く（scene.ts）。
@@ -33,8 +33,8 @@ variants:
     event:
       mac_message: "さっき描いてくれた夕焼けの海の絵、Slack の work の #random に貼っておいて"
     checks:
-      - { id: posted, asked: { agent: poppo, message: "画像: */work/images/output-20260927-201512-1\\.png" } }
-      - { id: to-random, asked: { agent: poppo, message: "返信先: *work/#random" } }
+      - { id: posted, asked: { agent: poppo, message: "\"images\": *\\[[^\\]]*\"/work/images/output-20260927-201512-1\\.png\"" } }
+      - { id: to-random, asked: { agent: poppo, to: { file: /sources/slack/work/random } } }
 dryRun:
   - calls:
       - { tool: run_shell, args: { command: "ls /work/images" } }

@@ -29,8 +29,8 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "1.2.0",
-    "@earendil-works/pi-ai": "1.0.1",
-    "@earendil-works/pi-coding-agent": "1.0.1",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
     "@slack/socket-mode": "3.0.1",
     "@slack/web-api": "8.1.1",
     "markdown-it": "15.0.2",

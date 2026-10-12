@@ -5,7 +5,7 @@
 
 - 通るのは本物の経路です。システム指示、ツールの定義と結果の文、イベントの行、打ち切り、マニュアル（`manual/`）は、評価するブランチのものがそのまま使われます。
 - workspace の shell は本物の runner（`runner/`）で、bubblewrap の中で本番のコンテナと同じ配置にして動かします。ネットワークはありません。
-- 外への作用は記録するだけです。Mac への返事と知らせは記録に残り、ポッポさんへの依頼は形を確かめて受け付けの文を返すだけで、Slack には何も送りません。
+- 外への作用は記録するだけです。Mac への返事と知らせは記録に残り、ポッポさんへの依頼は形を確かめ、実行の data directory の `sources/agents/poppo/` に置いて受け付けの文を返すだけで、Slack には何も送りません（返す先が記録にあるかは確かめません）。
 - 外のエージェントとポッポさんには、場面に書いた相手役が答えます。本物にはつなぎません（下の「相手役と、続けるターン」）。
 - 本番の状態の写しから始めることもできます（下の「本番の写しから試す」、[ADR 0052](../docs/adr/0052-trying-a-turn-on-a-copy-of-production.md)）。
 - 1 回ごとに新しいデータディレクトリ、SQLite、Pi の session で回します。
@@ -179,7 +179,7 @@ checks:
 | `shell: <正規表現>` | run_shell のコマンドが合った。`min`・`max` |
 | `output: <文字列>` | run_shell か read の結果に含まれた。`min`・`max` |
 | `read: <パス>`・`notRead: <パス>` | read で読んだか、run_shell のコマンドがそのパスを含んだ（読まなかった）。ディレクトリも書けます |
-| `asked: { agent, message, replyTo }` | `ask_agent` の宛先、本文の正規表現、ポッポさんへの依頼の返信先（`work/#dev 2026-09-27 14:32:05 田中` の形）が合った。`min`・`max` |
+| `asked: { agent, message, to }` | `ask_agent` の宛先、本文の正規表現、ポッポさんへの依頼の返す先（`{ file: /sources/slack/work/dev/2026-09-27.jsonl, path: ".[36]" }`、チャンネルなら `file` だけ）が合った。`min`・`max` |
 | `reply: <正規表現>` | 本人への返事の文が合った。`min`・`max` |
 | `modelCalls: { min, max }` | モデルの呼び出し回数 |
 | `finished: true` | 打ち切られずに終わった |
@@ -215,7 +215,7 @@ follow: true
 ```
 
 - 既定は 1 ターンです。相手役は依頼を受け付けるだけで、返事はしません。
-- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は、実行の data directory の `sources/agents/` に置かれ、`sources_updated` の attention（kind `agent_reply`）で届きます（サーバーの返事の取りに行きの道筋と、本物の `sources` を通ります。ADR 0069）。ポッポさんの返事は `agent: poppo` の `agent_reply`（`result`・`reply_to`・`draft`・`text`）です。依頼が無くなるか、ターンが上限に達したら止まります。
+- `follow` を書くと、ターンが終わるたびに、そのターンの依頼に相手役が答え、本物と同じ出来事で返します。外のエージェントの返事は、実行の data directory の `sources/agents/` に置かれ、`sources_updated` の attention（kind `agent_reply`）で届きます（サーバーの返事の取りに行きの道筋と、本物の `sources` を通ります。ADR 0069）。ポッポさんの返事も、本物と同じく依頼のディレクトリの `results.jsonl` に 1 行足され、attention（kind `agent_reply`、agent `poppo`、`state`・`summary`）で届きます（ADR 0074）。同じターンの依頼への返事は、1 つの `sources_updated` にまとめて届きます。依頼が無くなるか、ターンが上限に達したら止まります。
 - `replies` を書いた相手役は、書いた順に返事を返します（使い切ったら最後のものを繰り返します）。ポッポさんの `result` は `sent`・`reacted`・`to_owner`・`returned`・`rejected`・`expired`・`not_sent` のどれかで、省くと `sent` です。
 - `replies` の無い相手役は LLM（`--actor`）が演じます。外のエージェントは Agent Card の説明と `instructions` を、ポッポさんは「判定と承認を経て投稿する係」という役と `instructions` を渡されます。ドライランでは決まった文で答えます。
 - 相手役への依頼と返事、返事が書いた文か LLM か（`by`）は、結果の `actors` に残ります。判定役にも見せます。ターン数は `turns`、呼び出し回数・トークン・時間は全ターンの合計です。

@@ -76,12 +76,14 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      Pi の Codemode `codemode`（既定 off。下記「Codemode で作業環境の出力を絞る」）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
+   - `postbox`（省略可）: 記憶に置いた定期便をサーバーが cron で送る郵便ポストの設定です。下記「定期便を送る（郵便ポスト）」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
    - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
      係のターンの上限 `modelCalls`（既定 100 回）と `timeoutMinutes`（既定 60 分）。経路と上限は、動いている最中に `/settings` で上書きできます（下の「ブラウザで話す・設定を変える」）。一晩は工程に分かれ、上限は工程ごとにまるごと使えます
      （一晩の合計ではありません）。朝の締め切り `stopStartingAt`（`loop.timeZone` の時刻、既定 `"05:30"`、`false` で無し。
-     `loop.nightlyRotationAt` と同じ時刻にはできません。`/settings` では変えられません）。その夜の切り替えの時刻の後で最初に来るこの時刻を過ぎたら、次の工程を始めません。トピックの合計の文字数がこれ以下なら毎晩すべてのトピックを書き直してよい大きさ `rewriteAllMaxChars`
+     `loop.nightlyRotationAt` と同じ時刻にはできません。`/settings` では変えられません）。その夜の切り替えの時刻の後で最初に来るこの時刻を過ぎたら、次の工程を始めません。
+     睡眠薬（下の「睡眠薬で寝かせる」）のときの締め切り `pillStopStartingAfterMinutes`（飲ませた時刻からの分、既定 90、`false` で無し。`/settings` では変えられません）。トピックの合計の文字数がこれ以下なら毎晩すべてのトピックを書き直してよい大きさ `rewriteAllMaxChars`
      （既定 100000。`archive/`・`diary/`・固定のファイル・`INDEX.md` は数えません。0 なら常に次の `rotateFiles` の形）、
      超えたときに一晩に順番で回すファイルの数 `rotateFiles`（既定 2、0〜10）。
      最初の工程に渡すその日の会話の本文の長さの上限 `conversationMaxChars`（既定 30000 文字。超えたら古い方から省きます。0 なら渡さず、日記だけで書き起こします）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
@@ -226,6 +228,27 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
 
 稼働状態は `node dist/src/server/main.js health --data-dir <data directory>` で確認できます（稼働中なら終了コード 0）。
 
+### 睡眠薬で寝かせる
+
+本人は、好きなときに natsumi に睡眠薬を飲ませて寝かせられます（[ADR 0077](docs/adr/0077-a-sleeping-pill-to-make-up-for-a-missed-night.md)）。
+飲ませるのはダッシュボードの「睡眠薬」（`/dashboard/sleep`）か、クライアントの契約の `sleep.take` です。natsumi が自分から寝ることはありません。
+睡眠薬は 1 種類で、何をするかはサーバーが直近の夜の処理の欠けから決めます。
+
+| 直近の夜の状態 | すること |
+| --- | --- |
+| 振り返り（引き継ぎ）が欠けている | `deep`: 夜と同じ全部（振り返り → 記憶の整理係 → 新しい session） |
+| 引き継ぎはあり、新しい session が欠けている | `resume`: 残った引き継ぎから新しい session を作る。整理係も済んでいなければ先に走らせる |
+| 新しい session はあり、整理係が済んでいない | `resleep`: session はそのままで整理係だけ |
+| 全部済んでいる | `nap`: 昼寝。引き継ぎだけを書いて新しい session に移る。整理係は走らない |
+| 今の session が空 | 何もしない |
+
+- 直近の夜は、直前の `loop.nightlyRotationAt` の時刻です。`false` なら、振り返りから始まった最も新しい切り替え（夜か `deep`）の時刻です。
+- 何をするかは、natsumi がその睡眠薬を処理し始めるときに決めます。夜の切り替えや前の睡眠薬が待っている・走っているときに飲ませたら、それに合流し、二重には寝ません。
+- 寝ている間は夜と同じで、届いたメッセージは待たせ、アバターは `sleepy` です。
+- 睡眠薬の整理係は、飲ませた時刻から `curator.pillStopStartingAfterMinutes`（既定 90 分）を過ぎたら次の工程を始めません。始めなかった工程は次の夜に回ります。
+- 結果は夜の切り替えと同じく `session_rotations` に種類（`night`・`deep`・`resume`・`resleep`・`nap`）付きで残り、ダッシュボードの「失敗と待ち」と「睡眠薬」で見られます。本人へは何も送りません。
+- 睡眠薬の後も、次の夜はいつもどおり切り替えます。
+
 ### モデルの経路を切り替える
 
 思考ループのモデルの経路に名前を付けて設定に並べ、動いているサーバーのまま手で切り替えられます
@@ -358,6 +381,89 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 - スクリプトの中で呼んだツールは、session の記録に toolCall としては残らず、codemode の結果に名前・引数・状態の一覧だけが残ります。
   `stats` の読み直しの数には、その一覧の `run_shell`・`read` と、前と同じ本文のスクリプトも数えます。
 
+### skill を渡す
+
+決まった仕事のやり方を、Pi の skill の形（`SKILL.md` を持つディレクトリ）でなつみに渡せます
+（[ADR 0073](docs/adr/0073-skills-from-the-owner-and-her-own.md)）。書き手は二人で、置き場所も二つです。
+
+```json
+"skills": { "enabled": true }
+```
+
+- `enabled`（既定 `false`）: off のときは、Pi の skill を一つも読み込まず、ツールも system prompt も入れる前と一字一句同じです。
+- 本人の skill: data directory の `skills/` に、本人の private リポジトリを clone しておきます。作業環境からは `/skills` に読み取り専用で見えます。
+  サーバーは取りに行かないので、更新は本人が clone で `git pull` します（Kubernetes では sshd から。手順は環境の設定のリポジトリにあります）。
+  `skills/` は data directory を作るときに空で作られるので、その中で `git clone <リポジトリ> .` とします。
+- なつみの skill: 記憶の `skills/`（作業環境の `/memory/skills/<名前>/SKILL.md`）に、なつみが自分で書きます。
+  記憶と同じくターンの終わりに検査してコミットするので、本人は記憶の git の差分で見られます。承認は挟みません。
+  - 記憶のファイルと同じ検査（大きさ・文字・symlink）が掛かります。skill のディレクトリ（`SKILL.md` のある `skills/<名前>/`）の中に限り、
+    スクリプトや参照のデータなど `.md` 以外のテキストのファイルも置けます。バイナリは置けず、1 つの skill の合計は 100,000 文字までです。
+    スクリプトはなつみが作業環境で `bash` や `python3` を付けて動かします。サーバーは動かしません。
+  - `SKILL.md` は、Pi が読み込める形（frontmatter に `description` があり、`name` と `description` に Pi の警告が出ない）でなければ、前のコミットに戻し、理由をなつみに伝えます。
+  - 記憶の整理係は `skills/` を変えません。`search_memory` は記憶の全体を探すので、`skills/` のスクリプトも対象です。
+- system prompt には、作業環境の節に skill の置き場所と書き方の節が入り、その後ろに Pi が skill の一覧（名前・説明・`SKILL.md` のパス）を足します。
+  パスは作業環境から見たもので、本人の分が先に並びます。本文は入らず、なつみが `read` で読みます。`read` は `/skills` の下も読めるようになります。
+- 一覧は session を作るときに組み、session の間は変えません。足したり直したりした skill は、次の session（夜の切り替えかサーバーの再起動の後）から効きます。
+  一覧が変わった最初の session では prefix cache が外れます。
+- 同じ名前の skill が両方にあれば本人の分を使い、なつみの分は読み込まずにログに警告を出します。
+  clone が無いとき、`SKILL.md` が壊れているとき、symlink を通って見つかった skill（作業環境からは同じパスで読めないので外します）も、ログに出して残りで続けます。起動は止めません。
+- 作業環境（`loop.workspaceSocket`）が無いときは、Pi は一覧を入れないので、skill は効きません。
+
+### インスタンスに特有のツールを宣言する
+
+インスタンスごとに違う道具を、コードを足さずに、config の最上位の `tools` でツールとして宣言できます
+（[ADR 0075](docs/adr/0075-tools-declared-in-the-config.md)）。
+道具の本体は作業環境の `/tools` に置くプログラムで、runner が bash を通さずに起動します。
+
+```json
+"tools": [
+  {
+    "name": "weather",
+    "description": "都市の今日の天気を調べる。city に都市の名前を書く。",
+    "parameters": {
+      "type": "object",
+      "properties": { "city": { "type": "string", "description": "都市の名前" } },
+      "required": ["city"]
+    },
+    "command": ["/tools/weather.py", "--units", "metric"],
+    "exposure": "model-only",
+    "timeoutSeconds": 30,
+    "maxOutputChars": 8000
+  }
+]
+```
+
+- `name`（必須）: ツールの名前です。英字で始まり、英数字・`_`・`-` で 64 文字までです。
+  組み込みのツール（`run_shell`・`reply_to_mac` など）、`codemode`、Pi の組み込みのツール（`bash`・`edit`・`write` など）と同じ名前や、
+  宣言の中で重なる名前は、起動時に拒みます。
+- `description`（必須）: モデルに見せる説明です。書いたとおりに prefix に載ります。system prompt は変えないので、使い方はここに書きます。
+- `parameters`（既定は引数なし）: 引数の JSON Schema です。最上位は `object` で、使える型は `object`・`string`・`number`・`boolean`・`array` と、
+  `string` か `number` の `enum` だけです。キーワードは `type`・`description`・`enum`・`properties`・`required`・`items`・`additionalProperties`（真偽値）に限ります。
+  ほかのもの（`integer`・`anyOf`・`pattern`・`$ref` など）は起動時に拒みます。
+- `command`（必須）: プログラムと固定の引数の配列です。プログラムは `/tools` の下の絶対パスに限ります（`..` や `.` を含まない形）。
+  なつみが書ける `/memory` などに置くと、自分の道具を書き換えられてしまうからです。
+- `exposure`（既定 `"model-only"`）: Codemode が on のときの見え方です。`"model-only"` はモデルが直接だけ、`"direct"` はモデルからもスクリプトからも、
+  `"codemode"` はスクリプトからだけ呼べます。Codemode が off のときは、どれもモデルが直接呼ぶツールです。
+  外へ作用する道具を `direct` や `codemode` にすると、スクリプトの条件分岐で作用が出たり出なかったりします。どれをスクリプトに渡すかは、config を書く人が決めます。
+- `timeoutSeconds`（既定 30、1〜60 の整数）: この時間を過ぎると、runner がプロセスのグループごと止め、失敗として返します。
+  上限は runner の応答の上限（60 秒）と同じで、道具が runner を `run_shell` のコマンドより長く占めることはありません。長い仕事は `run_shell` で回します。
+- `maxOutputChars`（既定 8000、1〜20000）: モデルに返す標準出力の上限です。超えた分は切り、切ったことを一行添えます。
+- 呼び出し: モデルが書いた引数（JSON）を、そのまま 1 行で標準入力に渡します。コマンドの文字列には埋め込みません。
+  作業ディレクトリは `/work`、環境変数は `run_shell` と同じ 5 つ（`PATH`・`PWD`・`HOME`・`LANG`・`TZ`）です。
+- 結果: 終了コード 0 なら、標準出力がそのまま結果です（空なら「出力は空でした」）。標準エラー出力は返しません。
+  0 以外の終了コード、時間切れ、シグナルは失敗として返し、終了コードと標準出力・標準エラー出力（2000 文字まで）の先頭を添えます。
+  結果は文字だけです。画像が要るときは、道具が `/work` に書き、なつみが `view` で見ます。
+  プログラムが終わった後も、そのプロセスのグループに残ったものは runner が止めます。
+- 道具は作業環境の中で、作業環境の権限で動きます。出口も作業環境のままで、道具を足しても広がりません。秘密は作業環境に置かないので、秘密の要る API はまだ道具にできません。
+- なつみの session にだけ渡します。記憶の整理係には渡しません。作業環境（`loop.workspaceSocket`）が無い config で宣言すると、起動時に拒みます。
+- ターンの上限、振り返り中にツールを断ること、`stats` の読み直しの数（同じ引数でもう一度呼んだもの）、ターンの記録、畳み込みは、組み込みのツールと同じです。
+  畳み込みでは `run_shell` と同じく「残さないツール」として畳まれます。ダッシュボードのターンの詳細では、呼び出しに「config で宣言したツール」の印が付きます。
+- 読み込むのは起動時だけです。宣言を変えたら再起動します。session は切り替えないので、ツールの定義が変わった後の最初の呼び出しでは prefix cache が外れ、
+  古い履歴には消えたツールの呼び出しが残ります。宣言しない config では、ツールも説明も system prompt も、宣言を入れる前と一字一句同じです。
+- **`tools` を書いた config は、これに対応した版より前のサーバーには入れられません**（知らない設定として起動を止めます）。
+  **サーバーと作業環境の image は同じ版にそろえてください。** 古い作業環境の runner は新しい要求の形を知らず、宣言したツールの呼び出しはすべて失敗します
+  （その旨を結果で返します）。`run_shell` の要求の形は変わっていないので、古いサーバーと新しい作業環境の組み合わせでは `run_shell` は動きます。
+
 ### ブラウザで話す・設定を変える
 
 ブラウザで `<publicOrigin>/`（例: `https://natsumi.example.net/`）を開くと、Mac・iPhone と同じ会話でなつみと話せ、承認もできます。
@@ -400,13 +506,13 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、予約、睡眠薬、定期便、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
   以前の `/dashboard` だけの cookie を持つブラウザは、`/dashboard` を開いたときに新しい cookie へ移し替えます。
   ページの「ログアウト」は、そのブラウザのセッションだけを終わらせます。
-- 読み取り専用です。経路や畳み込みの切り替え、承認は、アプリとコマンド、ブラウザの `/` と `/settings` で行います。上のリンク（「話す」「設定」）から移れます。
+- 読み取り専用です（例外は、予約の削除と睡眠薬）。経路や畳み込みの切り替え、承認は、アプリとコマンド、ブラウザの `/` と `/settings` で行います。上のリンク（「話す」「設定」）から移れます。
 - いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
   文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
   文脈の大きさは、ターンの終わりに測った値です。実行中のターンからは、その詳細へ移れます。
@@ -426,7 +532,14 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
     ここから「承認の履歴」へ移れます。
   - 予約した確認（self-check）の予定と理由、次の夜の切り替えの予定時刻（`loop.nightlyRotationAt`）。
   - 外のエージェントへの依頼。相手、状態（waiting・input-required・completed・failed・gave-up）、送った時刻と最後の変化。まだ続いているものが先です。
-  - 夜の session の切り替えの結果と、失敗の理由。
+  - 夜の session の切り替えと睡眠薬の結果、種類（`night`・`deep`・`resume`・`resleep`・`nap`）と、失敗の理由。
+- 「睡眠薬」（`/dashboard/sleep`）は、いま睡眠薬を飲ませると何をするか、するとどのくらい寝ているか、直近の夜の時刻と 3 つの部分（振り返り・整理係・新しい session）が済んでいるか、
+  直近の夜からの最も新しい失敗、走っている・待っている切り替えを出します。ページのボタンで飲ませると、同じページに戻って受け付けたことを出します。
+  開いただけでは何も変わらず、自動では更新しません。ログインしているブラウザから、同じオリジンのフォームでだけ受け付けます。
+- 「定期便」（`/dashboard/postbox`）は、郵便ポストの定期便を名前の順に出します（[ADR 0076](docs/adr/0076-a-postbox-for-requests-sent-on-a-schedule.md)）。
+  名前、相手、cron、最後に送った時刻、その結果（返事を待っている・受け取り・中身なし・失敗・待つのをやめた・聞き返し・飛ばした）と飛ばした理由、
+  続けて失敗した回数、前回の受け取り、次に送る時刻です。検査に通らない定期便は、送らない理由を出します。表示だけで、止める操作はありません。
+  最後に `/sources` に置いた返事があれば、その「最後の返事」のディレクトリへ「ファイル」でリンクします。
 - 「一行メモ」（`/dashboard/memos`）は、ターンの終わりに書いた一行メモを新しい順に 20 件ずつ、全文で出します。
   一覧は SQLite から作り、メモは session のファイルのうち、そのターンの位置の終わりの付近（最大 1MB）だけを読みます。
   位置を持つ前の「推定」のターンは、ファイルを先頭から探すことになるので一覧では読みません。そのターンの詳細で見られます。
@@ -452,10 +565,10 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   - グラフはサーバーが SVG で描き、JS は使いません。点や棒に触れると値が出て、各グラフの下の「数値の表」に同じ数値があります。
   - ターンの無い刻みは値なしとして扱い、0 にはしません。線はそこで切れ、表では「—」と出します。
   - 集計は SQLite で行い、期間の行だけを `started_at` の索引で読みます。
-- 「ファイル」（`/dashboard/files`）は、なつみの作業環境の `/memory`・`/work`・`/home/natsumi`・`/manual`・`/manual/agents` の今の中身を、
+- 「ファイル」（`/dashboard/files`）は、なつみの作業環境の `/memory`・`/work`・`/home/natsumi`・`/manual`・`/manual/agents`・`/sources` の今の中身を、
   読み取り専用で見せます（[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。URL は `/dashboard/files` の後に作業環境のパスを続けた形です（`/dashboard/files/memory/always.md` など）。
   - 読む場所: `/memory` は記憶の repository（`loop.memoryRepository`、既定は data directory の `memory/`）、`/work` と `/home/natsumi` は data directory の `work/` と `home/`、
-    `/manual/agents` は data directory の `agents/` です。`/manual` は、コードに同梱の [manual/](manual/) を読みます。
+    `/manual/agents` は data directory の `agents/`、`/sources` は data directory の `sources/` です。`/manual` は、コードに同梱の [manual/](manual/) を読みます。
     image ではサーバーの `/app/manual`（作業環境の `/manual` と同じビルドから作ったもの）、チェックアウトから `--data-dir` を付けて起動したときは、そのチェックアウトの `manual/` です。設定では変えられません。
   - ディレクトリは 1 階層ずつ並べます。既定は名前順（ディレクトリが先）で、列見出しの「名前」「更新日時」「大きさ」で並べ替えます（`?sort=mtime&order=asc` など）。
     ディレクトリの大きさは数えません。1 つのディレクトリで並べるのは 2,000 件までです。
@@ -648,7 +761,7 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   1 枚 10 MiB・1 回 8 枚までを、返事の `images/` に置き、`.natsumi/images/` にも写しを残します（migration 19）。
   `README.md` に置いた画像と説明、取らなかった画像とその理由を書きます。取れなくても文章の返事はそのまま届けます。
   natsumi は `reply_to_mac` の `images` に、`/sources/agents/` の下の画像をそのまま並べられます。
-- Slack の送信役（ポッポさん）の結果は、今までどおり `agent_reply` の出来事で届けます。
+- Slack の送信役（ポッポさん）の依頼と結果も `sources/agents/poppo/` に置き、同じ attention で知らせます（下の「Slack に投稿する（ポッポさん）」）。
 - 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
   待っている依頼は、新しい版で取りに行き、`sources/agents/` に返事のためのディレクトリを作って置きます（頼んだことの記録はありません）。
 - 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
@@ -656,6 +769,53 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
   取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
 - token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
+### 定期便を送る（郵便ポスト）
+
+外のエージェントへの決まった依頼を、記憶の `postbox/` に 1 通 1 ファイルで置いておくと、サーバーが cron どおりに送ります
+（[ADR 0076](docs/adr/0076-a-postbox-for-requests-sent-on-a-schedule.md)）。送るときに natsumi のターンは使わず、モデルも呼びません。
+`a2a` の設定が要ります。
+
+```markdown
+---
+to: news
+cron: "0 7 * * *"
+notify: attention
+---
+今朝のニュースから、ソフトウェアの開発と自宅のサーバーの運用に関わるものを選んでください。
+```
+
+- ファイル名（`.md` を除く。小文字の英数字とハイフン）が定期便の名前です。`to` は `a2a.agents` の名前、`cron` は 5 項目の cron 式で、
+  `loop.timeZone` で読みます。`paused: true` で止め、`notify: attention` で返事のたびにすぐ知らせます。本文が相手に渡す依頼です。
+- サーバーが読むのは、記憶の HEAD にコミットされた内容だけです。読み直すのは、ターンの終わりに記憶をコミットした直後、
+  1 分ごとの見回りで HEAD が変わっていたとき、起動したときです。作業ツリーは見張りません。
+- natsumi が書いた定期便は、ターンの終わりの検査（frontmatter が YAML として読める、知らない項目が無い、`to` が `a2a.agents` にある、
+  cron が読めて当てはまる時刻がある、回の間隔が下限以上、本文がある）に当たると、直前のコミットの状態に戻し、理由を次のターンで伝えます。
+  本人が ssh でコミットした定期便は、読むときに同じ検査をし、通らないものだけを送らずに飛ばします。理由は natsumi の次のターンの入力とダッシュボードに出します。
+- 時刻が来たら一度だけ送ります。送る前にその回を記録するので、再起動しても同じ回を二度送りません。止まっていた間に過ぎた回は、
+  何回分でも、起動後の最初の見回りで 1 回だけ送ります。前の回の返事を待っているうちに次の回が来たら、その回は送らずに飛ばします。
+- 依頼の本文の末尾に、前回うまく受け取った回を送った時刻を `前回の受け取り: 2026-10-11T07:00:00+09:00 (JST)` の 1 行で足し、
+  A2A の message の metadata にも `{"postbox": {"name": "<名前>", "lastReceivedAt": "<同じ時刻>"}}` で載せます。
+  時刻は `loop.timeZone` の ISO 8601（秒まで）で、括弧はそのタイムゾーンの略号（得られなければ IANA 名）です。
+  初回は行を足さず、`lastReceivedAt` を省きます。失敗した回では進めません。
+- 返事は `ask_agent` と同じく `sources/agents/<相手>/<送った UTC の日時>-<短い印>/` に置き、`request.md` に `postbox: <名前>` を書きます。
+  依頼のディレクトリは返事と一緒に作り、返事が来る前には作りません。知らせ方は次のとおりです。
+  - 中身のある返事は、既定ではふつうの更新（attention なし。awake hours の外なら朝に出ます）。`notify: attention` なら attention（`details` に `postbox`）。
+  - reply/v1 の DataPart で `sections` が空の返事は「中身なし」とし、知らせず、ディレクトリも残しません（うまく受け取った回として数えます）。
+    文章だけで返す相手の返事は、毎回置いて知らせます。
+  - 聞き返し（`input_required`）は常に attention で知らせます。natsumi が `ask_agent` の `continue: true` で答えられ、答えた後の返事がうまく受け取れたら、
+    その回を送った時刻で前回の受け取りを進めます。
+  - 失敗（`failed`）と待ちの上限切れ（`gave_up`。上限は `a2a.giveUpAfterHours`）はふつうの更新です。3 回続いたときだけ attention で知らせます。
+- 定期便ごとの記録（前回の受け取り、次の回、最後に送った時刻と結果、続けて失敗した回数）は `.natsumi/state.sqlite`（migration 31）に持ちます。
+  ファイルを消すと記録も消え、作り直した定期便は初回として送ります。
+- 夜の記憶の整理係は `postbox/` を変えません。
+
+| 設定 | 既定 | 中身 |
+| --- | --- | --- |
+| `postbox.enabled` | `true` | `false` にすると、どの定期便も送りません（緊急に全部を止めるとき）。定期便の読み込みと検査、ダッシュボードの表示は続けます |
+| `postbox.minIntervalMinutes` | 15 | cron の回の間隔の下限（分、1〜1440）。これより短い回のある定期便は、検査で戻すか送らずに飛ばします |
+
+止めるときは、ファイルを消すか `paused: true` にしてコミットします（natsumi に頼んでもかまいません）。ダッシュボードからは止められません。
 
 ### Slack を受け取る
 
@@ -816,8 +976,21 @@ natsumi の番号で登録した signal-cli を `daemon --http` で動かして�
 natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信役のポッポさん（`poppo`）に頼みます
 （[ADR 0040](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)）。ポッポさんはサーバーの中にいて、Slack の設定があるときだけ頼める相手の一覧に載ります。
 
-- 依頼は見出し付きのテキスト（`返信先`・`種類`・`表情`、`---` の後が本文）です。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
-  返信先はファイルの発言の参照で、サーバーが記録と突き合わせます。形の崩れ、記録に無い参照、機械的な検査に当たる本文は、その場で断ります。
+- 依頼は `ask_agent` の `message` に書く JSON のオブジェクト 1 つです（`kind`・`to`・`face`・`text`・`emoji`・`images`、
+  [ADR 0074](docs/adr/0074-asking-poppo-in-json-and-hearing-back-in-sources.md)）。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
+  返す先の `to` は、natsumi が Slack の記録を読むときと同じ `{file, path}` で、チャンネルのディレクトリならチャンネルそのものに、
+  日付のファイルと行の `jq -s` のパスならその発言に返します。サーバーが記録と突き合わせます。
+  JSON として読めないもの（前の見出し付きの形を含む）、欄の過不足、記録に無い行、機械的な検査に当たる本文は、どの欄をどう直すかを添えてその場で断ります。
+- 受け付けた依頼は、data directory の `sources/agents/poppo/<受け付けた UTC の日時>-<短い印>/` に置きます。
+  `request.json` は natsumi が書いた欄と、頼んだ時刻、返す先の手がかり（チャンネル、発言の時刻・発言者・本文の書き出し）です。
+  結果（`sent`・`reacted`・`to_owner`・`returned`・`rejected`・`expired`・`not_sent`）は出るたびに `results.jsonl` に 1 行ずつ足し、
+  `sources_updated` の attention（kind `agent_reply`、agent `poppo`、`state`・`summary`（ポッポさんの言葉）・頼んだことの先頭の行・頼んだ時刻）で知らせます。
+  attention の `file`・`path` は `results.jsonl` のその行です。`sent` で投稿の ts が分かるときは、送った時点で Slack の記録にその投稿を書き、
+  `slack_file`・`slack_path` でその行を指します（画像付きの投稿は Slack が ts を返さないので付きません）。
+  結果は `.natsumi/state.sqlite` の `dove_results`（migration 29）に記録してからファイルに書き、attention を出します。
+  途中でサーバーが止まっても、次の起動で書いて知らせます。`sources.git` の履歴には `request.json` と `results.jsonl` が入ります。
+- 移行: 版を上げた時点で本人の承認を待っている依頼は、結果が出たときに記録から `request.json` を組み立ててディレクトリを作ります（`note` にそう書きます）。
+  まだ natsumi に渡していないポッポさんの `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。新しくは作りません。
 - 下書きは判定にかけます（[ADR 0059](docs/adr/0059-two-judges-side-by-side-and-fewer-issues.md)）。問いは英語で、問題点ごとの点数（本人に代わる約束・期限、隠しごとの匂わせ、事実と違う説明、同意の捏造、私的な事情）と、
   置き場所を聞きます。判定に見せるのは下書き・今の時刻・返信先と、チャンネル直下と返信先のスレッドのそれぞれ最新の発言（今の時点まで）だけです。
   - 判定は logprobs と Jev の 2 つあり、有効なものを同時に掛けて、両方の結果を残します。決めるのは採用する方で、答えが無ければもう一方、両方だめなら判定なしです。
@@ -838,7 +1011,7 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
   （例: `slack (work): the custom emoji could not be read (emoji.list: missing_scope, needed emoji:read)`）。
   以前の設定 `slack.reactions`（候補の一覧）は廃止し、書いてあると起動しません。
   標準の絵文字の名前は emoji-datasource（MIT License）から `scripts/slack-emoji-names.ts` で生成した `src/server/slack-emoji-names.ts` です。
-- 投稿には `/work` の画像を付けられます（見出し `画像:`、[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）。
+- 投稿には `/work` の画像を付けられます（欄 `images`、[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）。
   - サーバーは `/work` の下（リンクや `..` で外に出るものは断ります）の PNG・JPEG・WebP（中身で見分けます）だけを、`slack.postImages` の上限まで受け付けます。
   - 受け付けた時点で画像を `.natsumi/images/` に写し、ID を付けます。承認に見せるのも Slack に送るのもこの写しで、後で `/work` のファイルが変わっても変わりません。
   - 判定に掛けるのは本文だけです。本文の無い画像だけの投稿は、判定にも承認にも通さずに送り、置き場所は判定なしのときの決まりで決めます。
@@ -935,6 +1108,9 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   `/manual/avatar` は natsumi が起動のたびにアバターから書き出す、画像を作るページ `images.md` と画像生成の設定 `sdctl-params.yaml`
   （`natsumi-data` の `avatar/`、読み取り専用。[ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)）です。
   system prompt には「やり方が分からないときは `/manual/INDEX.md` を読む」の 1 文だけがあり、使い方の説明はマニュアルの側に足します。
+  `/skills` は本人の skill の clone（`natsumi-data` の `skills/`、読み取り専用。[skill を渡す](#skill-を渡す)）です。
+  `/tools` は config で宣言したツールの本体の置き場所（読み取り専用。[インスタンスに特有のツールを宣言する](#インスタンスに特有のツールを宣言する)）です。
+  Kubernetes の構成では、インスタンスごとの ConfigMap を mount します。Docker の構成（`compose.yaml`）には `/tools` の mount は無いので、使うときは override で足します。
 
   `/work` と `/home/natsumi` にはターンの終わりの検査もコミットも掛からず、git の差分でも見られません。
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
@@ -976,6 +1152,8 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     残ったプロセスを止めるのは natsumi です（`ps` と `kill`）。サーバーは止めません。
   - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで（モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字まで）
   - 1 つのコマンドの長さは 8000 文字まで。超えるとサーバーが送る前に拒否します。
+  - config で宣言したツールは別の形の要求で動き、こちらは時間切れで止めます（`timeoutSeconds`、60 秒まで）。要求の 1 行は 64 KiB までで、
+    引数がそれを超えるとサーバーが送る前に拒否します。
   - 応答の上限と出力の上限は `compose.yaml` の `command` で、サーバー側の待ち時間は `loop.shellWaitSeconds` で変えられます。
 - 環境変数: コマンドには `PATH`・`PWD`・`HOME`・`LANG`・`TZ` の 5 つだけを渡します。コンテナ自体の環境変数は空のままです。
   `TZ` はサーバーがコマンドごとに `loop.timeZone` を送ります（`NATSUMI_TIME_ZONE` は runner 側の既定値です）。
@@ -997,7 +1175,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     グループの書き込みと、ディレクトリの setgid を付けてください。umask か setgid が外れると、サーバーが記憶をコミットできなくなります。
   - runner は `-socket` のディレクトリが無ければ作ります。持ち主の違う volume（Pod の `emptyDir` など）では、
     その下のサブディレクトリをソケットの置き場に指定します（例: `/run/natsumi-workspace/runner/runner.sock`）。
-- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/`・`agents/` を作るので、`natsumi-workspace` は
+- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/`・`agents/`・`skills/` などを作るので、`natsumi-workspace` は
   natsumi が healthy になってから起動します。
 - 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で
   2 つのコンテナを起動し、コンテナの形（ネットワーク、マウント、権限、資源の上限、見えない秘密、環境変数）と、

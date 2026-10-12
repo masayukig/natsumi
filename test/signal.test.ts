@@ -218,7 +218,9 @@ async function doveSetup(t: test.TestContext) {
   // No judge: every draft goes to the owner.
   const dove = new SlackDove({
     db, archive, workspaces: { work: slack }, publicOrigin: 'https://natsumi.example.test', workDirectory: join(root, 'work'),
-    images: new ImageStore(db, join(root, 'images')), now: () => clock.now, log: line => { logs.push(line); }, raise: () => {},
+    images: new ImageStore(db, join(root, 'images')), timeZone: 'Asia/Tokyo', now: () => clock.now,
+    // Where the results go (ADR 0074); what she hears of them is not what this test is about.
+    place: { directory: join(root, 'agents'), record: () => true, notify: () => {}, takeIn: async () => {} }, log: line => { logs.push(line); },
     judges: {}, judgeChoice: () => ({ logprobs: false, jev: false, adopted: 'jev' }),
     config: { approvalDays: 7, placementFollowing: 2, judgeContext: { messages: 5, chars: 500 }, images: { maxBytes: 1024, maxCount: 2 } },
   });
@@ -232,7 +234,7 @@ async function doveSetup(t: test.TestContext) {
     await rm(root, { recursive: true, force: true });
   });
   const draft = async () => {
-    await dove.ask('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: 投稿\n---\n大丈夫です');
+    await dove.ask(JSON.stringify({ kind: 'post', to: { file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[0]' }, text: '大丈夫です' }));
     await dove.idle();
     await approvals.idle();
     return dove.pendingApprovals().at(-1)!.approvalId;

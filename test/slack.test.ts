@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { SLACK_DEFAULTS } from '../src/server/config.ts';
-import { parseReference } from '../src/server/dove-request.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { SlackWorkspace } from '../src/server/slack.ts';
@@ -35,10 +34,17 @@ async function setup(t: test.TestContext, options: { backfillDays?: number; maxI
   slack.addChannel({ id: 'C1', name: 'dev', isIm: false });
   const told: Attention[] = [];
   const logs: string[] = [];
+  /** The directories taken in, each with the files it held then. */
+  const takenIn: { path: string; files: string[] }[] = [];
   const workspace = new SlackWorkspace({
     name: 'work', api: slack, socket: slack, archive, reaction: 'eyes', backfillDays: options.backfillDays ?? SLACK_DEFAULTS.backfillDays,
     maxImageBytes: options.maxImageBytes ?? 1024 * 1024, now, log: line => { logs.push(line); },
     attention: attention => { told.push(attention); },
+    takeIn: async path => {
+      let files: string[] = [];
+      try { files = (await readdir(join(directory, path.slice('/sources/slack/'.length)))).sort(); } catch { /* none yet */ }
+      takenIn.push({ path, files });
+    },
   });
   await workspace.start();
   t.after(async () => {
@@ -49,7 +55,7 @@ async function setup(t: test.TestContext, options: { backfillDays?: number; maxI
   const read = (path: string) => readFile(join(directory, path), 'utf8');
   /** A day file as `jq -s` reads it: one value a line. */
   const lines = async (path: string) => (await read(path)).split('\n').filter(Boolean).map(line => JSON.parse(line) as Line);
-  return { root, db, directory, archive, slack, workspace, told, logs, read, lines, tick: (ms: number) => { clock += ms; } };
+  return { root, db, directory, archive, slack, workspace, told, logs, takenIn, read, lines, tick: (ms: number) => { clock += ms; } };
 }
 
 /** A message event as Slack sends it over Socket Mode. */
@@ -289,6 +295,24 @@ test('a channel never recorded is filled in from the configured number of days b
   assert.equal(f.told.length, 0, 'a first fill-in tells of no old mentions');
 });
 
+// The past filled in as she joins a channel is not news, as what was there before the server started is not (ADR 0050).
+test('a channel filled in for the first time is taken in by the sources once written; a later fill-in or a live message is not', async t => {
+  const f = await setup(t, { backfillDays: 2 });
+  f.slack.addChannel({ id: 'C2', name: 'random', isIm: false });
+  f.slack.post('C2', { ts: tsAt('2026-09-24T05:00:00Z'), user: 'U1', text: '昨日の発言', files: [] });
+  f.slack.connect();
+  await f.workspace.idle();
+  const random = f.takenIn.filter(entry => entry.path === '/sources/slack/work/random');
+  assert.deepEqual(random, [{ path: '/sources/slack/work/random', files: ['2026-09-24.jsonl'] }]);
+  f.slack.emit(message({ channel: 'C2', text: '参加した後の発言', ts: tsAt('2026-09-25T05:50:00Z') }));
+  await f.workspace.idle();
+  f.slack.post('C2', { ts: tsAt('2026-09-25T05:55:00Z'), user: 'U1', text: '止まっている間の発言', files: [] });
+  f.slack.connect();
+  await f.workspace.idle();
+  // A channel with nothing recorded yet, such as #dev here, is taken in again on each fill-in, with nothing in it.
+  assert.equal(f.takenIn.filter(entry => entry.path === '/sources/slack/work/random').length, 1, 'what comes after the first fill-in is news');
+});
+
 test('a mention missed while disconnected is told when it is filled in', async t => {
   const f = await setup(t);
   f.slack.emit(message({ text: '記録済み', ts: tsAt(AT) }));
@@ -314,17 +338,32 @@ test('a reply to a thread whose parent was never recorded fetches the parent int
   assert.equal(f.told[0]!.path, '.[1]');
 });
 
-test('a reference written from a line\'s time and speaker finds that message, as the dove matches it', async t => {
+test('a line named by its file and path, as an attention gives them, is the message the dove answers (ADR 0074)', async t => {
   const f = await setup(t);
-  f.slack.emit(message({ text: '返したい発言', ts: tsAt(AT) }));
+  f.slack.emit(message({ text: '<@UBOT> 返したい発言', ts: tsAt(AT) }));
   await f.workspace.idle();
-  const [line] = await f.lines('work/dev/2026-09-25.jsonl');
-  const reference = parseReference(`work/#dev ${line!.at} ${line!.from}`);
-  assert.ok(typeof reference !== 'string', String(reference));
-  const found = f.archive.resolve(reference);
+  const [told] = f.told;
+  const found = f.archive.resolve({ file: told!.file, path: told!.path! });
   assert.ok(found.ok, JSON.stringify(found));
   assert.equal(found.target.message?.ts, tsAt(AT));
-  assert.equal(found.target.message?.text, '返したい発言');
+  assert.equal(found.target.message?.at, '2026-09-25 14:32:05');
+  assert.equal(found.target.message?.text, '@natsumi 返したい発言');
+  assert.deepEqual(f.archive.lineOf('work', 'C1', tsAt(AT)), { file: told!.file, path: told!.path });
+});
+
+test('her own post is recorded as it is sent, under her own name, and Slack telling of it after adds no line', async t => {
+  const f = await setup(t);
+  const parent = tsAt(AT);
+  f.slack.emit(message({ text: '相談です', ts: parent }));
+  await f.workspace.idle();
+  const ts = tsAt('2026-09-25T05:40:00Z');
+  await f.workspace.recordOwn('C1', { ts, threadTs: parent, text: 'お答えします' });
+  assert.deepEqual((await f.lines('work/dev/2026-09-25.jsonl'))[1], { at: '2026-09-25 14:40:00', from: 'natsumi', mine: true, reply_to: 0, text: 'お答えします' });
+  assert.deepEqual(f.archive.lineOf('work', 'C1', ts), { file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[1]' });
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: 'お答えします', ts, thread_ts: parent }));
+  await f.workspace.idle();
+  assert.equal((await f.lines('work/dev/2026-09-25.jsonl')).length, 2);
+  assert.equal(f.told.length, 0, 'her own post is never news to her');
 });
 
 test('day files written in Markdown before are written again as JSON Lines from every row, and removed', async t => {

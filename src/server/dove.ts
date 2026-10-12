@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { readFile, rm } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { Transaction } from './conversation-store.ts';
-import { parseDoveRequest } from './dove-request.ts';
+import { AGENTS_PATH, type ReplyPlace } from './agent-replies.ts';
+import {
+  requestLine, resultAttention, targetHead, writeDoveRequest, writeDoveResults, type DoveRequestRecord, type DoveResultLine,
+} from './dove-files.ts';
+import { parseDoveRequest, type DoveTarget } from './dove-request.ts';
 import { discardImages, type ImageLimits, type ImageStore, type TakenImage } from './images.ts';
 import { judgeSideBySide, JUDGE_METHODS, type JudgeChoice, type JudgeMethod, type JudgeSlot, type Placement, type ScoredIssue } from './judge.ts';
 import type { ToolOutcome } from './loop-tools.ts';
-import { isoAt } from './nightly.ts';
+import { isoAt, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { describeFailure, SlackCallError, type SlackApi } from './slack-api.ts';
 import type { ResolvedTarget, SlackArchive } from './slack-archive.ts';
@@ -23,8 +26,12 @@ import { postWithImages } from './slack-images.ts';
  * and the server's rule on the deciding judge's scores decides: send it now, hand it to the owner, or turn it back to
  * natsumi with the reasons. The third return on the same target
  * goes to the owner instead, with the drafts before it. A reaction with any emoji that exists is put on with neither
- * Jev nor the owner. Whatever happens comes back to her as an `agent_reply` event from `poppo`, in the server's words,
- * naming no ID (ADR 0024).
+ * Jev nor the owner.
+ *
+ * Each request taken gets a directory under /sources/agents/poppo with what she asked (ADR 0074), and whatever happens
+ * to it becomes a line of its results.jsonl, in the server's words and naming no ID (ADR 0024), told to her by an
+ * attention of a `sources_updated` event. A result is recorded in the database as it happens, and written and told
+ * from there: one the process stopped before telling is told on the next start, and none is told twice.
  *
  * A post may carry images from /work (ADR 0044), copied to the server's side as it is asked, so that the owner approves
  * and Slack is sent the copy. Only the text is judged; images alone go with neither a judge nor the owner, placed by the
@@ -45,8 +52,6 @@ export const DOVE_NAME = 'poppo';
 export const MAX_RETURNS = 2;
 /** How much of the message replied to an approval shows. */
 const REPLY_TO_HEAD_CHARS = 100;
-/** How much of the draft an event line shows, so she knows which request it is about. */
-const DRAFT_HEAD_CHARS = 60;
 
 export interface DoveConfig {
   /** How long an approval waits for the owner. */
@@ -59,7 +64,8 @@ export interface DoveConfig {
   images: ImageLimits;
 }
 
-export type RaiseDoveReply = (record: (eventId: string, transaction: Transaction) => void) => void;
+/** natsumi's own post as it was sent, for the record of Slack to have it before Slack tells of it. */
+export interface OwnPost { ts: string; threadTs?: string; text: string }
 
 export interface SlackDoveOptions {
   db: DatabaseSync;
@@ -79,19 +85,30 @@ export interface SlackDoveOptions {
   workDirectory: string;
   /** Where the images are copied and recorded, out of the workspace's reach. */
   images: ImageStore;
+  /**
+   * Where the requests and their results are put and how she hears of them (ADR 0074): `sources/agents`, and the
+   * attentions of the sources. Without it every request is refused, for she would never hear what became of it.
+   */
+  place?: ReplyPlace;
+  /** Records her own post in the record of Slack as it is sent, so a result can name its line (ADR 0074). */
+  recordOwn?: (workspace: string, channelId: string, post: OwnPost) => Promise<void>;
+  /** The owner's time zone, in which the times of the requests and results are written. */
+  timeZone: string;
   now: () => number;
-  raise: RaiseDoveReply;
   log?: (line: string) => void;
 }
 
 type Result = 'sent' | 'reacted' | 'to_owner' | 'returned' | 'rejected' | 'expired' | 'not_sent';
 type Failure = 'mechanical-check' | 'slack-error' | 'target-gone' | 'interrupted';
+/** What Slack took: the post's ts when it gave one (an upload gives none). */
+interface Delivered { ts?: string }
 
 interface PostRow {
   post_id: string; kind: 'post' | 'reaction'; workspace: string; channel_id: string; target_ts: string | null;
   target_thread_ts: string | null; reference: string; text: string; expression: string | null; verdict: string | null;
-  scores: string | null; placement: Placement | null; state: string;
+  scores: string | null; placement: Placement | null; state: string; place: string | null; created_at: string;
 }
+interface ResultRow { result_id: number; post_id: string; result: Result; text: string; posted_ts: string | null; told: number; created_at: string }
 interface ImageRow { image_id: string; source: string; file: string; mime_type: string; bytes: number }
 interface ApprovalRow {
   approval_id: string; revision: number; post_id: string; payload: string; state: string; expires_at: string;
@@ -124,6 +141,8 @@ export class SlackDove {
   private readonly emoji: SlackEmoji;
   private readonly listeners = new Set<(event: { type: string; payload: Record<string, unknown> }) => void>();
   private chain: Promise<void> = Promise.resolve();
+  /** The results being written and told, one round at a time. */
+  private telling: Promise<void> = Promise.resolve();
   private closed = false;
 
   constructor(options: SlackDoveOptions) {
@@ -143,10 +162,14 @@ export class SlackDove {
 
   close(): void { this.closed = true; }
 
-  /** Resolves once everything asked or decided so far has been carried out. */
+  /** Resolves once everything asked or decided so far has been carried out, and told. */
   async idle(): Promise<void> {
     let current: Promise<void>;
-    do { current = this.chain; await current; } while (current !== this.chain);
+    let told: Promise<void>;
+    do {
+      current = this.chain; told = this.telling;
+      await current; await told;
+    } while (current !== this.chain || told !== this.telling);
   }
 
   /**
@@ -156,16 +179,19 @@ export class SlackDove {
    */
   async ask(message: string): Promise<ToolOutcome> {
     const refuse = (text: string): ToolOutcome => ({ ok: false, text: text.startsWith('頼んでいません。') ? text : `頼んでいません。${text}` });
+    const place = this.options.place;
+    if (!place) return refuse(`結果を置く場所（${AGENTS_PATH}）を用意できていないので、どうなったかを知らせられません。急ぎならマスターに伝えてください。`);
     const parsed = parseDoveRequest(message);
     if (!parsed.ok) return refuse(parsed.text);
-    const { target, kind, expression, body, images = [] } = parsed.request;
-    if (!this.options.workspaces[target.workspace]) {
-      return refuse(`ワークスペース「${target.workspace}」は Slack の設定にありません。/sources/slack/INDEX.md にある名前で書いてください。`);
-    }
-    const resolved = this.options.archive.resolve(target);
+    const { to, kind, expression, body, images = [] } = parsed.request;
+    const resolved = this.options.archive.resolve(to);
     if (!resolved.ok) return refuse(resolved.text);
-    if (kind === 'reaction' && !await this.emoji.exists(target.workspace, body)) {
-      return refuse(`リアクション「${body}」は付けられません。その名前の絵文字は、標準の絵文字にも ${target.workspace} のカスタム絵文字にもありません。名前の確かめ方は /manual/slack.md にあります。`);
+    const { workspace } = resolved.target;
+    if (!this.options.workspaces[workspace]) {
+      return refuse(`ワークスペース「${workspace}」は Slack の設定にありません。/sources/slack/INDEX.md にあるチャンネルを書いてください。`);
+    }
+    if (kind === 'reaction' && !await this.emoji.exists(workspace, body)) {
+      return refuse(`リアクション「${body}」は付けられません。その名前の絵文字は、標準の絵文字にも ${workspace} のカスタム絵文字にもありません。名前の確かめ方は /manual/slack.md にあります。`);
     }
     if (kind === 'post' && body !== '') {
       const check = checkOutgoingText(body);
@@ -181,28 +207,44 @@ export class SlackDove {
     }
     const { message: named } = resolved.target;
     const reference = named ? `${resolved.target.label} ${named.at} ${named.speaker}` : resolved.target.label;
+    const at = this.options.now();
+    const record: DoveRequestRecord = { kind, to, ...(expression ? { face: expression } : {}),
+      ...(kind === 'reaction' ? { emoji: body } : body !== '' ? { text: body } : {}), ...(images.length > 0 ? { images } : {}),
+      asked_at: this.local(at), target: targetOf(resolved.target) };
+    // The request's directory is made before it is recorded, so its first result always has somewhere to go.
+    let made: { path: string; directory: string };
+    try { made = await writeDoveRequest(place.directory, DOVE_NAME, at, record); } catch {
+      await discardImages(taken);
+      this.log('dove: a request could not be put in /sources');
+      return refuse(`依頼を ${AGENTS_PATH} に置けませんでした。急ぎならマスターに伝えてください。`);
+    }
+    // The request is hers and tells her nothing: only its results are news (ADR 0069).
+    try { await place.takeIn(made.path); } catch { this.log('dove: a request could not be taken in by the sources; it may be shown as an update'); }
     const now = this.iso();
     try {
       this.transaction(() => {
         this.db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
-          expression, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'judging', ?, ?)`)
-          .run(postId, kind, target.workspace, resolved.target.channelId, named?.ts ?? null, named?.threadTs ?? null, reference, body,
-            expression ?? null, now, now);
+          expression, state, place, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'judging', ?, ?, ?)`)
+          .run(postId, kind, workspace, resolved.target.channelId, named?.ts ?? null, named?.threadTs ?? null, reference, body,
+            expression ?? null, made.path, now, now);
         this.options.images.record(taken, now);
         const image = this.db.prepare('INSERT INTO dove_post_images (post_id, position, image_id) VALUES (?, ?, ?)');
         taken.forEach((one, position) => image.run(postId, position, one.imageId));
       });
     } catch (error) {
       await discardImages(taken);
+      await rm(made.directory, { recursive: true, force: true });
       throw error;
     }
     this.enqueue(() => this.carry(postId));
-    const later = 'は、後で agent_reply の出来事（agent: poppo）として届きます。待たずに、ほかのことをしてかまいません。';
+    const later = `は、後で同じディレクトリの results.jsonl に 1 行ずつ足され、sources_updated の attention（kind: agent_reply、agent: poppo）で届きます。`
+      + '待たずに、ほかのことをしてかまいません。';
+    const asked = `頼んだことは ${made.path}/request.json に置きました。`;
     return { ok: true, text: kind === 'reaction'
-      ? `ポッポさんがリアクションの依頼を受け付けました。付けたかどうか${later}`
+      ? `ポッポさんがリアクションの依頼を受け付けました。${asked}付けたかどうか${later}`
       : body === ''
-        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。本文が無いので、判定にもマスターにも回さずに届けます。届けたかどうか${later}`
-        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。届けたか、マスターに回したか、突き返したか${later}` };
+        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。${asked}本文が無いので、判定にもマスターにも回さずに届けます。届けたかどうか${later}`
+        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。${asked}届けたか、マスターに回したか、突き返したか${later}` };
   }
 
   /**
@@ -214,6 +256,8 @@ export class SlackDove {
     for (const { post_id } of sending) this.fail(this.post(post_id)!, 'interrupted');
     const judging = this.db.prepare(`SELECT post_id FROM dove_posts WHERE state = 'judging' ORDER BY created_at, rowid`).all() as { post_id: string }[];
     for (const { post_id } of judging) this.enqueue(() => this.carry(post_id));
+    // A result the last process recorded and did not get to tell.
+    this.tellLater();
   }
 
   /** Every approval still waiting and not past its time, oldest first. */
@@ -280,26 +324,6 @@ export class SlackDove {
     }
   }
 
-  /**
-   * The line one `dove-reply` event becomes inside `<events>`, taken once: the text is emptied from its row as it goes
-   * (ADR 0008). Named like an outside agent's answer, from `poppo`, with no ID in it.
-   */
-  takeEventLine(eventId: string, receivedAt: string): Record<string, unknown> {
-    const row = this.db.prepare(`SELECT r.result, r.text, p.reference, p.text AS draft, p.kind FROM dove_replies r
-      JOIN dove_posts p ON p.post_id = r.post_id WHERE r.event_id = ?`).get(eventId) as
-      { result: Result; text: string; reference: string; draft: string; kind: string } | undefined;
-    if (!row) return { type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME };
-    this.db.prepare(`UPDATE dove_replies SET text = '' WHERE event_id = ?`).run(eventId);
-    const postId = (this.db.prepare('SELECT post_id FROM dove_replies WHERE event_id = ?').get(eventId) as { post_id: string }).post_id;
-    const images = this.images(postId).map(image => image.source);
-    return {
-      type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME, result: row.result, reply_to: row.reference,
-      ...(row.kind === 'reaction' ? { reaction: row.draft } : row.draft === '' ? {} : { draft: cut(row.draft, DRAFT_HEAD_CHARS) }),
-      ...(images.length > 0 ? { images } : {}),
-      ...(row.text ? { text: row.text } : {}),
-    };
-  }
-
   private enqueue(work: () => Promise<void>): void {
     // After the current tick, so a request is only ever carried out once the tool call that made it has returned.
     this.chain = this.chain.then(() => new Promise<void>(resolve => setImmediate(resolve))).then(async () => {
@@ -347,9 +371,9 @@ export class SlackDove {
     if (verdict === 'send') {
       this.setPost(postId, { state: 'sending' });
       const delivered = await this.deliver(post, post.text, placement);
-      if (delivered === true) {
+      if (typeof delivered === 'object') {
         this.setPost(postId, { state: 'sent', sent_text: post.text, sent_placement: placement });
-        this.tell(postId, 'sent', `ポッポ！ ${this.sentTo(post, target.label, placement)}よ。`);
+        this.tell(postId, 'sent', `ポッポ！ ${this.sentTo(post, target.label, placement)}よ。`, delivered.ts);
       } else this.fail(post, delivered);
       return;
     }
@@ -374,7 +398,7 @@ export class SlackDove {
     const placement: Placement = !target.message ? 'channel' : this.defaultPlacement(target);
     this.setPost(post.post_id, { placement, state: 'sending' });
     const delivered = await this.deliver(post, '', placement);
-    if (delivered !== true) return this.fail(post, delivered);
+    if (typeof delivered !== 'object') return this.fail(post, delivered);
     this.setPost(post.post_id, { state: 'sent', sent_text: '', sent_placement: placement });
     this.tell(post.post_id, 'sent', `ポッポ！ 画像 ${this.images(post.post_id).length} 枚を${where(target.label, placement)}に届けたよ。`);
   }
@@ -418,7 +442,7 @@ export class SlackDove {
     const placement: Placement = post.target_ts ? approval.decided_placement ?? shown.target.placement : 'channel';
     const delivered = await this.deliver(post, text, placement);
     const resolvedAt = this.iso();
-    if (delivered === true) {
+    if (typeof delivered === 'object') {
       this.transaction(() => {
         this.db.prepare(`UPDATE approvals SET delivery = 'sent', sent_text = ?, resolved_at = ? WHERE approval_id = ?`).run(text, resolvedAt, approvalId);
         this.setPost(post.post_id, { state: 'sent', sent_text: text, sent_placement: placement });
@@ -426,7 +450,7 @@ export class SlackDove {
       this.emit('approval.resolved', { approvalId, revision: approval.revision, state: approval.state, resolvedAt, delivery: 'sent', sentText: text });
       this.tell(post.post_id, 'sent', approval.state === 'edited'
         ? `ポッポ！ マスターが直した本文で、${this.sentTo(post, shown.target.channel, placement)}よ。届けた本文:「${text}」`
-        : `ポッポ！ マスターが承認したから、${this.sentTo(post, shown.target.channel, placement)}よ。`);
+        : `ポッポ！ マスターが承認したから、${this.sentTo(post, shown.target.channel, placement)}よ。`, delivered.ts);
       return;
     }
     this.fail(post, delivered);
@@ -449,10 +473,11 @@ export class SlackDove {
   }
 
   /**
-   * The last check and the post itself: the text, or the images with the text as their comment. True when Slack took
-   * it; otherwise why not. Only images alone go without text, and then there is no text to check.
+   * The last check and the post itself: the text, or the images with the text as their comment. What Slack took, with
+   * her post recorded when Slack gave its ts; otherwise why not. Only images alone go without text, and then there is
+   * no text to check.
    */
-  private async deliver(post: PostRow, text: string, placement: Placement): Promise<true | Failure> {
+  private async deliver(post: PostRow, text: string, placement: Placement): Promise<Delivered | Failure> {
     const images = this.images(post.post_id);
     if ((text !== '' || images.length === 0) && !checkOutgoingText(text).ok) return 'mechanical-check';
     if (post.target_ts && !this.options.archive.isPresent(post.workspace, post.channel_id, post.target_ts)) return 'target-gone';
@@ -460,10 +485,12 @@ export class SlackDove {
     if (!api) return 'slack-error';
     const replyThread = post.target_ts ? post.target_thread_ts ?? post.target_ts : undefined;
     const expression = post.expression ?? 'neutral';
+    let threadTs: string | undefined;
+    let ts: string;
     try {
       if (images.length > 0) {
         // A broadcast of images stays in the thread: Slack's upload cannot show it in the channel too.
-        const threadTs = placement === 'channel' ? undefined : replyThread;
+        threadTs = placement === 'channel' ? undefined : replyThread;
         // The copies taken when she asked, never /work again. Slack takes no icon with an upload.
         const files = await Promise.all(images.map(async image => ({ filename: basename(image.source),
           data: await readFile(this.options.images.path(image.file)) })));
@@ -471,18 +498,23 @@ export class SlackDove {
         await postWithImages(api, post.channel_id, text, files, { ...(threadTs ? { threadTs } : {}),
           iconUrl: `${this.options.avatarBaseUrl ?? `${this.options.publicOrigin}/avatar`}/${expression}.png`,
           log: line => this.log(`slack (${post.workspace}): ${line}`) });
-        return true;
+        return {};
       }
       // The channel itself takes no thread; a broadcast goes to the thread and is shown in the channel too.
-      const threadTs = placement === 'channel' ? undefined : replyThread;
-      await api.postMessage(post.channel_id, text, { ...(threadTs ? { threadTs } : {}),
+      threadTs = placement === 'channel' ? undefined : replyThread;
+      ts = await api.postMessage(post.channel_id, text, { ...(threadTs ? { threadTs } : {}),
         ...(threadTs && placement === 'broadcast' ? { replyBroadcast: true } : {}),
         iconUrl: `${this.options.avatarBaseUrl ?? `${this.options.publicOrigin}/avatar`}/${expression}.png` });
-      return true;
     } catch (error) {
       this.log(`slack (${post.workspace}): posting failed (${describeFailure(error)})`);
       return error instanceof SlackCallError && GONE.has(error.reason) ? 'target-gone' : 'slack-error';
     }
+    if (!ts) return {};
+    // It was sent whatever comes of this: without it the result names no line of hers.
+    try { await this.options.recordOwn?.(post.workspace, post.channel_id, { ts, ...(threadTs ? { threadTs } : {}), text }); } catch (error) {
+      this.log(`dove: her own post could not be recorded (${describeFailure(error)})`);
+    }
+    return { ts };
   }
 
   /** Not sent: recorded, the owner's devices told when it was hers, and natsumi told. */
@@ -542,13 +574,92 @@ export class SlackDove {
       ...(post.target_thread_ts ? { threadTs: post.target_thread_ts } : {}), speaker: speaker.join(' '), at: `${date} ${time}`, text: row?.text ?? '' } };
   }
 
-  /** Tells natsumi, as an event of its own that waits behind whatever she is doing. */
-  private tell(postId: string, result: Result, text: string): void {
+  /**
+   * Records a result, which is then written to its request's results.jsonl and told to natsumi by an attention
+   * (ADR 0074). The row is the record: what is not written and told yet is, from here or on the next start.
+   */
+  private tell(postId: string, result: Result, text: string, postedTs?: string): void {
     if (this.closed) return;
-    this.options.raise(eventId => {
-      this.db.prepare('INSERT INTO dove_replies (event_id, post_id, result, text, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(eventId, postId, result, text, this.iso());
+    this.db.prepare('INSERT INTO dove_results (post_id, result, text, posted_ts, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(postId, result, text, postedTs ?? null, this.iso());
+    this.tellLater();
+  }
+
+  /** Writes and tells every result not told yet, after whatever is being told now. */
+  private tellLater(): void {
+    this.telling = this.telling.then(async () => {
+      if (this.closed) return;
+      try { await this.tellWaiting(); } catch (error) {
+        this.log(`dove: a result could not be told (${describeFailure(error)}); it is told on the next start`);
+      }
     });
+  }
+
+  private async tellWaiting(): Promise<void> {
+    const place = this.options.place;
+    if (!place) return;
+    const posts = (this.db.prepare('SELECT DISTINCT post_id FROM dove_results WHERE told = 0 ORDER BY result_id').all() as { post_id: string }[])
+      .map(row => row.post_id);
+    let told = false;
+    for (const postId of posts) {
+      if (this.closed) return;
+      const post = this.post(postId);
+      if (!post) continue;
+      const directory = await this.directoryOf(post, place.directory);
+      const rows = this.db.prepare('SELECT * FROM dove_results WHERE post_id = ? ORDER BY result_id').all(postId) as unknown as ResultRow[];
+      const lines = rows.map(row => this.resultLine(post, row));
+      await writeDoveResults(directory.directory, lines);
+      const request = this.requestOf(post);
+      this.transaction(() => {
+        rows.forEach((row, index) => {
+          if (row.told) return;
+          if (!place.record(resultAttention(directory.path, DOVE_NAME, index, lines[index]!, request))) {
+            throw new Error('the attention was let go');
+          }
+          this.db.prepare('UPDATE dove_results SET told = 1 WHERE result_id = ?').run(row.result_id);
+        });
+      });
+      told = true;
+    }
+    if (told) place.notify();
+  }
+
+  /**
+   * A request's directory: the one made as it was taken, or for one taken before they were kept (ADR 0074), one made
+   * now from the record, as near as it can be to what she asked.
+   */
+  private async directoryOf(post: PostRow, agents: string): Promise<{ path: string; directory: string }> {
+    if (post.place) {
+      const relative = post.place.slice(AGENTS_PATH.length + 1);
+      return { path: post.place, directory: join(agents, relative) };
+    }
+    const target = this.target(post);
+    const line = target.message ? this.options.archive.lineOf(post.workspace, post.channel_id, target.message.ts) : undefined;
+    const channel = this.options.archive.channel(post.workspace, post.channel_id);
+    const to: DoveTarget = line ?? { file: `/sources/slack/${post.workspace}/${channel?.directory ?? ''}` };
+    const images = this.images(post.post_id).map(image => image.source);
+    const at = Date.parse(post.created_at);
+    const made = await writeDoveRequest(agents, DOVE_NAME, this.options.now(), {
+      kind: post.kind, to, ...(post.expression ? { face: post.expression } : {}),
+      ...(post.kind === 'reaction' ? { emoji: post.text } : post.text !== '' ? { text: post.text } : {}), ...(images.length > 0 ? { images } : {}),
+      asked_at: this.local(at), target: targetOf(target), note: '版を上げる前の依頼なので、サーバーが記録から組み立てました。',
+    });
+    this.db.prepare('UPDATE dove_posts SET place = ? WHERE post_id = ?').run(made.path, post.post_id);
+    post.place = made.path;
+    return made;
+  }
+
+  /** One result as results.jsonl keeps it, with her own post's line when it was sent and is in the record. */
+  private resultLine(post: PostRow, row: ResultRow): DoveResultLine {
+    const own = row.posted_ts ? this.options.archive.lineOf(post.workspace, post.channel_id, row.posted_ts) : undefined;
+    return { at: this.local(Date.parse(row.created_at)), state: row.result, text: row.text,
+      ...(own ? { slack_file: own.file, slack_path: own.path } : {}) };
+  }
+
+  /** What a request asked and when, for its attentions. */
+  private requestOf(post: PostRow): { line: string; askedAt: string } {
+    return { line: requestLine({ kind: post.kind, text: post.text, emoji: post.text, images: this.images(post.post_id).map(image => image.source) }),
+      askedAt: this.local(Date.parse(post.created_at)) };
   }
 
   private emit(type: string, payload: Record<string, unknown>): void {
@@ -607,12 +718,20 @@ export class SlackDove {
 
   private iso(): string { return isoAt(this.options.now()); }
 
+  private local(at: number): string { return localDateTime(at, this.options.timeZone); }
+
   private log(line: string): void { this.options.log?.(line); }
 }
 
 /** Where a post was put: the channel itself, or the thread, which is where a broadcast of images stays. */
 function where(label: string, placement: Placement): string {
   return placement === 'channel' ? label : `${label} のスレッド`;
+}
+
+/** What a request answers, as she would read it in the record. */
+function targetOf(target: ResolvedTarget): DoveRequestRecord['target'] {
+  const { message } = target;
+  return { channel: target.label, ...(message ? { at: message.at, from: message.speaker, text: targetHead(message.text) } : {}) };
 }
 
 function cut(text: string, max: number): string {

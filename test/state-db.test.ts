@@ -89,8 +89,9 @@ test('the schema keeps the conversation shown to the owner and only references t
       // What natsumi asked the dove to post, kept with Jev's scores and the owner's decision to look back on (ADR 0040).
       // It is what went, or was to go, to Slack; her thinking about it stays in the Pi session.
       if (table === 'dove_posts' && column === 'text') continue;
-      // The dove's answer waits here until it is handed to Pi, and is emptied then, like an agent's.
-      if (table === 'dove_replies' && column === 'text') continue;
+      // The dove's words on what became of a request, which its results.jsonl under /sources is written again from on
+      // every result (ADR 0074). They are the server's, as Slack's record is Slack's; natsumi reads them from the file.
+      if (table === 'dove_results' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
@@ -605,4 +606,93 @@ test('schema 26 gives the agents\' tasks and exchanges the place of their reques
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 26));
   assert.deepEqual(plainRows(db.prepare('SELECT place, request FROM agent_tasks').all()), [{ place: null, request: null }]);
   assert.deepEqual(plainRows(db.prepare('SELECT place FROM agent_contexts').all()), [{ place: null }]);
+}));
+
+/**
+ * Schema 30 drops the dove's answers kept as events before ADR 0074: none is made any more, and the queue has none left
+ * by the time this version is taken. One still waiting is closed rather than left with no line to be made into; the
+ * posts they answered, and the events that carried them, stay.
+ */
+test('schema 30 drops the dove\'s answers of before, closes any still waiting, and keeps the posts', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 29));
+  db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    expression, state, created_at, updated_at) VALUES ('post-old', 'post', 'work', 'C1', NULL, NULL, 'work/#dev', '下書き', NULL,
+    'returned', 'x', 'x')`).run();
+  const event = db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'x', 'x')`);
+  event.run('event-told', 'dove-reply', 'replied');
+  event.run('event-waiting', 'dove-reply', 'queued');
+  event.run('event-other', 'ping', 'queued');
+  const reply = db.prepare(`INSERT INTO dove_replies (event_id, post_id, result, text, created_at) VALUES (?, 'post-old', 'returned', ?, 'x')`);
+  reply.run('event-told', '');
+  reply.run('event-waiting', 'ポッポ、これは届けられないよ。');
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 30)).applied, [30]);
+  assert.equal(tables(db).includes('dove_replies'), false);
+  assert.deepEqual(plainRows(db.prepare('SELECT event_id, kind, state, reason FROM loop_events ORDER BY event_id').all()), [
+    { event_id: 'event-other', kind: 'ping', state: 'queued', reason: null },
+    { event_id: 'event-told', kind: 'dove-reply', state: 'replied', reason: null },
+    { event_id: 'event-waiting', kind: 'dove-reply', state: 'no-reply', reason: 'superseded' },
+  ]);
+  assert.deepEqual(plainRows(db.prepare('SELECT post_id, state FROM dove_posts').all()), [{ post_id: 'post-old', state: 'returned' }]);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+}));
+
+/**
+ * Schema 31 adds the postbox (ADR 0076): the agents' tasks name the letter a request was sent on, empty for every task
+ * from before, and each letter has a record of its own.
+ */
+test('schema 31 adds the postbox: tasks from before name no letter, and a letter is sendable or has its problem', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 30));
+  db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at)
+    VALUES ('wiki', 't1', 'c1', 'waiting', 'x', 'x', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 31)).applied, [31]);
+  assert.deepEqual(plainRows(db.prepare('SELECT postbox, postbox_sent_at FROM agent_tasks').all()), [{ postbox: null, postbox_sent_at: null }]);
+  const insert = db.prepare(`INSERT INTO postbox_letters (name, path, agent, cron, problem, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'x', 'x')`);
+  insert.run('morning-news', 'postbox/morning-news.md', 'news', '0 7 * * *', null);
+  insert.run('noisy', 'postbox/noisy.md', null, null, 'cron が短すぎます');
+  assert.throws(() => insert.run('broken', 'postbox/broken.md', null, null, null), /CHECK/);
+  assert.throws(() => db.prepare(`UPDATE postbox_letters SET last_result = 'lost' WHERE name = 'morning-news'`).run(), /CHECK/);
+  assert.deepEqual(plainRows(db.prepare('SELECT name, paused, notify, failures FROM postbox_letters ORDER BY name').all()), [
+    { name: 'morning-news', paused: 0, notify: 'update', failures: 0 },
+    { name: 'noisy', paused: 0, notify: 'update', failures: 0 },
+  ]);
+}));
+
+/**
+ * Schema 33 tells the rows of `session_rotations` apart by what began them (ADR 0077): the night's switch, or a sleeping
+ * pill's kind. Every row from before was a night's. A resleep does not switch, and ends `curated`, while it runs `curating`.
+ */
+test('schema 33 gives each switch its kind, the night\'s for every row from before, and lets a resleep end curated', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 32));
+  db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
+    .run('conversation-1', 'session-now', 'now.jsonl', '2026-03-01T00:00:00.000Z');
+  const event = db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES (?, ?, 'no-reply', 'x', 'x')`);
+  event.run('event-night', 'nightly-review');
+  event.run('event-failed', 'nightly-review');
+  db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, handoff_commit,
+    to_session_id, to_session_file, reason, created_at, updated_at) VALUES (?, ?, 'conversation-1', ?, ?, ?, ?, ?, ?, ?, 'x', 'x')`)
+    .run('rotation-night', 'event-night', 'old', 'old.jsonl', 'switched', 'abc123', 'session-now', 'now.jsonl', null);
+  db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, reason,
+    created_at, updated_at) VALUES ('rotation-failed', 'event-failed', 'conversation-1', 'old', 'old.jsonl', 'failed', 'no-handoff', 'x', 'x')`).run();
+
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 33)).applied, [33]);
+
+  assert.deepEqual(plainRows(db.prepare(`SELECT rotation_id, kind, state, handoff_commit, to_session_id, reason FROM session_rotations
+    ORDER BY rotation_id`).all()), [
+    { rotation_id: 'rotation-failed', kind: 'night', state: 'failed', handoff_commit: null, to_session_id: null, reason: 'no-handoff' },
+    { rotation_id: 'rotation-night', kind: 'night', state: 'switched', handoff_commit: 'abc123', to_session_id: 'session-now', reason: null },
+  ]);
+  const insert = db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, kind,
+    state, created_at, updated_at) VALUES (?, ?, 'conversation-1', 'now', 'now.jsonl', ?, ?, 'x', 'x')`);
+  const pills: [string, string, string][] = [['pill-1', 'resleep', 'curating'], ['pill-2', 'resleep', 'curated'], ['pill-3', 'nap', 'reviewing'],
+    ['pill-4', 'resume', 'switching'], ['pill-5', 'deep', 'failed']];
+  for (const [id, kind, state] of pills) {
+    event.run(`event-${id}`, 'sleeping-pill');
+    insert.run(id, `event-${id}`, kind, state);
+  }
+  event.run('event-bad', 'sleeping-pill');
+  assert.throws(() => insert.run('bad-kind', 'event-bad', 'siesta', 'failed'), /CHECK/, 'a kind that is not one of the five');
+  assert.throws(() => insert.run('bad-curated', 'event-bad', 'night', 'curated'), /CHECK/, 'only a resleep ends curated');
+  assert.throws(() => insert.run('bad-state', 'event-bad', 'resleep', 'dozing'), /CHECK/);
+  // The CHECK of before still holds: a finished switch names the session it went to.
+  assert.throws(() => insert.run('bad-switch', 'event-bad', 'nap', 'switched'), /CHECK/);
 }));

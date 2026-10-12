@@ -62,7 +62,9 @@ type Result struct {
 	StderrTruncated bool   `json:"stderrTruncated"`
 	// The response limit was reached and the command was left running.
 	StillRunning bool `json:"stillRunning"`
-	// The response limit in milliseconds, so the answer can say how long it waited.
+	// A declared tool's timeout was reached and its process group was killed (ADR 0075). Never set for a command.
+	TimedOut bool `json:"timedOut"`
+	// The response limit in milliseconds, so the answer can say how long it waited; a tool's timeout for a tool.
 	ResponseLimitMs int64 `json:"responseLimitMs"`
 	// Commands this runner started that are still alive, this one included while it is.
 	Running int `json:"running"`
@@ -134,10 +136,7 @@ func (l *liveCommand) release() {
 // Run runs one command in its own process group and answers when it ends or when the response limit is reached,
 // whichever comes first. Nothing is killed either way.
 func (s *Server) Run(command string, timeZone string) Result {
-	limits := s.Limits
-	if timeZoneName.MatchString(timeZone) {
-		limits.TimeZone = timeZone
-	}
+	limits := s.limitsFor(timeZone)
 	result := Result{ResponseLimitMs: limits.Response.Milliseconds()}
 
 	outRead, outWrite, err := os.Pipe()
@@ -322,9 +321,13 @@ func (s *Server) handle(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, _ := bufio.NewReader(io.LimitReader(conn, MaxRequestBytes+1)).ReadBytes('\n')
 	var answer any
+	// A command for bash, or a declared tool's argv with its input and timeout (ADR 0075). Only one of the two.
 	var request struct {
-		Command  string `json:"command"`
-		TimeZone string `json:"timeZone"`
+		Command        string    `json:"command"`
+		Argv           *[]string `json:"argv"`
+		Stdin          *string   `json:"stdin"`
+		TimeoutSeconds float64   `json:"timeoutSeconds"`
+		TimeZone       string    `json:"timeZone"`
 	}
 	switch {
 	case len(line) > MaxRequestBytes:
@@ -333,6 +336,23 @@ func (s *Server) handle(conn net.Conn) {
 		answer = refusal{Error: "request must be one JSON line"}
 	case json.Unmarshal(line, &request) != nil:
 		answer = refusal{Error: "request is not JSON"}
+	case request.Argv != nil && request.Command != "":
+		answer = refusal{Error: "request must have either command or argv"}
+	case request.Argv != nil:
+		if reason := argvRequest(*request.Argv); reason != "" {
+			answer = refusal{Error: reason}
+			break
+		}
+		stdin := ""
+		if request.Stdin != nil {
+			stdin = *request.Stdin
+		}
+		timeout := time.Duration(request.TimeoutSeconds * float64(time.Second))
+		s.mu.Lock()
+		answer = s.RunArgv(*request.Argv, stdin, timeout, request.TimeZone)
+		s.mu.Unlock()
+	case request.Stdin != nil:
+		answer = refusal{Error: "stdin is only for argv"}
 	case strings.TrimSpace(request.Command) == "":
 		answer = refusal{Error: "command is empty"}
 	default:

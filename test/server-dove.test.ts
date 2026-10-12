@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { openPush } from '../src/server/push-crypto.ts';
 import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
-import { FakeSlack, PNG, referenceFromAttention, tsAt } from './support/fake-slack.ts';
+import { FakeSlack, PNG, targetFromAttention, tsAt } from './support/fake-slack.ts';
 import { login, PUBLIC_ORIGIN, startFixture, type Fixture } from './support/server-fixture.ts';
 
 /**
@@ -87,14 +87,13 @@ async function withDove(fn: (f: Fixture, slack: FakeSlack, apns: FakeApns, jev: 
   const jev = new OwnerJev();
   const f = await startFixture({ apns: { origin: apns.origin, pem: apnsTestKey().pem, retryDelaysMs: [1] },
     slack: { section: SLACK, api: slack, judge: jev } });
-  // natsumi answers a mention by asking the dove to reply to it, with a reference written from the line it points at.
+  // natsumi answers a mention by asking the dove to reply to it, with the file and path of the attention (ADR 0074).
   f.model.auto = context => {
     const last = context.messages.at(-1);
-    const text = last?.role === 'user' ? JSON.stringify(last.content) : '';
-    const reference = referenceFromAttention(text, f.data);
-    if (!reference) return {};
+    const to = targetFromAttention(last?.role === 'user' ? JSON.stringify(last.content) : '');
+    if (!to) return {};
     return { calls: [{ name: 'ask_agent', arguments: { agent: 'poppo', continue: false,
-      message: `返信先: ${reference}\n種類: 投稿\n表情: happy\n---\n架空の返事です。` } }] };
+      message: JSON.stringify({ kind: 'post', to, face: 'happy', text: '架空の返事です。' }) } }] };
   };
   try { await fn(f, slack, apns, jev); } finally {
     await f.cleanup();
@@ -184,6 +183,15 @@ test('a draft handed to the owner is an approval on every device and a push to t
     const twice = await mac.command('approval.decide', { approvalId: approval.approvalId, revision: 1, decision: 'reject' });
     assert.deepEqual(twice.payload, { approvalId: approval.approvalId, revision: 1, state: 'approved' });
     assert.equal(slack.posts.length, 1);
+
+    // What became of it reached her as attentions under /sources/agents/poppo (ADR 0074): handed to the owner, then
+    // sent, with her own post's line in the record of Slack.
+    const told = () => f.model.contexts.map(context => JSON.stringify(context.messages.at(-1)?.content ?? ''))
+      .filter(text => text.includes('\\"agent\\":\\"poppo\\"'));
+    const sent = await until(() => told().find(text => text.includes('\\"state\\":\\"sent\\"')));
+    assert.match(sent, /\/sources\/agents\/poppo\/\d{8}T\d{6}Z-[0-9a-f]{4}\/results\.jsonl/);
+    assert.match(sent, /\\"slack_file\\":\\"\/sources\/slack\/work\/dev\/2026-09-25\.jsonl\\",\\"slack_path\\":\\"\.\[1\]\\"/);
+    assert.ok(told().some(text => text.includes('\\"state\\":\\"to_owner\\"')));
     await mac.close();
   }));
 
@@ -222,11 +230,10 @@ test('an approval with an image lists it, and the image is fetched only with a l
     await writeFile(join(f.data, 'work', 'images', 'cat.png'), PNG);
     f.model.auto = context => {
       const last = context.messages.at(-1);
-      const text = last?.role === 'user' ? JSON.stringify(last.content) : '';
-      const reference = referenceFromAttention(text, f.data);
-      if (!reference) return {};
+      const to = targetFromAttention(last?.role === 'user' ? JSON.stringify(last.content) : '');
+      if (!to) return {};
       return { calls: [{ name: 'ask_agent', arguments: { agent: 'poppo', continue: false,
-        message: `返信先: ${reference}\n種類: 投稿\n画像: /work/images/cat.png\n---\n描いてみました。` } }] };
+        message: JSON.stringify({ kind: 'post', to, images: ['/work/images/cat.png'], text: '描いてみました。' }) } }] };
     };
     const { token } = await login(f);
     const mac = await Client.open(f, token);

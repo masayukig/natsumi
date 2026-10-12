@@ -1,7 +1,7 @@
 # 0066. Pi の Codemode で、作業環境の生の出力を文脈に入れずに済ませる
 
 - Date: 2026-10-03
-- Status: Accepted
+- Status: Accepted（「本人に見えること、外に出ることは、モデルが直接呼ぶ」と「スクリプトから呼べるのは作業環境の 3 つだけ」は組み込みのツールに限り、config で宣言したツールの見え方は config を書く人の判断に移すことを [ADR 0075](0075-tools-declared-in-the-config.md) で一部覆す）
 
 ## Context
 

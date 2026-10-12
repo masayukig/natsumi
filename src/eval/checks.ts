@@ -84,13 +84,13 @@ function rule(spec: Record<string, unknown>, record: RunRecord): [boolean, strin
   if (spec.read !== undefined) return bounded(calls(reads(tools, spec.read as string)), `${spec.read} を読んだ`);
   if (spec.notRead !== undefined) return none(reads(tools, spec.notRead as string).length, `${spec.notRead} を読んだ`);
   if (spec.asked !== undefined) {
-    const asked = spec.asked as { agent?: string; message?: string; replyTo?: string };
+    const asked = spec.asked as { agent?: string; message?: string; to?: { file: string; path?: string } };
     const found = tools.filter(tool => {
       if (tool.name !== 'ask_agent') return false;
       if (asked.agent !== undefined && tool.args.agent !== asked.agent) return false;
       const message = argText(tool.args.message);
       if (asked.message !== undefined && !new RegExp(asked.message, 'u').test(message)) return false;
-      if (asked.replyTo !== undefined && replyTo(message) !== asked.replyTo) return false;
+      if (asked.to !== undefined && !sameTarget(message, asked.to)) return false;
       return true;
     });
     return bounded(calls(found), `ask_agent ${JSON.stringify(asked)}`);
@@ -126,12 +126,16 @@ function reads(tools: ToolRecord[], path: string): ToolRecord[] {
   });
 }
 
-/** Where a request to the dove replies to, as natsumi wrote it; the dove's own reading decides. */
-function replyTo(message: string): string | undefined {
+/**
+ * Whether a request to the dove goes where the check says (ADR 0074), as natsumi wrote it and the dove's own reading
+ * takes it: the same file, a directory with or without its last slash, and the same line.
+ */
+function sameTarget(message: string, expected: { file: string; path?: string }): boolean {
   const parsed = parseDoveRequest(message);
-  if (!parsed.ok) return undefined;
-  const { workspace, channel, at, speaker, begins } = parsed.request.target;
-  return [`${workspace}/${channel}`, ...(at ? [at.date, at.time] : []), ...(speaker ? [speaker] : []), ...(begins ? [`「${begins}」`] : [])].join(' ');
+  if (!parsed.ok) return false;
+  const { to } = parsed.request;
+  const file = (path: string) => path.replace(/\/+$/, '');
+  return file(to.file) === file(expected.file) && to.path === expected.path;
 }
 
 function argText(value: unknown): string {

@@ -1079,7 +1079,10 @@ test('a reply whose images cannot be taken is not sent, text and all, and says h
 test('the dashboard reads the running turn, the queue, the route, the fold and the context, and changes nothing by reading (ADR 0049)', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open({ now: () => Date.parse('2026-01-01T00:00:00Z') });
+    // A source with nothing to show, so that an event can wait behind the turn.
+    const sources = { take: async () => false, eventLine: (_: string, receivedAt: string) => ({ type: 'sources_updated', received_at: receivedAt }),
+      images: async () => [] };
+    const { loop, events } = await f.open({ now: () => Date.parse('2026-01-01T00:00:00Z'), sources });
     const idle = loop.dashboardState();
     assert.equal(idle.unavailable, null);
     assert.equal(idle.turn, null);
@@ -1091,7 +1094,7 @@ test('the dashboard reads the running turn, the queue, the route, the fold and t
 
     const sent = f.send(loop, 'おはよう');
     const reply = await f.model.next();
-    loop.raise('dove-reply', () => {});
+    assert.equal(loop.raiseSourcesUpdated(), true);
     const running = loop.dashboardState();
     assert.match(running.turn?.turnId ?? '', /^turn-[0-9a-f-]{36}$/);
     assert.deepEqual(running.turn, { turnId: running.turn!.turnId, startedAt: '2026-01-01T00:00:00.000Z', eventKinds: 'mac_message', phase: 'turn' });

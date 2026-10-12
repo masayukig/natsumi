@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ConversationStore } from '../src/server/conversation-store.ts';
 import { SlackDove, type DoveConfig } from '../src/server/dove.ts';
 import { JUDGE_ISSUES, JudgeError, type JudgeChoice, type JudgeClient, type Judgement, type Placement } from '../src/server/judge.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
+import type { Attention } from '../src/server/sources.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
 
@@ -51,17 +52,20 @@ const OWNER = () => scores([0.01, 0.5]);
 const RETURN = () => scores([0.9]);
 
 const PARENT = tsAt('2026-09-25T05:32:05Z'); // 14:32:05 in Tokyo
+/** Where natsumi names the parent: the first line of its day's file (ADR 0074). */
+const PARENT_LINE = { file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[0]' };
+const CHANNEL = { file: '/sources/slack/work/dev' };
 
 /**
  * The dove with Jev alone on and adopted, unless told otherwise; `logprobs` is the other judge's stand-in, off until the
  * test turns it on through `choice`, as the settings would.
  */
-async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUrl?: string } = {}) {
+async function setup(t: test.TestContext, options: { jev?: boolean; place?: boolean; avatarBaseUrl?: string } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-dove-')));
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const clock = { now: Date.parse('2026-09-25T06:00:00Z') };
-  const archive = new SlackArchive({ db, directory: join(root, 'slack'), timeZone: 'Asia/Tokyo', now: () => clock.now });
+  const archive = new SlackArchive({ db, directory: join(root, 'sources', 'slack'), timeZone: 'Asia/Tokyo', now: () => clock.now });
   archive.addChannel('work', 'C1', { name: 'dev', isIm: false });
   await archive.record('work', 'C1', { ts: PARENT, speaker: '山田', own: false, text: '明日のレビュー、大丈夫そう？', files: [], edited: false });
   // natsumi's /work, as the server sees it in the data directory, with one image she drew.
@@ -73,24 +77,26 @@ async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUr
   const jev = new FakeJev();
   const logprobs = new FakeJev();
   const choice: JudgeChoice = { logprobs: false, jev: true, adopted: 'jev' };
-  const store = new ConversationStore(db, () => clock.now);
-  const events: string[] = [];
   const clientEvents: { type: string; payload: Record<string, any> }[] = [];
   const logs: string[] = [];
+  // Where the results are put and how she hears of them (ADR 0074): the attentions are kept here, as the sources would.
+  const attentions: Attention[] = [];
+  const place = { directory: join(root, 'sources', 'agents'), notified: 0, accept: true, takenIn: [] as string[],
+    record(attention: Attention) { if (!this.accept) return false; attentions.push(attention); return true; },
+    notify() { this.notified += 1; },
+    takeIn(path: string) { this.takenIn.push(path); return Promise.resolve(); } };
   const open = () => {
     const dove = new SlackDove({
       db, archive, workspaces: { work: slack }, config: CONFIG, publicOrigin: ORIGIN,
       judges: options.jev === false ? {} : { jev: { client: jev, thresholds: THRESHOLDS }, logprobs: { client: logprobs, thresholds: { owner: 0.5, return: 0.9 } } },
       judgeChoice: () => ({ ...choice }),
-      workDirectory: work, images, ...(options.avatarBaseUrl ? { avatarBaseUrl: options.avatarBaseUrl } : {}),
+      workDirectory: work, images, timeZone: 'Asia/Tokyo', ...(options.avatarBaseUrl ? { avatarBaseUrl: options.avatarBaseUrl } : {}),
+      ...(options.place === false ? {} : { place }),
+      // natsumi's own post, recorded as the Slack connection records it once it is sent.
+      recordOwn: (workspace, channelId, message) => archive.record(workspace, channelId, { ts: message.ts,
+        ...(message.threadTs ? { threadTs: message.threadTs } : {}), speaker: 'なつみ', own: true, text: message.text, files: [], edited: false })
+        .then(() => {}),
       now: () => clock.now, log: line => { logs.push(line); },
-      raise: record => {
-        events.push(store.transaction(transaction => {
-          const id = store.insertEvent('dove-reply');
-          record(id, transaction);
-          return id;
-        }));
-      },
     });
     dove.subscribe(event => { clientEvents.push(event); });
     return dove;
@@ -101,12 +107,21 @@ async function setup(t: test.TestContext, options: { jev?: boolean; avatarBaseUr
     db.close();
     await rm(root, { recursive: true, force: true });
   });
-  const lines = () => events.map(id => dove.takeEventLine(id, '2026-09-25T06:00:00.000Z'));
-  return { root, work, images, db, clock, archive, slack, jev, logprobs, choice, dove, events, clientEvents, logs, lines, open };
+  /** A file under /sources, as the server sees it. */
+  const disk = (path: string) => join(root, 'sources', path.replace(/^\/sources\//, ''));
+  /** Each result as she reads it, in the order she was told: its line of results.jsonl, and the attention that told her. */
+  const lines = () => attentions.map(attention => {
+    const rows = readFileSync(disk(attention.file), 'utf8').split('\n').filter(Boolean).map(row => JSON.parse(row) as Record<string, any>);
+    return { ...rows[Number(/^\.\[(\d+)\]$/.exec(attention.path!)![1])]!, attention } as Record<string, any> & { attention: Attention };
+  });
+  /** The request of a result's directory, as the server wrote it. */
+  const request = (attention: Attention) => JSON.parse(readFileSync(disk(attention.file.replace(/results\.jsonl$/, 'request.json')), 'utf8')) as Record<string, any>;
+  return { root, work, images, db, clock, archive, slack, jev, logprobs, choice, dove, clientEvents, logs, lines, open, attentions, place,
+    disk, request };
 }
 
-const post = (body: string, { to = 'work/#dev 2026-09-25 14:32:05 山田', expression }: { to?: string; expression?: string } = {}) =>
-  `返信先: ${to}\n種類: 投稿\n${expression ? `表情: ${expression}\n` : ''}---\n${body}`;
+const post = (text: string, { to = PARENT_LINE, expression }: { to?: { file: string; path?: string }; expression?: string } = {}) =>
+  JSON.stringify({ kind: 'post', to, ...(expression ? { face: expression } : {}), text });
 
 /** No Slack ts, no approval or post ID: she names things by what she can read (ADR 0024). */
 function assertNoIds(line: Record<string, unknown>) {
@@ -122,6 +137,8 @@ test('a draft Jev passes is sent at once, without the owner, into the thread, un
   const outcome = await f.dove.ask(post('大丈夫です。明日の 10 時に始めましょう。', { expression: 'happy' }));
   assert.equal(outcome.ok, true);
   assert.match(outcome.text, /受け付け/);
+  assert.match(outcome.text, /\/sources\/agents\/poppo\/20260925T060000Z-[0-9a-f]{4}\/request\.json/);
+  assert.match(outcome.text, /sources_updated/);
   assert.match(outcome.text, /agent_reply/);
   assert.equal(f.slack.posts.length, 0, 'the tool only takes the request');
   await f.dove.idle();
@@ -129,10 +146,9 @@ test('a draft Jev passes is sent at once, without the owner, into the thread, un
     iconUrl: `${ORIGIN}/avatar/happy.png` }]);
   assert.equal(f.clientEvents.length, 0, 'nothing waits for the owner');
   const [line] = f.lines();
-  assert.equal(line!.type, 'agent_reply');
-  assert.equal(line!.agent, 'poppo');
-  assert.equal(line!.result, 'sent');
-  assert.equal(line!.reply_to, 'work/#dev 2026-09-25 14:32:05 山田');
+  assert.equal(line!.state, 'sent');
+  assert.equal(line!.attention.kind, 'agent_reply');
+  assert.equal(line!.attention.details!.agent, 'poppo');
   assertNoIds(line!);
   const row = f.db.prepare('SELECT verdict, placement, sent_text, scores, state FROM dove_posts').get() as Record<string, string>;
   assert.equal(row.verdict, 'send');
@@ -148,6 +164,16 @@ test('fork: with slack.avatarBaseUrl the icon is fetched from there instead of p
   await f.dove.ask(post('大丈夫です。', { expression: 'happy' }));
   await f.dove.idle();
   assert.equal(f.slack.posts[0]!.iconUrl, 'https://cdn.example.test/avatar/happy.png');
+});
+
+// Her request is hers: its directory is taken in as it is made, and only the results put in it later are news (ADR 0069).
+test('the request\'s directory is taken in by the sources as it is made, with its request in it', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  const outcome = await f.dove.ask(post('了解です。'));
+  const [path] = /\/sources\/agents\/poppo\/[^/]+/.exec(outcome.text)!;
+  assert.deepEqual(f.place.takenIn, [path]);
+  assert.ok(existsSync(f.disk(`${path}/request.json`)));
 });
 
 test('Jev sees the draft and the message it answers, and nothing natsumi said about it', async t => {
@@ -216,7 +242,7 @@ test('Jev choosing the broadcast replies in the thread shown in the channel too'
 test('a post to the channel itself goes to the channel, and Jev is not asked where', async t => {
   const f = await setup(t);
   f.jev.answers.push(SEND());
-  await f.dove.ask(post('おはようございます。', { to: 'work/#dev' }));
+  await f.dove.ask(post('おはようございます。', { to: CHANNEL }));
   await f.dove.idle();
   assert.equal(f.jev.asked[0]!.placement, false);
   assert.equal(f.jev.asked[0]!.state.reply_to, null);
@@ -227,7 +253,7 @@ test('a reply to a message in a thread stays in the thread, and Jev is not asked
   const f = await setup(t);
   await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:40:10Z'), threadTs: PARENT, speaker: '佐藤', own: false, text: '続きです', files: [], edited: false });
   f.jev.answers.push(SEND());
-  await f.dove.ask(post('了解です。', { to: 'work/#dev 2026-09-25 14:40:10 佐藤' }));
+  await f.dove.ask(post('了解です。', { to: { file: PARENT_LINE.file, path: '.[1]' } }));
   await f.dove.idle();
   assert.equal(f.jev.asked[0]!.placement, false);
   assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '了解です。', threadTs: PARENT, iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
@@ -240,7 +266,7 @@ test('a draft Jev hands to the owner waits for her approval, and the approval ca
   await f.dove.idle();
   assert.equal(f.slack.posts.length, 0, 'nothing is sent before the owner decides');
   const [line] = f.lines();
-  assert.equal(line!.result, 'to_owner');
+  assert.equal(line!.state, 'to_owner');
   assert.match(String(line!.text), new RegExp(JUDGE_ISSUES[1]!.label));
   assertNoIds(line!);
   assert.equal(f.clientEvents.length, 1);
@@ -275,7 +301,7 @@ test('with no verdict the draft goes to the owner, and the server places it: the
   assert.deepEqual(approval.reason.issues, []);
   assert.equal(approval.reason.placement, undefined);
   assert.equal(approval.target.placement, 'channel');
-  assert.equal(f.lines()[0]!.result, 'to_owner');
+  assert.equal(f.lines()[0]!.state, 'to_owner');
   assert.ok(f.logs.some(line => line.includes('http-529')));
 });
 
@@ -298,10 +324,10 @@ test('a returned draft comes back with its reasons; the third return on the same
   await f.dove.ask(post('下書き 2'));
   await f.dove.idle();
   const [first, second] = f.lines();
-  assert.equal(first!.result, 'returned');
+  assert.equal(first!.state, 'returned');
   assert.match(String(first!.text), new RegExp(JUDGE_ISSUES[0]!.label));
   assert.match(String(first!.text), /あと 1 回/);
-  assert.equal(second!.result, 'returned');
+  assert.equal(second!.state, 'returned');
   assert.equal(f.clientEvents.length, 0);
   await f.dove.ask(post('下書き 3'));
   await f.dove.idle();
@@ -312,7 +338,7 @@ test('a returned draft comes back with its reasons; the third return on the same
   assert.deepEqual(approval.history.map((entry: { text: string }) => entry.text), ['下書き 1', '下書き 2']);
   assert.deepEqual(approval.history[0].issues.map((issue: { name: string }) => issue.name), [JUDGE_ISSUES[0]!.name]);
   assert.equal(approval.history[0].issues[0].flagged, true);
-  assert.equal(f.lines()[2]!.result, 'to_owner');
+  assert.equal(f.lines()[2]!.state, 'to_owner');
 });
 
 test('a send in between starts the count of rewrites again', async t => {
@@ -322,7 +348,7 @@ test('a send in between starts the count of rewrites again', async t => {
     await f.dove.ask(post(`下書き ${body}`));
     await f.dove.idle();
   }
-  assert.deepEqual(f.lines().map(line => line.result), ['returned', 'returned', 'sent', 'returned']);
+  assert.deepEqual(f.lines().map(line => line.state), ['returned', 'returned', 'sent', 'returned']);
 });
 
 test('the mechanical check turns a draft back before anything is judged', async t => {
@@ -333,36 +359,56 @@ test('the mechanical check turns a draft back before anything is judged', async 
   assert.match(outcome.text, /制御文字列/);
   await f.dove.idle();
   assert.equal(f.jev.asked.length, 0);
-  assert.equal(f.events.length, 0);
+  assert.equal(f.attentions.length, 0);
 });
 
-test('a reference the record does not have, or an unknown workspace or channel, is turned back', async t => {
+test('a place the record does not have, or one outside the Slack record, is turned back and names what to fix', async t => {
   const f = await setup(t);
+  f.archive.addChannel('home', 'C9', { name: 'dev', isIm: false });
+  await f.archive.remove('work', 'C1', PARENT);
+  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:33:00Z'), speaker: '佐藤', own: false, text: 'まだあります', files: [], edited: false });
   for (const [to, pattern] of [
-    ['work/#dev 2026-09-25 14:32:06 山田', /見つかりません/],
-    ['home/#dev', /ワークスペース/],
-    ['work/#random', /チャンネル/],
+    [{ file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[5]' }, /\.\[5\].*ありません/],
+    [{ file: '/sources/slack/work/dev/2026-09-24.jsonl', path: '.[0]' }, /ありません/],
+    [{ file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[0]' }, /消され/],
+    [{ file: '/sources/slack/work/dev/2026-09-25.jsonl' }, /path/],
+    [{ file: '/sources/slack/work/dev', path: '.[0]' }, /チャンネル.*path/],
+    [{ file: '/sources/slack/work/random' }, /チャンネル.*記録がありません/],
+    [{ file: '/sources/slack/home/dev' }, /ワークスペース/],
+    [{ file: '/sources/slack/work' }, /\/sources\/slack\/work\/dev/],
+    [{ file: '/sources/slack/INDEX.md' }, /\/sources\/slack\/work\/dev/],
+    [{ file: '/sources/slack/work/dev/files/a.png' }, /\/sources\/slack\/work\/dev/],
+    [{ file: '/sources/slack/work/dev/../dev/2026-09-25.jsonl', path: '.[1]' }, /\/sources\/slack/],
+    [{ file: '/work/dev' }, /\/sources\/slack/],
+    [{ file: 'work/dev' }, /\/sources\/slack/],
   ] as const) {
     const outcome = await f.dove.ask(post('大丈夫です。', { to }));
-    assert.equal(outcome.ok, false, to);
-    assert.match(outcome.text, pattern);
+    assert.equal(outcome.ok, false, JSON.stringify(to));
+    assert.match(outcome.text, /^頼んでいません。/);
+    assert.match(outcome.text, pattern, JSON.stringify(to));
   }
   assert.equal(f.jev.asked.length, 0);
+  assert.deepEqual(await readdir(f.place.directory).catch(() => []), [], 'no directory is left of a request not taken');
 });
 
-test('two messages of the same second by the same speaker are turned back with how each begins, and no ts', async t => {
+test('two messages of the same second by the same speaker are told apart by their lines, with nothing more to write', async t => {
   const f = await setup(t);
   await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:32:05Z', '000200'), speaker: '山田', own: false, text: 'もう一つの発言です', files: [], edited: false });
-  const outcome = await f.dove.ask(post('大丈夫です。'));
-  assert.equal(outcome.ok, false);
-  assert.match(outcome.text, /明日のレビュー、大丈夫そう？/);
-  assert.match(outcome.text, /もう一つの発言です/);
-  assert.doesNotMatch(outcome.text, /\d{10}\.\d{6}/);
-  assert.match(outcome.text, /書き出し/);
   f.jev.answers.push(SEND());
-  assert.equal((await f.dove.ask(post('そちらへの返事', { to: 'work/#dev 2026-09-25 14:32:05 山田 「もう一つ」' }))).ok, true);
+  assert.equal((await f.dove.ask(post('そちらへの返事', { to: { file: PARENT_LINE.file, path: '.[1]' } }))).ok, true);
   await f.dove.idle();
   assert.deepEqual(f.slack.posts.map(sent => sent.threadTs), [tsAt('2026-09-25T05:32:05Z', '000200')]);
+});
+
+test('a reply in a thread is named by its line in the parent\'s file, and the reply goes to that thread', async t => {
+  const f = await setup(t);
+  // A reply on the next day is written into its parent's day, after it (ADR 0039).
+  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T16:10:00Z'), threadTs: PARENT, speaker: '佐藤', own: false, text: '翌日の返信です', files: [], edited: false });
+  f.jev.answers.push(scores([], 'thread'));
+  await f.dove.ask(post('お答えします。', { to: { file: PARENT_LINE.file, path: '.[1]' } }));
+  await f.dove.idle();
+  assert.equal((f.jev.asked[0]!.state as Record<string, any>).reply_to.text, '翌日の返信です');
+  assert.deepEqual(f.slack.posts.map(sent => sent.threadTs), [PARENT]);
 });
 
 test('approving sends exactly the approved text, once, and tells the devices and natsumi', async t => {
@@ -379,7 +425,7 @@ test('approving sends exactly the approved text, once, and tells the devices and
   assert.deepEqual({ ...resolved, resolvedAt: undefined }, { approvalId, revision: 1, state: 'approved', resolvedAt: undefined,
     delivery: 'sent', sentText: '承認を待つ下書き' });
   const last = f.lines().at(-1)!;
-  assert.equal(last.result, 'sent');
+  assert.equal(last.state, 'sent');
   assert.match(String(last.text), /マスター/);
   // The same answer again, from another device: the first decision stands and nothing is sent twice.
   assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'reject', deviceId: 'd2' }),
@@ -435,7 +481,7 @@ test('an edited text that fails the mechanical check is not sent', async t => {
   assert.equal(resolved.delivery, 'failed');
   assert.equal(resolved.reason, 'mechanical-check');
   assert.equal(resolved.sentText, undefined);
-  assert.equal(f.lines().at(-1)!.result, 'not_sent');
+  assert.equal(f.lines().at(-1)!.state, 'not_sent');
 });
 
 test('an edit to blank text is invalid', async t => {
@@ -459,7 +505,7 @@ test('rejecting sends nothing and tells natsumi', async t => {
   const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
   assert.equal(resolved.state, 'rejected');
   assert.equal(resolved.delivery, undefined);
-  assert.equal(f.lines().at(-1)!.result, 'rejected');
+  assert.equal(f.lines().at(-1)!.state, 'rejected');
 });
 
 test('an approval past its time expires, tells everyone, and is answered as expired', async t => {
@@ -476,7 +522,8 @@ test('an approval past its time expires, tells everyone, and is answered as expi
   assert.deepEqual(f.dove.pendingApprovals(), []);
   const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
   assert.equal(resolved.state, 'expired');
-  assert.equal(f.lines().at(-1)!.result, 'expired');
+  await f.dove.idle();
+  assert.equal(f.lines().at(-1)!.state, 'expired');
   assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'approve', deviceId: 'd1' }),
     { kind: 'accepted', approvalId, revision: 1, state: 'expired' });
   await f.dove.idle();
@@ -495,7 +542,7 @@ test('a decision that comes after the time is up expires the approval rather tha
   assert.equal(f.slack.posts.length, 0);
 });
 
-const reaction = (name: string) => `返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n${name}`;
+const reaction = (name: string) => JSON.stringify({ kind: 'reaction', to: PARENT_LINE, emoji: name });
 
 test('a standard emoji is put on at once, with neither Jev nor the owner', async t => {
   const f = await setup(t);
@@ -506,7 +553,7 @@ test('a standard emoji is put on at once, with neither Jev nor the owner', async
   assert.equal(f.jev.asked.length, 0);
   assert.equal(f.clientEvents.length, 0);
   const [reacted] = f.lines();
-  assert.equal(reacted!.result, 'reacted');
+  assert.equal(reacted!.state, 'reacted');
   assertNoIds(reacted!);
 });
 
@@ -554,7 +601,7 @@ test('Slack refusing the post, or the message having been deleted, is told to na
   f.slack.fail('postMessage', 'C1', 'chat.postMessage', 'ratelimited');
   await f.dove.ask(post('一通目'));
   await f.dove.idle();
-  assert.equal(f.lines()[0]!.result, 'not_sent');
+  assert.equal(f.lines()[0]!.state, 'not_sent');
   assert.ok(f.logs.some(line => line.includes('chat.postMessage: ratelimited')));
   assert.ok(!f.logs.some(line => line.includes('一通目')), 'no text in the log');
   f.slack.failures.clear();
@@ -562,7 +609,7 @@ test('Slack refusing the post, or the message having been deleted, is told to na
   await f.archive.remove('work', 'C1', PARENT);
   await f.dove.idle();
   assert.equal(f.slack.posts.length, 0);
-  assert.equal(f.lines()[1]!.result, 'not_sent');
+  assert.equal(f.lines()[1]!.state, 'not_sent');
   const rows = f.db.prepare('SELECT state, failure FROM dove_posts ORDER BY created_at, rowid').all().map(row => ({ ...row }));
   assert.deepEqual(rows, [{ state: 'failed', failure: 'slack-error' }, { state: 'failed', failure: 'target-gone' }]);
 });
@@ -578,23 +625,12 @@ test('after a restart, a draft still being judged is judged, and one caught mid-
   f.dove.resume();
   await f.dove.idle();
   assert.deepEqual(f.slack.posts.map(sent => sent.text), ['判定中だった下書き']);
-  assert.deepEqual(f.lines().map(line => line.result).sort(), ['not_sent', 'sent']);
-});
-
-test('an event line is handed over once: its text is emptied from the record after', async t => {
-  const f = await setup(t);
-  f.jev.answers.push(RETURN());
-  await f.dove.ask(post('下書き'));
-  await f.dove.idle();
-  const line = f.dove.takeEventLine(f.events[0]!, '2026-09-25T06:00:00.000Z');
-  assert.match(String(line.text), /./);
-  const row = f.db.prepare('SELECT text FROM dove_replies').get() as { text: string };
-  assert.equal(row.text, '');
+  assert.deepEqual(f.lines().map(line => line.state).sort(), ['not_sent', 'sent']);
 });
 
 // ADR 0044: images named under `画像:`, taken and copied at once, sent with files.uploadV2's three calls.
-const withImages = (body: string, images: string[], to = 'work/#dev 2026-09-25 14:32:05 山田') =>
-  `返信先: ${to}\n種類: 投稿\n${images.map(image => `画像: ${image}\n`).join('')}---\n${body}`;
+const withImages = (body: string, images: string[], to: { file: string; path?: string } = PARENT_LINE) =>
+  JSON.stringify({ kind: 'post', to, ...(body ? { text: body } : {}), images });
 /** Fork (ADR F03): the cat uploaded unshared and shown by an image block, under her icon, after the body if any. */
 const catPost = (text: string, threadTs?: string) => ({ channel: 'C1', text, ...(threadTs ? { threadTs } : {}),
   iconUrl: `${ORIGIN}/avatar/neutral.png`, blocks: [...(text ? [{ type: 'section', text: { type: 'mrkdwn', text } }] : []),
@@ -613,9 +649,10 @@ test('images alone are sent at once, with neither Jev nor the owner, placed by t
   assert.deepEqual(f.slack.unshared, [{ id: 'F1', filename: 'cat.png', data: PNG }]);
   assert.deepEqual(f.slack.uploads, [], 'nothing is shared by the upload itself');
   const [line] = f.lines();
-  assert.equal(line!.result, 'sent');
-  assert.deepEqual(line!.images, ['/work/images/cat.png']);
-  assert.equal(line!.draft, undefined, 'no draft to show');
+  assert.equal(line!.state, 'sent');
+  assert.deepEqual(f.request(line!.attention).images, ['/work/images/cat.png']);
+  assert.equal(f.request(line!.attention).text, undefined, 'no text to show');
+  assert.equal(line!.attention.details!.request, '画像 1 枚');
   assertNoIds(line!);
   const row = f.db.prepare('SELECT verdict, state, placement, text FROM dove_posts').get() as Record<string, string | null>;
   assert.deepEqual({ ...row }, { verdict: null, state: 'sent', placement: 'channel', text: '' });
@@ -625,7 +662,7 @@ test('images alone into a thread go to the thread, as the server\'s rule has it 
   const f = await setup(t);
   const reply = tsAt('2026-09-25T05:40:10Z');
   await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: '絵をお願い', files: [], edited: false });
-  await f.dove.ask(withImages('', ['/work/images/cat.png'], 'work/#dev 2026-09-25 14:40:10 佐藤'));
+  await f.dove.ask(withImages('', ['/work/images/cat.png'], { file: PARENT_LINE.file, path: '.[1]' }));
   await f.dove.idle();
   assert.deepEqual(f.slack.posts, [catPost('', PARENT)]);
 });
@@ -640,9 +677,10 @@ test('with a body, only the body is judged, and a pass sends the images with the
   assert.doesNotMatch(JSON.stringify(f.jev.asked[0]!.state), /cat\.png|\/work\//, 'Jev is shown nothing of the images');
   assert.deepEqual(f.slack.posts, [catPost('描いてみました。', PARENT)]);
   const [line] = f.lines();
-  assert.equal(line!.result, 'sent');
-  assert.equal(line!.draft, '描いてみました。');
-  assert.deepEqual(line!.images, ['/work/images/cat.png']);
+  assert.equal(line!.state, 'sent');
+  assert.equal(f.request(line!.attention).text, '描いてみました。');
+  assert.deepEqual(f.request(line!.attention).images, ['/work/images/cat.png']);
+  assert.equal(line!.slack_file, undefined, 'an upload names no line of its own: Slack gives it no ts');
 });
 
 test('a body the judge hands to the owner takes its images to the approval, and what is sent is the copy', async t => {
@@ -730,7 +768,7 @@ test('Slack refusing the upload is told to natsumi as not sent', async t => {
   await f.dove.ask(withImages('', ['/work/images/cat.png']));
   await f.dove.idle();
   const [line] = f.lines();
-  assert.equal(line!.result, 'not_sent');
+  assert.equal(line!.state, 'not_sent');
   assert.match(String(line!.text), /Slack に断られた/);
   assert.ok(f.logs.some(line => line.includes('files.completeUploadExternal: ratelimited')));
 });
@@ -743,7 +781,7 @@ test('fork (ADR F03): image blocks Slack refuses fall back to the upload with th
   await f.dove.idle();
   assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT,
     initialComment: '描いてみました。' }]);
-  assert.equal(f.lines()[0]!.result, 'sent');
+  assert.equal(f.lines()[0]!.state, 'sent');
   assert.deepEqual(f.logs, ['slack (work): images went up without her icon (chat.postMessage: missing_scope)']);
 });
 
@@ -849,7 +887,7 @@ test('the judge is told when the message replied to is itself in a thread, and i
   const reply = tsAt('2026-09-25T05:40:00Z'); // 14:40:00 in Tokyo
   await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: 'スレッドの中の質問です', files: [], edited: false });
   f.jev.answers.push(scores([], 'channel'));
-  await f.dove.ask(post('お答えします。', { to: 'work/#dev 2026-09-25 14:40:00 佐藤' }));
+  await f.dove.ask(post('お答えします。', { to: { file: PARENT_LINE.file, path: '.[1]' } }));
   await f.dove.idle();
   const { state } = f.jev.asked[0]! as { state: Record<string, any> };
   assert.equal(state.reply_to.in_thread, true);
@@ -874,7 +912,7 @@ test('with no verdict the server\'s rule placing a reply in the channel posts it
 test('with no verdict the server\'s rule never broadcasts: a reply in a thread stays in it', async t => {
   const f = await setup(t, { jev: false });
   await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:40:00Z'), threadTs: PARENT, speaker: '佐藤', own: false, text: '質問です', files: [], edited: false });
-  await f.dove.ask(post('大丈夫です。', { to: 'work/#dev 2026-09-25 14:40:00 佐藤' }));
+  await f.dove.ask(post('大丈夫です。', { to: { file: PARENT_LINE.file, path: '.[1]' } }));
   await f.dove.idle();
   assert.equal(f.clientEvents[0]!.payload.target.placement, 'thread');
 });
@@ -898,7 +936,7 @@ test('images with a body placed as a broadcast go to the thread alone; placed in
 test('a post to the channel itself is never a broadcast, and a reply the owner puts in the thread is not either', async t => {
   const f = await setup(t);
   f.jev.answers.push(SEND(), scores([0.01, 0.5], 'broadcast'));
-  await f.dove.ask(post('おはようございます。', { to: 'work/#dev' }));
+  await f.dove.ask(post('おはようございます。', { to: CHANNEL }));
   await f.dove.idle();
   await f.dove.ask(post('大丈夫です。'));
   await f.dove.idle();
@@ -906,4 +944,135 @@ test('a post to the channel itself is never a broadcast, and a reply the owner p
   f.dove.decide({ approvalId: approval.approvalId, revision: 1, decision: 'approve', placement: 'thread', deviceId: 'device-1' });
   await f.dove.idle();
   assert.deepEqual(f.slack.posts.map(one => [one.threadTs, one.replyBroadcast]), [[undefined, undefined], [PARENT, undefined]]);
+});
+
+// ADR 0074: each request gets a directory under /sources/agents/poppo, with request.json and a line per result in
+// results.jsonl, and each result is told by an attention of the source `agents` as it comes.
+
+test('a request taken is put in a directory of its own: what she asked, when, and the start of what it answers', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  const outcome = await f.dove.ask(post('大丈夫です。\n明日の 10 時に始めましょう。', { expression: 'happy' }));
+  const path = /(\/sources\/agents\/poppo\/20260925T060000Z-[0-9a-f]{4})\/request\.json/.exec(outcome.text)![1]!;
+  assert.deepEqual(JSON.parse(await readFile(f.disk(`${path}/request.json`), 'utf8')), {
+    kind: 'post', to: PARENT_LINE, face: 'happy', text: '大丈夫です。\n明日の 10 時に始めましょう。',
+    asked_at: '2026-09-25 15:00',
+    target: { channel: 'work/#dev', at: '2026-09-25 14:32:05', from: '山田', text: '明日のレビュー、大丈夫そう？' },
+  });
+  assert.equal(f.attentions.length, 0, 'the request is hers, and nothing is told of it');
+  await f.dove.idle();
+  assert.equal(f.attentions[0]!.file, `${path}/results.jsonl`);
+});
+
+test('a post to a channel and a reaction keep what was asked as it was written, the channel for what it answers', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('おはようございます。', { to: CHANNEL }));
+  await f.dove.ask(reaction(':+1:'));
+  await f.dove.idle();
+  const [channel, reacted] = f.attentions.map(attention => f.request(attention));
+  assert.deepEqual(channel, { kind: 'post', to: CHANNEL, text: 'おはようございます。', asked_at: '2026-09-25 15:00', target: { channel: 'work/#dev' } });
+  assert.deepEqual(reacted, { kind: 'reaction', to: PARENT_LINE, emoji: '+1', asked_at: '2026-09-25 15:00',
+    target: { channel: 'work/#dev', at: '2026-09-25 14:32:05', from: '山田', text: '明日のレビュー、大丈夫そう？' } });
+});
+
+test('a result is a line of results.jsonl, told by an attention that points at it, with her own post\'s line when sent', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('大丈夫です。明日の 10 時に始めましょう。'));
+  await f.dove.idle();
+  const [attention] = f.attentions;
+  const directory = attention!.file.replace(/\/results\.jsonl$/, '');
+  assert.deepEqual(attention, { source: 'agents', kind: 'agent_reply', file: `${directory}/results.jsonl`, path: '.[0]',
+    details: { agent: 'poppo', state: 'sent', summary: 'ポッポ！ work/#dev のスレッドに届けたよ。', request: '大丈夫です。明日の 10 時に始めましょう。',
+      asked_at: '2026-09-25 15:00', slack_file: '/sources/slack/work/dev/2026-09-25.jsonl', slack_path: '.[1]' } });
+  const rows = (await readFile(f.disk(attention!.file), 'utf8')).split('\n').filter(Boolean).map(row => JSON.parse(row));
+  assert.deepEqual(rows, [{ at: '2026-09-25 15:00', state: 'sent', text: 'ポッポ！ work/#dev のスレッドに届けたよ。',
+    slack_file: '/sources/slack/work/dev/2026-09-25.jsonl', slack_path: '.[1]' }]);
+  // Her post is in the record where the result says, by her own name, before Slack tells of it.
+  const own = (await readFile(f.disk('/sources/slack/work/dev/2026-09-25.jsonl'), 'utf8')).split('\n').filter(Boolean).map(row => JSON.parse(row));
+  assert.equal(own[1].mine, true);
+  assert.equal(own[1].text, '大丈夫です。明日の 10 時に始めましょう。');
+  assert.ok(f.place.notified >= 1, 'the event is asked for');
+  assertNoIds(rows[0]!);
+  assertNoIds(attention!.details!);
+});
+
+test('handed to the owner and then sent: two lines in the same directory, each told as it comes, the state the latest', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('承認を待つ下書き'));
+  await f.dove.idle();
+  assert.deepEqual(f.attentions.map(attention => [attention.path, attention.details!.state]), [['.[0]', 'to_owner']]);
+  f.dove.decide({ approvalId: f.clientEvents[0]!.payload.approvalId, revision: 1, decision: 'approve', deviceId: 'd1' });
+  await f.dove.idle();
+  assert.deepEqual(f.attentions.map(attention => [attention.path, attention.details!.state]), [['.[0]', 'to_owner'], ['.[1]', 'sent']]);
+  assert.equal(f.attentions[0]!.file, f.attentions[1]!.file);
+  assert.deepEqual(f.lines().map(line => line.state), ['to_owner', 'sent']);
+  assert.equal(f.attentions[1]!.details!.slack_path, '.[1]');
+});
+
+test('a reaction says which emoji was asked for, and points at nothing more than its own line', async t => {
+  const f = await setup(t);
+  await f.dove.ask(reaction('eyes'));
+  await f.dove.idle();
+  const [attention] = f.attentions;
+  assert.equal(attention!.details!.request, ':eyes:');
+  assert.equal(attention!.details!.state, 'reacted');
+  assert.equal(attention!.details!.slack_file, undefined);
+});
+
+test('without a place for the results, nothing is asked: she would never hear what became of it', async t => {
+  const f = await setup(t, { place: false });
+  const outcome = await f.dove.ask(post('大丈夫です。'));
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /^頼んでいません。/);
+  assert.match(outcome.text, /\/sources\/agents/);
+  assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM dove_posts').get() as { n: number }).n, 0);
+});
+
+test('a request waiting for the owner at the upgrade gets its directory when its result comes, made from the record', async t => {
+  const f = await setup(t);
+  // As the version before left it: no directory, an approval waiting, its images taken.
+  const taken = await f.images.take(['/work/images/cat.png'], f.work, CONFIG.images);
+  assert.ok(taken.ok);
+  f.images.record(taken.images, '2026-09-25T05:50:00.000Z');
+  f.db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    expression, verdict, placement, state, created_at, updated_at) VALUES ('post-old', 'post', 'work', 'C1', ?, NULL,
+    'work/#dev 2026-09-25 14:32:05 山田', '前の版の下書き', 'sad', 'owner', 'thread', 'pending', '2026-09-25T05:50:00.000Z', '2026-09-25T05:50:00.000Z')`)
+    .run(PARENT);
+  f.db.prepare('INSERT INTO dove_post_images (post_id, position, image_id) VALUES (?, 0, ?)').run('post-old', taken.images[0]!.imageId);
+  f.db.prepare(`INSERT INTO approvals (approval_id, revision, kind, post_id, payload, state, created_at, expires_at)
+    VALUES ('approval-old', 1, 'slack-post', 'post-old', ?, 'pending', '2026-09-25T05:50:00.000Z', '2026-10-02T05:50:00.000Z')`)
+    .run(JSON.stringify({ approvalId: 'approval-old', revision: 1, text: '前の版の下書き', target: { channel: 'work/#dev', placement: 'thread' } }));
+  f.dove.decide({ approvalId: 'approval-old', revision: 1, decision: 'approve', deviceId: 'd1' });
+  await f.dove.idle();
+  const [attention] = f.attentions;
+  assert.match(attention!.file, /^\/sources\/agents\/poppo\/20260925T060000Z-[0-9a-f]{4}\/results\.jsonl$/);
+  assert.deepEqual(f.request(attention!), { kind: 'post', to: PARENT_LINE, face: 'sad', text: '前の版の下書き', images: ['/work/images/cat.png'],
+    asked_at: '2026-09-25 14:50', target: { channel: 'work/#dev', at: '2026-09-25 14:32:05', from: '山田', text: '明日のレビュー、大丈夫そう？' },
+    note: '版を上げる前の依頼なので、サーバーが記録から組み立てました。' });
+  assert.deepEqual(f.lines().map(line => line.state), ['sent']);
+  assert.equal(attention!.details!.asked_at, '2026-09-25 14:50');
+  assert.equal(attention!.details!.request, '前の版の下書き');
+});
+
+test('a result recorded but not yet put in its file, or not told, is put and told on the next start, once', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(RETURN());
+  f.place.accept = false;
+  await f.dove.ask(post('下書き'));
+  await f.dove.idle();
+  assert.equal(f.attentions.length, 0);
+  assert.ok(f.logs.some(line => line.includes('dove: a result could not be told')), f.logs.join('\n'));
+  f.place.accept = true;
+  f.dove.close();
+  const again = f.open();
+  again.resume();
+  await again.idle();
+  assert.deepEqual(f.lines().map(line => line.state), ['returned']);
+  again.resume();
+  await again.idle();
+  assert.equal(f.attentions.length, 1, 'told once');
+  again.close();
 });

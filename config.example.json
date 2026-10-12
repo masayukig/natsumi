@@ -54,10 +54,14 @@
     "modelCalls": 100,
     "timeoutMinutes": 60,
     "stopStartingAt": "05:30",
+    "pillStopStartingAfterMinutes": 90,
     "rotateFiles": 2,
     "rewriteAllMaxChars": 100000,
     "conversationMaxChars": 30000,
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 120 }
   },
+  "skills": { "enabled": false },
+  "postbox": { "enabled": true, "minIntervalMinutes": 15 },
+  "tools": [],
   "avatar": { "id": "natsumi" }
 }

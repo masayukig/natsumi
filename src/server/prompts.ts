@@ -100,13 +100,27 @@ export const WORKSPACE_COMMANDS = `### 作業環境だけのコマンド
 - \`view <パス>\`: /work か /sources の下の画像を見ます。run_shell のコマンドを \`view /work/images/cat.png\` のような 1 行だけにします。\`cd\` や \`&&\`・\`;\` とつなぐと、ただのコマンドとして動いて見られません。詳しくは /manual/slack.md にあります。`;
 
 /**
- * The section for a session with a workspace: the fixed lines, the commands, and the manual's index as the server
- * read it at start. Without the index, the sentence that points at it stands in its place.
+ * The section for a session with a workspace: the fixed lines, the commands, the section on skills when they are on,
+ * and the manual's index as the server read it at start. Without the index, the sentence that points at it stands in
+ * its place.
  */
-export function workspaceSection(manualIndex?: string): string {
-  if (!manualIndex) return `${WORKSPACE_BULLETS}\n${MANUAL_FALLBACK}\n\n${WORKSPACE_COMMANDS}`;
-  return `${WORKSPACE_BULLETS}\n${MANUAL_POINTER}\n\n${WORKSPACE_COMMANDS}\n\n### マニュアルの目次（/manual/INDEX.md）\n\n${manualIndex}`;
+export function workspaceSection(manualIndex?: string, skills = false): string {
+  const commands = skills ? `${WORKSPACE_COMMANDS}\n\n${SKILLS_SECTION}` : WORKSPACE_COMMANDS;
+  if (!manualIndex) return `${WORKSPACE_BULLETS}\n${MANUAL_FALLBACK}\n\n${commands}`;
+  return `${WORKSPACE_BULLETS}\n${MANUAL_POINTER}\n\n${commands}\n\n### マニュアルの目次（/manual/INDEX.md）\n\n${manualIndex}`;
 }
+
+/**
+ * Skills, for a session that loads them (ADR 0073): where they are, which she may write, and how. Fixed, and in only
+ * when skills are switched on, which is chosen once for a deployment: the list itself is Pi's, after the prompt.
+ */
+export const SKILLS_SECTION = `### skill
+- 決まった仕事のやり方（手順）は skill になっています。指示の終わりに、skill の名前・説明・SKILL.md の場所の一覧があります。仕事が説明に合ったら、その SKILL.md を read で読んで従います。SKILL.md に書かれた相対パスは、SKILL.md のあるディレクトリから読みます。
+- /skills の下はマスターの skill です。読み取り専用で、あなたには書き換えられません。
+- 仕事の中で覚えたやり方は、自分の skill として /memory/skills/<名前>/SKILL.md に書けます。頭の frontmatter に name（ディレクトリと同じ名前で、小文字の英数字とハイフン）と description（どんな仕事のときに読むか）を書きます。記憶と同じように、ターンの終わりに検査してコミットされます。
+- skill のディレクトリの中には、スクリプト（scripts/ など）や参照のデータも、テキストのファイルなら置けます。スクリプトは \`bash /memory/skills/<名前>/scripts/x.sh\` や \`python3 /memory/skills/<名前>/scripts/x.py\` のように、コマンドを付けて動かします。1 つの skill のファイルの合計には上限があります。
+- 書いた skill が一覧に載るのは、次の思考の記録（夜の切り替えの後）からです。マスターの skill と同じ名前の skill は使われません。
+- skill は記憶の整理係の対象外です。直すのも消すのも、あなたが行います。`;
 
 export const NO_WORKSPACE_SECTION = `## 記憶と作業場
 - いまは作業環境につながっていないので、記憶を読むことも書くこともできません。
@@ -143,8 +157,9 @@ ${workspace}
 - mac_message: マスターとの一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、マスターがまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。attachments があれば、マスターがメッセージに添えたファイルです。path が置き場所（/sources/uploads の下で、読み取り専用）、bytes が大きさです。shown_as_image が付いたものは、画像としてメッセージと一緒に届いています。ほかのファイルは、要るときに作業環境で読みます。
 - ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time はマスターのタイムゾーンの今の時刻です。マスターに伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。
 - self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの check_id・reason・予定の時刻（scheduled_for）があります。繰り返しの予約には cron が付き、予約はそのまま次の時刻まで残ります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。繰り返しの予約は、過ぎた回がいくつあっても 1 回だけ届きます。
-- sources_updated: /sources の読みもの（Slack のチャンネルや、外のエージェントの返事など）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file がその場所で、path があれば、それが file の中の jq -s のパスです。kind の意味と読み方は読みものごとのマニュアル（Slack なら /manual/slack.md、外のエージェントの返事の agent_reply なら /manual/ask-agent.md）にあります。agent_reply には、相手の名前（agent）・状態（state）・要約（summary）が付きます。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。
-- nightly_review: 一日の終わりの振り返りです。instructions に従います。マスターには何も送りません。`;
+- sources_updated: /sources の読みもの（Slack のチャンネルや、外のエージェントの返事など）が更新されました。changed に、変わったディレクトリ（dir）ごとに、変わったファイル（files）、前に見せてからの書き込みの回数（writes）、前回からの差分を見るコマンド（diff）があります。差分の本文は載っていません。attention があれば、そのディレクトリにあなた宛てのものがあります。file がその場所で、path があれば、それが file の中の jq -s のパスです。kind の意味と読み方は読みものごとのマニュアル（Slack とポッポさんの結果なら /manual/slack.md、外のエージェントの返事の agent_reply なら /manual/ask-agent.md）にあります。agent_reply には、相手の名前（agent）・状態（state）・要約（summary）が付きます。画像が付いていれば一緒に届きます。読むか、反応するかはあなたが決めます。
+- nightly_review: 一日の終わりの振り返りです。instructions に従います。マスターには何も送りません。
+- nap: マスターに寝かされた昼寝です。instructions に従います。マスターには何も送りません。`;
 
 /**
  * The system prompt from its parts, each already read and stripped of its opening heading: the base instruction with
@@ -158,8 +173,10 @@ export function composeSystemPrompt(parts: {
   self?: Self;
   ownerOnSlack?: boolean;
   ownerOnSignal?: boolean;
+  /** Whether the session loads skills (ADR 0073). Off when left out. */
+  skills?: boolean;
 }): string {
-  let instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex) : NO_WORKSPACE_SECTION, parts.self);
+  let instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex, parts.skills) : NO_WORKSPACE_SECTION, parts.self);
   if (parts.ownerOnSlack) instruction += `\n\n${OWNER_ON_SLACK_SECTION}`;
   if (parts.ownerOnSignal) instruction += `\n\n${OWNER_ON_SIGNAL_SECTION}`;
   let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
@@ -236,12 +253,12 @@ export const NOTIFY_OWNER_DESCRIPTION = 'マスターに確かめてほしい相
 export const SET_MAC_AVATAR_EXPRESSION_DESCRIPTION = (expressions: readonly string[]) =>
   `マスターの Mac のデスクトップにいるあなたのアバターの表情を変える。候補: ${expressions.join(', ')}。`;
 
-export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。'
+export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）か昼寝（nap）でだけ使う。次の新しい思考の記録に引き継ぐメモを書く。'
   + '書いた内容は /memory/handoff.md になり、このターンの終わりにコミットされる。何度か呼ぶと最後のものが使われる。';
 
-export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。今夜の記憶の変更を自分の言葉で説明する。'
-  + 'この文がそのまま今夜のコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。'
-  + '書かなくても夜は終わるが、その場合の説明はサーバーが機械的に付ける。';
+export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）か昼寝（nap）でだけ使う。そのターンの記憶の変更を自分の言葉で説明する。'
+  + 'この文がそのままそのターンのコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。'
+  + '書かなくてもターンは終わるが、その場合の説明はサーバーが機械的に付ける。';
 
 export const SCHEDULE_SELF_CHECK_DESCRIPTION = '後で自分からもう一度確かめるための予約をする。時刻が来ると、reason を添えた self_check のイベントが届く。'
   + 'cron・at・in_minutes のどれか 1 つだけを指定する。'
@@ -257,7 +274,8 @@ export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の�
 
 /**
  * Fixed like every description here: which agents exist is the config's, so the list lives in the manual she reads
- * with run_shell, and this names only where it is (ADR 0036). The states are the attention's own words (ADR 0069).
+ * with run_shell, and this names only where it is (ADR 0036). The states are the attention's own words (ADR 0069), and
+ * the dove's are its results' (ADR 0074).
  */
 export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。'
   + 'agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。'
@@ -269,7 +287,10 @@ export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理�
   + 'state は completed（済んだ）、failed（できなかった）、input_required（相手が聞き返している。summary が質問）、'
   + 'gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。'
   + '要約で足りなければ README.md を読み、要る節のファイルだけを読む。読み方は /manual/ask-agent.md にある。'
-  + 'ポッポさん（poppo）の結果だけは、agent_reply の出来事として届く（/manual/slack.md）。\n'
+  + 'ポッポさん（poppo）は Slack への送信役で、message には JSON のオブジェクトをひとつ書く（書き方は /manual/slack.md）。'
+  + 'ポッポさんへの依頼のディレクトリは /sources/agents/poppo の下にでき、request.json に頼んだことが置かれる。'
+  + '結果は出るたびに同じディレクトリの results.jsonl に一行ずつ足され、同じく attention（kind: agent_reply、agent: poppo）として届く。'
+  + 'file は results.jsonl、path はその行で、state はその結果、summary はポッポさんの言葉。\n'
   + '返事を待たずに、ほかのことをしてよい。相手とのやり取りはマスターには見えないので、マスターに伝えたいことは reply_to_mac か notify_owner で伝える。';
 
 // ── On a turn's input ──
@@ -298,6 +319,18 @@ export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思�
   + '・/work と /home/natsumi を片づける。ここは検査もコミットもされないので、残したいものがあれば /memory に移します。'
   + '全部をやる必要はありません。今夜できなかったことは引き継ぎに書いておいてください。明日の自分がそこから拾えます。'
   + '済んだら、ツールを呼ばずに終えてください。';
+
+/**
+ * The nap the owner's sleeping pill puts her into when the night is done (ADR 0077): the handoff alone, then a new
+ * session. Not the night's menu: the always-memory, the personality and the workspace are the night's to look at, so
+ * they are not offered here. The handoff is written as the night's is.
+ */
+export const NAP_INSTRUCTIONS = '昼寝です。マスターに寝かされました。起きると思考の記録が新しくなり、今の細かいやりとりは見えなくなります。'
+  + 'やることは 1 つだけです。'
+  + 'write_handoff_note で、起きた後の自分への引き継ぎを書くこと。対応中のこと、マスターの返事を待っていること、マスターの最近の様子など、記憶に書くほどではないが起きた後に知っておきたいことを短くまとめます。'
+  + '引き継ぎも、' + SUBJECT_AND_TIME
+  + 'マスターへの返事や知らせは送りません。'
+  + '書いたら、ツールを呼ばずに終えてください。';
 
 /**
  * What the server asks for once a turn has ended, in the same session (ADR 0047). One fixed text, both because it is

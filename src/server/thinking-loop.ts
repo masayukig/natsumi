@@ -12,22 +12,24 @@ import type { ReplyPlace } from './agent-replies.ts';
 import { AgentRequests } from './agent-requests.ts';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
-import type { A2AConfig, CuratorConfig, LoopConfig } from './config.ts';
+import type { A2AConfig, CuratorConfig, DeclaredToolConfig, LoopConfig, PostboxConfig } from './config.ts';
+import { createDeclaredTools } from './declared-tools.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
-  type RotationRow, type Transaction } from './conversation-store.ts';
+  type RotationRow } from './conversation-store.ts';
 import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { CODEMODE_TOOL_NAME, withCodemode } from './codemode.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { gitIdentity } from './git.ts';
-import { compactionInstructions, composeSystemPrompt, DEFAULT_SELF, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
+import { compactionInstructions, composeSystemPrompt, DEFAULT_SELF, NAP_INSTRUCTIONS, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
   type Self } from './prompts.ts';
 import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
 import { TurnStats, type Confusion, type TokenCounts, type TurnKind, type TurnPlace } from './turn-stats.ts';
 import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
-import { CurationRecord, curatorDeadline, recoverCuratorRun, runCuratorNight, type CuratorStageResult } from './memory-curator.ts';
+import { CURATOR_STAGES, CurationRecord, curatorDeadline, recoverCuratorRun, runCuratorNight, type CuratorNightResult,
+  type CuratorStageResult } from './memory-curator.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
@@ -36,6 +38,9 @@ import { ReadState, type ReadPosition } from './read-state.ts';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
+import { piSkills, skillPlaces } from './skills.ts';
+import { checkLetter, Postbox, POSTBOX_DEFAULTS, PostboxLedger, type LetterRules } from './postbox.ts';
+import { judgePill, nightOf, type PillInProgress, type PillJudgement, type PillKind, type RotationKind } from './sleeping-pill.ts';
 import { parseView, viewImage } from './view.ts';
 import { CutShortNotices, waitedOnKinds } from './turn-notice.ts';
 import type { ShownAttachment } from '../shared/protocol/conversation.ts';
@@ -54,11 +59,23 @@ export const REFLECTION_TIMEOUT_MS = 120_000;
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
 export type { EventKind, EventState };
 
-/** How a nightly switch ended. A failed switch leaves the current session in place. */
+/**
+ * How a nightly switch or a sleeping pill ended. A failed switch leaves the current session in place; a resleep ends
+ * `curated` without switching (ADR 0077).
+ */
 export type RotationOutcome =
   | { result: 'switched' }
+  | { result: 'curated' }
   | { result: 'skipped'; reason: 'empty-session' }
   | { result: 'failed'; reason: string };
+
+/**
+ * The owner's sleeping pill was taken (ADR 0077): the event it is, what the judgement said as it was taken, and whether
+ * it joined a night or a pill already waiting or running. What it did is told by the judgement afterwards.
+ */
+export type TakePillOutcome =
+  | { kind: 'accepted'; eventId: string; pill: PillKind; joined: boolean }
+  | { kind: 'unavailable'; code: UnavailableCode };
 
 /** An event for clients. `conversation.message`, `avatar.expression` and `conversation.event.completed`. */
 export interface LoopClientEvent {
@@ -199,6 +216,16 @@ export interface LoopOptions {
   /** The avatar's `personality.md`, where the memory's personality starts when it has none (ADR 0060). */
   personality?: string;
   /**
+   * Whether her sessions load skills (ADR 0073): the owner's from the data directory's `skills/`, and hers from memory's.
+   * The list is made with each session, so a skill added or changed reaches the next one. Off when left out.
+   */
+  skills?: boolean;
+  /**
+   * The tools the config declares (ADR 0075), given to her sessions after every built-in tool and never to the
+   * curator's. They need the workspace runner; without one they are left out. None when left out.
+   */
+  tools?: DeclaredToolConfig[];
+  /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone, but for the night
@@ -217,6 +244,11 @@ export interface LoopOptions {
   curator?: CuratorConfig;
   /** The outside agents natsumi may ask (ADR 0035). Without it `ask_agent` is still there, and refuses. */
   a2a?: A2AConfig;
+  /**
+   * The postbox (ADR 0076): the letters in memory's `postbox/`, checked at the end of her turns and sent on their cron by
+   * `tickPostbox`. On, with the floor of 15 minutes, when left out; with no agent configured every letter fails its check.
+   */
+  postbox?: PostboxConfig;
   /** Replaces the SDK client built from `a2a`. */
   a2aClient?: A2AClient;
   /**
@@ -230,8 +262,9 @@ export interface LoopOptions {
    */
   sources?: SourceEvents;
   /**
-   * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent, and its answers
-   * come back as `dove-reply` events. Present only when Slack is configured.
+   * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent. What comes of a
+   * request is told by the sources (ADR 0074).
+   * Present only when Slack is configured.
    */
   dove?: DoveEvents;
   notifyLimits?: { perTurn: number; perHour: number };
@@ -284,14 +317,10 @@ export interface LoopUploads {
   images(messageId: string): Promise<ImageContent[]>;
 }
 
-/** The side of the dove the loop talks to: a request, and the line of each answer. */
+/** The side of the dove the loop talks to: a request. */
 export interface DoveEvents {
   ask(message: string): ToolOutcome | Promise<ToolOutcome>;
-  takeEventLine(eventId: string, receivedAt: string): Record<string, unknown>;
 }
-
-/** The kinds of event something outside the loop may raise. */
-export type RaisedKind = 'dove-reply';
 
 type FinishTurn = NonNullable<AgentSession['agent']['finishTurn']>;
 type StopContext = Parameters<FinishTurn>[0];
@@ -313,6 +342,8 @@ interface Turn {
   nestedCalls: number;
   /** The review's rotation, whether it wrote its handoff, and what it said about the night (ADR 0020). */
   rotationId?: string; handoffWritten?: true; changeNote?: string;
+  /** A review turn that is a sleeping pill's nap (ADR 0077): the same tools, told apart only in their words. */
+  nap?: true;
 }
 
 /**
@@ -337,6 +368,8 @@ export class ThinkingLoop {
   private readonly workspaceSize: WorkspaceSize;
   private readonly readState: ReadState;
   private readonly shell: WorkspaceShell | undefined;
+  /** The names of the tools the config declares and her sessions are given (ADR 0075). */
+  private readonly declaredNames: ReadonlySet<string>;
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
   private readonly queue: string[] = [];
   private readonly handling = new Map<string, Handling>();
@@ -358,10 +391,14 @@ export class ThinkingLoop {
   private avatar: { expression: Expression; by: 'server' | 'model'; changedAt: number };
   private readonly selfChecks: SelfChecks;
   private readonly agents: AgentRequests;
+  /** The letters of the postbox and their clock (ADR 0076). */
+  private readonly postbox: Postbox;
   /** When something last arrived or was last handled: the quiet interval before a ping counts from here (ADR 0014). */
   private activityAt: number;
   /** A nightly switch is under way; natsumi sleeps through it. */
   private rotating = false;
+  /** The night or the sleeping pill she sleeps through now, and what it does (ADR 0077). */
+  private sleeping: { eventId: string; kind: 'night' | RotationKind; since: number } | undefined;
   /** The line of thinking being written, the one last sent, and when it went (ADR 0017). */
   private readonly thinking = { line: '', sent: '', at: 0 };
   /** Stops watching the Pi session the loop is attached to. */
@@ -411,10 +448,17 @@ export class ThinkingLoop {
     const loop = options.loop;
     // One directory, two ways in: the shell writes the files, and the repository is what commits them.
     const memoryDirectory = loop.memoryRepository ?? join(options.dataDirectory, 'memory');
+    const postbox = options.postbox ?? POSTBOX_DEFAULTS;
+    const letterRules = (): LetterRules => ({ agents: Object.keys(options.a2a?.agents ?? {}), minIntervalMinutes: postbox.minIntervalMinutes,
+      timeZone: loop.timeZone });
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
       alwaysMaxChars: loop.alwaysMemoryMaxChars, identity: gitIdentity(this.self),
       ...(options.personality !== undefined ? { personality: options.personality } : {}),
+      checkLetter: (path, text) => {
+        const checked = checkLetter(path, text, { ...letterRules(), now: this.now() });
+        return checked.ok ? undefined : checked.reason;
+      },
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);
@@ -428,6 +472,7 @@ export class ThinkingLoop {
         memoryChanges: () => this.memoryRepository.changeSummary(),
       })
       : undefined;
+    this.declaredNames = new Set(this.shell ? (options.tools ?? []).map(tool => tool.name) : []);
     // The three places that survive a restart, under the names natsumi sees inside the container (ADR 0019).
     this.workspaceSize = new WorkspaceSize({
       places: [{ label: '/memory', path: memoryDirectory },
@@ -439,12 +484,15 @@ export class ThinkingLoop {
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: loop.timeZone,
       awakeHours: options.settings ? () => options.settings!.awakeHours() : loop.awakeHours });
     const { a2a } = options;
+    const ledger = new PostboxLedger(options.db, this.now);
     this.agents = new AgentRequests({
       db: options.db, now: this.now, config: a2a,
       client: options.a2aClient ?? (a2a ? new SdkA2AClient({ tokenFile: a2a.tokenFile }) : undefined),
       ...(options.agentReplies ? { replies: options.agentReplies } : {}), log: line => this.log(line), images: this.images,
-      timeZone: loop.timeZone,
+      timeZone: loop.timeZone, postbox: ledger,
     });
+    this.postbox = new Postbox({ db: options.db, now: this.now, timeZone: loop.timeZone, enabled: postbox.enabled, rules: letterRules,
+      repository: this.memoryRepository, sender: this.agents, ledger, log: line => this.log(line) });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
     this.routes = options.routes ?? { defaultRoute: 'default', list: [{ name: 'default', target: options.target,
@@ -569,7 +617,10 @@ export class ThinkingLoop {
   rotate(): Promise<RotationOutcome> {
     const unavailable = this.unavailable;
     if (unavailable) return Promise.resolve({ result: 'failed', reason: unavailable });
-    let eventId = this.store.pendingRotation();
+    // A sleeping pill still waiting is joined too: judged as it begins, it does what the night would. One already under
+    // way is not, or the night would be skipped: the night waits behind it instead (ADR 0077).
+    let eventId = this.store.pendingRotations()
+      .find(pending => pending.kind === 'nightly-review' || this.queue.includes(pending.eventId))?.eventId;
     if (!eventId) {
       eventId = this.store.insertEvent('nightly-review');
       this.queue.push(eventId);
@@ -579,6 +630,55 @@ export class ThinkingLoop {
       this.rotationWaiters.set(id, [...(this.rotationWaiters.get(id) ?? []), resolve]);
       this.pump();
     });
+  }
+
+  /**
+   * What a sleeping pill would do now (ADR 0077), and what that is decided from: the one judgement the dashboard and the
+   * client contract show, and the pill runs as it begins. Reads only; changes nothing.
+   */
+  async sleepStatus(): Promise<PillJudgement> {
+    const now = this.now();
+    const { nightlyRotationAt, timeZone } = this.options.loop;
+    const latestReviewAt = this.store.latestReviewedRotationAt();
+    const night = nightOf(now, nightlyRotationAt, timeZone, latestReviewAt);
+    const since = night === undefined ? undefined : isoAt(night);
+    let curatorBaseAt: number | undefined;
+    try { curatorBaseAt = await this.memoryRepository.commitTime(this.curation.base()); } catch { /* no base to count from */ }
+    return judgePill({
+      now, nightlyRotationAt, timeZone, sessionEmpty: (this.session?.messages.length ?? 0) === 0, sessionStartedAt: this.sessionStartedAt(),
+      rotations: since === undefined ? [] : this.store.rotationsSince(since), latestReviewAt,
+      curatorRuns: this.options.curator?.enabled === true && this.shell !== undefined, curatorBaseAt,
+      curatorFailures: since === undefined ? [] : this.turnStats.curatorFailuresSince(since), inProgress: this.pillInProgress(),
+    });
+  }
+
+  /**
+   * The owner gives natsumi a sleeping pill (ADR 0077). It is an event of the loop's, taken in its turn like any other,
+   * and judged as it begins; a night or a pill already waiting or running is joined instead, so nothing sleeps twice.
+   * Answers at once, without waiting for her to wake.
+   */
+  async takeSleepingPill(): Promise<TakePillOutcome> {
+    if (this.unavailable) return { kind: 'unavailable', code: this.unavailable };
+    const judged = await this.sleepStatus();
+    // Looked at again after the wait, and nothing awaited from here on, so a second pill cannot slip in beside the first.
+    const unavailable = this.unavailable;
+    if (unavailable) return { kind: 'unavailable', code: unavailable };
+    const [pending] = this.store.pendingRotations();
+    if (pending) return { kind: 'accepted', eventId: pending.eventId, pill: judged.kind, joined: true };
+    const eventId = this.store.insertEvent('sleeping-pill');
+    this.queue.push(eventId);
+    this.activityAt = this.now();
+    this.pump();
+    return { kind: 'accepted', eventId, pill: judged.kind, joined: false };
+  }
+
+  /** The night or the pill she sleeps through, or the one waiting for its turn. A pill waiting is not decided yet. */
+  private pillInProgress(): PillInProgress | null {
+    if (this.sleeping) return { kind: this.sleeping.kind, state: 'running', since: isoAt(this.sleeping.since) };
+    const [pending] = this.store.pendingRotations();
+    if (!pending) return null;
+    return { kind: pending.kind === 'nightly-review' ? 'night' : 'sleeping-pill', state: pending.state === 'processing' ? 'running' : 'queued',
+      since: pending.createdAt };
   }
 
   /** When the current Pi session began: its switch, or the conversation's creation. */
@@ -722,18 +822,12 @@ export class ThinkingLoop {
   }
 
   /**
-   * An event raised from outside the loop, such as the dove's answer (ADR 0040). The caller's own rows are written in
-   * the event's transaction, so neither is ever recorded without the other. It waits behind
-   * whatever is running: it is queued, not steered in.
+   * One look at the postbox (ADR 0076), from the scheduler's tick whatever the hour: memory's HEAD read again when it
+   * moved, and each letter whose run has come sent once. No turn of hers is used, and no model is called.
    */
-  raise(kind: RaisedKind, record: (eventId: string, transaction: Transaction) => void): void {
-    const eventId = this.store.transaction(transaction => {
-      const id = this.store.insertEvent(kind);
-      record(id, transaction);
-      return id;
-    });
-    this.queue.push(eventId);
-    this.pump();
+  tickPostbox(): Promise<void> {
+    if (this.unavailable) return Promise.resolve();
+    return this.postbox.tick();
   }
 
   /**
@@ -847,7 +941,9 @@ export class ThinkingLoop {
 
   private async sessionOptions(): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
-    const { tools, extensions } = withCodemode(createLoopTools(this.host()), this.options.loop.codemode, () => this.turn);
+    const declared = this.declaredTools();
+    const { tools, extensions } = withCodemode([...createLoopTools(this.host()), ...declared.definitions], this.options.loop.codemode,
+      () => this.turn, declared.exposures);
     return {
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target: this.route!.target,
       systemPrompt: await this.systemPrompt(),
@@ -855,6 +951,21 @@ export class ThinkingLoop {
       tools,
       keepRecentTokens: this.options.loop.compactionKeepRecent,
       extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting }), ...extensions],
+      ...(this.options.skills ? { skills: piSkills(skillPlaces(dataDirectory, this.memoryRepository.directory), line => this.log(line)) } : {}),
+    };
+  }
+
+  /**
+   * The declared tools' definitions and how Codemode reaches each (ADR 0075). Each call is a request to the runner,
+   * in the same line as her commands.
+   */
+  private declaredTools() {
+    const declared = (this.options.tools ?? []).filter(tool => this.declaredNames.has(tool.name));
+    const shell = this.shell;
+    return {
+      definitions: createDeclaredTools(declared, (tool, input) => shell!.runTool({ argv: tool.command, input,
+        timeoutSeconds: tool.timeoutSeconds, maxOutputChars: tool.maxOutputChars })),
+      exposures: new Map(declared.map(tool => [tool.name, tool.exposure])),
     };
   }
 
@@ -913,6 +1024,7 @@ export class ThinkingLoop {
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
     const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex, self: this.self,
+      skills: this.options.skills === true,
       personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice(),
       ownerOnSlack: this.options.ownerOnSlack === true, ownerOnSignal: this.options.ownerOnSignal === true });
@@ -983,6 +1095,7 @@ export class ThinkingLoop {
         return;
       }
       const turnId = `turn-${randomUUID()}`;
+      if (this.store.eventKind(eventId) === 'sleeping-pill') { await this.runPill(eventId, turnId); return; }
       const review = this.store.eventKind(eventId) === 'nightly-review';
       this.working = { turnId, startedAt: isoAt(this.now()), eventKinds: this.eventLabel([eventId]), phase: 'turn' };
       this.workingPlace = { kind: review ? 'review' : 'events', mark: await this.markPlace(this.session!), eventIds: [eventId] };
@@ -1012,11 +1125,12 @@ export class ThinkingLoop {
   private isRotationQueuedFirst(): boolean {
     const first = this.queue[0];
     if (!first || this.running) return false;
-    return this.store.eventKind(first) === 'nightly-review';
+    const kind = this.store.eventKind(first);
+    return kind === 'nightly-review' || kind === 'sleeping-pill';
   }
 
   /** Runs one turn and records how its events ended. Returns the turn, with the failure if it did not end cleanly. */
-  private async runTurn(eventIds: string[], kind: Turn['kind'], rotationId?: string): Promise<EndedTurn> {
+  private async runTurn(eventIds: string[], kind: Turn['kind'], rotationId?: string, nap = false): Promise<EndedTurn> {
     const session = this.session!;
     // The review reads and rewrites memory file by file, so it has limits of its own (ADR 0018). The owner may have
     // changed them while natsumi runs; the turn keeps what they were as it began (ADR 0058).
@@ -1024,12 +1138,12 @@ export class ThinkingLoop {
     const maxCalls = kind === 'review' ? limits.reviewModelCalls : limits.eventModelCalls;
     const timeoutMs = (kind === 'review' ? limits.reviewTimeoutMinutes : limits.eventTimeoutMinutes) * 60_000;
     const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt: this.now(), doveRefusals: 0,
-      nestedCalls: 0 };
+      nestedCalls: 0, ...(nap ? { nap: true as const } : {}) };
     this.turn = turn;
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, timeoutMs);
-    const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
+    const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice(), this.postbox.takeNotice()].filter(Boolean).join('\n\n');
     const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notices ? `\n\n${notices}` : '');
     const images = await this.eventImages(eventIds);
     try {
@@ -1086,7 +1200,7 @@ export class ThinkingLoop {
     // Thinking ends with the handling, whoever set it (ADR 0014); other expressions return to neutral with time.
     if (this.avatar.expression === 'thinking' && this.queue.length === 0) this.setAvatar('neutral', 'server');
     const first = replies[0]?.usage;
-    const confusion = { repeatedCalls: repeatedCalls(session.messages, before), unansweredMessages: unanswered,
+    const confusion = { repeatedCalls: repeatedCalls(session.messages, before, this.declaredNames), unansweredMessages: unanswered,
       toolErrors: session.messages.slice(before).filter(message => message.role === 'toolResult' && message.isError).length,
       doveRefusals: turn.doveRefusals };
     return { ...turn, ...(failure ? { failure } : {}), eventIds, endedAt, usage: sumUsage(replies),
@@ -1197,41 +1311,49 @@ export class ThinkingLoop {
     } catch {
       // The error text is the git CLI's and never leaves the server.
       this.log('memory: the commit failed; the changes stay in the working tree');
+      return;
     }
+    // A letter she wrote is sent from the commit that took it in, not from the next minute's look (ADR 0076).
+    try { await this.postbox.reload(); } catch { this.log('postbox: memory could not be read after the commit'); }
   }
 
-  /** The event kinds of a turn, in the names the model sees, for the machine-made commit message. */
+  /**
+   * The event kinds of a turn, in the names the model sees, for the machine-made commit message. A sleeping pill goes by
+   * what it did (ADR 0077): `deep` by the night's review it is to her, a nap by its own event.
+   */
   private eventLabel(eventIds: string[]): string {
-    const kinds = this.store.eventKinds(eventIds).map(kind => (kind ?? 'event').replace(/-/g, '_'));
+    const stored = this.store.eventKinds(eventIds);
+    const kinds = eventIds.map((eventId, index) => {
+      const kind = stored[index];
+      if (kind !== 'sleeping-pill') return (kind ?? 'event').replace(/-/g, '_');
+      const did = this.sleeping?.eventId === eventId ? this.sleeping.kind : this.store.rotationKindOf(eventId);
+      return did === 'deep' ? 'nightly_review' : did ?? 'sleeping_pill';
+    });
     return [...new Set(kinds)].join('+');
   }
 
   /**
    * The nightly switch (ADR 0009): a review turn in the current session writes memories and a handoff, then a new
    * session starts from that handoff. The old session file is kept. The shown conversation is untouched.
+   *
+   * A sleeping pill runs the same (ADR 0077): `deep` is the night itself, with the pill's deadline for the curator, and a
+   * `nap` is the review under the nap's own event, with no curator.
    */
-  private async runRotation(eventId: string, turnId: string): Promise<void> {
-    const { sessionDirectory } = this.options;
+  private async runRotation(eventId: string, turnId: string, kind: 'night' | 'deep' | 'nap' = 'night', takenAt?: number): Promise<void> {
     const session = this.session!;
-    const finish = (outcome: RotationOutcome) => {
-      if (outcome.result === 'failed') this.log(`thinking loop: the nightly switch failed (${outcome.reason})`);
-      const waiters = this.rotationWaiters.get(eventId) ?? [];
-      this.rotationWaiters.delete(eventId);
-      for (const resolve of waiters) resolve(outcome);
-    };
     if (session.messages.length === 0) {
+      this.sleeping = undefined;
       this.store.setEventState(eventId, 'no-reply');
-      return finish({ result: 'skipped', reason: 'empty-session' });
+      return this.finishRotation(eventId, { result: 'skipped', reason: 'empty-session' });
     }
-    this.rotating = true;
     const conversation = this.store.conversation()!;
     const rotationId = `rotation-${randomUUID()}`;
+    this.fallAsleep(eventId, kind);
     this.store.insertRotation({ rotationId, eventId, conversationId: conversation.conversation_id,
-      fromSessionId: conversation.pi_session_id, fromSessionFile: conversation.pi_session_file });
-    this.setAvatar('sleepy', 'server');
+      fromSessionId: conversation.pi_session_id, fromSessionFile: conversation.pi_session_file, kind });
 
     const outcome = await (async (): Promise<RotationOutcome> => {
-      const turn = await this.runTurn([eventId], 'review', rotationId);
+      const turn = await this.runTurn([eventId], 'review', rotationId, kind === 'nap');
       // The review is a turn too, placed in the session it closes (ADR 0049). It has no memo, and ends the session.
       this.recordTurn(turnId, turn, undefined, false, await this.placeSince(session, this.workingPlace?.mark),
         turn.failure ?? (turn.handoffWritten ? 'ok' : 'no-handoff'));
@@ -1256,33 +1378,148 @@ export class ThinkingLoop {
       this.store.saveHandoffCommit(rotationId, handoffCommit);
       setRotation('switching');
       // natsumi is asleep: the curator reorganizes memory before the new session is made (ADR 0055). Whatever becomes of
-      // it, the switch goes on; a stop during it is the only thing that holds the switch, as it would anyway.
-      if (!this.closing) await this.curate();
+      // it, the switch goes on; a stop during it is the only thing that holds the switch, as it would anyway. A nap has
+      // no curator (ADR 0077).
+      if (kind !== 'nap' && !this.closing) await this.curate(takenAt);
+      return this.switchSession(eventId, rotationId, conversation.conversation_id, handoffCommit, session);
+    })();
+    this.wake();
+    this.finishRotation(eventId, outcome);
+  }
+
+  /**
+   * The owner's sleeping pill, as its turn begins (ADR 0077): judged now, not as it was taken, and run as the judgement
+   * says. A pill on an empty session with nothing left for the curator does nothing and leaves no row, as the night does
+   * not switch one.
+   */
+  private async runPill(eventId: string, turnId: string): Promise<void> {
+    const judged = await this.sleepStatus();
+    const takenAt = Date.parse(this.store.eventRow(eventId).created_at);
+    if (judged.kind === 'none') {
+      this.store.setEventState(eventId, 'no-reply');
+      return this.finishRotation(eventId, { result: 'skipped', reason: 'empty-session' });
+    }
+    this.log(`thinking loop: a sleeping pill was taken (${judged.kind})`);
+    // Processing from here, so a crash closes it on the next start rather than running it again.
+    this.store.setEventState(eventId, 'processing');
+    if (judged.kind === 'resume') return this.runResume(eventId, takenAt, judged.done.curator);
+    if (judged.kind === 'resleep') return this.runResleep(eventId, takenAt);
+    this.sleeping = { eventId, kind: judged.kind, since: this.now() };
+    this.working = { turnId, startedAt: isoAt(this.now()), eventKinds: this.eventLabel([eventId]), phase: 'turn' };
+    this.workingPlace = { kind: 'review', mark: await this.markPlace(this.session!), eventIds: [eventId] };
+    return this.runRotation(eventId, turnId, judged.kind, takenAt);
+  }
+
+  /**
+   * A night that wrote its handoff and could not make its new session (ADR 0077): no turn of hers, the curator first if
+   * the night left it out too, then the new session from the handoff left. The row records the commit in hand as the
+   * session is made, which is where the handoff it was given can be found again (ADR 0020).
+   */
+  private async runResume(eventId: string, takenAt: number, curated: boolean): Promise<void> {
+    const session = this.session!;
+    const conversation = this.store.conversation()!;
+    const rotationId = `rotation-${randomUUID()}`;
+    this.fallAsleep(eventId, 'resume');
+    this.store.insertRotation({ rotationId, eventId, conversationId: conversation.conversation_id, fromSessionId: conversation.pi_session_id,
+      fromSessionFile: conversation.pi_session_file, kind: 'resume', state: 'switching' });
+    const outcome = await (async (): Promise<RotationOutcome> => {
+      if (!curated && !this.closing) await this.curate(takenAt);
       if (this.closing) {
-        // The handoff is kept; the next start finishes this switch.
+        // No commit is recorded yet, so the next start closes the row instead of finishing it.
         this.store.setEventState(eventId, 'failed', 'stopped');
         return { result: 'failed', reason: 'stopped' };
       }
-      let created: AgentSession | undefined;
-      try {
-        created = await createPersistedPiSession(await this.sessionOptions());
-        this.commitSwitch({ rotation_id: rotationId, conversation_id: conversation.conversation_id, handoff_commit: handoffCommit }, created);
-      } catch {
-        created?.dispose();
-        setRotation('failed', 'session-create-failed');
-        this.store.setEventState(eventId, 'failed', 'session-create-failed');
-        return { result: 'failed', reason: 'session-create-failed' };
+      let handoffCommit: string;
+      try { handoffCommit = await this.memoryRepository.head(); } catch {
+        this.store.setRotation(rotationId, 'failed', 'handoff-not-committed');
+        this.store.setEventState(eventId, 'failed', 'handoff-not-committed');
+        return { result: 'failed', reason: 'handoff-not-committed' };
       }
-      this.attach(created);
-      session.dispose();
-      this.compactionRetryAbove = undefined;
-      this.store.setEventState(eventId, 'no-reply');
-      this.log(`thinking loop: switched to a new session (the old one is kept as ${relative(sessionDirectory, session.sessionFile!)})`);
-      return { result: 'switched' };
+      this.store.saveHandoffCommit(rotationId, handoffCommit);
+      return this.switchSession(eventId, rotationId, conversation.conversation_id, handoffCommit, session);
     })();
+    this.wake();
+    this.finishRotation(eventId, outcome);
+  }
+
+  /**
+   * A night whose curator did not finish (ADR 0077): the curator alone, the session kept. The row ends `curated` when
+   * every stage that rewrites topics went well, which is when the curator's base moved; otherwise it has failed as
+   * `curator-incomplete`, and the next night (or pill) reads the same day again.
+   */
+  private async runResleep(eventId: string, takenAt: number): Promise<void> {
+    const conversation = this.store.conversation()!;
+    const rotationId = `rotation-${randomUUID()}`;
+    this.fallAsleep(eventId, 'resleep');
+    this.store.insertRotation({ rotationId, eventId, conversationId: conversation.conversation_id, fromSessionId: conversation.pi_session_id,
+      fromSessionFile: conversation.pi_session_file, kind: 'resleep', state: 'curating' });
+    const night = this.closing ? undefined : await this.curate(takenAt);
+    const rewritten = night !== undefined && CURATOR_STAGES.filter(stage => stage.rewrites)
+      .every(stage => night.stages.find(result => result.stage === stage.name)?.outcome === 'ok');
+    let outcome: RotationOutcome;
+    if (this.closing) {
+      this.store.setRotation(rotationId, 'failed', 'stopped');
+      this.store.setEventState(eventId, 'failed', 'stopped');
+      outcome = { result: 'failed', reason: 'stopped' };
+    } else if (rewritten) {
+      this.store.setRotation(rotationId, 'curated');
+      this.store.setEventState(eventId, 'no-reply');
+      outcome = { result: 'curated' };
+    } else {
+      this.store.setRotation(rotationId, 'failed', 'curator-incomplete');
+      this.store.setEventState(eventId, 'failed', 'curator-incomplete');
+      outcome = { result: 'failed', reason: 'curator-incomplete' };
+    }
+    this.wake();
+    this.finishRotation(eventId, outcome);
+  }
+
+  /** The new session, from the handoff in memory, and the conversation pointed at it; the old session file is kept. */
+  private async switchSession(eventId: string, rotationId: string, conversationId: string, handoffCommit: string,
+    old: AgentSession): Promise<RotationOutcome> {
+    if (this.closing) {
+      // The handoff is kept; the next start finishes this switch.
+      this.store.setEventState(eventId, 'failed', 'stopped');
+      return { result: 'failed', reason: 'stopped' };
+    }
+    let created: AgentSession | undefined;
+    try {
+      created = await createPersistedPiSession(await this.sessionOptions());
+      this.commitSwitch({ rotation_id: rotationId, conversation_id: conversationId, handoff_commit: handoffCommit }, created);
+    } catch {
+      created?.dispose();
+      this.store.setRotation(rotationId, 'failed', 'session-create-failed');
+      this.store.setEventState(eventId, 'failed', 'session-create-failed');
+      return { result: 'failed', reason: 'session-create-failed' };
+    }
+    this.attach(created);
+    old.dispose();
+    this.compactionRetryAbove = undefined;
+    this.store.setEventState(eventId, 'no-reply');
+    this.log(`thinking loop: switched to a new session (the old one is kept as ${relative(this.options.sessionDirectory, old.sessionFile!)})`);
+    return { result: 'switched' };
+  }
+
+  /** She sleeps: messages wait for her, and the avatar shows it (ADR 0009, ADR 0077). */
+  private fallAsleep(eventId: string, kind: 'night' | RotationKind) {
+    this.rotating = true;
+    this.sleeping = { eventId, kind, since: this.sleeping?.eventId === eventId ? this.sleeping.since : this.now() };
+    this.setAvatar('sleepy', 'server');
+  }
+
+  /** She wakes: to what waits for her, if anything does. */
+  private wake() {
     this.rotating = false;
+    this.sleeping = undefined;
     if (this.avatar.by === 'server' && this.avatar.expression === 'sleepy') this.setAvatar(this.queue.length > 0 ? 'thinking' : 'neutral', 'server');
-    finish(outcome);
+  }
+
+  /** Tells whoever waits on the switch how it ended: the scheduler, or a night that joined a pill. */
+  private finishRotation(eventId: string, outcome: RotationOutcome) {
+    if (outcome.result === 'failed') this.log(`thinking loop: the nightly switch failed (${outcome.reason})`);
+    const waiters = this.rotationWaiters.get(eventId) ?? [];
+    this.rotationWaiters.delete(eventId);
+    for (const resolve of waiters) resolve(outcome);
   }
 
   /** A curator stage a stop cut off is thrown away before anything else reads memory (ADR 0055, ADR 0068). */
@@ -1293,11 +1530,14 @@ export class ThinkingLoop {
   /**
    * The memory curator's night (ADR 0055, ADR 0068), in stages run by the curator's own module; here it is only put
    * inside the switch, with natsumi asleep, shown as the turn in progress and recorded a turn for each stage. Never
-   * throws, and never holds up the switch it runs inside.
+   * throws, and never holds up the switch it runs inside. Undefined when it does not run.
+   *
+   * A sleeping pill's curator stops beginning stages `pillStopStartingAfterMinutes` after the pill was taken (ADR 0077);
+   * the night's morning deadline is counted from the night, which would have passed by day.
    */
-  private async curate(): Promise<void> {
+  private async curate(pillTakenAt?: number): Promise<CuratorNightResult | undefined> {
     const configured = this.options.curator;
-    if (!configured?.enabled || !this.shell) return;
+    if (!configured?.enabled || !this.shell) return undefined;
     // The owner's choice from the settings (ADR 0068), else the config's; a route that is not there is natsumi's.
     const night = this.options.settings?.curator?.() ?? { route: configured.route ?? null, modelCalls: configured.modelCalls,
       timeoutMinutes: configured.timeoutMinutes };
@@ -1308,9 +1548,11 @@ export class ThinkingLoop {
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
     this.curatorStop = new AbortController();
     const { nightlyRotationAt, timeZone } = this.options.loop;
-    const deadline = curatorDeadline(this.now(), nightlyRotationAt, config.stopStartingAt, timeZone);
+    const pillMinutes = config.pillStopStartingAfterMinutes;
+    const deadline = pillTakenAt === undefined ? curatorDeadline(this.now(), nightlyRotationAt, config.stopStartingAt, timeZone)
+      : pillMinutes === false ? undefined : pillTakenAt + pillMinutes * 60_000;
     try {
-      await runCuratorNight({
+      return await runCuratorNight({
         repository: this.memoryRepository, shell: this.shell, modelRuntime: this.modelRuntime!, route, config, record: this.curation,
         now: this.now, log: line => this.log(line), name: this.self.name, timeZone: this.options.loop.timeZone,
         fileMaxChars: this.options.loop.memoryFileMaxChars, dataDirectory, agentDirectory, sessionDirectory, thinking: this.thinkingLevel(),
@@ -1478,13 +1720,15 @@ export class ThinkingLoop {
    */
   private eventLine(eventId: string): Record<string, unknown> {
     const row = this.store.eventRow(eventId);
-    if (row.kind === 'nightly-review') {
+    // A pill's deep sleep is the night itself to her, and its nap an event of its own (ADR 0077).
+    if (row.kind === 'nightly-review' || (row.kind === 'sleeping-pill' && this.sleeping?.kind !== 'nap')) {
       return { type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
     }
+    if (row.kind === 'sleeping-pill') return { type: 'nap', received_at: row.created_at, instructions: NAP_INSTRUCTIONS };
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
+    // Not made any more (ADR 0069): one queued before the upgrade is handed over once, as it was.
     if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
-    if (row.kind === 'dove-reply') return this.options.dove?.takeEventLine(eventId, row.created_at) ?? { type: 'agent_reply', received_at: row.created_at, agent: DOVE_NAME };
     if (row.kind === 'sources-updated') return this.options.sources?.eventLine(eventId, row.created_at) ?? { type: 'sources_updated', received_at: row.created_at };
     // Only an event recorded before ADR 0050 and closed by its migration has this kind; it is never made into a line.
     if (row.kind === 'slack-mention') return { type: 'slack_mention', received_at: row.created_at };
@@ -1521,7 +1765,7 @@ export class ThinkingLoop {
       askAgent: (agent, message, goOn) => agent === DOVE_NAME && this.options.dove
         ? this.askDove(message) : this.agents.ask(agent, message, goOn),
       ...(this.shell ? { runShell: (command: string) => this.runShell(command),
-        capture: (command: string) => this.shell!.capture(command) } : {}),
+        capture: (command: string) => this.shell!.capture(command), skills: this.options.skills === true } : {}),
     };
   }
 
@@ -1579,7 +1823,9 @@ export class ThinkingLoop {
    */
   private async reply(text: string, expression: Expression, paths: string[] = []): Promise<ToolOutcome> {
     if (this.turn?.kind === 'review') {
-      return { ok: false, text: '送信していません。夜の振り返りの間は、マスターに話しかけません。明日に伝えたいことは write_handoff_note に書いてください。' };
+      return { ok: false, text: this.turn.nap
+        ? '送信していません。昼寝の間は、マスターに話しかけません。起きた後に伝えたいことは write_handoff_note に書いてください。'
+        : '送信していません。夜の振り返りの間は、マスターに話しかけません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
@@ -1622,7 +1868,9 @@ export class ThinkingLoop {
   private notify(text: string, expression: Expression): ToolOutcome {
     const turn = this.turn;
     if (turn?.kind === 'review') {
-      return { ok: false, text: '送信していません。夜の振り返りの間は、マスターに知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
+      return { ok: false, text: turn.nap
+        ? '送信していません。昼寝の間は、マスターに知らせを送りません。起きた後に伝えたいことは write_handoff_note に書いてください。'
+        : '送信していません。夜の振り返りの間は、マスターに知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     const limits = this.options.notifyLimits ?? DEFAULT_NOTIFY_LIMITS;
     if (turn && turn.notices >= limits.perTurn) {
@@ -1646,7 +1894,7 @@ export class ThinkingLoop {
   private async writeHandoff(text: string): Promise<ToolOutcome> {
     const turn = this.turn;
     if (turn?.kind !== 'review' || !turn.rotationId) {
-      return { ok: false, text: '書いていません。write_handoff_note は、夜の振り返り（nightly_review）の中でだけ使えます。' };
+      return { ok: false, text: '書いていません。write_handoff_note は、夜の振り返り（nightly_review）か昼寝（nap）の中でだけ使えます。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
@@ -1658,7 +1906,7 @@ export class ThinkingLoop {
       return { ok: false, text: '書けませんでした。handoff.md に書き込めなかったので、もう一度試してください。' };
     }
     turn.handoffWritten = true;
-    return { ok: true, text: '引き継ぎのメモを handoff.md に書きました。このターンの終わりにコミットされ、明日の新しい思考の記録はこのメモから始まります。書き直すなら、もう一度呼んでください。' };
+    return { ok: true, text: `引き継ぎのメモを handoff.md に書きました。このターンの終わりにコミットされ、${turn.nap ? '起きた後' : '明日'}の新しい思考の記録はこのメモから始まります。書き直すなら、もう一度呼んでください。` };
   }
 
   /**
@@ -1669,13 +1917,13 @@ export class ThinkingLoop {
   private writeChangeNote(text: string): ToolOutcome {
     const turn = this.turn;
     if (turn?.kind !== 'review') {
-      return { ok: false, text: '書いていません。write_change_note は、夜の振り返り（nightly_review）の中でだけ使えます。'
+      return { ok: false, text: '書いていません。write_change_note は、夜の振り返り（nightly_review）か昼寝（nap）の中でだけ使えます。'
         + '日中の記憶のコミットメッセージはサーバーが付けるので、この説明の行き場がありません。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
     turn.changeNote = text;
-    return { ok: true, text: '今夜の記憶のコミットメッセージにします。書き直すなら、もう一度呼んでください。' };
+    return { ok: true, text: `${turn.nap ? 'この昼寝' : '今夜'}の記憶のコミットメッセージにします。書き直すなら、もう一度呼んでください。` };
   }
 
   /** A steered event is shown to natsumi when Pi puts its prompt into the context, at a model-call boundary. */
@@ -1796,11 +2044,12 @@ type EndedTurn = Turn & { failure?: string; eventIds: string[]; endedAt: number;
 
 /**
  * The run_shell commands and read paths of the turn (from `start`) that were already used before, in the session's
- * context or earlier in the turn (ADR 0047). A command is compared with its spaces normalized; nothing is parsed.
+ * context or earlier in the turn (ADR 0047), and the declared tools' calls with the same arguments (ADR 0075). A
+ * command is compared with its spaces normalized; nothing is parsed.
  * Codemode's are counted too (ADR 0066): a script the same as one before, and the commands and reads a script made,
  * as Pi records them beside the script's result.
  */
-function repeatedCalls(messages: AgentSession['messages'], start: number): number {
+function repeatedCalls(messages: AgentSession['messages'], start: number, declared: ReadonlySet<string>): number {
   const seen = new Set<string>();
   let repeated = 0;
   const count = (key: string | undefined, index: number) => {
@@ -1810,18 +2059,20 @@ function repeatedCalls(messages: AgentSession['messages'], start: number): numbe
   };
   messages.forEach((message, index) => {
     if (message.role === 'toolResult' && message.toolName === CODEMODE_TOOL_NAME) {
-      for (const nested of message.nestedCalls?.calls ?? []) count(callKey(nested.name, nested.arguments ?? {}), index);
+      for (const nested of message.nestedCalls?.calls ?? []) count(callKey(nested.name, nested.arguments ?? {}, declared), index);
     }
     if (message.role !== 'assistant') return;
     for (const block of message.content) {
-      if (block.type === 'toolCall') count(callKey(block.name, block.arguments as Record<string, unknown>), index);
+      if (block.type === 'toolCall') count(callKey(block.name, block.arguments as Record<string, unknown>, declared), index);
     }
   });
   return repeated;
 }
 
-function callKey(name: string, args: Record<string, unknown>): string | undefined {
+function callKey(name: string, args: Record<string, unknown>, declared: ReadonlySet<string>): string | undefined {
   const words = (value: string) => value.trim().replace(/\s+/g, ' ');
+  // A declared tool's call is its arguments as JSON (ADR 0075): the same arguments in another order are another call.
+  if (declared.has(name)) return `${name} ${JSON.stringify(args)}`;
   return name === 'run_shell' && typeof args.command === 'string' ? `run_shell ${words(args.command)}`
     : name === 'read' && typeof args.path === 'string' ? `read ${args.path.trim()}`
     : name === CODEMODE_TOOL_NAME && typeof args.code === 'string' ? `codemode ${words(args.code)}` : undefined;

@@ -196,6 +196,16 @@ export class FakeSlack implements SlackApi, SlackSocket {
 }
 
 /**
+ * Where a `sources_updated` with an attention in Slack points (ADR 0050), as natsumi copies it into a request to the
+ * dove (ADR 0074): the file and the path of the first such attention. Undefined when the prompt carries none. `text`
+ * is the prompt as JSON.
+ */
+export function targetFromAttention(text: string): { file: string; path: string } | undefined {
+  const match = /\\"file\\":\\"(\/sources\/slack\/[^"\\]+\.jsonl)\\",\\"path\\":\\"(\.\[\d+\])\\"/.exec(text);
+  return match ? { file: match[1]!, path: match[2]! } : undefined;
+}
+
+/**
  * What natsumi does with a `sources_updated` that has an attention in Slack (ADR 0050), done by a scripted model: reads
  * the line its path names in the day file (`jq -s '.[N]' <file>`) and writes the reference to it from its time and
  * speaker. Undefined when the prompt carries no attention. `text` is the prompt as JSON; `data` is the data directory.

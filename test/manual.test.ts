@@ -5,7 +5,9 @@ import { AGENT_LIST_PATH } from '../src/server/agent-requests.ts';
 import { AGENT_LIST_DIRECTORY, AGENT_LIST_FILE } from '../src/server/agent-list.ts';
 import { loadAvatar } from '../src/server/avatar.ts';
 import { readImagesTemplate, renderImagesPage } from '../src/server/avatar-manual.ts';
-import { ASK_AGENT_DESCRIPTION, workspaceSection } from '../src/server/prompts.ts';
+import { parseDoveRequest } from '../src/server/dove-request.ts';
+import { codeManualDirectory, readManualIndex } from '../src/server/manual.ts';
+import { ASK_AGENT_DESCRIPTION, composeSystemPrompt, workspaceSection } from '../src/server/prompts.ts';
 
 const root = new URL('..', import.meta.url).pathname;
 const read = (path: string) => readFile(`${root}${path}`, 'utf8');
@@ -13,6 +15,8 @@ const read = (path: string) => readFile(`${root}${path}`, 'utf8');
 const LIST = `/manual/agents/${AGENT_LIST_FILE}`;
 /** The page on drawing, which the server writes from the avatar on every start (ADR 0057), as it writes it for natsumi. */
 const IMAGES = '/manual/avatar/images.md';
+/** The params the server writes beside it, which the page on drawing names. */
+const PARAMS = '/manual/avatar/sdctl-params.yaml';
 const imagesPage = async () => renderImagesPage(await readImagesTemplate(), await loadAvatar(undefined));
 
 const mentioned = (text: string) => [...text.matchAll(/\/manual\/[\w./-]*[\w]/g)].map(match => match[0]);
@@ -27,7 +31,7 @@ test('every page of the manual that the prompt, the tool and the manual itself n
   assert.ok(named.has(LIST));
   assert.ok(named.has(IMAGES));
   for (const path of named) {
-    if (path === LIST || path === IMAGES) continue;
+    if (path === LIST || path === IMAGES || path === PARAMS) continue;
     assert.ok(pages.includes(path.replace('/manual/', '')), `${path} is named but not in manual/`);
   }
   assert.equal(AGENT_LIST_PATH, LIST);
@@ -64,14 +68,21 @@ test('the workspace image holds the manual, and compose shows it the list of age
   assert.match(avatar[1]!, /subpath: avatar\b/);
 });
 
-// ADR 0040: what she writes to the dove and what comes back are spelled the way the server reads and writes them.
-test('the Slack page says how to ask the dove and names every answer it gives', async () => {
+// ADR 0040, ADR 0074: what she writes to the dove and what comes back are spelled the way the server reads and writes them.
+test('the Slack page says how to ask the dove in JSON, where the results are, and names every one it gives', async () => {
   const page = await read('manual/slack.md');
-  for (const word of ['poppo', '返信先:', '種類: 投稿', '種類: リアクション', '表情:', '---', 'agent_reply',
+  for (const word of ['poppo', '"kind"', '"post"', '"reaction"', '"to"', '"file"', '"path"', '"face"', '"text"', '"emoji"', '"images"',
+    'agent_reply', 'attention', '/sources/agents/poppo/', 'request.json', 'results.jsonl', 'slack_file', 'slack_path', 'summary',
     'sent', 'reacted', 'to_owner', 'returned', 'rejected', 'expired', 'not_sent']) {
     assert.ok(page.includes(word), word);
   }
+  // The form before ADR 0074 is gone, and no schema is shown: the table and the examples are enough.
+  assert.doesNotMatch(page, /返信先:|種類: 投稿|`---` の行|書き出しを「」|\$schema/);
   assert.doesNotMatch(page, /今はまだ Slack に書き込めません|書き込む手段がありません/);
+  // Every example of a request is one the server takes.
+  const examples = [...page.matchAll(/```json\n([\s\S]*?)```/g)].map(match => match[1]!).filter(block => block.includes('"to"'));
+  assert.ok(examples.length >= 3, `${examples.length} examples`);
+  for (const example of examples) assert.equal(parseDoveRequest(example).ok, true, example);
 });
 
 // ADR 0050: the page says what an attention's kind means, how to read the JSON Lines, and how to see a diff.
@@ -94,7 +105,7 @@ test('the Slack page reads a sources_updated: its kinds, the lines by jq -s, the
 // ADR 0044, ADR 0057: the page on drawing names the defaults, and natsumi's own look as the owner wrote it.
 test('the page on images says how to draw with the default params, where to put the result, and how she looks', async () => {
   const page = await imagesPage();
-  for (const word of ['sdctl txt2img --prompt ', '/work/images', 'view ', '画像:', 'anima_2_9_Anima-2.9B-preview-v1', 'kutara_anima.v1', '-o ']) {
+  for (const word of ['sdctl txt2img --prompt ', '/work/images', 'view ', '`images`', 'anima_2_9_Anima-2.9B-preview-v1', 'kutara_anima.v1', '-o ']) {
     assert.ok(page.includes(word), word);
   }
   // The defaults come from the image's sdctl config file: no flag for them, and nothing to throw away.
@@ -134,7 +145,7 @@ test('the page on images says her body lines go into every picture of her, whate
 
 test('the Slack page says how to name images for the dove', async () => {
   const page = await read('manual/slack.md');
-  assert.ok(page.includes('画像: /work/'));
+  assert.ok(page.includes('"images": ["/work/'));
   assert.ok(page.includes(IMAGES));
 });
 
@@ -144,6 +155,28 @@ test('the page on images says how to show the owner a picture with reply_to_mac'
   for (const word of ['reply_to_mac', 'images', '/work/', 'notify_owner']) assert.ok(page.includes(word), word);
 });
 
+// ADR 0073: the owner's sd-generate skill is written for another machine. Where the two differ, this page wins, and it
+// says so only for a deployment whose list has the skill.
+test('the page on images says what to take from an sd-generate skill and where this page wins over it', async () => {
+  const page = await imagesPage();
+  const start = page.indexOf('## skill の sd-generate');
+  assert.ok(start >= 0, 'no section on the sd-generate skill');
+  const end = page.indexOf('\n## ', start + 1);
+  const section = page.slice(start, end < 0 ? undefined : end);
+  assert.match(section, /一覧に `sd-generate` があれば/);
+  for (const word of ['go install', '/etc/sdctl/config.yaml', '--config', 'SDCTL_URL', 'localhost:7860', 'sdctl models set', '403',
+    'override_settings', '--model', 'sdctl models list', '/manual/avatar/sdctl-params.yaml', '.jpg', '/work/images',
+    'reply_to_mac', '/manual/slack.md']) {
+    assert.ok(section.includes(word), word);
+  }
+  // The section is not where her own look is: that one stays last, as the server fills it in.
+  assert.ok(start < page.indexOf('## あなた自身の姿'));
+  // It lives in the workspace, not in her instructions: the prefix does not move.
+  const index = await readManualIndex(await codeManualDirectory());
+  assert.doesNotMatch(composeSystemPrompt({ workspace: true, skills: true, ...(index ? { manualIndex: index } : {}),
+    personality: '', always: '', handoff: '' }), /sd-generate/);
+});
+
 // ADR 0048: an image an agent hands back is in /work/agents; she looks at it with view and shows it with reply_to_mac.
 test('the page on asking agents says where an image in a reply is and how to look at it and show it', async () => {
   const page = await read('manual/ask-agent.md');
@@ -151,4 +184,17 @@ test('the page on asking agents says where an image in a reply is and how to loo
     assert.ok(page.includes(word), word);
   }
   assert.ok((await imagesPage()).includes('/sources/agents/'));
+});
+
+// ADR 0074: the tool's fixed text and the page on asking agents say the dove's requests are JSON and its results are
+// lines under /sources/agents/poppo, told as attentions, and the list of agents points at the Slack page.
+test('the tool, the page on asking agents and the list say the dove is asked in JSON and heard from under /sources', async () => {
+  for (const word of ['poppo', 'JSON', '/manual/slack.md', '/sources/agents/poppo', 'results.jsonl']) {
+    assert.ok(ASK_AGENT_DESCRIPTION.includes(word), word);
+  }
+  assert.doesNotMatch(ASK_AGENT_DESCRIPTION, /agent_reply の出来事/);
+  const page = await read('manual/ask-agent.md');
+  for (const word of ['/sources/agents/poppo/', 'results.jsonl', '/manual/slack.md']) assert.ok(page.includes(word), word);
+  assert.doesNotMatch(page, /agent_reply の出来事/);
+  assert.doesNotMatch(await read('manual/slack.md'), /agent_reply の出来事/);
 });

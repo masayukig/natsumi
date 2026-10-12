@@ -112,7 +112,7 @@ dryRun:
         args:
           agent: poppo
           continue: false
-          message: "返信先: work/#dev 2026-09-27 14:32:05 田中\n種類: 投稿\n---\n週末の対応を考えると、B 案がいいと思います！"
+          message: '{"kind":"post","to":{"file":"/sources/slack/work/dev/2026-09-27.jsonl","path":".[36]"},"text":"週末の対応を考えると、B 案がいいと思います！"}'
 checks:
   - id: mention
     output: なつみさんはどっちがいいと思う
@@ -121,7 +121,7 @@ checks:
   - id: parent
     output: リリースの段取り、案が 2 つあります
   - id: reply-target
-    asked: { agent: poppo, replyTo: "work/#dev 2026-09-27 14:32:05 田中" }
+    asked: { agent: poppo, to: { file: /sources/slack/work/dev/2026-09-27.jsonl, path: ".[36]" } }
     max: 1
   - id: random-once
     shell: /random

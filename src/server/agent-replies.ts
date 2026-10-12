@@ -183,12 +183,14 @@ export interface ReplyPlace {
   directory: string;
   record(attention: Attention): boolean;
   notify(): void;
+  /** Takes a directory (as the workspace names it) in as it stands, as not news: a request is hers (ADR 0069). */
+  takeIn(path: string): Promise<void>;
 }
 
 /** The place of the replies in `sources/` (as the server sees it), told of through these sources. */
 export function replyPlaceOf(sources: Sources, sourcesDirectory: string): ReplyPlace {
   return { directory: join(sourcesDirectory, AGENTS_SOURCE), record: attention => sources.recordAttention(attention),
-    notify: () => sources.notify() };
+    notify: () => sources.notify(), takeIn: path => sources.takeIn(path) };
 }
 
 /** The images of a reply, brought into `directory`, which the workspace names `path`. */
@@ -229,6 +231,8 @@ export interface WriteRequestOptions {
    * known (one made before requests were kept).
    */
   previous?: string | null;
+  /** The letter it was sent on, for a request the postbox sent with no turn of hers (ADR 0076). */
+  postbox?: string;
 }
 
 /**
@@ -237,16 +241,20 @@ export interface WriteRequestOptions {
  * and nothing is told of it.
  */
 export async function writeAgentRequest(options: WriteRequestOptions): Promise<RequestPlace> {
-  const { directory, agent } = options;
+  const made = await makeReplyDirectory(options.directory, options.agent, options.at, temporary => writeRequestFile(temporary, options));
+  return { path: made.path, directory: made.directory };
+}
+
+/** Writes `request.md` into a request's directory, as it is being made. */
+export async function writeRequestFile(directory: string, options: Omit<WriteRequestOptions, 'directory' | 'at'>): Promise<void> {
+  const { agent } = options;
   const lines = [`# ${agent} への依頼`, '', `- 頼んだ時刻: ${options.askedAt}`, `- 相手: ${agent}`, `- 種類: ${REQUEST_KIND_WORDS[options.how]}`];
   if (options.how !== 'new') {
     lines.push(`- 前のやり取り: ${options.previous ? `${options.previous}/` : '分かりません（記録が残る前のやり取りです）'}`);
   }
+  if (options.postbox !== undefined) lines.push(`- postbox: ${options.postbox}（定期便。サーバーが時刻どおりに送った依頼です）`);
   lines.push('', '## 文面', '', options.text.trim(), '');
-  const made = await makeReplyDirectory(directory, agent, options.at, async temporary => {
-    await put(join(temporary, REQUEST_FILE), lines.join('\n'));
-  });
-  return { path: made.path, directory: made.directory };
+  await put(join(directory, REQUEST_FILE), lines.join('\n'));
 }
 
 /** The first line of a request with words in it, cut short for an attention. */
@@ -343,10 +351,12 @@ async function clearReply(directory: string): Promise<void> {
 }
 
 /**
- * Makes a directory `<agent>/<time>-<mark>` with what `fill` writes into it. It is filled beside its place under a
- * name git leaves out and moved into place whole, so it is never seen half-written.
+ * Makes a directory `<agent>/<time>-<mark>` with what `fill` writes into it, told the path the workspace will name it
+ * by. It is filled beside its place under a name git leaves out and moved into place whole, so it is never seen
+ * half-written. The dove's requests are made here too (ADR 0074), and the postbox's with their replies (ADR 0076).
  */
-async function makeReplyDirectory(directory: string, agent: string, at: number, fill: (temporary: string) => Promise<void>):
+export async function makeReplyDirectory(directory: string, agent: string, at: number,
+  fill: (temporary: string, path: string) => Promise<void>):
   Promise<RequestPlace> {
   const parent = join(directory, agent);
   await mkdir(parent, { recursive: true, mode: 0o750 });
@@ -360,15 +370,16 @@ async function makeReplyDirectory(directory: string, agent: string, at: number, 
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw error;
     }
+    const path = `${AGENTS_PATH}/${agent}/${name}`;
     try {
-      await fill(temporary);
+      await fill(temporary, path);
       try { await mkdir(final); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') { await rm(temporary, { recursive: true, force: true }); continue; }
         throw error;
       }
       // An empty directory is moved over, never a full one: the name was free a moment ago and is kept free here.
       await rename(temporary, final);
-      return { path: `${AGENTS_PATH}/${agent}/${name}`, directory: final };
+      return { path, directory: final };
     } catch (error) {
       await rm(temporary, { recursive: true, force: true });
       throw error;

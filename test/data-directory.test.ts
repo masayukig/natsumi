@@ -54,8 +54,9 @@ test('initialization shares the workspace places with the group and keeps the se
   await initializeDataDirectory(root);
   // memory/, and the two places the workspace container mounts as /work and /home/natsumi (ADR 0019), and the list of
   // agents it sees read-only as /manual/agents (ADR 0036). The workspace may run as another UID in a shared group, so
-  // the group writes them, and setgid keeps new entries in that group (ADR 0033).
-  for (const dir of ['memory', 'work', 'home', 'agents']) {
+  // the group writes them, and setgid keeps new entries in that group (ADR 0033). skills/ is where the owner's clone of
+  // their skills goes, which the workspace sees read-only as /skills and the owner writes over ssh (ADR 0073).
+  for (const dir of ['memory', 'work', 'home', 'agents', 'skills']) {
     const info = await stat(join(root, dir));
     assert.ok(info.isDirectory());
     assert.equal(info.mode & 0o7777, 0o2770, dir);

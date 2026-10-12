@@ -15,7 +15,6 @@ const WAITED_ON: Partial<Record<EventKind, string>> = {
   'mac-message': 'マスターのメッセージ',
   'slack-mention': 'Slack のメンション',
   'agent-reply': 'エージェントからの返事',
-  'dove-reply': 'エージェントからの返事',
 };
 
 export interface CutTurn {
