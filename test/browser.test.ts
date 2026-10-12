@@ -222,6 +222,27 @@ test('with a bundle the page loads it, and the bundle is served to anyone, by it
   await writeFile(join(bundle, '.hidden.js'), 'not served\n');
 }, webBundle: root => join(root, 'bundle') }));
 
+// The page's logout is a form's POST to /dashboard/logout, whose Origin the page's referrer policy decides: `no-referrer`
+// would send `Origin: null`, and the logout would be refused. The bundle and the manifest are not pages and stay as they were.
+test('the app\'s pages are same-origin for the referrer, and its files stay no-referrer', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  for (const [path, init] of [['/', withCookie(`${COOKIE}=${cookie}`)], ['/settings', withCookie(`${COOKIE}=${cookie}`)],
+    ['/', { method: 'POST' }], ['/app/missing.js', {}]] as [string, RequestInit][]) {
+    const res = await f.fetch(path, init);
+    assert.match(res.headers.get('content-type') ?? '', /^text\/html/, path);
+    assert.equal(res.headers.get('referrer-policy'), 'same-origin', `${init.method ?? 'GET'} ${path} (${res.status})`);
+  }
+  for (const path of ['/app/app.js', '/app/manifest.webmanifest']) {
+    const res = await f.fetch(path);
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer', path);
+  }
+}, { prepare: async data => {
+  const bundle = join(data, '..', 'bundle');
+  await mkdir(bundle, { recursive: true });
+  await writeFile(join(bundle, 'app.js'), 'console.log("fixture bundle");\n');
+}, webBundle: root => join(root, 'bundle') }));
+
 test('the page names the manifest and the VAPID key; the service worker may take / as its scope (ADR 0070)', () => withFixture(async f => {
   const cookie = await browserLogin(f);
   const page = await f.fetch('/', withCookie(`${COOKIE}=${cookie}`));
