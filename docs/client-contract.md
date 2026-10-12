@@ -216,7 +216,7 @@ natsumi の思考のモデルは、サーバーの設定に名前付きで並べ
 
 | 欄 | 内容 |
 | --- | --- |
-| `kind` | いま飲ませたら何をするか。`deep`（夜と同じ全部）・`resume`（残った引き継ぎから新しい session。整理係が済んでいなければ先に）・`resleep`（session はそのままで整理係だけ）・`nap`（昼寝。引き継ぎだけを書いて新しい session）・`none`（今の session が空なので何もしない） |
+| `kind` | いま飲ませたら何をするか。`deep`（夜と同じ全部）・`resume`（残った引き継ぎから新しい session。整理係が済んでいなければ先に）・`resleep`（session はそのままで整理係だけ）・`nap`（昼寝。引き継ぎだけを書いて新しい session）・`none`（今の session が空で、整理係も済んでいるので何もしない。空の session では、`deep`・`nap` の代わりに、整理係が済んでいなければ `resleep`、済んでいれば `none` になる） |
 | `night` | 判定に使った直近の夜の時刻。夜の切り替えをしない設定で、振り返りの記録も無ければ null |
 | `done` | 直近の夜の 3 つの部分が済んでいるか。`review`（振り返りの引き継ぎ）・`curator`（記憶の整理係。整理係が動かない設定では true）・`session`（新しい session） |
 | `lastFailure` | 直近の夜からの最も新しい失敗。無ければ null。切り替えの行なら `source: "rotation"` と `kind`（`night`・`deep`・`resume`・`resleep`・`nap`）・`state`・`reason`・`at`、整理係の工程なら `source: "curator"` と `stage`・`outcome`・`at` |

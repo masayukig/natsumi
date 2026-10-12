@@ -346,10 +346,59 @@ test('a pill after a night that could not make its new session resumes from the 
   } finally { await f.cleanup(); }
 });
 
-test('a pill on an empty session does nothing, and leaves no row', async () => {
+test('a pill just after a switch whose curator began nothing sleeps again: empty, the session is kept and the curator runs', async () => {
+  const f = await setup();
+  try {
+    // The switch comes at 06:00, past the morning deadline: the curator begins nothing, and nothing is said after it.
+    f.clock.at = Date.parse('2026-10-05T06:00:00+09:00');
+    const { loop } = await f.open();
+    const seen = behave(f);
+    await aDay(f, loop);
+    assert.equal((await loop.rotate()).result, 'switched');
+    assert.deepEqual(f.curatorTurns(), ALL_SKIPPED);
+    const session = f.sessionId();
+    const natsumiCalls = seen.natsumi.length;
+    const status = await loop.sleepStatus();
+    assert.equal(status.kind, 'resleep');
+    assert.deepEqual(status.done, { review: true, curator: false, session: true });
+
+    f.clock.at += 60_000;
+    const taken = await pill(loop);
+
+    assert.equal(taken.pill, 'resleep');
+    assert.equal(seen.natsumi.length, natsumiCalls, 'natsumi has no turn');
+    assert.equal(f.sessionId(), session, 'the session is kept');
+    assert.deepEqual(f.curatorTurns().slice(4), ALL_OK);
+    assert.deepEqual(f.rotations().map(row => [row.kind, row.state]), [['night', 'switched'], ['resleep', 'curated']]);
+    assert.equal((await loop.sleepStatus()).kind, 'none', 'the curator done, an empty session has nothing left');
+  } finally { await f.cleanup(); }
+});
+
+test('a pill on an empty session with no review and no curator runs the curator alone: no review in a session with nothing to review', async () => {
   const f = await setup();
   try {
     const { loop } = await f.open();
+    const seen = behave(f);
+    const session = f.sessionId();
+    const status = await loop.sleepStatus();
+    assert.equal(status.kind, 'resleep');
+    assert.deepEqual(status.done, { review: false, curator: false, session: true });
+
+    const taken = await pill(loop);
+
+    assert.equal(taken.pill, 'resleep');
+    assert.equal(seen.natsumi.length, 0, 'natsumi has no turn');
+    assert.equal(f.sessionId(), session, 'the session is kept');
+    assert.deepEqual(f.curatorTurns(), ALL_OK);
+    assert.deepEqual(f.rotations().map(row => [row.kind, row.state]), [['resleep', 'curated']]);
+    assert.equal((await loop.sleepStatus()).kind, 'none');
+  } finally { await f.cleanup(); }
+});
+
+test('a pill on an empty session with nothing for the curator does nothing, and leaves no row', async () => {
+  const f = await setup();
+  try {
+    const { loop } = await f.open({ curator: false });
     behave(f);
     assert.equal((await loop.sleepStatus()).kind, 'none');
     const taken = await pill(loop);
