@@ -159,8 +159,27 @@ public struct PhoneMediator {
             return []
 
         case .inputSubmitted(let text):
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-            return apply(state.session.send(text: text))
+            guard let attachments = Attaching.takeForSending(text, drafts: &state.drafts) else { return [] }
+            return apply(state.session.send(text: text, attachments: attachments))
+
+        case .attachRequested(let source):
+            return state.hasSession ? [.chooseFiles(source)] : []
+
+        case .filesPicked(let files):
+            guard state.hasSession else { return [] }
+            return state.drafts.add(files, limits: state.conversation.uploadLimits).map { .upload(localId: $0.localId, $0.file) }
+
+        case .attachmentPreviewed(let id, let image):
+            state.drafts.preview(id, image)
+            return []
+
+        case .uploadFinished(let id, let result):
+            state.drafts.finish(id, result)
+            return []
+
+        case .attachmentRemoved(let id):
+            state.drafts.remove(id)
+            return []
 
         case .outgoingDismissed(let requestId):
             state.session.dismiss(requestId: requestId)
@@ -328,10 +347,12 @@ public struct PhoneMediator {
         guard state.hasSession else { return [] }
         var ids: [String] = []
         var approvalIds: [String] = []
+        var attached: [String] = []
         switch state.page {
         case .history where !state.visibleHistoryIds.isEmpty:
-            ids = state.conversation.messages.filter { state.visibleHistoryIds.contains($0.messageId) }
-                .flatMap { $0.images.map(\.imageId) }
+            let rows = state.conversation.messages.filter { state.visibleHistoryIds.contains($0.messageId) }
+            ids = rows.flatMap { $0.images.map(\.imageId) }
+            attached = Attaching.pictureIds(rows)
         case .approval(let id):
             approvalIds = pending.first { $0.approvalId == id }?.images.map(\.imageId) ?? []
         default:
@@ -339,12 +360,15 @@ public struct PhoneMediator {
         }
         return (state.images.request(ids) + state.images.request(approvalIds, forApproval: true))
             .map { .fetchImage(imageId: $0) }
+            + state.images.request(attached).map { .fetchAttachment(uploadId: $0) }
     }
 
-    /// The owner logged out, or the session is gone: the pictures go with it (client-contract「会話の画像」).
+    /// The owner logged out, or the session is gone: the pictures go with it (client-contract「会話の画像」), and so do
+    /// the files for the next message, which were uploaded with that session.
     private mutating func forgetImages() {
         state.images = ImageShelf()
         state.viewedImage = nil
+        state.drafts.clear()
     }
 
     /// Keeps the badge and the delivered notifications in step with what the owner has read and checked, whenever

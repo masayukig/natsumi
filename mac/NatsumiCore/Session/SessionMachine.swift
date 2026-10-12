@@ -79,11 +79,13 @@ public struct SessionMachine {
         return [sync(resume: tracker.position)]
     }
 
-    public mutating func send(text: String) -> [SessionEffect] {
+    /// Sends what the owner wrote with the files that are up, if any. Once queued, its text and files never change, so
+    /// that a resend under the same requestId is the same message.
+    public mutating func send(text: String, attachments: [ShownAttachment] = []) -> [SessionEffect] {
         let requestId = makeRequestId()
-        conversation.enqueue(text: text, requestId: requestId)
-        guard phase == .ready, let deviceId else { return [] }
-        return [.send(ClientEnvelope(requestId: requestId, deviceId: deviceId, command: .conversationSend(text: text)))]
+        conversation.enqueue(text: text, attachments: attachments, requestId: requestId)
+        guard phase == .ready, let deviceId, let message = conversation.outbox.last else { return [] }
+        return [.send(ClientEnvelope(requestId: requestId, deviceId: deviceId, command: message.command))]
     }
 
     public mutating func dismiss(requestId: String) {
@@ -276,7 +278,7 @@ public struct SessionMachine {
         failures = 0
         guard let deviceId else { return [] }
         let sends = conversation.unsent.map {
-            SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: .conversationSend(text: $0.text)))
+            SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
         }
         // Reads and checks are safe to send again: the position only moves forward and a check is recorded once.
         let changes = conversation.localReadChanges.map {

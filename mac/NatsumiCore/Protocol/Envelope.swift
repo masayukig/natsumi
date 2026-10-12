@@ -75,7 +75,8 @@ public struct ServerEnvelope: Equatable, Sendable {
                     readState: ReadState(
                         readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount ?? 0,
                         unacknowledgedNotificationIds: $0.unacknowledgedNotificationIds ?? []),
-                    pendingApprovals: $0.pendingApprovals?.elements ?? [], modelRoutes: $0.modelRoutes?.value))
+                    pendingApprovals: $0.pendingApprovals?.elements ?? [], modelRoutes: $0.modelRoutes?.value,
+                    uploadLimits: $0.uploads?.value.map { UploadLimits(maxFileBytes: $0.maxFileBytes, maxFiles: $0.maxFiles) }))
             }
         case "conversation.message": payload(ShownMessage.self).map { .message($0) }
         case "avatar.expression": payload(ExpressionPayload.self).map { .expression($0.expression) }
@@ -128,6 +129,12 @@ public struct ServerEnvelope: Equatable, Sendable {
         let unacknowledgedNotificationIds: [String]?
         let pendingApprovals: Lossy<Approval>?
         let modelRoutes: Lenient<ModelRoutes>?
+        let uploads: Lenient<UploadsPayload>?
+    }
+
+    private struct UploadsPayload: Decodable {
+        let maxFileBytes: Int
+        let maxFiles: Int
     }
 
     /// A field that is left out when it cannot be read, rather than losing the whole payload with it.
@@ -164,7 +171,8 @@ public struct ServerEnvelope: Equatable, Sendable {
 
 public enum ClientCommand: Equatable, Sendable {
     case sessionSync(resume: StreamPosition?)
-    case conversationSend(text: String)
+    /// What the owner wrote, and the files they attached in the order shown (ADR 0071).
+    case conversationSend(text: String, uploadIds: [String] = [])
     case conversationRead(throughMessageId: String)
     case notificationAck(notificationId: String)
     /// Where to send this iPhone's notifications, and the key to seal them to (ADR 0029).
@@ -200,9 +208,11 @@ public struct ClientEnvelope: Equatable, Sendable {
             } else {
                 object["payload"] = ["resume": NSNull()]
             }
-        case .conversationSend(let text):
+        case .conversationSend(let text, let uploadIds):
             object["type"] = "conversation.send"
-            object["payload"] = ["text": text]
+            var payload: [String: Any] = ["text": text]
+            if !uploadIds.isEmpty { payload["uploadIds"] = uploadIds }
+            object["payload"] = payload
         case .conversationRead(let throughMessageId):
             object["type"] = "conversation.read"
             object["payload"] = ["throughMessageId": throughMessageId]
