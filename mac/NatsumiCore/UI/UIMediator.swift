@@ -123,7 +123,7 @@ public struct UIMediator {
         case .hotKeyPressed:
             // Unlike her click, it never takes the window away: it brings it out and to the front, ready to type in,
             // from whatever app the owner is in.
-            return state.isConversationOpen ? [.focusInput] : openConversation()
+            return openConversation()
 
         case .hotKeyRegistrationFailed(let key):
             state.hotKeyMessage = "\(key.displayName) はほかのアプリが使っているため登録できませんでした"
@@ -459,9 +459,10 @@ public struct UIMediator {
     }
 
     /// Opens the conversation window in the state it was left in. The first time, it opens right under her; after
-    /// that it comes back to where it was, and she goes on as if it were any other window (ADR 0021).
+    /// that it comes back to where it was, and she goes on as if it were any other window (ADR 0021). A window that
+    /// is out may be behind other windows (ADR 0078): asked for, it comes to the front.
     private mutating func openConversation() -> [UIEffect] {
-        guard !state.isConversationOpen else { return [] }
+        guard !state.isConversationOpen else { return [.focusInput] }
         state.isConversationOpen = true
         guard state.conversationWindow.origin == nil else { return [.focusInput] }
         state.conversationWindow.origin = ConversationPlacement.first(

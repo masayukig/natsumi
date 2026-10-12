@@ -85,11 +85,11 @@ struct UIMediatorTests {
         #expect(mediator.handle(.conversationCloseRequested).isEmpty)
     }
 
-    @Test("メニューから話しかけると、消えていても覚えている状態で開く。開いていれば何もしない")
+    @Test("メニューから話しかけると、消えていても覚えている状態で開く。開いていれば前に出すだけ（ADR 0078）")
     func talkOpensTheConversation() {
         var mediator = placed()
         #expect(mediator.handle(.talkRequested).contains(.focusInput))
-        #expect(mediator.handle(.talkRequested).isEmpty)
+        #expect(mediator.handle(.talkRequested) == [.focusInput])
         #expect(props(mediator).conversation?.history == nil)
         _ = mediator.handle(.historyToggleRequested)
         _ = mediator.handle(.conversationCloseRequested)
@@ -115,13 +115,13 @@ struct UIMediatorTests {
         #expect(props(mediator).conversation == folded)
     }
 
-    @Test("「履歴を開く」と「続きは履歴で」は、ウインドウを出して履歴を開く。開いていれば何もしない")
+    @Test("「履歴を開く」と「続きは履歴で」は、ウインドウを出して履歴を開く。開いていれば前に出すだけ（ADR 0078）")
     func historyRequested() {
         var mediator = placed()
         let effects = mediator.handle(.historyOpenRequested)
         #expect(effects.first == .focusInput)
         #expect(props(mediator).conversation?.history != nil)
-        #expect(mediator.handle(.historyLinkClicked).isEmpty)
+        #expect(mediator.handle(.historyLinkClicked) == [.focusInput])
         _ = mediator.handle(.conversationCloseRequested)
         #expect(mediator.handle(.historyLinkClicked) == [.focusInput])
         #expect(props(mediator).conversation?.history != nil)
@@ -671,6 +671,15 @@ struct UIMediatorTests {
         #expect(opened.first == .focusInput)
         #expect(mediator.handle(.hotKeyPressed) == [.focusInput])
         #expect(props(mediator).conversation != nil)
+    }
+
+    @Test("会話のウインドウはほかのウインドウの裏に回れるので、出ているときに「話しかける」「履歴を開く」でも前に出して焦点を移す")
+    func askingForTheWindowBringsItForward() {
+        var mediator = placed()
+        _ = mediator.handle(.talkRequested)
+        #expect(mediator.handle(.talkRequested) == [.focusInput])
+        #expect(mediator.handle(.historyOpenRequested).first == .focusInput)
+        #expect(mediator.handle(.historyLinkClicked) == [.focusInput])
     }
 
     @Test("記録を始めると登録を外し、押したキーを保存して登録し直す")
