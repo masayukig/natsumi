@@ -54,7 +54,7 @@ struct HistoryView: View {
             }
             }
             .overlay(alignment: .bottom) { Rectangle().fill(Comic.pageInk).frame(height: 2) }
-            InputBar(send: sinks.historyInput)
+            InputBar(composer: props.composer, send: sinks.historyInput)
         }
         .foregroundStyle(Comic.pageInk)
         .background(Comic.page)
@@ -111,7 +111,12 @@ struct HistoryRowView: View {
             }
         } else {
             VStack(alignment: .trailing, spacing: 4) {
-                OwnerBubble(runs: props.runs)
+                if !props.text.isEmpty { OwnerBubble(runs: props.runs) }
+                // The pictures the owner attached, small, and the other files by name (ADR 0071).
+                if !props.images.isEmpty {
+                    ImageStripView(tiles: props.images, spacing: 6, open: openImage)
+                }
+                if !props.files.isEmpty { AttachedFilesView(files: props.files) }
                 if let time = props.time { caption(time) }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -163,7 +168,8 @@ struct OutgoingRowView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            OwnerBubble(runs: props.runs)
+            if !props.text.isEmpty { OwnerBubble(runs: props.runs) }
+            OutgoingFilesView(names: props.files)
             if let failure = props.failure {
                 HStack(spacing: 4) {
                     Text(failure)

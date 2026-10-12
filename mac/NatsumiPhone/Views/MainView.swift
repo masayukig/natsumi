@@ -140,7 +140,7 @@ struct MainView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, props.outgoing.isEmpty ? 0 : 4)
-            InputBar(isComposing: props.isComposing, send: sinks.input)
+            InputBar(composer: props.composer, isComposing: props.isComposing, send: sinks.input)
         }
         .foregroundStyle(Comic.pageInk)
         .background(Comic.page)
@@ -398,8 +398,10 @@ struct CharacterView: View {
     }
 }
 
-/// The text field and the yellow send button.
+/// The text field and the yellow send button, the clip for attaching a photo or a file, and the files for the next
+/// message over them (ADR 0071).
 struct InputBar: View {
+    let composer: ComposerProps
     /// The owner is in the field: the field says so, and the keyboard is up.
     var isComposing = false
     let send: PhoneEventSink
@@ -411,45 +413,63 @@ struct InputBar: View {
     @State private var draft = ""
 
     var body: some View {
-        let isEmpty = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("話しかける", text: $draft, axis: .vertical)
-                .font(Comic.font(16))
-                .lineLimit(1...5)
-                .focused($isFocused)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 13)
-                .frame(minHeight: 50)
-                .background {
-                    InkedPaper(shape: RoundedRectangle(cornerRadius: 25), fill: Comic.surface, ink: Comic.pageInk)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 25)
-                                .stroke(Comic.notice, lineWidth: 3)
-                                .padding(-3)
-                                .opacity(isComposing ? 1 : 0)
+        // Files that are up go without text; nothing goes while one is still going up.
+        let isEmpty = !composer.canSend
+            || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !composer.sendsWithoutText)
+        VStack(alignment: .leading, spacing: 8) {
+            if !composer.chips.isEmpty {
+                AttachmentChipsView(chips: composer.chips) { send(.attachmentRemoved(localId: $0)) }
+            }
+            HStack(alignment: .bottom, spacing: 10) {
+                Menu {
+                    Button { send(.attachRequested(.photos)) } label: { Label("写真", systemImage: "photo.on.rectangle") }
+                    Button { send(.attachRequested(.files)) } label: { Label("ファイル", systemImage: "folder") }
+                } label: {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(composer.canAttach ? Comic.pageInk : Comic.disabledInk)
+                        .frame(width: 36, height: 50)
+                }
+                .disabled(!composer.canAttach)
+                .accessibilityLabel("添付")
+                TextField("話しかける", text: $draft, axis: .vertical)
+                    .font(Comic.font(16))
+                    .lineLimit(1...5)
+                    .focused($isFocused)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 13)
+                    .frame(minHeight: 50)
+                    .background {
+                        InkedPaper(shape: RoundedRectangle(cornerRadius: 25), fill: Comic.surface, ink: Comic.pageInk)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 25)
+                                    .stroke(Comic.notice, lineWidth: 3)
+                                    .padding(-3)
+                                    .opacity(isComposing ? 1 : 0)
+                            }
+                    }
+                    // The keyboard being up is the mediator's to know, and its answer is what puts the caret in or
+                    // takes it out: the field says what happened, and follows what comes back.
+                    .onChange(of: isFocused) { send(.inputFocusChanged(isFocused)) }
+                    .onChange(of: isComposing) { if isFocused != isComposing { isFocused = isComposing } }
+                Button {
+                    send(.inputSubmitted(draft))
+                    draft = ""
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(isEmpty ? Comic.disabledInk : Comic.ink)
+                        .frame(width: 50, height: 50)
+                        .background {
+                            InkedPaper(
+                                shape: Circle(), fill: isEmpty ? Comic.disabled : Comic.send,
+                                ink: isEmpty ? Comic.disabledInk : Comic.ink)
                         }
                 }
-                // The keyboard being up is the mediator's to know, and its answer is what puts the caret in or
-                // takes it out: the field says what happened, and follows what comes back.
-                .onChange(of: isFocused) { send(.inputFocusChanged(isFocused)) }
-                .onChange(of: isComposing) { if isFocused != isComposing { isFocused = isComposing } }
-            Button {
-                send(.inputSubmitted(draft))
-                draft = ""
-            } label: {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(isEmpty ? Comic.disabledInk : Comic.ink)
-                    .frame(width: 50, height: 50)
-                    .background {
-                        InkedPaper(
-                            shape: Circle(), fill: isEmpty ? Comic.disabled : Comic.send,
-                            ink: isEmpty ? Comic.disabledInk : Comic.ink)
-                    }
+                .buttonStyle(.plain)
+                .disabled(isEmpty)
+                .accessibilityLabel("送る")
             }
-            .buttonStyle(.plain)
-            .disabled(isEmpty)
-            .accessibilityLabel("送る")
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
