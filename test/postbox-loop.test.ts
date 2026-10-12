@@ -44,6 +44,7 @@ async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; ex
   const sourcesDirectory = join(data, 'sources');
   const memory = join(data, 'memory');
   const opened: ThinkingLoop[] = [];
+  let opening: Sources | undefined;
   const f = {
     agent, model, clock, db, memory, replies: join(sourcesDirectory, 'agents'),
     ledger: new PostboxLedger(db, () => clock.now),
@@ -52,6 +53,7 @@ async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; ex
         awakeHours: LOOP_DEFAULTS.awakeHours, activity: SOURCES_DEFAULTS.activity, historyDays: 7, now: () => clock.now });
       sources.register(AGENTS_REGISTRATION);
       await sources.prepare();
+      opening = sources;
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 6, timeZone: 'Asia/Tokyo' }, now: () => clock.now,
@@ -78,6 +80,9 @@ async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; ex
     read(path: string) { return readFile(join(sourcesDirectory, 'agents', 'news', path), 'utf8'); },
     attentions() { return Number((db.prepare('SELECT count(*) AS n FROM source_attention').get() as { n: number }).n); },
     letter(name: string) { return f.ledger.list().find(entry => entry.name === name); },
+    /** The sources of the loop opened last. */
+    get sources() { return opening!; },
+    sourcesDirectory,
   };
   t.after(async () => {
     for (const loop of opened) await loop.close();
@@ -144,6 +149,34 @@ test('an owner\'s letter is sent at its time with no turn of hers, and its reply
   await run(f, loop, tokyo('2026-10-12 07:00'));
   assert.equal(f.agent.received[1]!.text, `${BODY}\n\n前回の受け取り: 2026-10-11T07:00:00+09:00 (JST)`);
   assert.deepEqual(f.agent.received[1]!.metadata, { postbox: { name: 'morning-news', lastReceivedAt: '2026-10-11T07:00:00+09:00' } });
+});
+
+// The run's directory is made with its reply in it, so it is first seen whole while the server runs: it is still news.
+test('the reply of a letter with no notify comes to her in a sources_updated once its wait is up, its files named', async t => {
+  const f = await setup(t);
+  // The history has begun before it, as it has on a server that has run a while.
+  await mkdir(join(f.replies, 'wiki', '20261010T000000Z-0000'), { recursive: true });
+  await writeFile(join(f.replies, 'wiki', '20261010T000000Z-0000', 'request.md'), '# 依頼\n');
+  const loop = await f.open();
+  f.commit('morning-news', LETTER());
+  await loop.tickPostbox();
+  const task = await run(f, loop, tokyo('2026-10-11 08:00'));
+  f.agent.settle(task.id, 'completed', '運用に関わるニュースが 1 件あります。');
+  await poll(f, loop);
+  const [directory] = await f.directories();
+  await f.sources.tick();
+  assert.ok(f.sources.deadline(`agents/news/${directory}`), 'its wait is drawn as it is first seen');
+  assert.equal(f.model.calls, 0, 'nothing is told before its wait is up');
+  f.script();
+  f.clock.now += 60 * 60_000;
+  await f.sources.tick();
+  await loop.idle();
+  const told = (f.model.contexts.at(-1)?.messages ?? []).filter(m => m.role === 'user').map(textOf)
+    .flatMap(text => text.split('\n')).filter(line => line.includes('"type":"sources_updated"'))
+    .flatMap(line => (JSON.parse(line) as { changed: { dir: string; files: string[]; attention?: unknown }[] }).changed);
+  assert.deepEqual(told, [{ dir: `/sources/agents/news/${directory}`, writes: 2,
+    files: [`/sources/agents/news/${directory}/README.md`, `/sources/agents/news/${directory}/request.md`],
+    diff: `sources-diff /sources/agents/news/${directory}` }]);
 });
 
 test('a letter with notify: attention is told at once, its attention naming the letter', async t => {

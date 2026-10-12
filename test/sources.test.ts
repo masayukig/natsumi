@@ -73,20 +73,101 @@ async function setup(t: test.TestContext, start = MORNING,
   };
 }
 
-test('a directory seen for the first time is taken in silently: its past is not news', async t => {
+test('a directory there before the server started is taken in silently: its past is not news', async t => {
   const f = await setup(t);
   await f.write('chat/work/dev/2026-09-26.jsonl', '{"text":"昔の発言"}\n');
   await f.sources.prepare();
   f.advance(90 * MINUTE);
   await f.sources.tick();
   assert.equal(f.raised(), 0);
-  // A channel that appears later is placed as silently, however much it brings.
-  await f.write('chat/work/new/2026-09-27.jsonl', '{"text":"埋め直した発言"}\n');
+  assert.equal((await f.take()).ready, false);
+});
+
+// A directory that appears while the server runs came after it began: what it brings is news, as any change is.
+test('a directory that appears while running is shown once its wait is up, with every file it brings', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('chat/work/new/2026-09-27.jsonl', '{"text":"最初の発言"}\n');
+  await f.write('chat/work/new/2026-09-28.jsonl', '{"text":"次の発言"}\n');
+  await f.sources.tick();
+  // Two writes in the window: still the quiet mean, drawn as it is first seen.
+  assert.equal(f.sources.deadline('chat/work/new'), MORNING + 11 * MINUTE);
+  f.advance(9 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 0);
+  f.advance(MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 1);
+  const { ready, line } = await f.take();
+  assert.equal(ready, true);
+  assert.deepEqual(line!.changed, [{ dir: '/sources/chat/work/new',
+    files: ['/sources/chat/work/new/2026-09-27.jsonl', '/sources/chat/work/new/2026-09-28.jsonl'], writes: 2,
+    diff: 'sources-diff /sources/chat/work/new' }]);
+  // The whole of it reads as added.
+  const shown = await f.diff();
+  assert.match(shown, /\+\{"text":"最初の発言"\}/);
+  assert.match(shown, /\+\{"text":"次の発言"\}/);
+  // Shown once: not again until it changes again.
+  assert.equal(f.sources.deadline('chat/work/new'), undefined);
+  f.advance(120 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 1);
+  assert.equal((await f.take()).ready, false);
+  await f.append('chat/work/new/2026-09-28.jsonl', '{"text":"その次"}\n');
+  await f.sources.tick();
+  f.advance(10 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 2);
+  const { line: later } = await f.take();
+  assert.deepEqual((later!.changed as { files: string[] }[])[0]!.files, ['/sources/chat/work/new/2026-09-28.jsonl']);
+});
+
+test('a directory that appears as a turn begins, before any tick sees it, is not lost to the commit the turn makes', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('chat/work/new/a.jsonl', '{"text":"x"}\n');
+  // Nothing is due yet, so nothing is shown.
+  assert.equal((await f.take()).ready, false);
+  f.advance(10 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 1);
+  const { line } = await f.take();
+  assert.deepEqual((line!.changed as { files: string[] }[])[0]!.files, ['/sources/chat/work/new/a.jsonl']);
+});
+
+test('the very first directory, with no history before it, is taken in silently', async t => {
+  const f = await setup(t);
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('chat/work/dev/a.jsonl', '{"text":"x"}\n');
   await f.sources.tick();
   f.advance(90 * MINUTE);
   await f.sources.tick();
   assert.equal(f.raised(), 0);
   assert.equal((await f.take()).ready, false);
+});
+
+test('at night a directory that appears waits for the morning, and is shown then', async t => {
+  const f = await setup(t, NIGHT);
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(MINUTE);
+  await f.write('chat/work/new/a.jsonl', '{"text":"夜に入ったチャンネル"}\n');
+  await f.sources.tick();
+  f.advance(2 * 60 * MINUTE);
+  await f.sources.tick();
+  assert.equal(f.raised(), 0);
+  assert.equal((await f.take()).ready, false);
+  f.at(MORNING);
+  await f.sources.tick();
+  assert.equal(f.raised(), 1);
+  const { line } = await f.take();
+  assert.deepEqual((line!.changed as { dir: string }[]).map(entry => entry.dir), ['/sources/chat/work/new']);
+  assert.match(await f.diff(), /夜に入ったチャンネル/);
 });
 
 test('the files of the chat under uploads/ are outside the history: never committed, never news (ADR 0071)', async t => {
@@ -493,9 +574,11 @@ test('the nightly pruning keeps N days, and every ref still works after it', asy
 });
 
 // ADR 0069: a source may put a whole new directory and an attention in it at once, such as an outside agent's reply.
-test('an attention in a directory seen for the first time is still shown, with its own fields and no jq path', async t => {
+test('an attention in a directory seen for the first time is shown with its files and diff, its own fields and no jq path', async t => {
   const f = await setup(t);
   f.sources.register({ name: 'agents', depth: 2, exclude: ['*/*/images/'] });
+  // The history has begun before it, as it has on a server that has run a while.
+  await f.write('chat/work/dev/a.jsonl', '');
   await f.sources.prepare();
   f.advance(MINUTE);
   await f.write('agents/wiki/20260927T010000Z-ab12/README.md', '# wiki の返事\n');
@@ -517,8 +600,15 @@ test('an attention in a directory seen for the first time is still shown, with i
   assert.deepEqual(changed.map(entry => entry.dir), ['/sources/agents/wiki/20260927T010000Z-ab12']);
   assert.deepEqual(changed[0]!.attention, [{ source: 'agents', kind: 'agent_reply',
     file: '/sources/agents/wiki/20260927T010000Z-ab12/README.md', agent: 'wiki', state: 'completed', summary: 'ねこは液体です。' }]);
-  // The body is not shown as a diff: she reads the README and the sections she needs.
-  assert.equal(changed[0]!.diff, undefined);
+  // Its files are named, and the diff shows the whole of it as added.
+  assert.deepEqual(changed[0]!.files, ['/sources/agents/wiki/20260927T010000Z-ab12/01-本文.md',
+    '/sources/agents/wiki/20260927T010000Z-ab12/README.md']);
+  assert.equal(changed[0]!.diff, 'sources-diff /sources/agents/wiki/20260927T010000Z-ab12');
+  assert.match(await f.diff(), /\+# wiki の返事/);
+  // Shown with its attention, it does not come again as a plain change.
+  f.advance(60 * MINUTE);
+  await f.sources.tick();
+  assert.equal((await f.take()).ready, false);
   // The images are kept out of the history.
   const tracked = (await run('git', ['--git-dir', f.gitDirectory, '-c', 'core.quotePath=false', 'ls-tree', '-r', '--name-only', 'HEAD'])).stdout;
   assert.match(tracked, /01-本文\.md/);
