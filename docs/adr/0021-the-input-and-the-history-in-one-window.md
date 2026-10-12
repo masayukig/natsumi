@@ -1,7 +1,7 @@
 # 0021. 入力欄と履歴を 1 つのウインドウにする
 
 - Date: 2026-09-21
-- Status: Accepted（§5 の「開いても既読にしない」は [ADR 0022](0022-only-her-last-line-in-the-balloon.md) で置き換え。§2 の層・Space・全画面の扱いは [ADR 0078](0078-the-conversation-window-as-an-ordinary-window.md) で置き換え）
+- Status: Accepted（§5 の「開いても既読にしない」は [ADR 0022](0022-only-her-last-line-in-the-balloon.md) で置き換え。§2 の層・Space・全画面の扱いは [ADR 0078](0078-the-conversation-window-and-the-settings-as-ordinary-windows.md) で置き換え）
 
 ## Context
 

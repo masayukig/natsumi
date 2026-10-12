@@ -2,7 +2,7 @@ import AppKit
 import NatsumiCore
 import SwiftUI
 
-/// The settings window, in the character's layer so that it opens without bringing the app to the front.
+/// The settings window: among ordinary windows (ADR 0078), opening without bringing the app to the front.
 @MainActor
 final class SettingsComponent: Component {
     let panel = OverlayPanel.make(style: [.titled, .closable], acceptsKey: true)
@@ -16,6 +16,10 @@ final class SettingsComponent: Component {
         super.init(name: "settings")
         hosting = NSHostingView(rootView: SettingsView(props: nil, send: sink))
         panel.title = "natsumi の設定"
+        // Like the conversation window, other windows may come over it; opened or clicked into, it comes forward.
+        panel.level = .normal
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.raisesWhenKey = true
         panel.isOpaque = true
         panel.backgroundColor = .windowBackgroundColor
         panel.contentView = hosting

@@ -781,7 +781,9 @@ final class RootComponent: Component {
         let visible = visibleFrame
         let size = settings.panel.frame.size
         settings.panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2))
-        settings.panel.makeKeyAndOrderFront(nil)
+        // The app is not the active one: the window is put over the others itself, then takes the keys.
+        settings.panel.orderFrontRegardless()
+        settings.panel.makeKey()
     }
 }
 

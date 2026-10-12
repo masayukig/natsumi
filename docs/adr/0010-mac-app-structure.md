@@ -11,7 +11,7 @@
   返事の束（古い順・重ねる縁・「あと N 件」）は、最後の返事 1 件を出す形に [ADR 0022](0022-only-her-last-line-in-the-balloon.md) で置き換え。
   スリープから起きたときのつなぎ直しと、開いている接続の ping は [ADR 0037](0037-catching-up-after-sleep-and-pinging-the-socket.md) で追加。
   本文の中の URL をリンクにしてクリックでブラウザを開くことは [ADR 0038](0038-links-in-what-she-says.md) で追加。
-  会話のウインドウをキャラクターと同じ層から普通のウインドウの層に下ろすことは [ADR 0078](0078-the-conversation-window-as-an-ordinary-window.md) で改訂）
+  会話のウインドウと設定をキャラクターと同じ層から普通のウインドウの層に下ろすことは [ADR 0078](0078-the-conversation-window-and-the-settings-as-ordinary-windows.md) で改訂）
 
 ## Context
 
