@@ -71,7 +71,7 @@ export function page(title: string, main: Html, options: { signedIn: boolean; cu
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="same-origin">
 <title>${title} — ${avatarId}</title>
 <link rel="stylesheet" href="${STATIC_FILES.css}">
 <script src="${STATIC_FILES.js}" defer></script>

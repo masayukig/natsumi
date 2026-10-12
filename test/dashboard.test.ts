@@ -127,7 +127,8 @@ test('with the cookie, /dashboard shows the page under a strict CSP and the usua
   assert.equal(res.headers.get('x-frame-options'), 'DENY');
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-  assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(res.headers.get('referrer-policy'), 'same-origin');
+  assert.match(res.text, /<meta name="referrer" content="same-origin">/, 'a meta overrides the header, so it says the same');
 
   // Nothing inline for the CSP to refuse: the script and the style sheet are files of their own.
   assert.match(res.text, /<script src="\/dashboard\/static\/dashboard\.js" defer><\/script>/);
@@ -270,6 +271,34 @@ test('a logout without the public origin as its Origin is refused and logs nothi
   }
   assert.equal((await f.fetch('/dashboard', withCookie(cookie))).status, 200);
   assert.equal((await f.fetch('/dashboard/logout', withCookie(cookie))).status, 405, 'a GET does not log out');
+}));
+
+// A form's POST carries its Origin only when the page's referrer policy lets it: under `no-referrer` the Fetch standard
+// sends `Origin: null` for a non-CORS POST, which the check above refuses. The dashboard's pages are `same-origin`.
+test('every answer of the dashboard is same-origin for the referrer, and the rest of the server stays no-referrer', () => withFixture(async f => {
+  const cookie = await browserLogin(f);
+  const dashboard: [string, RequestInit][] = [
+    ['/dashboard', withCookie(cookie)],
+    ['/dashboard/checks', withCookie(cookie)],
+    ['/dashboard/sleep', withCookie(cookie)],
+    ['/dashboard/status', withCookie(cookie)],
+    ['/dashboard/no-such-page', withCookie(cookie)],
+    ['/dashboard/static/dashboard.css', {}],
+    ['/dashboard/signed-out', {}],
+    ['/dashboard', {}],
+    ['/dashboard/sleep', withCookie(cookie, { method: 'POST', headers: { origin: 'null' } })],
+    ['/dashboard/sleep', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } })],
+    ['/dashboard/checks/no-such-check/cancel', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } })],
+    ['/dashboard/logout', withCookie(cookie, { method: 'POST', headers: { origin: PUBLIC_ORIGIN } })],
+  ];
+  for (const [path, init] of dashboard) {
+    const res = await f.fetch(path, init);
+    assert.equal(res.headers.get('referrer-policy'), 'same-origin', `${init.method ?? 'GET'} ${path} (${res.status})`);
+  }
+  for (const path of ['/v1/avatar', '/dashboardx', '/auth/github/callback?code=x&state=y']) {
+    const res = await f.fetch(path);
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer', `${path} (${res.status})`);
+  }
 }));
 
 test('of the app’s ways in, the cookie opens the WebSocket with our Origin and the images, and nothing else (ADR 0058)', () => withFixture(async f => {

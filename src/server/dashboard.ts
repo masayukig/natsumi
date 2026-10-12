@@ -136,6 +136,9 @@ export class Dashboard {
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     setSecurityHeaders(response);
+    // A form's POST carries its Origin only when its page lets the referrer go to its own origin: under `no-referrer`
+    // the Fetch standard sends `Origin: null`, which the checks below refuse. Elsewhere nothing goes out still.
+    response.setHeader('referrer-policy', 'same-origin');
     const path = url.pathname;
     const method = request.method;
 
