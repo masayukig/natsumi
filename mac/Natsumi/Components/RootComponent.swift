@@ -584,6 +584,12 @@ final class RootComponent: Component {
             NSWorkspace.shared.open(url)
         case .fetchImage(let id):
             fetchImage(id)
+        case .fetchAttachment(let id):
+            fetchAttachment(id)
+        case .chooseFiles:
+            chooseFiles()
+        case .upload(let id, let file):
+            upload(id, file)
         case .terminate:
             NSApp.terminate(nil)
         }
@@ -630,6 +636,51 @@ final class RootComponent: Component {
         Task { [weak self] in
             let fetch = await ImageFetcher.fetch(request, imageId: id)
             self?.deliver(.imageFetched(imageId: id, fetch))
+        }
+    }
+
+    /// Fetches a picture the owner attached, as a picture of hers is fetched (ADR 0071).
+    private func fetchAttachment(_ id: String) {
+        guard let server = account.serverAddress, let token = account.session()?.token else {
+            deliver(.imageFetched(imageId: id, .unavailable))
+            return
+        }
+        let request = UploadAPI.contentRequest(server: server, token: token, uploadId: id)
+        Task { [weak self] in
+            let fetch = await ImageFetcher.fetch(request, imageId: id)
+            self?.deliver(.imageFetched(imageId: id, fetch))
+        }
+    }
+
+    /// The system's open panel, over whatever app the owner is in.
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "添付"
+        NSApp.activate()
+        panel.begin { [weak self] response in
+            guard response == .OK else { return }
+            let files = panel.urls.compactMap(Uploader.picked)
+            guard !files.isEmpty else { return }
+            self?.deliver(.filesPicked(files))
+        }
+    }
+
+    /// Uploads one file with the session, and makes a small copy of it while it goes when it is a picture.
+    private func upload(_ id: String, _ file: PickedFile) {
+        guard let server = account.serverAddress, let token = account.session()?.token else {
+            deliver(.uploadFinished(localId: id, .failed(.unauthorized)))
+            return
+        }
+        let request = UploadAPI.request(server: server, token: token, name: file.name)
+        Task { [weak self] in
+            if let image = await Uploader.preview(file, localId: id) { self?.deliver(.attachmentPreviewed(localId: id, image)) }
+        }
+        Task { [weak self] in
+            let result = await Uploader.upload(file, request: request)
+            self?.deliver(.uploadFinished(localId: id, result))
         }
     }
 
