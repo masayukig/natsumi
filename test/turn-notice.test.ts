@@ -112,13 +112,16 @@ test('a sources update that carries a Slack mention counts as one waited on; one
   const db = openStateDatabase(join(root, 'state.sqlite'));
   t.after(() => db.close());
   migrate(db, MIGRATIONS);
-  for (const id of ['with', 'without']) {
+  for (const id of ['with', 'without', 'agent']) {
     db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
       VALUES (?, 'sources-updated', NULL, 'no-reply', '2026-10-03T00:45:00.000Z', '2026-10-03T00:45:00.000Z')`).run(id);
   }
   db.prepare(`INSERT INTO source_attention (source, kind, dir, file, path, images, created_at, event_id)
     VALUES ('slack', 'mention', 'slack/work/dev', '/sources/slack/work/dev/2026-10-03.jsonl', '.[3]', '[]', '2026-10-03T00:45:00.000Z', 'with')`).run();
-  const kinds = waitedOnKinds(db, ['with', 'without', 'ping'], ['sources-updated', 'sources-updated', 'ping']);
-  assert.deepEqual(kinds, ['slack-mention', 'sources-updated', 'ping']);
-  assert.match(cutShortText({ failure: 'model-call-limit', kinds, maxCalls: 16, timeoutMinutes: 10 })!, /^Slack のメンションへの対応が途中で打ち切られました/);
+  db.prepare(`INSERT INTO source_attention (source, kind, dir, file, path, images, created_at, event_id)
+    VALUES ('agents', 'agent_reply', 'agents/dev', '/sources/agents/dev/2026-10-03.jsonl', '.[0]', '[]', '2026-10-03T00:45:00.000Z', 'agent')`).run();
+  const kinds = waitedOnKinds(db, ['with', 'without', 'ping', 'agent'], ['sources-updated', 'sources-updated', 'ping', 'sources-updated']);
+  assert.deepEqual(kinds, ['slack-mention', 'sources-updated', 'ping', 'agent-reply']);
+  assert.match(cutShortText({ failure: 'model-call-limit', kinds: [kinds[3]], maxCalls: 16, timeoutMinutes: 10 })!, /^エージェントからの返事への対応が/);
+  assert.match(cutShortText({ failure: 'model-call-limit', kinds: kinds.slice(0, 3), maxCalls: 16, timeoutMinutes: 10 })!, /^Slack のメンションへの対応が途中で打ち切られました/);
 });

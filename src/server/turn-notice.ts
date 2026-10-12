@@ -51,9 +51,13 @@ export function cutShortText({ failure, kinds, maxCalls, timeoutMinutes }: CutTu
 
 /**
  * The kinds as `cutShortText` reads them: a Slack mention or DM reaches her as a sources update that carries an
- * attention (ADR 0039, ADR 0050), so a sources update with one is someone waiting, named as a mention.
+ * attention (ADR 0039, ADR 0050), so a sources update with one is someone waiting, named as a mention. An agent's
+ * reply comes the same way (source 'agents'), and is named as one.
  */
 export function waitedOnKinds(db: DatabaseSync, eventIds: string[], kinds: (EventKind | undefined)[]): (EventKind | undefined)[] {
-  const attended = db.prepare('SELECT 1 FROM source_attention WHERE event_id = ? LIMIT 1');
-  return kinds.map((kind, index) => kind === 'sources-updated' && attended.get(eventIds[index]!) ? 'slack-mention' : kind);
+  const attended = db.prepare('SELECT source FROM source_attention WHERE event_id = ? LIMIT 1');
+  return kinds.map((kind, index) => {
+    const row = kind === 'sources-updated' ? attended.get(eventIds[index]!) as { source: string } | undefined : undefined;
+    return !row ? kind : row.source === 'agents' ? 'agent-reply' : 'slack-mention';
+  });
 }
