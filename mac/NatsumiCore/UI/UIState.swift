@@ -107,6 +107,8 @@ public struct UIState {
     public internal(set) var images = ImageShelf()
     /// The picture opened large, while its window is out.
     public internal(set) var viewedImage: String?
+    /// The files for the next message (ADR 0071).
+    public internal(set) var drafts = AttachmentDrafts()
 
     public var conversation: ConversationState { session.conversation }
     public var avatar: AvatarArt { avatars.art }

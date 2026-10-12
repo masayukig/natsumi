@@ -118,9 +118,12 @@ public struct PhoneCharacterProps: Equatable, Sendable {
 /// The whole conversation, pushed over the main screen. The rows are derived as on the Mac (ADR 0027).
 public struct PhoneHistoryProps: Equatable, Sendable {
     public var history: HistoryProps
+    /// The files for the next message, over the history's own input field (ADR 0071).
+    public var composer: ComposerProps
 
-    public init(history: HistoryProps) {
+    public init(history: HistoryProps, composer: ComposerProps = ComposerProps()) {
         self.history = history
+        self.composer = composer
     }
 }
 
@@ -171,11 +174,14 @@ public struct PhoneMainProps: Equatable, Sendable {
     public var page: PhonePageProps?
     /// A picture opened large over everything, with 「閉じる」.
     public var viewer: ImageViewerProps?
+    /// The files for the next message, over the input field, and whether it can go (ADR 0071).
+    public var composer: ComposerProps
 
     public init(
         status: PhoneStatusProps, notices: PhoneNoticeProps?, balloon: PhoneBalloonProps?,
         character: PhoneCharacterProps, outgoing: [OutgoingRowProps], isComposing: Bool = false,
-        page: PhonePageProps? = nil, approvals: PhoneApprovalEntryProps? = nil, viewer: ImageViewerProps? = nil
+        page: PhonePageProps? = nil, approvals: PhoneApprovalEntryProps? = nil, viewer: ImageViewerProps? = nil,
+        composer: ComposerProps = ComposerProps()
     ) {
         self.status = status
         self.notices = notices
@@ -186,6 +192,7 @@ public struct PhoneMainProps: Equatable, Sendable {
         self.isComposing = isComposing
         self.page = page
         self.viewer = viewer
+        self.composer = composer
     }
 }
 
@@ -220,7 +227,8 @@ public enum PhoneProps {
                 avatar: state.avatar, expression: face(conversation, isComposing: state.isComposing),
                 name: state.avatars.name),
             outgoing: outgoing(conversation, isComposing: state.isComposing), isComposing: state.isComposing,
-            page: page(state, time: time), approvals: PhoneApprovalProps.entry(state), viewer: viewer(state))))
+            page: page(state, time: time), approvals: PhoneApprovalProps.entry(state), viewer: viewer(state),
+            composer: UIProps.composer(state.drafts, canAttach: state.hasSession))))
     }
 
     /// The picture opened large, while it is here to show.
@@ -248,10 +256,11 @@ public enum PhoneProps {
         conversation.outbox.compactMap { item in
             let failure: String? = switch item.status {
             case .sending: nil
-            case .rejected(let code), .unavailable(let code): "送れませんでした（\(code)）"
+            case .rejected(let code), .unavailable(let code): "送れませんでした（\(UIProps.sendFailureReason(code))）"
             }
             guard isComposing || failure != nil else { return nil }
-            return OutgoingRowProps(requestId: item.requestId, text: item.text, failure: failure)
+            return OutgoingRowProps(
+                requestId: item.requestId, text: item.text, files: item.attachments.map(\.name), failure: failure)
         }
     }
 
@@ -261,7 +270,8 @@ public enum PhoneProps {
         case .history:
             .history(PhoneHistoryProps(history: UIProps.history(
                 state.conversation, time: time, avatar: state.avatar, images: state.images, strip: .phoneHistory,
-                openHelp: "タップで拡大", name: state.avatars.name)))
+                openHelp: "タップで拡大", name: state.avatars.name),
+                composer: UIProps.composer(state.drafts, canAttach: state.hasSession)))
         case .settings:
             .settings(PhoneSettingsProps(
                 serverOrigin: state.serverOrigin ?? "", status: status(state.status),

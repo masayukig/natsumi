@@ -38,7 +38,8 @@ enum Fixture {
         seq: Int, stream: String = stream, requestId: String? = nil, deviceId: String = "device-example",
         messages: [[String: Any]] = [], pending: [[String: Any]] = [], expression: String = "neutral",
         readThrough: String? = nil, unreadReplyCount: Int = 0, unacknowledged: [String] = [],
-        approvals: [[String: Any]]? = nil, modelRoutes: [String: Any]? = nil, avatarVersion: String? = nil
+        approvals: [[String: Any]]? = nil, modelRoutes: [String: Any]? = nil, avatarVersion: String? = nil,
+        uploads: [String: Any]? = nil
     ) -> Data {
         var payload: [String: Any] = [
             "deviceId": deviceId, "messages": messages, "pendingEvents": pending, "avatar": ["expression": expression],
@@ -48,6 +49,7 @@ enum Fixture {
         if let approvals { payload["pendingApprovals"] = approvals }
         if let modelRoutes { payload["modelRoutes"] = modelRoutes }
         if let avatarVersion { payload["avatarVersion"] = avatarVersion }
+        if let uploads { payload["uploads"] = uploads }
         return envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: payload)
     }
 

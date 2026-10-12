@@ -10,8 +10,16 @@ final class OverlayPanel: NSPanel {
     /// A ⌘-key the panel answers itself, by the key's lowercase letter. The app is never the active one, so its
     /// menu's shortcuts do not reach a key panel; what a panel wants from the keyboard it takes here.
     var onCommand: ((String) -> Bool)?
+    /// A panel at the level of ordinary windows comes over them when the owner clicks into it. The app is never the
+    /// active one, so nothing else would bring it forward (ADR 0078).
+    var raisesWhenKey = false
 
     override var canBecomeKey: Bool { acceptsKey }
+
+    override func becomeKey() {
+        super.becomeKey()
+        if raisesWhenKey { orderFrontRegardless() }
+    }
     override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) {

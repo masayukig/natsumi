@@ -31,6 +31,7 @@ final class PhoneRootComponent: PhoneComponent {
     /// The last tidying of the notifications, which a silent push waits for before iOS suspends the app again.
     private var tidyTask: Task<Void, Never>?
     private let pushKeys = PushKeyStore(accessGroup: PushKeyStore.sharedGroup())
+    private let pickers = FilePickers()
 
     init() {
         super.init(name: "root")
@@ -185,6 +186,12 @@ final class PhoneRootComponent: PhoneComponent {
             UIApplication.shared.open(url)
         case .fetchImage(let id):
             fetchImage(id)
+        case .fetchAttachment(let id):
+            fetchAttachment(id)
+        case .chooseFiles(let source):
+            pickers.present(source) { [weak self] files in self?.deliver(.filesPicked(files)) }
+        case .upload(let id, let file):
+            upload(id, file)
         case .loadAvatar:
             deliver(.avatarLoaded(AvatarReceiver.copy.load()))
         case .fetchAvatarListing(let origin):
@@ -251,6 +258,35 @@ final class PhoneRootComponent: PhoneComponent {
         Task { [weak self] in
             let fetch = await ImageFetcher.fetch(request, imageId: id)
             self?.deliver(.imageFetched(imageId: id, fetch))
+        }
+    }
+
+    /// Fetches a picture the owner attached, as a picture of hers is fetched (ADR 0071).
+    private func fetchAttachment(_ id: String) {
+        guard let server = account.serverAddress, let token = account.session()?.token else {
+            deliver(.imageFetched(imageId: id, .unavailable))
+            return
+        }
+        let request = UploadAPI.contentRequest(server: server, token: token, uploadId: id)
+        Task { [weak self] in
+            let fetch = await ImageFetcher.fetch(request, imageId: id)
+            self?.deliver(.imageFetched(imageId: id, fetch))
+        }
+    }
+
+    /// Uploads one file with the session, and makes a small copy of it while it goes when it is a picture.
+    private func upload(_ id: String, _ file: PickedFile) {
+        guard let server = account.serverAddress, let token = account.session()?.token else {
+            deliver(.uploadFinished(localId: id, .failed(.unauthorized)))
+            return
+        }
+        let request = UploadAPI.request(server: server, token: token, name: file.name)
+        Task { [weak self] in
+            if let image = await Uploader.preview(file, localId: id) { self?.deliver(.attachmentPreviewed(localId: id, image)) }
+        }
+        Task { [weak self] in
+            let result = await Uploader.upload(file, request: request)
+            self?.deliver(.uploadFinished(localId: id, result))
         }
     }
 

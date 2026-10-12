@@ -61,6 +61,19 @@ public enum PhoneEvent: Equatable, Sendable {
     /// The count of approvals waiting, under the status.
     case approvalsOpenRequested
 
+    // MARK: The files for the next message (ADR 0071)
+
+    /// The clip beside the input field: a photo from the library, or a file from the Files app.
+    case attachRequested(AttachSource)
+    /// Files chosen in a picker.
+    case filesPicked([PickedFile])
+    /// A small copy of a picture being attached, made from its bytes.
+    case attachmentPreviewed(localId: String, LoadedImage)
+    /// What came of an `.upload`.
+    case uploadFinished(localId: String, UploadResult)
+    /// The × on a file's chip.
+    case attachmentRemoved(localId: String)
+
     // MARK: The history and the settings
 
     /// A row of the history came into sight or went out of it.
@@ -126,6 +139,14 @@ public enum PhoneEffect: Equatable, Sendable {
     case openLink(URL)
     /// Fetch a picture with the session (`GET /v1/images/<imageId>`) and answer with `.imageFetched`.
     case fetchImage(imageId: String)
+    /// Fetch a picture the owner attached (`GET /v1/uploads/<uploadId>`) and answer with `.imageFetched` under its
+    /// upload ID (ADR 0071).
+    case fetchAttachment(uploadId: String)
+    /// Let the owner choose from the photos or the files, and answer with `.filesPicked` unless they cancel.
+    case chooseFiles(AttachSource)
+    /// Upload one file with the session (`POST /v1/uploads`) and answer with `.uploadFinished`; a picture is also
+    /// answered with `.attachmentPreviewed`.
+    case upload(localId: String, PickedFile)
 
     // MARK: Notifications (ADR 0029)
 
@@ -133,6 +154,14 @@ public enum PhoneEffect: Equatable, Sendable {
     case registerForNotifications
     /// Set the badge and take away the delivered notifications of what was read or checked.
     case tidyNotifications(PushTidy)
+}
+
+/// Where the iPhone takes a file to attach from.
+public enum AttachSource: Equatable, Sendable {
+    /// The photo library.
+    case photos
+    /// The Files app.
+    case files
 }
 
 /// The iPhone's tree.

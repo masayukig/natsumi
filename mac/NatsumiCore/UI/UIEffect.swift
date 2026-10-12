@@ -55,5 +55,13 @@ public enum UIEffect: Equatable, Sendable {
     case openLink(URL)
     /// Fetch a picture with the session (`GET /v1/images/<imageId>`) and answer with `.imageFetched`.
     case fetchImage(imageId: String)
+    /// Fetch a picture the owner attached (`GET /v1/uploads/<uploadId>`) and answer with `.imageFetched` under its
+    /// upload ID (ADR 0071).
+    case fetchAttachment(uploadId: String)
+    /// Let the owner choose files, and answer with `.filesPicked` unless they cancel.
+    case chooseFiles
+    /// Upload one file with the session (`POST /v1/uploads`) and answer with `.uploadFinished`; a picture is also
+    /// answered with `.attachmentPreviewed`.
+    case upload(localId: String, PickedFile)
     case terminate
 }

@@ -123,7 +123,7 @@ public struct UIMediator {
         case .hotKeyPressed:
             // Unlike her click, it never takes the window away: it brings it out and to the front, ready to type in,
             // from whatever app the owner is in.
-            return state.isConversationOpen ? [.focusInput] : openConversation()
+            return openConversation()
 
         case .hotKeyRegistrationFailed(let key):
             state.hotKeyMessage = "\(key.displayName) はほかのアプリが使っているため登録できませんでした"
@@ -261,8 +261,27 @@ public struct UIMediator {
 
         // MARK: The conversation
         case .inputSubmitted(let text):
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-            return apply(state.session.send(text: text))
+            guard let attachments = Attaching.takeForSending(text, drafts: &state.drafts) else { return [] }
+            return apply(state.session.send(text: text, attachments: attachments))
+
+        case .attachRequested:
+            return state.hasSession ? [.chooseFiles] : []
+
+        case .filesPicked(let files):
+            guard state.hasSession else { return [] }
+            return state.drafts.add(files, limits: state.conversation.uploadLimits).map { .upload(localId: $0.localId, $0.file) }
+
+        case .attachmentPreviewed(let id, let image):
+            state.drafts.preview(id, image)
+            return []
+
+        case .uploadFinished(let id, let result):
+            state.drafts.finish(id, result)
+            return []
+
+        case .attachmentRemoved(let id):
+            state.drafts.remove(id)
+            return []
 
         case .outgoingDismissed(let requestId):
             state.session.dismiss(requestId: requestId)
@@ -440,9 +459,10 @@ public struct UIMediator {
     }
 
     /// Opens the conversation window in the state it was left in. The first time, it opens right under her; after
-    /// that it comes back to where it was, and she goes on as if it were any other window (ADR 0021).
+    /// that it comes back to where it was, and she goes on as if it were any other window (ADR 0021). A window that
+    /// is out may be behind other windows (ADR 0078): asked for, it comes to the front.
     private mutating func openConversation() -> [UIEffect] {
-        guard !state.isConversationOpen else { return [] }
+        guard !state.isConversationOpen else { return [.focusInput] }
         state.isConversationOpen = true
         guard state.conversationWindow.origin == nil else { return [.focusInput] }
         state.conversationWindow.origin = ConversationPlacement.first(
@@ -484,17 +504,22 @@ public struct UIMediator {
         guard state.hasSession else { return [] }
         let conversation = state.conversation
         var ids = UIProps.shownReply(conversation, readingHistory: state.isReadingHistory)?.images.map(\.imageId) ?? []
+        var attached: [String] = []
         if state.isConversationOpen, state.conversationWindow.showsHistory, !state.visibleHistoryIds.isEmpty {
-            ids += conversation.messages.filter { state.visibleHistoryIds.contains($0.messageId) }
-                .flatMap { $0.images.map(\.imageId) }
+            let rows = conversation.messages.filter { state.visibleHistoryIds.contains($0.messageId) }
+            ids += rows.flatMap { $0.images.map(\.imageId) }
+            attached = Attaching.pictureIds(rows)
         }
         return state.images.request(ids).map { .fetchImage(imageId: $0) }
+            + state.images.request(attached).map { .fetchAttachment(uploadId: $0) }
     }
 
-    /// The owner logged out, or the session is gone: the pictures go with it (client-contract「会話の画像」).
+    /// The owner logged out, or the session is gone: the pictures go with it (client-contract「会話の画像」), and so do
+    /// the files for the next message, which were uploaded with that session.
     private mutating func forgetImages() {
         state.images = ImageShelf()
         state.viewedImage = nil
+        state.drafts.clear()
     }
 
     /// Passes the session machine's effects on as the mediator's own, and reads the connection's state off it.

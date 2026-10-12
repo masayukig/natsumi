@@ -10,15 +10,20 @@ public struct OutgoingMessage: Equatable, Identifiable, Sendable {
 
     public let requestId: String
     public let text: String
+    /// The files that go with it, in the order shown (ADR 0071). A resend carries the same ones.
+    public let attachments: [ShownAttachment]
     public var status: Status
 
-    public init(requestId: String, text: String, status: Status) {
+    public init(requestId: String, text: String, attachments: [ShownAttachment] = [], status: Status) {
         self.requestId = requestId
         self.text = text
+        self.attachments = attachments
         self.status = status
     }
 
     public var id: String { requestId }
+
+    var command: ClientCommand { .conversationSend(text: text, uploadIds: attachments.map(\.uploadId)) }
 }
 
 /// Something the owner read or checked on this device that the server has not answered yet. It shows at once and is
@@ -59,6 +64,8 @@ public struct ConversationState: Equatable, Sendable {
     public private(set) var readState = ReadState()
     /// Reads and checks on this device the server has not answered, oldest first.
     public private(set) var localReadChanges: [ReadChange] = []
+    /// How large a file and how many files the server takes, as the last snapshot said (ADR 0071).
+    public private(set) var uploadLimits: UploadLimits?
 
     public init() {}
 
@@ -156,8 +163,8 @@ public struct ConversationState: Equatable, Sendable {
 
     // MARK: - Sending
 
-    public mutating func enqueue(text: String, requestId: String) {
-        outbox.append(OutgoingMessage(requestId: requestId, text: text, status: .sending))
+    public mutating func enqueue(text: String, attachments: [ShownAttachment] = [], requestId: String) {
+        outbox.append(OutgoingMessage(requestId: requestId, text: text, attachments: attachments, status: .sending))
     }
 
     public mutating func dismiss(requestId: String) {
@@ -173,6 +180,7 @@ public struct ConversationState: Equatable, Sendable {
                 uniquingKeysWith: { _, latest in latest })
             expression = snapshot.expression
             readState = snapshot.readState
+            uploadLimits = snapshot.uploadLimits
             // A snapshot is the whole of what the server keeps, and the line is not in it.
             thinkingLine = nil
         case .message(let message):

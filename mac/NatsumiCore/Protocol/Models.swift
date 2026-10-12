@@ -40,11 +40,13 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
     public let expression: Expression?
     /// The pictures natsumi attached to a reply, in the order she put them (ADR 0045). Empty on every other line.
     public let images: [ShownImage]
+    /// The files the owner attached to a message, in the order sent (ADR 0071). Empty on every other line.
+    public let attachments: [ShownAttachment]
 
     public init(
         messageId: String, role: Role, kind: Kind, text: String, createdAt: String,
         eventId: String? = nil, replyTo: String? = nil, about: [String]? = nil, expression: Expression? = nil,
-        images: [ShownImage] = []
+        images: [ShownImage] = [], attachments: [ShownAttachment] = []
     ) {
         self.messageId = messageId
         self.role = role
@@ -57,10 +59,11 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
         self.about = about
         self.expression = expression
         self.images = images
+        self.attachments = attachments
     }
 
     private enum CodingKeys: String, CodingKey {
-        case messageId, role, kind, text, createdAt, eventId, replyTo, about, expression, images
+        case messageId, role, kind, text, createdAt, eventId, replyTo, about, expression, images, attachments
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,7 +79,9 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
             expression: (try? values.decodeIfPresent(String.self, forKey: .expression)).flatMap { $0 }
                 .flatMap(Expression.init(rawValue:)),
             // A picture this app cannot read is left out; the line and the other pictures are not.
-            images: (try? values.decodeIfPresent(Lossy<ShownImage>.self, forKey: .images))?.elements ?? [])
+            images: (try? values.decodeIfPresent(Lossy<ShownImage>.self, forKey: .images))?.elements ?? [],
+            // So is a file.
+            attachments: (try? values.decodeIfPresent(Lossy<ShownAttachment>.self, forKey: .attachments))?.elements ?? [])
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -91,6 +96,7 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
         try values.encodeIfPresent(about, forKey: .about)
         try values.encodeIfPresent(expression, forKey: .expression)
         if !images.isEmpty { try values.encode(images, forKey: .images) }
+        if !attachments.isEmpty { try values.encode(attachments, forKey: .attachments) }
     }
 
     public var id: String { messageId }
@@ -172,10 +178,13 @@ public struct Snapshot: Equatable, Sendable {
     public let pendingApprovals: [Approval]
     /// The model routes; nil from a server that does not say them.
     public let modelRoutes: ModelRoutes?
+    /// How large a file and how many files the server takes; nil from a server that does not say (ADR 0071).
+    public let uploadLimits: UploadLimits?
 
     public init(
         deviceId: String, messages: [ShownMessage], pendingEvents: [PendingEvent], expression: Expression,
-        readState: ReadState = ReadState(), pendingApprovals: [Approval] = [], modelRoutes: ModelRoutes? = nil
+        readState: ReadState = ReadState(), pendingApprovals: [Approval] = [], modelRoutes: ModelRoutes? = nil,
+        uploadLimits: UploadLimits? = nil
     ) {
         self.deviceId = deviceId
         self.messages = messages
@@ -184,6 +193,7 @@ public struct Snapshot: Equatable, Sendable {
         self.readState = readState
         self.pendingApprovals = pendingApprovals
         self.modelRoutes = modelRoutes
+        self.uploadLimits = uploadLimits
     }
 }
 
