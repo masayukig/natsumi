@@ -311,6 +311,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
           maxImageBytes: slackConfig.maxImageBytes, now, log,
           attention: attention => { sources?.attention(attention); },
+          takeIn: async path => { await sources?.takeIn(path); },
         });
         slackWorkspaces.set(name, workspace);
         void workspace.start().then(

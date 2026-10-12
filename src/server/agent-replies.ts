@@ -183,12 +183,14 @@ export interface ReplyPlace {
   directory: string;
   record(attention: Attention): boolean;
   notify(): void;
+  /** Takes a directory (as the workspace names it) in as it stands, as not news: a request is hers (ADR 0069). */
+  takeIn(path: string): Promise<void>;
 }
 
 /** The place of the replies in `sources/` (as the server sees it), told of through these sources. */
 export function replyPlaceOf(sources: Sources, sourcesDirectory: string): ReplyPlace {
   return { directory: join(sourcesDirectory, AGENTS_SOURCE), record: attention => sources.recordAttention(attention),
-    notify: () => sources.notify() };
+    notify: () => sources.notify(), takeIn: path => sources.takeIn(path) };
 }
 
 /** The images of a reply, brought into `directory`, which the workspace names `path`. */

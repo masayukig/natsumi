@@ -215,6 +215,8 @@ export class SlackDove {
       this.log('dove: a request could not be put in /sources');
       return refuse(`依頼を ${AGENTS_PATH} に置けませんでした。急ぎならマスターに伝えてください。`);
     }
+    // The request is hers and tells her nothing: only its results are news (ADR 0069).
+    try { await place.takeIn(made.path); } catch { this.log('dove: a request could not be taken in by the sources; it may be shown as an update'); }
     const now = this.iso();
     try {
       this.transaction(() => {

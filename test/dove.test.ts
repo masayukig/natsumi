@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,9 +81,10 @@ async function setup(t: test.TestContext, options: { jev?: boolean; place?: bool
   const logs: string[] = [];
   // Where the results are put and how she hears of them (ADR 0074): the attentions are kept here, as the sources would.
   const attentions: Attention[] = [];
-  const place = { directory: join(root, 'sources', 'agents'), notified: 0, accept: true,
+  const place = { directory: join(root, 'sources', 'agents'), notified: 0, accept: true, takenIn: [] as string[],
     record(attention: Attention) { if (!this.accept) return false; attentions.push(attention); return true; },
-    notify() { this.notified += 1; } };
+    notify() { this.notified += 1; },
+    takeIn(path: string) { this.takenIn.push(path); return Promise.resolve(); } };
   const open = () => {
     const dove = new SlackDove({
       db, archive, workspaces: { work: slack }, config: CONFIG, publicOrigin: ORIGIN,
@@ -155,6 +156,16 @@ test('a draft Jev passes is sent at once, without the owner, into the thread, un
   assert.equal(row.state, 'sent');
   assert.equal(row.sent_text, '大丈夫です。明日の 10 時に始めましょう。');
   assert.equal(JSON.parse(row.scores!).length, JUDGE_ISSUES.length, 'the scores are kept for looking back');
+});
+
+// Her request is hers: its directory is taken in as it is made, and only the results put in it later are news (ADR 0069).
+test('the request\'s directory is taken in by the sources as it is made, with its request in it', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  const outcome = await f.dove.ask(post('了解です。'));
+  const [path] = /\/sources\/agents\/poppo\/[^/]+/.exec(outcome.text)!;
+  assert.deepEqual(f.place.takenIn, [path]);
+  assert.ok(existsSync(f.disk(`${path}/request.json`)));
 });
 
 test('Jev sees the draft and the message it answers, and nothing natsumi said about it', async t => {

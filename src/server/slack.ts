@@ -1,6 +1,6 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ArchivedMessage, ArchivedReaction, ChannelRow, Reactor, SlackArchive } from './slack-archive.ts';
+import { SLACK_PATH, type ArchivedMessage, type ArchivedReaction, type ChannelRow, type Reactor, type SlackArchive } from './slack-archive.ts';
 import type { Attention } from './sources.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
 import { imageType } from './view.ts';
@@ -25,6 +25,11 @@ export interface SlackWorkspaceOptions {
   socket: SlackSocket;
   archive: SlackArchive;
   attention: TellAttention;
+  /**
+   * Takes a channel's directory (as the workspace names it) in as it stands, as not news: the past filled in as she
+   * joins it (ADR 0050). What comes after is news.
+   */
+  takeIn?: (path: string) => Promise<void>;
   /** Put on a mention or a DM as it arrives, by the server alone (ADR 0039). */
   reaction: string;
   backfillDays: number;
@@ -197,7 +202,16 @@ export class SlackWorkspace {
         if (await this.fillInOne(channel, reply, how)) filled += 1;
       }
     }
+    // A first fill-in is the past, and not news. The live events wait behind it, so what they write comes after.
+    if (cursor === undefined) await this.takeIn(channel);
     return filled;
+  }
+
+  /** A channel's directory taken in by the sources as it stands. One that cannot be is shown as an update instead. */
+  private async takeIn(channel: ChannelRow): Promise<void> {
+    try { await this.options.takeIn?.(`${SLACK_PATH}/${this.options.name}/${channel.directory}`); } catch (error) {
+      this.report('a channel filled in could not be taken in by the sources', error);
+    }
   }
 
   /** One message of a fill-in: one that cannot be recorded is logged and passed over. */

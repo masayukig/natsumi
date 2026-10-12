@@ -1,7 +1,7 @@
 # 0053. 読みものの更新は、最初の変化で引いたランダムな待ちの後に知らせる
 
 - Date: 2026-09-27
-- Status: Accepted
+- Status: Accepted（動いている間に新しく現れたディレクトリも、最初に見えたときに待ちを引いてふつうの更新として出すことを、[ADR 0050](0050-telling-of-source-updates-with-one-event.md) の 2026-10-12 の追記で追加）
 
 ## Context
 
