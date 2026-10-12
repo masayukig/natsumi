@@ -181,7 +181,12 @@ function message(heading: string): Html {
 `;
 }
 
+/**
+ * A page of the app. Its logout is a form's POST to the dashboard, which carries the Origin only when the page lets the
+ * referrer go to its own origin: under `no-referrer` the Fetch standard sends `Origin: null`, and the logout is refused.
+ */
 function send(response: ServerResponse, status: number, body: Html, headers: Record<string, string | string[]> = {}) {
   const text = Buffer.from(body.text, 'utf8');
-  response.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': text.length, ...headers }).end(text);
+  response.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': text.length,
+    'referrer-policy': 'same-origin', ...headers }).end(text);
 }
