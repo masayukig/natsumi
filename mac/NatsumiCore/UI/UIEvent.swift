@@ -104,6 +104,20 @@ public enum UIEvent: Equatable, Sendable {
 
     case inputSubmitted(String)
     case outgoingDismissed(requestId: String)
+
+    // MARK: The files for the next message (ADR 0071)
+
+    /// The clip beside the input field: the owner chooses files to attach.
+    case attachRequested
+    /// Files chosen, dropped on the window or pasted into the input field.
+    case filesPicked([PickedFile])
+    /// A small copy of a picture being attached, made from its bytes.
+    case attachmentPreviewed(localId: String, LoadedImage)
+    /// What came of an `.upload`.
+    case uploadFinished(localId: String, UploadResult)
+    /// The × on a file's chip.
+    case attachmentRemoved(localId: String)
+
     /// The button under the title bar, or ⌘L: the history unfolds above the input field, or folds away.
     case historyToggleRequested
     /// ⌘W or the title bar's close button.

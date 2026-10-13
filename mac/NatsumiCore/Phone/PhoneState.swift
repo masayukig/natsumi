@@ -27,6 +27,8 @@ public struct PhoneState {
     public internal(set) var images = ImageShelf()
     /// The picture opened large over everything.
     public internal(set) var viewedImage: String?
+    /// The files for the next message (ADR 0071).
+    public internal(set) var drafts = AttachmentDrafts()
     /// The rows of the history in sight, by message ID, while the history is open.
     var visibleHistoryIds: Set<String> = []
     /// Where this iPhone's notifications go. It outlives a session: the next login registers the same (ADR 0029).

@@ -1,6 +1,7 @@
 import AppKit
 import NatsumiCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The conversation window (ADR 0021): the connection's state, the history when it is unfolded, and the input
 /// field at the bottom. Enter sends and Shift+Enter starts a new line; the window itself takes ⌘L and ⌘W.
@@ -38,7 +39,20 @@ struct ConversationView: View {
                 ForEach(props.failures) { failure in
                     FailedRow(props: failure) { send(.outgoingDismissed(requestId: failure.requestId)) }
                 }
-                InputField(field: field)
+                if !props.composer.chips.isEmpty {
+                    AttachmentChipsView(chips: props.composer.chips) { field(.attachmentRemoved(localId: $0)) }
+                }
+                HStack(alignment: .top, spacing: 4) {
+                    Button { field(.attachRequested) } label: {
+                        Image(systemName: "paperclip").font(.system(size: 14))
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!props.composer.canAttach)
+                    .help("ファイルを添付")
+                    .accessibilityLabel("ファイルを添付")
+                    .padding(.top, 4)
+                    InputField(composer: props.composer, field: field)
+                }
             }
             .padding(8)
             // Folded, the input field has whatever the window gives it; unfolded, it keeps that height and the
@@ -47,6 +61,20 @@ struct ConversationView: View {
         }
         .frame(minWidth: ConversationWindow.minWidth, minHeight: 60)
         .background(Color(nsColor: .windowBackgroundColor))
+        // Files dropped anywhere on the window are attached; the input field takes its own drops.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard props.composer.canAttach else { return false }
+            Task { @MainActor in
+                var files: [PickedFile] = []
+                for provider in providers {
+                    let item = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier)
+                    let url = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
+                    if let file = url.flatMap(Uploader.picked) { files.append(file) }
+                }
+                if !files.isEmpty { field(.filesPicked(files)) }
+            }
+            return true
+        }
     }
 
     private var inputHeight: CGFloat {
@@ -57,11 +85,14 @@ struct ConversationView: View {
 /// The text box and its placeholder. The draft is drawing-local on purpose: while an input method is composing,
 /// the text belongs to the text view and must not travel through the tree.
 private struct InputField: View {
+    let composer: ComposerProps
     let field: EventSink
     @State private var draft = ""
 
     var body: some View {
-        InputTextView(text: $draft, onSubmit: submit)
+        InputTextView(text: $draft, onSubmit: submit) { files in
+            if composer.canAttach { field(.filesPicked(files)) }
+        }
             .overlay(alignment: .topLeading) {
                 if draft.isEmpty {
                     Text("話しかける（Shift+Enter で改行）")
@@ -76,9 +107,12 @@ private struct InputField: View {
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
     }
 
-    /// An empty draft is not a message: nothing is raised and what was typed stays.
+    /// An empty draft is not a message unless files go with it, and nothing goes while a file is still going up:
+    /// then nothing is raised and what was typed stays.
     private func submit() {
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard composer.canSend,
+              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || composer.sendsWithoutText
+        else { return }
         field(.inputSubmitted(draft))
         draft = ""
     }
@@ -194,13 +228,18 @@ private struct MessageRow: View {
                 }
                 .foregroundStyle(Comic.ink)
             }
-            LinkedText(
-                runs: props.runs, font: Comic.nsFont(13), color: props.isOwner ? .labelColor : .black, lineSpacing: 3,
-                isSelectable: true, sink: send)
-                .fixedSize(horizontal: false, vertical: true)
+            if !props.text.isEmpty {
+                LinkedText(
+                    runs: props.runs, font: Comic.nsFont(13), color: props.isOwner ? .labelColor : .black, lineSpacing: 3,
+                    isSelectable: true, sink: send)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !props.images.isEmpty {
                 ImageStripView(tiles: props.images, spacing: 6) { send(.imageClicked(imageId: $0)) }
                     .padding(.top, 4)
+            }
+            if !props.files.isEmpty {
+                AttachedFilesView(files: props.files).padding(.top, 2)
             }
         }
         .foregroundStyle(props.isOwner ? Color.primary : Comic.ink)
@@ -266,15 +305,20 @@ private struct OutgoingRow: View {
         HStack {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 2) {
-                LinkedText(
-                    runs: props.runs, font: .systemFont(ofSize: NSFont.systemFontSize), color: .labelColor,
-                    isSelectable: true, sink: send)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .padding(.trailing, HistoryBubbleShape.tailWidth)
-                    .background(
-                        Color.accentColor.opacity(0.1), in: HistoryBubbleShape(side: .trailing, radius: 10))
+                VStack(alignment: .trailing, spacing: 2) {
+                    if !props.text.isEmpty {
+                        LinkedText(
+                            runs: props.runs, font: .systemFont(ofSize: NSFont.systemFontSize), color: .labelColor,
+                            isSelectable: true, sink: send)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    OutgoingFilesView(names: props.files)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .padding(.trailing, HistoryBubbleShape.tailWidth)
+                .background(
+                    Color.accentColor.opacity(0.1), in: HistoryBubbleShape(side: .trailing, radius: 10))
                 if let failure = props.failure {
                     HStack(spacing: 4) {
                         Text(failure).font(.caption2).foregroundStyle(.red)

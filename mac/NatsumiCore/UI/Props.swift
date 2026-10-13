@@ -265,14 +265,16 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var isUnread: Bool
     /// nil on the owner's messages.
     public var face: FaceProps?
-    /// The pictures she attached, small, under the text (ADR 0045).
+    /// The pictures she attached, or the owner did, small, under the text (ADR 0045, ADR 0071).
     public var images: [ImageTileProps]
+    /// The files the owner attached that are not pictures, by name (ADR 0071).
+    public var files: [AttachedFileProps]
     /// Her name, as the avatar says, on her lines; nil on the owner's messages.
     public var speaker: String?
 
     public init(
         messageId: String, text: String, time: String?, isOwner: Bool, isNotice: Bool, isUnread: Bool,
-        face: FaceProps? = nil, images: [ImageTileProps] = [], speaker: String? = nil
+        face: FaceProps? = nil, images: [ImageTileProps] = [], files: [AttachedFileProps] = [], speaker: String? = nil
     ) {
         self.messageId = messageId
         self.text = text
@@ -283,10 +285,73 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
         self.isUnread = isUnread
         self.face = face
         self.images = images
+        self.files = files
         self.speaker = speaker
     }
 
     public var id: String { messageId }
+}
+
+/// A file attached to one of the owner's messages that is not a picture: its name, and how large it is.
+public struct AttachedFileProps: Equatable, Sendable, Identifiable {
+    public var uploadId: String
+    public var name: String
+    public var detail: String
+
+    public init(uploadId: String, name: String, detail: String) {
+        self.uploadId = uploadId
+        self.name = name
+        self.detail = detail
+    }
+
+    public var id: String { uploadId }
+}
+
+/// A file waiting to go with the next message, as a chip over the input field (ADR 0071).
+public struct AttachmentChipProps: Equatable, Sendable, Identifiable {
+    public var localId: String
+    public var name: String
+    /// 「アップロード中…」, its size once it is up, or why it will not go.
+    public var detail: String
+    public var isUploading: Bool
+    public var isFailed: Bool
+    /// A small copy of a picture, when there is one.
+    public var thumbnail: LoadedImage?
+    /// What the × says it does.
+    public var removeLabel: String
+
+    public init(
+        localId: String, name: String, detail: String, isUploading: Bool, isFailed: Bool, thumbnail: LoadedImage?,
+        removeLabel: String
+    ) {
+        self.localId = localId
+        self.name = name
+        self.detail = detail
+        self.isUploading = isUploading
+        self.isFailed = isFailed
+        self.thumbnail = thumbnail
+        self.removeLabel = removeLabel
+    }
+
+    public var id: String { localId }
+}
+
+/// What goes with the input field: the files for the next message, and whether it can go now.
+public struct ComposerProps: Equatable, Sendable {
+    public var chips: [AttachmentChipProps]
+    /// Files can be attached: there is a session to upload them with.
+    public var canAttach: Bool
+    /// Nothing is still going up. A message waits for its files.
+    public var canSend: Bool
+    /// A file is up, so the message may go without text.
+    public var sendsWithoutText: Bool
+
+    public init(chips: [AttachmentChipProps] = [], canAttach: Bool = false, canSend: Bool = true, sendsWithoutText: Bool = false) {
+        self.chips = chips
+        self.canAttach = canAttach
+        self.canSend = canSend
+        self.sendsWithoutText = sendsWithoutText
+    }
 }
 
 public struct OutgoingRowProps: Equatable, Sendable, Identifiable {
@@ -294,13 +359,16 @@ public struct OutgoingRowProps: Equatable, Sendable, Identifiable {
     public var text: String
     /// `text` with its URLs as links (ADR 0038).
     public var runs: [TextRun]
+    /// The names of the files that go with it (ADR 0071).
+    public var files: [String]
     /// nil while it is only waiting to be accepted.
     public var failure: String?
 
-    public init(requestId: String, text: String, failure: String?) {
+    public init(requestId: String, text: String, files: [String] = [], failure: String?) {
         self.requestId = requestId
         self.text = text
         self.runs = TextLinks.runs(in: text)
+        self.files = files
         self.failure = failure
     }
 
@@ -340,10 +408,12 @@ public struct ConversationProps: Equatable, Sendable {
     public var failures: [FailureProps]
     /// What the button under the title bar does.
     public var toggleHelp: String
+    /// The files for the next message, and whether it can go (ADR 0071).
+    public var composer: ComposerProps
 
     public init(
         title: String = AvatarBook.fallbackName, frame: CGRect, foldedHeight: CGFloat, status: StatusProps,
-        history: HistoryProps?, failures: [FailureProps], toggleHelp: String
+        history: HistoryProps?, failures: [FailureProps], toggleHelp: String, composer: ComposerProps = ComposerProps()
     ) {
         self.title = title
         self.frame = frame
@@ -352,6 +422,7 @@ public struct ConversationProps: Equatable, Sendable {
         self.history = history
         self.failures = failures
         self.toggleHelp = toggleHelp
+        self.composer = composer
     }
 }
 
@@ -654,18 +725,51 @@ public enum UIProps {
                     strip: .macHistory(windowWidth: window.size.width), name: state.avatars.name)
                 : nil,
             failures: window.showsHistory ? [] : failures(conversation),
-            toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）")
+            toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）",
+            composer: composer(state.drafts, canAttach: state.hasSession))
     }
 
-    /// The messages that could not be recorded, as the folded window lists them over the input field.
+    /// The messages that could not be recorded, as the folded window lists them over the input field. A message of
+    /// files alone is named by its files.
     public static func failures(_ conversation: ConversationState) -> [FailureProps] {
         conversation.outbox.compactMap { item in
             switch item.status {
             case .sending: nil
             case .rejected(let code), .unavailable(let code):
-                FailureProps(requestId: item.requestId, text: "「\(item.text)」を送れませんでした（\(code)）")
+                FailureProps(
+                    requestId: item.requestId,
+                    text: "「\(item.text.isEmpty ? item.attachments.map(\.name).joined(separator: "、") : item.text)」を送れませんでした（\(sendFailureReason(code))）")
             }
         }
+    }
+
+    /// Why a message was not taken: the server's code, or words for the ones about its files (ADR 0071).
+    public static func sendFailureReason(_ code: String) -> String {
+        switch code {
+        case "upload-not-found": "添えたファイルが見つかりません。添え直してください"
+        case "too-many-uploads": "添えたファイルが多すぎます"
+        default: code
+        }
+    }
+
+    /// The files for the next message, as chips over the input field (ADR 0071).
+    public static func composer(_ drafts: AttachmentDrafts, canAttach: Bool) -> ComposerProps {
+        ComposerProps(
+            chips: drafts.items.map { draft in
+                let detail: String
+                var isFailed = false
+                switch draft.status {
+                case .uploading: detail = "アップロード中…"
+                case .ready(let shown): detail = AttachmentDrafts.sizeWords(shown.bytes)
+                case .failed(let words):
+                    detail = words
+                    isFailed = true
+                }
+                return AttachmentChipProps(
+                    localId: draft.localId, name: draft.name, detail: detail, isUploading: draft.status == .uploading,
+                    isFailed: isFailed, thumbnail: draft.preview, removeLabel: "\(draft.name) を取り除く")
+            },
+            canAttach: canAttach, canSend: !drafts.isUploading, sendsWithoutText: !drafts.ready.isEmpty)
     }
 
     public static func history(
@@ -681,18 +785,24 @@ public enum UIProps {
                 let message = conversation.messages[index]
                 let face = message.role == .owner ? nil : FaceProps(
                     expression: message.expression, isLarge: index == newest, help: feelingHelp(message.expression))
+                // Her pictures and the owner's attached pictures are drawn alike; the owner's other files by name.
+                let pictures = message.images + message.attachments.compactMap(\.image)
                 return HistoryRowProps(
                     messageId: message.messageId, text: message.text, time: times[index],
                     isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index], face: face,
-                    images: message.images.isEmpty ? [] : strip.tiles(message.images, shelf: images, openHelp: openHelp),
+                    images: pictures.isEmpty ? [] : strip.tiles(pictures, shelf: images, openHelp: openHelp),
+                    files: message.attachments.filter { !$0.isImage }.map {
+                        AttachedFileProps(uploadId: $0.uploadId, name: $0.name, detail: AttachmentDrafts.sizeWords($0.bytes))
+                    },
                     speaker: message.role == .owner ? nil : name)
             },
             outgoing: conversation.outbox.map { item in
                 let failure: String? = switch item.status {
                 case .sending: nil
-                case .rejected(let code), .unavailable(let code): "送れませんでした（\(code)）"
+                case .rejected(let code), .unavailable(let code): "送れませんでした（\(sendFailureReason(code))）"
                 }
-                return OutgoingRowProps(requestId: item.requestId, text: item.text, failure: failure)
+                return OutgoingRowProps(
+                    requestId: item.requestId, text: item.text, files: item.attachments.map(\.name), failure: failure)
             },
             isThinking: conversation.isThinking, avatar: avatar)
     }

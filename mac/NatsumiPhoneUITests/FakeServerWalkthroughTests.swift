@@ -143,6 +143,9 @@ final class FakeServerWalkthroughTests: XCTestCase {
         let first = app.buttons["画像 1/2"]
         XCTAssertTrue(first.waitForExistence(timeout: 10), "履歴に画像が出ない")
         XCTAssertTrue(app.buttons["画像 2/2"].waitForExistence(timeout: 10))
+        // The history opens at the newest line; lines sent by the tests before this one may have pushed the reply up.
+        let bar = app.navigationBars["会話"]
+        for _ in 0..<5 where first.frame.minY < bar.frame.maxY { app.swipeDown() }
         shoot("i1-history-images")
         first.tap()
         let close = app.buttons["閉じる"]
@@ -230,6 +233,65 @@ final class FakeServerWalkthroughTests: XCTestCase {
         app.buttons["設定"].tap()
         app.buttons["ログアウト"].tap()
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+    }
+
+    /// Files (ADR 0071): the clip attaches two made-up files (`-NatsumiPickExampleFiles` stands in for the system's
+    /// pickers), one is taken away, and the picture goes with a line; the history shows it small and opens it. Then
+    /// the two go alone, with nothing written, and the history shows the other by its name.
+    func testAttachmentWalkthrough() throws {
+        app.launchArguments = ["-NatsumiPickExampleFiles"]
+        app.launch()
+        logInIfAsked()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 15), "つながらない")
+
+        attachExamples()
+        shoot("f1-attached")
+        app.buttons["example.txt を取り除く"].tap()
+        XCTAssertFalse(app.buttons["example.txt を取り除く"].exists)
+        let field = app.textFields["話しかける"]
+        field.tap()
+        field.typeText("これを見て")
+        app.buttons["送る"].tap()
+        XCTAssertFalse(app.buttons["example.png を取り除く"].exists, "送っても添付が残る")
+        XCTAssertTrue(app.staticTexts["「これを見て」だね。わかった。"].waitForExistence(timeout: 15))
+        shoot("f2-sent")
+        app.buttons["閉じる"].tap()
+
+        // Nothing written: the files are the message.
+        attachExamples()
+        app.buttons["送る"].tap()
+        XCTAssertFalse(app.buttons["example.txt を取り除く"].exists, "送っても添付が残る")
+        sleep(2)
+
+        app.buttons["会話の履歴"].tap()
+        XCTAssertTrue(app.navigationBars["会話"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["example.txt"].waitForExistence(timeout: 10), "履歴に添付の名前が出ない")
+        let picture = app.buttons["画像 1/1"].firstMatch
+        XCTAssertTrue(picture.waitForExistence(timeout: 10), "履歴に添付の画像が出ない")
+        shoot("f3-history")
+        picture.tap()
+        let close = app.buttons["閉じる"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "拡大が開かない")
+        shoot("f4-viewer")
+        close.tap()
+        back()
+
+        app.buttons["設定"].tap()
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+    }
+
+    /// The clip, then 「ファイル」: the two made-up files go up, and the send button waits until they are up.
+    private func attachExamples() {
+        app.buttons["添付"].tap()
+        let files = app.buttons["ファイル"]
+        XCTAssertTrue(files.waitForExistence(timeout: 5), "添付のメニューが出ない")
+        files.tap()
+        XCTAssertTrue(app.buttons["example.png を取り除く"].waitForExistence(timeout: 5), "チップが出ない")
+        XCTAssertTrue(app.buttons["example.txt を取り除く"].exists)
+        let send = app.buttons["送る"]
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: send)
+        waitForExpectations(timeout: 10)
     }
 
     /// The row of the list for a channel.

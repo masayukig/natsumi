@@ -72,7 +72,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 - `UIState` から Props を導出する。**Mediator の外で Props を作らない。**
 - `UIEffect` は外の世界への指示である。**実行するのは Root だけ**であり、Mediator は実行しない。
   結果が要るものは、Root がイベントにして返す（`.resumeSession` には `.sessionResumed`、
-  `.loadAvatar` には `.avatarLoaded`、`.fetchAvatarListing` には `.avatarListingFetched`、`.receiveAvatar` には `.avatarReceived`、`.startLogin` には `.loginFinished`、`.fetchImage` には `.imageFetched` が返る）。
+  `.loadAvatar` には `.avatarLoaded`、`.fetchAvatarListing` には `.avatarListingFetched`、`.receiveAvatar` には `.avatarReceived`、`.startLogin` には `.loginFinished`、`.fetchImage` と `.fetchAttachment` には `.imageFetched`、`.chooseFiles` には `.filesPicked`、`.upload` には `.uploadFinished`（画像なら `.attachmentPreviewed` も）が返る）。
 - 会話と承認の画像（ADR 0045）は、どれを取りに行くかを Mediator が決め（吹き出しの返事と、履歴で見えている行と、iPhone の開いている承認）、
   取った画像は `UIState`・`PhoneState` の `ImageShelf` に ID ごとに持つ。縮めた画像は ID で等しさを比べるので、Props に入れても比較は軽い。
   ログアウトで捨て、承認の画像は承認が閉じたら捨てる。
@@ -105,6 +105,8 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `NatsumiCore/UI/TextLinks.swift` | 本文の中の URL をリンクにする分け方（`TextLinks`・`TextRun`）（ADR 0038） |
 | `NatsumiCore/UI/MessageTime.swift` | 履歴の行に添える時刻の書き方（`MessageTime`）。今と暦は Root が渡す |
 | `NatsumiCore/UI/ImageShelf.swift` | 取った画像を ID ごとに持つ `ImageShelf`、縮小画像の大きさ（`ImageStrip`）と Props（`ImageTileProps`・`ImageViewerProps`）（ADR 0045） |
+| `NatsumiCore/Protocol/UploadAPI.swift` | ファイルの上げと添付の取得の組み立てと答えの読み方（`UploadAPI`）、添付（`ShownAttachment`）と上限（`UploadLimits`）（ADR 0071） |
+| `NatsumiCore/Session/AttachmentDrafts.swift` | 送る前の添付（`AttachmentDrafts`）と選んだファイル（`PickedFile`）。送るときの取り出しは `Attaching` |
 | `NatsumiCore/Protocol/ImageAPI.swift` | 画像の取得の組み立てと答えの読み方（`ImageAPI`・`ImageFetch`）、読んで縮めた画像（`LoadedImage`） |
 | `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
 | `NatsumiCore/Keyboard/` | どこからでも会話のウインドウを出すショートカット（`HotKey`） |
@@ -112,10 +114,10 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | Mac だけの OS に触る部分（グローバルなショートカットの登録） |
-| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン・画像の取得の `ImageFetcher`・アバターの受け取りの `AvatarReceiver`）と、本文のリンクの描き方（`LinkedText`）、縮小画像の描き方（`ImageTileView`・`ImageStripView`） |
+| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン・画像の取得の `ImageFetcher`・アバターの受け取りの `AvatarReceiver`・ファイルの上げと読み込みの `Uploader`）と、本文のリンクの描き方（`LinkedText`）、縮小画像の描き方（`ImageTileView`・`ImageStripView`）、添付のチップと履歴の添付の描き方（`AttachmentViews`） |
 | `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps`、承認の画面の Props（`PhoneApprovalProps`）（ADR 0041） |
 | `NatsumiCore/Session/ApprovalBook.swift` | 承認待ちの一覧と、送っている本人の決定（ADR 0041） |
-| `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |
+| `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`）、写真とファイルのピッカーを出す `FilePickers` |
 | `NatsumiPhone/Views/` | iPhone の SwiftUI の Passive View と `Comic` の見た目 |
 | `NatsumiWidgets/` | iPhone のウィジェットの拡張。ロック画面からアプリを開くボタンと丸いウィジェット（ADR 0028） |
 | `NatsumiLaunch/` | iPhone のアプリと `NatsumiWidgets` の両方に入る、アプリを開く App Intent（`OpenNatsumiIntent`） |
