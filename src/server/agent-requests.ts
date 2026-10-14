@@ -142,6 +142,10 @@ export class AgentRequests {
       if (task?.state === 'waiting') {
         return refuse(`「${agent}」に前に頼んだことの返事を、まだ待っています。返事が sources_updated の attention として届いてから続けてください。`);
       }
+      // The agent takes an answer's words only, and would drop its files (ADR 0079).
+      if (task?.state === 'input-required' && paths.length > 0) {
+        return refuse(`「${agent}」の聞き返しへの答えには、ファイルを付けられません。答えは files なしで送り、ファイルは continue を false にして新しく頼んでください。`);
+      }
       to = task?.state === 'input-required' ? { contextId: last.context_id, taskId: task.task_id } : { contextId: last.context_id };
       previous = last.place;
     }
@@ -170,6 +174,9 @@ export class AgentRequests {
       await rm(made.place.directory, { recursive: true, force: true });
       const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
       this.log(`a2a: sending to ${agent} failed (${kind})`);
+      if (kind === 'no-files') {
+        return { ok: false, text: `頼んでいません。「${agent}」はファイルを受け取れません（${AGENT_LIST_PATH} の相手の説明を確かめてください）。files を外して頼んでください。` };
+      }
       if (kind === 'refused' && goOn) {
         return { ok: false, text: `頼めませんでした。「${agent}」が前のやり取りに続けることを受け付けませんでした。新しく頼むなら continue を false にしてください。` };
       }

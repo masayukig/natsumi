@@ -20,10 +20,11 @@ export const DEFAULT_A2A_CALL_TIMEOUT_MS = 30_000;
  * - `unavailable`: the agent could not be reached or did not answer in JSON-RPC (down, refused the token, timed out).
  * - `refused`: the agent answered with an error, such as a context it does not know.
  * - `not-found`: the agent does not know the task.
+ * - `no-files`: files were to go, and the agent's card does not say it takes anything but text. Nothing was sent.
  * The message is for the server's log: it may carry an upstream reason, and never the token.
  */
 export class A2ACallError extends Error {
-  readonly kind: 'no-token' | 'unavailable' | 'refused' | 'not-found';
+  readonly kind: 'no-token' | 'unavailable' | 'refused' | 'not-found' | 'no-files';
   constructor(kind: A2ACallError['kind'], message: string) {
     super(message);
     this.name = 'A2ACallError';
@@ -114,6 +115,8 @@ export class SdkA2AClient implements A2AClient {
   private readonly fetch: typeof fetch;
   /** Whether each agent's card names the reply extension, by URL, from the card last read. */
   private readonly offersReply = new Map<string, boolean>();
+  /** Whether each agent's card takes more than text (`defaultInputModes`), by URL, from the card last read (ADR 0079). */
+  private readonly takesFiles = new Map<string, boolean>();
 
   constructor(options: SdkA2AClientOptions) {
     this.tokenFile = options.tokenFile;
@@ -128,6 +131,10 @@ export class SdkA2AClient implements A2AClient {
    */
   async send(url: string, input: SendInput): Promise<SendResult> {
     const reply = await this.offersReplyAt(url);
+    // A host that takes text only may drop the files or refuse the body for its size; neither tells which (ADR 0079).
+    if ((input.files ?? []).length > 0 && !this.takesFiles.get(url)) {
+      throw new A2ACallError('no-files', 'the agent\'s card does not say it takes files');
+    }
     const message: Message = {
       messageId: randomUUID(), contextId: input.contextId ?? '', taskId: input.taskId ?? '', role: Role.ROLE_USER,
       parts: [{ content: { $case: 'text', value: input.text }, metadata: undefined, filename: '', mediaType: 'text/plain' },
@@ -138,7 +145,8 @@ export class SdkA2AClient implements A2AClient {
     const result = await this.call(url, (client, signal) => client.sendMessage({
       tenant: '', message, metadata: undefined,
       configuration: { acceptedOutputModes: reply ? ['text/plain', 'application/json'] : ['text/plain'],
-        taskPushNotificationConfig: undefined, returnImmediately: true },
+        // No history back: it is the message just sent, files and all, and nothing here reads it.
+        taskPushNotificationConfig: undefined, returnImmediately: true, historyLength: 0 },
     }, { signal, ...(reply ? { serviceParameters: ServiceParameters.create(withA2AExtensions(REPLY_EXTENSION_URI)) } : {}) }));
     if ('status' in result) return { kind: 'task', taskId: result.id, contextId: result.contextId, ...view(result) };
     return { kind: 'message', contextId: result.contextId, text: partsText(result.parts) };
@@ -156,6 +164,7 @@ export class SdkA2AClient implements A2AClient {
       return await response.json() as unknown;
     });
     this.offersReply.set(url, extensionsOf(body).includes(REPLY_EXTENSION_URI));
+    this.takesFiles.set(url, inputModesOf(body).some(mode => mode !== 'text/plain'));
     return summarizeCard(body);
   }
 
@@ -288,6 +297,12 @@ function view(task: Task): TaskView {
 /** The text of a message or an artifact. Files are brought separately (`fetchFile`), and the reply's data apart (`view`). */
 function partsText(parts: Part[]): string {
   return parts.map(part => part.content?.$case === 'text' ? part.content.value : '').filter(Boolean).join('\n');
+}
+
+/** The media types a card says it takes by default, read as leniently as the rest of it. */
+function inputModesOf(body: unknown): string[] {
+  const card = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
+  return Array.isArray(card.defaultInputModes) ? card.defaultInputModes.filter(mode => typeof mode === 'string') : [];
 }
 
 /** The URIs of the extensions a card names, read as leniently as the rest of it. */

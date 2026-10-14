@@ -1,10 +1,9 @@
-import { open, realpath, writeFile } from 'node:fs/promises';
+import { open, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import { AgentFileError, type A2AClient, type AgentFile, type SentFile } from './a2a-client.ts';
-import { binaryLabel, classify } from './dashboard-files.ts';
+import { binaryLabel, classify, TEXT_LIMIT } from './dashboard-files.ts';
 import { discardImages, imageExtension, keepImage, type ImageLimits, type PostImageType, type TakenImage } from './images.ts';
-import { isWithin } from './paths.ts';
-import { imageType, SOURCES_PATH, WORK_PATH } from './view.ts';
+import { imageType, resolveInPlace, SOURCES_PATH, WORK_PATH } from './view.ts';
 
 /**
  * The images an outside agent hands back with its answer (ADR 0048), brought into the reply's `images/` under
@@ -148,17 +147,10 @@ export async function readSentFiles(paths: string[], places: { work: string; sou
   for (const path of paths) {
     const outside = refuse(`ファイル「${path}」は送れません。送れるのは ${WORK_PATH}/ か ${SOURCES_PATH}/ の下のファイルだけです。`);
     const source = posix.normalize(path);
-    const place = source.startsWith(`${WORK_PATH}/`) ? { prefix: WORK_PATH, directory: places.work }
-      : source.startsWith(`${SOURCES_PATH}/`) ? { prefix: SOURCES_PATH, directory: places.sources } : undefined;
-    if (!place) return outside;
-    let root: string;
-    let real: string;
-    try {
-      root = await realpath(place.directory);
-      real = await realpath(join(root, source.slice(place.prefix.length + 1)));
-    } catch { return refuse(`ファイル ${source} が見つかりません。`); }
-    // A link that leads out of its place is refused as if it were outside, and says nothing of where it leads.
-    if (!isWithin(real, root) || real === root) return outside;
+    const resolved = await resolveInPlace(path, [{ prefix: WORK_PATH, directory: places.work }, { prefix: SOURCES_PATH, directory: places.sources }]);
+    if (resolved === 'missing') return refuse(`ファイル ${source} が見つかりません。`);
+    if (resolved === 'outside' || resolved.real === resolved.root) return outside;
+    const { real } = resolved;
     let handle;
     try { handle = await open(real, 'r'); } catch { return refuse(`ファイル ${source} を読めません。`); }
     try {
@@ -181,7 +173,8 @@ export async function readSentFiles(paths: string[], places: { work: string; sou
 function mediaType(data: Buffer, path: string): string {
   const binary = BINARY_TYPES[binaryLabel(data) ?? ''];
   if (binary) return binary;
-  const content = classify(data, data.length, data.length);
+  // The head is enough to tell, as the dashboard tells: a large file is not decoded whole.
+  const content = classify(data.subarray(0, TEXT_LIMIT), data.length, TEXT_LIMIT);
   if (content.type === 'image') return content.mimeType;
   if (content.type === 'text') return TEXT_TYPES[posix.extname(path).toLowerCase()] ?? 'text/plain';
   return 'application/octet-stream';

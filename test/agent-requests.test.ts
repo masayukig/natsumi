@@ -26,7 +26,7 @@ const HOUR = 3_600_000;
  * /sources/agents as files and reaches her as an attention of a `sources_updated` event (ADR 0069). The agent here is
  * a fake one speaking the real protocol; the model is scripted.
  */
-async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[] } = {}) {
+async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[]; inputModes?: string[] } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-agents-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -36,7 +36,8 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   await mkdir(agentDirectory, { recursive: true });
   const tokenFile = join(root, 'a2a-token');
   await writeFile(tokenFile, 'fake-agent-token\n');
-  const agent = await FakeAgent.start(options.extensions ? { extensions: options.extensions } : {});
+  const agent = await FakeAgent.start({ ...(options.extensions ? { extensions: options.extensions } : {}),
+    ...(options.inputModes ? { inputModes: options.inputModes } : {}) });
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
@@ -874,4 +875,36 @@ test('eight files of exactly 50 MB together go, and one byte more is refused bef
   assert.equal(results[1]!.isError, true);
   assert.equal(f.agent.received.length, 1);
   assert.equal(f.agent.received[0]!.files!.reduce((sum, file) => sum + file.data.length, 0), total);
+});
+
+test('an answer to a question cannot carry files: it is refused, and a new request may carry them', async t => {
+  const f = await setup(t);
+  await writeFile(join(f.work, 'memo.md'), '# メモ\n');
+  const { loop } = await f.open();
+  f.script(ask('wiki', '記事を直して', false));
+  await turn(f, loop);
+  f.agent.settle(f.agent.lastTask().id, 'input-required', 'どの記事ですか？');
+  f.script({ calls: [{ name: 'ask_agent', arguments: { agent: 'wiki', message: 'これです', continue: true, files: ['/work/memo.md'] } }] });
+  await loop.pollAgents();
+  await loop.idle();
+  const refused = toolResults(f.model).at(-1)!;
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /聞き返しへの答えには、ファイルを付けられません/);
+  assert.match(refused.text, /continue を false/);
+  assert.equal(f.agent.received.length, 1, 'nothing was sent');
+});
+
+test('files are refused for an agent whose card takes text only, and its request leaves no directory behind', async t => {
+  const f = await setup(t, { inputModes: ['text/plain'] });
+  await writeFile(join(f.work, 'memo.md'), '# メモ\n');
+  const { loop } = await f.open();
+  f.script(askWith('読んで', ['/work/memo.md']), ask('wiki', '読んで', false));
+  await turn(f, loop);
+  const [refused, asked] = toolResults(f.model);
+  assert.equal(refused!.isError, true);
+  assert.match(refused!.text, /ファイルを受け取れません/);
+  assert.equal(asked!.isError, false, 'text alone still goes');
+  assert.equal(f.agent.received.length, 1);
+  assert.equal(f.agent.received[0]!.files, undefined);
+  assert.equal((await readdir(join(f.replies, 'wiki'))).length, 1, 'only the request that went has a directory');
 });

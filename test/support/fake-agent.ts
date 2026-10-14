@@ -40,6 +40,8 @@ export interface FakeAgentOptions {
   replyWithMessage?: string;
   /** The URIs of the extensions the card names in `capabilities.extensions`. */
   extensions?: string[];
+  /** The card's `defaultInputModes`. Text and anything else by default, as a host that takes files says (ADR 0079). */
+  inputModes?: string[];
 }
 
 /**
@@ -221,7 +223,7 @@ export class FakeAgent {
         extensions: (this.options.extensions ?? []).map(uri => ({ uri, description: '', required: false, params: undefined })) },
       securitySchemes: {},
       securityRequirements: [],
-      defaultInputModes: ['text/plain'],
+      defaultInputModes: this.options.inputModes ?? ['text/plain', '*/*'],
       defaultOutputModes: ['text/plain'],
       skills: (this.options.skills ?? []).map(skill => ({ id: skill.id, name: skill.name, description: skill.description,
         tags: [], examples: skill.examples ?? [], inputModes: [], outputModes: [], securityRequirements: [] })),
@@ -234,7 +236,13 @@ export class FakeAgent {
     return {
       getAgentCard: async () => this.card(),
       getAuthenticatedExtendedAgentCard: async () => unsupported(),
-      sendMessage: async params => this.sendMessage(params.message!, params.configuration?.returnImmediately ?? false),
+      sendMessage: async params => {
+        const answer = this.sendMessage(params.message!, params.configuration?.returnImmediately ?? false);
+        // As a host does: the history is the messages sent, files and all, unless the caller asks for less.
+        const length = params.configuration?.historyLength;
+        if ('history' in answer && length !== undefined) answer.history = length === 0 ? [] : answer.history.slice(-length);
+        return answer;
+      },
       sendMessageStream: () => unsupported(),
       getTask: async params => {
         this.polls.push(params.id);
