@@ -118,10 +118,10 @@ function safeName(name: string, index: number): string {
 }
 
 /**
- * How large and how many the files natsumi sends with one request may be (ADR 0079): the contract with
- * fraction-agents, which refuses a message over them.
+ * How large each, how many and how large together the files natsumi sends with one request may be (ADR 0079): the
+ * contract with fraction-agents, which refuses a message over them.
  */
-export const SENT_FILE_LIMITS = { maxBytes: 20 * 1024 * 1024, maxCount: 8 };
+export const SENT_FILE_LIMITS = { maxBytes: 20 * 1024 * 1024, maxCount: 8, maxTotalBytes: 50 * 1024 * 1024 };
 
 /** The binaries `classify` names, as media types. Any other binary is sent as `application/octet-stream`. */
 const BINARY_TYPES: Record<string, string> = {
@@ -142,7 +142,9 @@ export async function readSentFiles(paths: string[], places: { work: string; sou
   const refuse = (text: string) => ({ ok: false as const, text });
   if (paths.length > limits.maxCount) return refuse(`送れるファイルは 1 回に ${limits.maxCount} 個までです（${paths.length} 個ありました）。`);
   const megabytes = Math.floor(limits.maxBytes / 1024 / 1024);
+  const tooMuch = refuse(`送れるファイルは合わせて ${Math.floor(limits.maxTotalBytes / 1024 / 1024)} MB までです。分けて頼むか、減らしてください。`);
   const files: SentFile[] = [];
+  let total = 0;
   for (const path of paths) {
     const outside = refuse(`ファイル「${path}」は送れません。送れるのは ${WORK_PATH}/ か ${SOURCES_PATH}/ の下のファイルだけです。`);
     const source = posix.normalize(path);
@@ -163,9 +165,12 @@ export async function readSentFiles(paths: string[], places: { work: string; sou
       const stats = await handle.stat();
       if (!stats.isFile()) return refuse(`${source} はファイルではありません。`);
       if (stats.size > limits.maxBytes) return refuse(`ファイル ${source} は大きすぎます（1 個 ${megabytes} MB まで）。`);
+      if (total + stats.size > limits.maxTotalBytes) return tooMuch;
       const data = await handle.readFile();
       // Read again rather than trusted: the file may have grown since it was looked at.
       if (data.length > limits.maxBytes) return refuse(`ファイル ${source} は大きすぎます（1 個 ${megabytes} MB まで）。`);
+      total += data.length;
+      if (total > limits.maxTotalBytes) return tooMuch;
       files.push({ name: posix.basename(source), mediaType: mediaType(data, source), data });
     } catch { return refuse(`ファイル ${source} を読めません。`); } finally { await handle.close(); }
   }

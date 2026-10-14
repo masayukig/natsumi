@@ -827,7 +827,7 @@ test('a file outside /work and /sources, one reached through .. or a link out, a
   assert.deepEqual(await readdir(join(f.replies, 'wiki')).catch(() => []), [], 'no request was made');
 });
 
-test('more than eight files, or one over 20 MB, are refused before anything is sent', async t => {
+test('more than eight files, one over 20 MB, or more than 50 MB together are refused before anything is sent', async t => {
   const f = await setup(t);
   const paths: string[] = [];
   for (let n = 1; n <= 9; n++) {
@@ -850,4 +850,28 @@ test('more than eight files, or one over 20 MB, are refused before anything is s
   assert.equal(f.agent.received.length, 1);
   assert.equal(f.agent.received[0]!.files!.length, 8);
   assert.equal(f.agent.received[0]!.files!.at(-1)!.data.length, 20 * 1024 * 1024);
+});
+
+test('eight files of exactly 50 MB together go, and one byte more is refused before anything is sent', async t => {
+  const f = await setup(t);
+  const total = 50 * 1024 * 1024;
+  const sizes = [20 * 1024 * 1024, 20 * 1024 * 1024, 10 * 1024 * 1024 - 5, 1, 1, 1, 1, 1];
+  assert.equal(sizes.reduce((sum, size) => sum + size, 0), total);
+  const paths: string[] = [];
+  for (const [n, size] of sizes.entries()) {
+    await writeFile(join(f.work, `${n}.bin`), '');
+    await truncate(join(f.work, `${n}.bin`), size);
+    paths.push(`/work/${n}.bin`);
+  }
+  await writeFile(join(f.work, 'over.bin'), '');
+  await truncate(join(f.work, 'over.bin'), 2);
+  const { loop } = await f.open();
+  f.script(askWith('a', paths), askWith('b', [...paths.slice(0, 7), '/work/over.bin']));
+  await turn(f, loop);
+  const results = toolResults(f.model);
+  assert.equal(results[0]!.isError, false, results[0]!.text);
+  assert.match(results[1]!.text, /合わせて 50 MB までです/);
+  assert.equal(results[1]!.isError, true);
+  assert.equal(f.agent.received.length, 1);
+  assert.equal(f.agent.received[0]!.files!.reduce((sum, file) => sum + file.data.length, 0), total);
 });
