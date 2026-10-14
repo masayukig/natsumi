@@ -233,6 +233,8 @@ export interface WriteRequestOptions {
   previous?: string | null;
   /** The letter it was sent on, for a request the postbox sent with no turn of hers (ADR 0076). */
   postbox?: string;
+  /** The files sent with it, as the workspace names them (ADR 0079). */
+  files?: string[];
 }
 
 /**
@@ -253,6 +255,7 @@ export async function writeRequestFile(directory: string, options: Omit<WriteReq
     lines.push(`- 前のやり取り: ${options.previous ? `${options.previous}/` : '分かりません（記録が残る前のやり取りです）'}`);
   }
   if (options.postbox !== undefined) lines.push(`- postbox: ${options.postbox}（定期便。サーバーが時刻どおりに送った依頼です）`);
+  if (options.files?.length) lines.push(`- 送ったファイル: ${options.files.join('、')}`);
   lines.push('', '## 文面', '', options.text.trim(), '');
   await put(join(directory, REQUEST_FILE), lines.join('\n'));
 }

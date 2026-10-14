@@ -16,6 +16,8 @@ export interface Received {
   returnImmediately: boolean;
   /** The message's metadata, as it arrived, when it had any. */
   metadata?: Record<string, unknown>;
+  /** The parts that carried a file's bytes, as they arrived, when there were any (ADR 0079). */
+  files?: { filename: string; mediaType: string; data: Buffer }[];
 }
 
 export type FakeTaskState = 'working' | 'completed' | 'failed' | 'input-required' | 'rejected';
@@ -252,8 +254,10 @@ export class FakeAgent {
 
   private sendMessage(message: Message, returnImmediately: boolean): Message | Task {
     const text = message.parts.map(part => part.content?.$case === 'text' ? part.content.value : '').join('');
+    const files = message.parts.flatMap(part => part.content?.$case === 'raw'
+      ? [{ filename: part.filename, mediaType: part.mediaType, data: Buffer.from(part.content.value) }] : []);
     this.received.push({ authorization: this.authorization, text, contextId: message.contextId, taskId: message.taskId, returnImmediately,
-      ...(message.metadata ? { metadata: message.metadata } : {}) });
+      ...(message.metadata ? { metadata: message.metadata } : {}), ...(files.length > 0 ? { files } : {}) });
     // The SDK drops what the card does not name before the host sees it.
     const activates = (this.options.extensions ?? []).includes(REPLY_EXTENSION_URI)
       && (this.extensionsHeader ?? '').split(',').map(uri => uri.trim()).includes(REPLY_EXTENSION_URI);

@@ -37,8 +37,11 @@ export interface LoopToolHost {
   scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string; cron?: string }): Outcome;
   listSelfChecks(): Outcome;
   cancelSelfCheck(checkId: string): Outcome;
-  /** Always present, whether or not any agent is configured, so the tool list never moves with the config (ADR 0036). */
-  askAgent(agent: string, message: string, goOn: boolean): Outcome;
+  /**
+   * Always present, whether or not any agent is configured, so the tool list never moves with the config (ADR 0036).
+   * `files` are paths under /work or /sources, as the workspace names them, sent with the message (ADR 0079).
+   */
+  askAgent(agent: string, message: string, goOn: boolean, files?: string[]): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
   runShell?(command: string): Outcome;
   /** The runner's raw answer, for `read` (ADR 0047). Present exactly when `runShell` is. */
@@ -141,8 +144,10 @@ export function createLoopTools(host: LoopToolHost) {
     defineTool({
       name: 'ask_agent', label: 'Ask an outside agent',
       description: ASK_AGENT_DESCRIPTION,
-      parameters: Type.Object({ agent: Type.String(), message: Type.String(), continue: Type.Boolean() }),
-      execute: async (_id, params) => result(host.askAgent(params.agent, params.message, params.continue)),
+      // files last and optional, so the parameters before it read as they did (ADR 0079).
+      parameters: Type.Object({ agent: Type.String(), message: Type.String(), continue: Type.Boolean(),
+        files: Type.Optional(Type.Array(Type.String())) }),
+      execute: async (_id, params) => result(host.askAgent(params.agent, params.message, params.continue, params.files)),
     }),
     // After ask_agent for the same reason: every definition before it stays where it was on the prefix (ADR 0047).
     // search_memory after read, likewise (ADR 0055).

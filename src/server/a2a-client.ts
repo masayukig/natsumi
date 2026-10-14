@@ -78,9 +78,13 @@ export interface CardSummary {
 }
 
 /**
- * A message to send: its text, where it goes on from, and the message's metadata, such as the postbox's (ADR 0076).
+ * A message to send: its text, where it goes on from, the message's metadata, such as the postbox's (ADR 0076), and
+ * the files natsumi sends with it (ADR 0079).
  */
-export interface SendInput { text: string; contextId?: string; taskId?: string; metadata?: Record<string, unknown> }
+export interface SendInput { text: string; contextId?: string; taskId?: string; metadata?: Record<string, unknown>; files?: SentFile[] }
+
+/** A file sent with a message, as its bytes: an agent cannot reach natsumi to fetch one (ADR 0079). */
+export interface SentFile { name: string; mediaType: string; data: Buffer }
 
 /** The calls the server makes to outside agents (ADR 0035). Tests stand a fake agent behind the real one. */
 export interface A2AClient {
@@ -126,7 +130,9 @@ export class SdkA2AClient implements A2AClient {
     const reply = await this.offersReplyAt(url);
     const message: Message = {
       messageId: randomUUID(), contextId: input.contextId ?? '', taskId: input.taskId ?? '', role: Role.ROLE_USER,
-      parts: [{ content: { $case: 'text', value: input.text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
+      parts: [{ content: { $case: 'text', value: input.text }, metadata: undefined, filename: '', mediaType: 'text/plain' },
+        ...(input.files ?? []).map(file => ({ content: { $case: 'raw' as const, value: file.data }, metadata: undefined,
+          filename: file.name, mediaType: file.mediaType }))],
       metadata: input.metadata, extensions: [], referenceTaskIds: [],
     };
     const result = await this.call(url, (client, signal) => client.sendMessage({

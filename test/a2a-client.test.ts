@@ -41,6 +41,28 @@ test('a message carries the metadata it is given, as it was given', async t => {
   assert.deepEqual(agent.received[0]!.metadata, metadata);
 });
 
+// ADR 0079: files go as parts of their own after the text, as their bytes, with their names and types.
+test('files go after the text as parts carrying their bytes, base64 on the wire, and a message without files is as before', async t => {
+  const bodies: unknown[] = [];
+  const { agent, client } = await setup(t, { fetch: async (input, init) => {
+    if (typeof init?.body === 'string') bodies.push(JSON.parse(init.body));
+    return fetch(input, init);
+  } });
+  const pdf = Buffer.from('%PDF-1.7\n');
+  await client.send(agent.url, { text: 'この資料を読んで', files: [{ name: 'a.pdf', mediaType: 'application/pdf', data: pdf },
+    { name: 'b.png', mediaType: 'image/png', data: PNG }] });
+  assert.equal(agent.received[0]!.text, 'この資料を読んで');
+  assert.deepEqual(agent.received[0]!.files, [{ filename: 'a.pdf', mediaType: 'application/pdf', data: pdf },
+    { filename: 'b.png', mediaType: 'image/png', data: PNG }]);
+  const parts = (bodies.at(-1) as { params: { message: { parts: unknown[] } } }).params.message.parts;
+  assert.deepEqual(parts.slice(1), [{ raw: pdf.toString('base64'), filename: 'a.pdf', mediaType: 'application/pdf' },
+    { raw: PNG.toString('base64'), filename: 'b.png', mediaType: 'image/png' }]);
+
+  await client.send(agent.url, { text: 'ファイルなし' });
+  assert.equal(agent.received[1]!.files, undefined);
+  assert.equal((bodies.at(-1) as { params: { message: { parts: unknown[] } } }).params.message.parts.length, 1);
+});
+
 // ADR 0033: a projected token is replaced while the server runs, so it is read from the file on every call.
 test('the token is read from its file again for every call', async t => {
   const { agent, client, tokenFile } = await setup(t);

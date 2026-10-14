@@ -1,8 +1,10 @@
-import { writeFile } from 'node:fs/promises';
+import { open, realpath, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
-import { AgentFileError, type A2AClient, type AgentFile } from './a2a-client.ts';
+import { AgentFileError, type A2AClient, type AgentFile, type SentFile } from './a2a-client.ts';
+import { binaryLabel, classify } from './dashboard-files.ts';
 import { discardImages, imageExtension, keepImage, type ImageLimits, type PostImageType, type TakenImage } from './images.ts';
-import { imageType } from './view.ts';
+import { isWithin } from './paths.ts';
+import { imageType, SOURCES_PATH, WORK_PATH } from './view.ts';
 
 /**
  * The images an outside agent hands back with its answer (ADR 0048), brought into the reply's `images/` under
@@ -113,4 +115,69 @@ function safeName(name: string, index: number): string {
   const stem = posix.basename(name.replaceAll('\\', '/')).replace(/\.[^.]*$/, '')
     .replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 64);
   return stem || `image-${index + 1}`;
+}
+
+/**
+ * How large and how many the files natsumi sends with one request may be (ADR 0079): the contract with
+ * fraction-agents, which refuses a message over them.
+ */
+export const SENT_FILE_LIMITS = { maxBytes: 20 * 1024 * 1024, maxCount: 8 };
+
+/** The binaries `classify` names, as media types. Any other binary is sent as `application/octet-stream`. */
+const BINARY_TYPES: Record<string, string> = {
+  PDF: 'application/pdf', ZIP: 'application/zip', gzip: 'application/gzip', SQLite: 'application/vnd.sqlite3',
+};
+
+/** Text whose extension says more than `text/plain`. */
+const TEXT_TYPES: Record<string, string> = { '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json', '.html': 'text/html' };
+
+/**
+ * Reads the files natsumi names in `ask_agent` (ADR 0079), all of them or none: the first that cannot be sent is
+ * said in one sentence, and nothing is sent. Only what is under `/work` and `/sources` is read, as `view` reads — a
+ * link or `..` that leads out of its place is refused as if it were outside — and only within the limits. Each goes
+ * by its base name, typed by its bytes; text by its extension too.
+ */
+export async function readSentFiles(paths: string[], places: { work: string; sources: string },
+  limits = SENT_FILE_LIMITS): Promise<{ ok: true; files: SentFile[] } | { ok: false; text: string }> {
+  const refuse = (text: string) => ({ ok: false as const, text });
+  if (paths.length > limits.maxCount) return refuse(`送れるファイルは 1 回に ${limits.maxCount} 個までです（${paths.length} 個ありました）。`);
+  const megabytes = Math.floor(limits.maxBytes / 1024 / 1024);
+  const files: SentFile[] = [];
+  for (const path of paths) {
+    const outside = refuse(`ファイル「${path}」は送れません。送れるのは ${WORK_PATH}/ か ${SOURCES_PATH}/ の下のファイルだけです。`);
+    const source = posix.normalize(path);
+    const place = source.startsWith(`${WORK_PATH}/`) ? { prefix: WORK_PATH, directory: places.work }
+      : source.startsWith(`${SOURCES_PATH}/`) ? { prefix: SOURCES_PATH, directory: places.sources } : undefined;
+    if (!place) return outside;
+    let root: string;
+    let real: string;
+    try {
+      root = await realpath(place.directory);
+      real = await realpath(join(root, source.slice(place.prefix.length + 1)));
+    } catch { return refuse(`ファイル ${source} が見つかりません。`); }
+    // A link that leads out of its place is refused as if it were outside, and says nothing of where it leads.
+    if (!isWithin(real, root) || real === root) return outside;
+    let handle;
+    try { handle = await open(real, 'r'); } catch { return refuse(`ファイル ${source} を読めません。`); }
+    try {
+      const stats = await handle.stat();
+      if (!stats.isFile()) return refuse(`${source} はファイルではありません。`);
+      if (stats.size > limits.maxBytes) return refuse(`ファイル ${source} は大きすぎます（1 個 ${megabytes} MB まで）。`);
+      const data = await handle.readFile();
+      // Read again rather than trusted: the file may have grown since it was looked at.
+      if (data.length > limits.maxBytes) return refuse(`ファイル ${source} は大きすぎます（1 個 ${megabytes} MB まで）。`);
+      files.push({ name: posix.basename(source), mediaType: mediaType(data, source), data });
+    } catch { return refuse(`ファイル ${source} を読めません。`); } finally { await handle.close(); }
+  }
+  return { ok: true, files };
+}
+
+/** A file's media type: a known binary by its first bytes, before asking whether it reads as text, as a PDF may. */
+function mediaType(data: Buffer, path: string): string {
+  const binary = BINARY_TYPES[binaryLabel(data) ?? ''];
+  if (binary) return binary;
+  const content = classify(data, data.length, data.length);
+  if (content.type === 'image') return content.mimeType;
+  if (content.type === 'text') return TEXT_TYPES[posix.extname(path).toLowerCase()] ?? 'text/plain';
+  return 'application/octet-stream';
 }
