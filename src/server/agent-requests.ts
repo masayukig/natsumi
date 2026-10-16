@@ -84,7 +84,7 @@ export interface AgentRequestsOptions {
   timeZone?: string;
   /** The record of the postbox's letters (ADR 0076), told how each run went. Without it the postbox sends nothing. */
   postbox?: PostboxLedger;
-  /** `/work` and `/sources` as the server sees them, which files sent with a request are read from (ADR 0079). */
+  /** `/work` and `/sources` as the server sees them, which files sent with a request are read from (ADR 0080). */
   workspace?: { work: string; sources: string };
   log?: (line: string) => void;
 }
@@ -124,7 +124,7 @@ export class AgentRequests {
     if (!target) return refuse(`「${agent}」という相手はいません。頼める相手と名前は ${AGENT_LIST_PATH} にあります。`);
     const check = checkOutgoingText(message);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '頼んでいません') };
-    // Read before anything is made or sent, so a file that cannot go stops the whole request (ADR 0079).
+    // Read before anything is made or sent, so a file that cannot go stops the whole request (ADR 0080).
     let files: SentFile[] = [];
     if (paths.length > 0) {
       if (!this.options.workspace) return refuse('ファイルを読む場所が用意されていないので、ファイルは送れません。');
@@ -142,7 +142,7 @@ export class AgentRequests {
       if (task?.state === 'waiting') {
         return refuse(`「${agent}」に前に頼んだことの返事を、まだ待っています。返事が sources_updated の attention として届いてから続けてください。`);
       }
-      // The agent takes an answer's words only, and would drop its files (ADR 0079).
+      // The agent takes an answer's words only, and would drop its files (ADR 0080).
       if (task?.state === 'input-required' && paths.length > 0) {
         return refuse(`「${agent}」の聞き返しへの答えには、ファイルを付けられません。答えは files なしで送り、ファイルは continue を false にして新しく頼んでください。`);
       }

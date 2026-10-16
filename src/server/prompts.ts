@@ -255,7 +255,7 @@ export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の�
 /**
  * Fixed like every description here: which agents exist is the config's, so the list lives in the manual she reads
  * with run_shell, and this names only where it is (ADR 0036). The states are the attention's own words (ADR 0069), and
- * the dove's are its results' (ADR 0074). The limits on files are only said to be there; the manual has them (ADR 0079).
+ * the dove's are its results' (ADR 0074). The limits on files are only said to be there; the manual has them (ADR 0080).
  */
 export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。'
   + 'agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。'

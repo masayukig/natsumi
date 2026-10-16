@@ -16,7 +16,7 @@ export interface Received {
   returnImmediately: boolean;
   /** The message's metadata, as it arrived, when it had any. */
   metadata?: Record<string, unknown>;
-  /** The parts that carried a file's bytes, as they arrived, when there were any (ADR 0079). */
+  /** The parts that carried a file's bytes, as they arrived, when there were any (ADR 0080). */
   files?: { filename: string; mediaType: string; data: Buffer }[];
 }
 
@@ -40,7 +40,7 @@ export interface FakeAgentOptions {
   replyWithMessage?: string;
   /** The URIs of the extensions the card names in `capabilities.extensions`. */
   extensions?: string[];
-  /** The card's `defaultInputModes`. Text and anything else by default, as a host that takes files says (ADR 0079). */
+  /** The card's `defaultInputModes`. Text and anything else by default, as a host that takes files says (ADR 0080). */
   inputModes?: string[];
 }
 

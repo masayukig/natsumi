@@ -41,7 +41,7 @@ test('a message carries the metadata it is given, as it was given', async t => {
   assert.deepEqual(agent.received[0]!.metadata, metadata);
 });
 
-// ADR 0079: files go as parts of their own after the text, as their bytes, with their names and types.
+// ADR 0080: files go as parts of their own after the text, as their bytes, with their names and types.
 test('files go after the text as parts carrying their bytes, base64 on the wire, and a message without files is as before', async t => {
   const bodies: unknown[] = [];
   const { agent, client } = await setup(t, { fetch: async (input, init) => {
@@ -63,7 +63,7 @@ test('files go after the text as parts carrying their bytes, base64 on the wire,
   assert.equal((bodies.at(-1) as { params: { message: { parts: unknown[] } } }).params.message.parts.length, 1);
 });
 
-// ADR 0079: the answer to a send carries no history, which would be the message just sent, its files' bytes and all.
+// ADR 0080: the answer to a send carries no history, which would be the message just sent, its files' bytes and all.
 test('a send asks for no history back, so the files sent do not come back with the task', async t => {
   const answers: string[] = [];
   const { agent, client } = await setup(t, { fetch: async (input, init) => {
@@ -78,7 +78,7 @@ test('a send asks for no history back, so the files sent do not come back with t
   assert.equal(answers[0]!.includes('"raw"'), false);
 });
 
-// ADR 0079: a host whose card takes text only may drop the files or refuse the body, and neither says so.
+// ADR 0080: a host whose card takes text only may drop the files or refuse the body, and neither says so.
 test('files are not sent to an agent whose card takes text only, nor to one whose card could not be read', async t => {
   const { agent, client } = await setup(t, {}, undefined, ['text/plain']);
   const kind = (promise: Promise<unknown>) => promise.then(() => 'sent', error => (error as A2ACallError).kind);

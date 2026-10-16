@@ -233,7 +233,7 @@ export interface WriteRequestOptions {
   previous?: string | null;
   /** The letter it was sent on, for a request the postbox sent with no turn of hers (ADR 0076). */
   postbox?: string;
-  /** The files sent with it, as the workspace names them (ADR 0079). */
+  /** The files sent with it, as the workspace names them (ADR 0080). */
   files?: string[];
 }
 

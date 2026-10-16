@@ -117,7 +117,7 @@ function safeName(name: string, index: number): string {
 }
 
 /**
- * How large each, how many and how large together the files natsumi sends with one request may be (ADR 0079): the
+ * How large each, how many and how large together the files natsumi sends with one request may be (ADR 0080): the
  * contract with fraction-agents, which refuses a message over them.
  */
 export const SENT_FILE_LIMITS = { maxBytes: 20 * 1024 * 1024, maxCount: 8, maxTotalBytes: 50 * 1024 * 1024 };
@@ -131,7 +131,7 @@ const BINARY_TYPES: Record<string, string> = {
 const TEXT_TYPES: Record<string, string> = { '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json', '.html': 'text/html' };
 
 /**
- * Reads the files natsumi names in `ask_agent` (ADR 0079), all of them or none: the first that cannot be sent is
+ * Reads the files natsumi names in `ask_agent` (ADR 0080), all of them or none: the first that cannot be sent is
  * said in one sentence, and nothing is sent. Only what is under `/work` and `/sources` is read, as `view` reads — a
  * link or `..` that leads out of its place is refused as if it were outside — and only within the limits. Each goes
  * by its base name, typed by its bytes; text by its extension too.

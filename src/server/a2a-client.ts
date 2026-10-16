@@ -80,11 +80,11 @@ export interface CardSummary {
 
 /**
  * A message to send: its text, where it goes on from, the message's metadata, such as the postbox's (ADR 0076), and
- * the files natsumi sends with it (ADR 0079).
+ * the files natsumi sends with it (ADR 0080).
  */
 export interface SendInput { text: string; contextId?: string; taskId?: string; metadata?: Record<string, unknown>; files?: SentFile[] }
 
-/** A file sent with a message, as its bytes: an agent cannot reach natsumi to fetch one (ADR 0079). */
+/** A file sent with a message, as its bytes: an agent cannot reach natsumi to fetch one (ADR 0080). */
 export interface SentFile { name: string; mediaType: string; data: Buffer }
 
 /** The calls the server makes to outside agents (ADR 0035). Tests stand a fake agent behind the real one. */
@@ -115,7 +115,7 @@ export class SdkA2AClient implements A2AClient {
   private readonly fetch: typeof fetch;
   /** Whether each agent's card names the reply extension, by URL, from the card last read. */
   private readonly offersReply = new Map<string, boolean>();
-  /** Whether each agent's card takes more than text (`defaultInputModes`), by URL, from the card last read (ADR 0079). */
+  /** Whether each agent's card takes more than text (`defaultInputModes`), by URL, from the card last read (ADR 0080). */
   private readonly takesFiles = new Map<string, boolean>();
 
   constructor(options: SdkA2AClientOptions) {
@@ -131,7 +131,7 @@ export class SdkA2AClient implements A2AClient {
    */
   async send(url: string, input: SendInput): Promise<SendResult> {
     const reply = await this.offersReplyAt(url);
-    // A host that takes text only may drop the files or refuse the body for its size; neither tells which (ADR 0079).
+    // A host that takes text only may drop the files or refuse the body for its size; neither tells which (ADR 0080).
     if ((input.files ?? []).length > 0 && !this.takesFiles.get(url)) {
       throw new A2ACallError('no-files', 'the agent\'s card does not say it takes files');
     }

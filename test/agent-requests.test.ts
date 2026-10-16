@@ -780,7 +780,7 @@ test('the history keeps the request and the README of a reply, and leaves the bo
   assert.deepEqual(tracked, ['README.md', 'request.md']);
 });
 
-// ADR 0079: files under /work and /sources go with the message as their bytes, and request.md names them.
+// ADR 0080: files under /work and /sources go with the message as their bytes, and request.md names them.
 const askWith = (message: string, files: string[]): ScriptedStep =>
   ({ calls: [{ name: 'ask_agent', arguments: { agent: 'wiki', message, continue: false, files } }] });
 

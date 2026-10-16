@@ -39,7 +39,7 @@ export interface LoopToolHost {
   cancelSelfCheck(checkId: string): Outcome;
   /**
    * Always present, whether or not any agent is configured, so the tool list never moves with the config (ADR 0036).
-   * `files` are paths under /work or /sources, as the workspace names them, sent with the message (ADR 0079).
+   * `files` are paths under /work or /sources, as the workspace names them, sent with the message (ADR 0080).
    */
   askAgent(agent: string, message: string, goOn: boolean, files?: string[]): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
@@ -144,7 +144,7 @@ export function createLoopTools(host: LoopToolHost) {
     defineTool({
       name: 'ask_agent', label: 'Ask an outside agent',
       description: ASK_AGENT_DESCRIPTION,
-      // files last and optional, so the parameters before it read as they did (ADR 0079).
+      // files last and optional, so the parameters before it read as they did (ADR 0080).
       parameters: Type.Object({ agent: Type.String(), message: Type.String(), continue: Type.Boolean(),
         files: Type.Optional(Type.Array(Type.String())) }),
       execute: async (_id, params) => result(host.askAgent(params.agent, params.message, params.continue, params.files)),
