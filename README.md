@@ -1166,6 +1166,13 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。image の tag は版の tag そのものです。
 `latest` は付けません。動かす版は、環境の設定の側で固定します。
 
+### 依存の更新
+
+依存の版は固定しており、上げる PR は Renovate が出します（設定は [renovate.json](renovate.json)、
+[ADR 0079](docs/adr/0079-dependency-updates-with-renovate.md)）。公開から 7 日経った版だけを提案します。
+Dockerfile の Node と setup-node の Node は 1 つの PR で同じ版に上がり、Pi の 2 つのパッケージも 1 つの PR で上がります。
+typebox は Pi が固定する版に手で合わせます。保留中の更新は Dependency Dashboard の issue に載ります。
+
 ## Mac アプリ
 
 `mac/` に Xcode プロジェクトがあります（[ADR 0010](docs/adr/0010-mac-app-structure.md)）。macOS 15 以降と Xcode 27 を使います。
