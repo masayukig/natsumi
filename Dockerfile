@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:24.12.0-bookworm-slim AS build
+FROM node:24.21.0-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ RUN npm run build
 
 # Holds the network namespace of the fixed-IPv6 layout (compose.ipv6.example.yaml) and sets the interface token.
 # Only this image carries iproute2, and only its container gets NET_ADMIN. Built on the same base to share layers.
-FROM node:24.12.0-bookworm-slim AS ipv6-netns
+FROM node:24.21.0-bookworm-slim AS ipv6-netns
 RUN apt-get update \
   && apt-get install -y --no-install-recommends iproute2 \
   && rm -rf /var/lib/apt/lists/*
@@ -71,7 +71,7 @@ WORKDIR /work
 ENTRYPOINT ["/usr/libexec/natsumi-workspace-runner"]
 CMD ["serve"]
 
-FROM node:24.12.0-bookworm-slim
+FROM node:24.21.0-bookworm-slim
 ENV NODE_ENV=production
 # git commits the memory repository (ADR 0018). Committing is the server's alone: natsumi has git in the workspace
 # container above, but there /memory/.git is mounted read-only, so she can read the history and not write it.

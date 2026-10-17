@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.12.0"
+          node-version: "24.21.0"
           cache: npm
       # The turn evaluation runs its workspace in bubblewrap (ADR 0051); Ubuntu's AppArmor keeps an unprivileged
       # process from making the user namespace it needs unless told otherwise. search_memory's tests run the real rg,

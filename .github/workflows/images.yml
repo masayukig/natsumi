@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.12.0"
+          node-version: "24.21.0"
           cache: npm
       # As in ci.yml: bubblewrap, and the user namespace it needs, for the turn evaluation's workspace (ADR 0051), and rg
       # for search_memory's tests (ADR 0055).
