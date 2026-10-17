@@ -16,6 +16,8 @@ export interface Received {
   returnImmediately: boolean;
   /** The message's metadata, as it arrived, when it had any. */
   metadata?: Record<string, unknown>;
+  /** The parts that carried a file's bytes, as they arrived, when there were any (ADR 0080). */
+  files?: { filename: string; mediaType: string; data: Buffer }[];
 }
 
 export type FakeTaskState = 'working' | 'completed' | 'failed' | 'input-required' | 'rejected';
@@ -38,6 +40,8 @@ export interface FakeAgentOptions {
   replyWithMessage?: string;
   /** The URIs of the extensions the card names in `capabilities.extensions`. */
   extensions?: string[];
+  /** The card's `defaultInputModes`. Text and anything else by default, as a host that takes files says (ADR 0080). */
+  inputModes?: string[];
 }
 
 /**
@@ -219,7 +223,7 @@ export class FakeAgent {
         extensions: (this.options.extensions ?? []).map(uri => ({ uri, description: '', required: false, params: undefined })) },
       securitySchemes: {},
       securityRequirements: [],
-      defaultInputModes: ['text/plain'],
+      defaultInputModes: this.options.inputModes ?? ['text/plain', '*/*'],
       defaultOutputModes: ['text/plain'],
       skills: (this.options.skills ?? []).map(skill => ({ id: skill.id, name: skill.name, description: skill.description,
         tags: [], examples: skill.examples ?? [], inputModes: [], outputModes: [], securityRequirements: [] })),
@@ -232,7 +236,13 @@ export class FakeAgent {
     return {
       getAgentCard: async () => this.card(),
       getAuthenticatedExtendedAgentCard: async () => unsupported(),
-      sendMessage: async params => this.sendMessage(params.message!, params.configuration?.returnImmediately ?? false),
+      sendMessage: async params => {
+        const answer = this.sendMessage(params.message!, params.configuration?.returnImmediately ?? false);
+        // As a host does: the history is the messages sent, files and all, unless the caller asks for less.
+        const length = params.configuration?.historyLength;
+        if ('history' in answer && length !== undefined) answer.history = length === 0 ? [] : answer.history.slice(-length);
+        return answer;
+      },
       sendMessageStream: () => unsupported(),
       getTask: async params => {
         this.polls.push(params.id);
@@ -252,8 +262,10 @@ export class FakeAgent {
 
   private sendMessage(message: Message, returnImmediately: boolean): Message | Task {
     const text = message.parts.map(part => part.content?.$case === 'text' ? part.content.value : '').join('');
+    const files = message.parts.flatMap(part => part.content?.$case === 'raw'
+      ? [{ filename: part.filename, mediaType: part.mediaType, data: Buffer.from(part.content.value) }] : []);
     this.received.push({ authorization: this.authorization, text, contextId: message.contextId, taskId: message.taskId, returnImmediately,
-      ...(message.metadata ? { metadata: message.metadata } : {}) });
+      ...(message.metadata ? { metadata: message.metadata } : {}), ...(files.length > 0 ? { files } : {}) });
     // The SDK drops what the card does not name before the host sees it.
     const activates = (this.options.extensions ?? []).includes(REPLY_EXTENSION_URI)
       && (this.extensionsHeader ?? '').split(',').map(uri => uri.trim()).includes(REPLY_EXTENSION_URI);

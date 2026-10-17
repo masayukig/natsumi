@@ -174,7 +174,7 @@ test('the reply_to_mac and notify_owner descriptions are fixed strings that tell
 });
 
 // ADR 0035 and ADR 0036: one tool for every agent, there with or without any configured, and its words never move.
-test('ask_agent is always registered last, with a fixed description and a required continue', () => {
+test('ask_agent is always registered last, with a fixed description, a required continue and files that may be left out', () => {
   const tools = createLoopTools(host());
   assert.equal(tools.at(-1)!.name, 'ask_agent');
   assert.deepEqual(names(host({ runShell: () => ok('ran') })).at(-1), 'ask_agent');
@@ -182,11 +182,12 @@ test('ask_agent is always registered last, with a fixed description and a requir
   assert.equal(ask.description, ASK_AGENT_DESCRIPTION);
   const schema = JSON.parse(JSON.stringify(ask.parameters)) as { properties: Record<string, { type: string }>; required: string[] };
   assert.deepEqual(Object.fromEntries(Object.entries(schema.properties).map(([name, value]) => [name, value.type])),
-    { agent: 'string', message: 'string', continue: 'boolean' });
+    { agent: 'string', message: 'string', continue: 'boolean', files: 'array' });
   assert.deepEqual([...schema.required].sort(), ['agent', 'continue', 'message']);
   // Where the list is, how the reply comes (ADR 0069) and the states it carries; no agent's name, no number.
   for (const phrase of ['/manual/agents/INDEX.md', 'sources_updated', 'attention', 'agent_reply', 'summary', 'README.md',
-    '/manual/ask-agent.md', 'request.md', 'request', 'asked_at', 'completed', 'failed', 'input_required', 'gave_up', 'continue']) {
+    '/manual/ask-agent.md', 'request.md', 'request', 'asked_at', 'completed', 'failed', 'input_required', 'gave_up', 'continue',
+    'files', '/work', '/sources']) {
     assert.ok(ASK_AGENT_DESCRIPTION.includes(phrase), phrase);
   }
   assert.doesNotMatch(ASK_AGENT_DESCRIPTION, /text が答え/);

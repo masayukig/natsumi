@@ -1,8 +1,8 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { A2ACallError, type A2AClient, type AgentFile, type AgentTaskState, type SendResult } from './a2a-client.ts';
-import { bringAgentImages, discardBrought, type BroughtImages } from './agent-files.ts';
+import { A2ACallError, type A2AClient, type AgentFile, type AgentTaskState, type SendResult, type SentFile } from './a2a-client.ts';
+import { bringAgentImages, discardBrought, readSentFiles, type BroughtImages } from './agent-files.ts';
 import {
   AGENTS_PATH, AGENTS_SOURCE, checkReplyData, clampSummary, firstLine, makeReplyDirectory, parseReplyData, replyFromText, undoReply,
   writeAgentReply, writeAgentRequest, writeRequestFile, type ReplyData, type ReplyForm, type ReplyPlace, type ReplyState, type RequestKind,
@@ -84,6 +84,8 @@ export interface AgentRequestsOptions {
   timeZone?: string;
   /** The record of the postbox's letters (ADR 0076), told how each run went. Without it the postbox sends nothing. */
   postbox?: PostboxLedger;
+  /** `/work` and `/sources` as the server sees them, which files sent with a request are read from (ADR 0080). */
+  workspace?: { work: string; sources: string };
   log?: (line: string) => void;
 }
 
@@ -113,7 +115,7 @@ export class AgentRequests {
   /** Stops writing: a fetch still on its way when the loop closes lands on a database that is going away. */
   close(): void { this.closed = true; }
 
-  async ask(agent: string, message: string, goOn: boolean): Promise<ToolOutcome> {
+  async ask(agent: string, message: string, goOn: boolean, paths: string[] = []): Promise<ToolOutcome> {
     const refuse = (text: string): ToolOutcome => ({ ok: false, text: `頼んでいません。${text}` });
     const { config, client } = this.options;
     if (!config || !client) return refuse('外のエージェントに頼む設定がありません。');
@@ -122,6 +124,14 @@ export class AgentRequests {
     if (!target) return refuse(`「${agent}」という相手はいません。頼める相手と名前は ${AGENT_LIST_PATH} にあります。`);
     const check = checkOutgoingText(message);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '頼んでいません') };
+    // Read before anything is made or sent, so a file that cannot go stops the whole request (ADR 0080).
+    let files: SentFile[] = [];
+    if (paths.length > 0) {
+      if (!this.options.workspace) return refuse('ファイルを読む場所が用意されていないので、ファイルは送れません。');
+      const read = await readSentFiles(paths, this.options.workspace);
+      if (!read.ok) return refuse(`${read.text}直してから、もう一度頼んでください。`);
+      files = read.files;
+    }
 
     let to: { contextId?: string; taskId?: string } = {};
     let previous: string | null | undefined;
@@ -131,6 +141,10 @@ export class AgentRequests {
       const task = last.task_id ? this.task(agent, last.task_id) : undefined;
       if (task?.state === 'waiting') {
         return refuse(`「${agent}」に前に頼んだことの返事を、まだ待っています。返事が sources_updated の attention として届いてから続けてください。`);
+      }
+      // The agent takes an answer's words only, and would drop its files (ADR 0080).
+      if (task?.state === 'input-required' && paths.length > 0) {
+        return refuse(`「${agent}」の聞き返しへの答えには、ファイルを付けられません。答えは files なしで送り、ファイルは continue を false にして新しく頼んでください。`);
       }
       to = task?.state === 'input-required' ? { contextId: last.context_id, taskId: task.task_id } : { contextId: last.context_id };
       previous = last.place;
@@ -143,7 +157,7 @@ export class AgentRequests {
     let made: MadeRequest;
     try {
       const place = await writeAgentRequest({ directory: this.options.replies.directory, agent, at, askedAt: this.localTime(at),
-        text: message, how, ...(goOn ? { previous: previous ?? null } : {}) });
+        text: message, how, ...(goOn ? { previous: previous ?? null } : {}), ...(paths.length > 0 ? { files: paths } : {}) });
       made = { place, text: message, at };
     } catch {
       this.log(`a2a: the request to ${agent} could not be put in /sources`);
@@ -155,11 +169,14 @@ export class AgentRequests {
 
     let sent: SendResult;
     try {
-      sent = await client.send(target.url, { text: message, ...to });
+      sent = await client.send(target.url, { text: message, ...to, ...(files.length > 0 ? { files } : {}) });
     } catch (error) {
       await rm(made.place.directory, { recursive: true, force: true });
       const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
       this.log(`a2a: sending to ${agent} failed (${kind})`);
+      if (kind === 'no-files') {
+        return { ok: false, text: `頼んでいません。「${agent}」はファイルを受け取れません（${AGENT_LIST_PATH} の相手の説明を確かめてください）。files を外して頼んでください。` };
+      }
       if (kind === 'refused' && goOn) {
         return { ok: false, text: `頼めませんでした。「${agent}」が前のやり取りに続けることを受け付けませんでした。新しく頼むなら continue を false にしてください。` };
       }

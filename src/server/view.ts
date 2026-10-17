@@ -36,23 +36,38 @@ export function imageType(head: Buffer): string | undefined {
   return undefined;
 }
 
+/** A place the workspace names by `prefix`, and where it is on the server. */
+export interface WorkspacePlace { prefix: string; directory: string }
+
+/**
+ * Where a workspace path under one of `places` really is on the server, with the place's own real path; `outside`
+ * when it is under none of them or a link or `..` leads out of its place, `missing` when it cannot be resolved.
+ * What is outside says nothing of where it leads.
+ */
+export async function resolveInPlace(path: string, places: WorkspacePlace[]):
+  Promise<{ source: string; real: string; root: string } | 'outside' | 'missing'> {
+  const source = posix.normalize(path);
+  const place = places.find(candidate => source.startsWith(`${candidate.prefix}/`));
+  if (!place) return 'outside';
+  let root: string;
+  let real: string;
+  try {
+    root = await realpath(place.directory);
+    real = await realpath(posix.join(root, source.slice(place.prefix.length + 1)));
+  } catch { return 'missing'; }
+  return isWithin(real, root) ? { source, real, root } : 'outside';
+}
+
 /** Reads the image at a workspace path under `/sources` or `/work`, mapped onto those directories on the server. */
 export async function viewImage(path: string, places: { sources: string; work: string }): Promise<ToolOutcome & { images?: ImageContent[] }> {
   const refuse = (text: string) => ({ ok: false, text: `表示していません。${text}` });
   const outside = 'view で見られるのは /sources/ と /work/ の下のファイルだけです。';
   if (!path.startsWith('/')) return refuse('view には /sources/ か /work/ から始まる絶対パスを書いてください。');
   const normalized = posix.normalize(path);
-  const place = normalized.startsWith(`${SOURCES_PATH}/`) ? { prefix: SOURCES_PATH, directory: places.sources }
-    : normalized.startsWith(`${WORK_PATH}/`) ? { prefix: WORK_PATH, directory: places.work } : undefined;
-  if (!place) return refuse(outside);
-  let real: string;
-  let root: string;
-  try {
-    root = await realpath(place.directory);
-    real = await realpath(posix.join(root, normalized.slice(place.prefix.length + 1)));
-  } catch { return refuse(`${normalized} が見つかりません。`); }
-  // A link that leads out of its place is refused as if it were outside, and says nothing of where it leads.
-  if (!isWithin(real, root)) return refuse(outside);
+  const resolved = await resolveInPlace(path, [{ prefix: SOURCES_PATH, directory: places.sources }, { prefix: WORK_PATH, directory: places.work }]);
+  if (resolved === 'outside') return refuse(outside);
+  if (resolved === 'missing') return refuse(`${normalized} が見つかりません。`);
+  const { real } = resolved;
   let handle;
   try { handle = await open(real, 'r'); } catch { return refuse(`${normalized} が見つかりません。`); }
   try {

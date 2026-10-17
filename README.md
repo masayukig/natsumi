@@ -761,6 +761,12 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   1 枚 10 MiB・1 回 8 枚までを、返事の `images/` に置き、`.natsumi/images/` にも写しを残します（migration 19）。
   `README.md` に置いた画像と説明、取らなかった画像とその理由を書きます。取れなくても文章の返事はそのまま届けます。
   natsumi は `reply_to_mac` の `images` に、`/sources/agents/` の下の画像をそのまま並べられます。
+- natsumi は `ask_agent` の `files` に `/work`・`/sources` の下のパスを並べて、ファイルを相手に渡せます（[ADR 0080](docs/adr/0080-sending-files-to-an-agent-with-the-request.md)）。
+  サーバーがファイルを読み、文面の後ろに A2A の Part として中身そのもの（`raw`、`filename`・`mediaType` 付き）を並べて送ります。
+  1 個 20 MiB・1 回 8 個・合わせて 50 MiB まで。場所の外（リンクや `..` で出るものも）・無い・大きすぎるファイルが 1 つでもあるか、合わせて大きすぎれば、何も送らずに断ります。
+  渡したファイルのパスは `request.md` に書きます。応答に送ったファイルが戻らないよう、`historyLength: 0` を付けます。
+  ファイルを付けた依頼は、相手の Agent Card の `defaultInputModes` に `text/plain` 以外（`*/*` など）があるときだけ送り、無ければ断ります。
+  聞き返しへの答えにはファイルを付けられません。
 - Slack の送信役（ポッポさん）の依頼と結果も `sources/agents/poppo/` に置き、同じ attention で知らせます（下の「Slack に投稿する（ポッポさん）」）。
 - 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
   待っている依頼は、新しい版で取りに行き、`sources/agents/` に返事のためのディレクトリを作って置きます（頼んだことの記録はありません）。
