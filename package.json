@@ -21,7 +21,7 @@
     "eval": "node src/eval/cli.ts"
   },
   "devDependencies": {
-    "@types/node": "24.10.1",
+    "@types/node": "24.19.2",
     "@types/ws": "8.18.1",
     "esbuild": "0.28.2",
     "playwright": "1.63.0",
