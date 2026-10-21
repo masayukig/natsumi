@@ -6,6 +6,7 @@
   "dependencyDashboard": true,
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
+  "platformAutomerge": false,
   "customManagers": [
     {
       "description": "The Node of the images' base is read as a Node release rather than as a Docker tag. A tag such as 24.12.0-bookworm-slim is pushed again each time its Debian layer is rebuilt, so its time is not when that Node came out, and Docker Hub does not always give a time at all; without one, the seven-day wait holds the image back for good while setup-node moves on alone. Read from the Node releases, both carry the same time and so are let through on the same day. The variant after the version is kept as written",
@@ -25,6 +26,11 @@
     }
   ],
   "packageRules": [
+    {
+      "description": "Patch, digest and pinning updates are merged by Renovate itself once the pull request's checks pass, which are ci.yml's: the type check, the tests, the build and the browser's tests, run on every pull request. platformAutomerge is off so that the merge waits for those checks without relying on the repository's auto-merge setting or branch protection. Minor and major updates only open a pull request. What Renovate alone merged is released once a week by weekly-release.yml",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
     {
       "description": "The Node the images run (the Dockerfile's base) and the Node the checks run (setup-node in ci.yml and images.yml) are the same version on purpose: a test passing on one Node says little about another. Grouping them puts all of them on one branch, so they cannot drift apart one pull request at a time",
       "matchDepNames": ["node"],

@@ -1,0 +1,67 @@
+# Once a week, releases the dependency updates Renovate merged on its own: when every commit since the last vX.Y.Z tag,
+# merges aside, is Renovate's and something that goes into the images changed, the next patch version is released.
+# Anything a person wrote waits for a release by hand, whose tag says what changed (scripts/weekly-release.ts).
+# The images are pushed first and the tag after, so that a tag never names images that are not there; the tag is pushed
+# with GITHUB_TOKEN and so starts no other workflow, which is why the images are built here and not by the tag.
+name: Weekly release
+
+on:
+  schedule:
+    # Monday 09:00 in Japan.
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-release
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.decide.outputs.version }}
+      message: ${{ steps.decide.outputs.message }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.21.0"
+      - id: decide
+        run: node scripts/weekly-release.ts
+
+  images:
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/images.yml
+    with:
+      version: ${{ needs.decide.outputs.version }}
+
+  tag:
+    needs: [decide, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      # An annotated tag, as the ones made by hand, on the commit the images were built from.
+      - env:
+          VERSION: ${{ needs.decide.outputs.version }}
+          MESSAGE: ${{ needs.decide.outputs.message }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "$MESSAGE" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"

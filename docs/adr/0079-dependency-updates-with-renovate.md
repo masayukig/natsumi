@@ -1,7 +1,7 @@
 # 0079. 依存の更新は Renovate に追わせ、公開から 7 日経った版だけを受け取る
 
 - Date: 2026-10-16
-- Status: Accepted
+- Status: Accepted（2026-10-21: パッチ等の自動マージと、Renovate だけの変更の週次のリリースを「追記」の節に加えた）
 
 ## Context
 
@@ -111,6 +111,32 @@ typebox は Renovate が知らせないので、`pi` の PR を受け取ると�
 
 Renovate の設定はこのリポジトリにあるが、Renovate 自体はここにない。構文は `renovate-config-validator` で確かめられ、
 何が拾われるかは手元で Renovate を `--platform=local` で動かせば確かめられる。それでも、実際に何が届くかは PR が届くまで分からない。
+
+## 追記（2026-10-21）: パッチ等は CI が通れば Renovate がマージし、Renovate だけの変更は週に一度リリースする
+
+### 自動マージ
+
+- patch・digest・pin・pinDigest の更新は、PR の CI が通ったら Renovate 自身がマージする（`automerge`）。minor と major は今までどおり PR が開くだけ。
+- `platformAutomerge` は切る。GitHub の auto-merge の許可や branch protection に頼らず、Renovate がチェックの通過を待ってマージする。
+- `ci.yml` は `pull_request` を絞り込まずに動くので、Renovate の PR はどれも CI を通ってからマージされる。
+
+### PR での image の build
+
+- Consequences に「image のビルドは版の tag を打つまで走らない」と書いたが、PR の CI はすでに image を作っている。
+  `npm test` に含まれる `test/image.test.ts` が、docker のある環境（GitHub の runner）で server と workspace の 2 つの image を build し、起動して確かめる。
+- そのため Dockerfile だけにかかわる更新（`golang` の image や sdctl の版）も、自動マージの前に image が作られる。push はしない。
+
+### 週に一度のリリース
+
+- 毎週月曜 9 時（JST）に `weekly-release.yml` が判定する（`scripts/weekly-release.ts`）。判定の材料は、最後の `vX.Y.Z` タグから `main` の HEAD までの、マージ以外のコミットである。
+- 次の 2 つを両方満たすときだけ、パッチ版を 1 つ上げてリリースする。満たさなければ何もせず、理由をログに残す。
+  - そのコミットの作者がすべて `renovate[bot]` である。
+  - image に入るファイルが変わっている。`.github/`・`renovate.json`・`mac/`・`docs/`・`test/` だけの変更は数えない。
+- 人のコミットが 1 つでも入っていれば、手のリリースに任せる。手で打つタグには変更の中身を書いているので、人の変更を「依存の更新」として出さないためである。
+  したがって、人の変更のあとは、次に手でリリースするまで自動のリリースは出ない。
+- 自動のタグも、手のタグと同じく注釈つきにする。メッセージは「依存の更新」であることと、含まれる Renovate のコミットの subject の一覧である。
+- `GITHUB_TOKEN` で push したタグでは `images.yml` が動かない。そこで同じ run の中で `images.yml` を呼び、image を push してからタグを push する。
+  image の push に失敗したときは、タグは残らない。手でタグを push したときは、今までどおり `images.yml` が動く。
 
 ## 関連 ADR
 
