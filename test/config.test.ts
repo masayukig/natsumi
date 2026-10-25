@@ -836,6 +836,7 @@ test('fork (ADR F04): the signal section is off when absent, approvals are off b
   rejects({ ...base(), signal: { ...signal, groups: { 'Iori Test': id } } }, 'signal.groups.Iori Test');
   rejects({ ...base(), signal: { ...signal, groups: { a: 'not an id' } } }, 'signal.groups.a', /base64/);
   rejects({ ...base(), signal: { ...signal, groups: { a: id, b: id } } }, 'signal.groups.b');
+  rejects({ ...base(), signal: { ...signal, groups: { 'g-0123abcd': id } } }, 'signal.groups.g-0123abcd');
   rejects({ ...base(), signal: { ...signal, group: 'x' } }, 'signal.group');
 });
 

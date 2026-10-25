@@ -16,8 +16,8 @@ import { SOURCES_PATH } from './view.ts';
  * Anyone in a group she is in can add her to another (groups v2), and Signal cannot stop it. So a group she is found in
  * (added, invited, or there at the start) that is not approved is asked about once in the owner's 1:1 chat: a 👍 (or a
  * quoted 参加/ok) approves it, a 👎 or ❌ (or 見送る/no) or no answer within a day makes her leave and block it. Until it
- * is approved nothing from it is written, said or answered. The groups in the config are approved from the start. Each
- * group's state is kept in a table of this fork's own, made here, as F02 and F04 do.
+ * is approved nothing from it is written, said or answered. The groups in the config are approved while they are listed
+ * there. Each group's state is kept in a table of this fork's own, made here, as F02 and F04 do.
  *
  * ponytail: lines are appended and never written again, so an edit, a deletion or a reaction in Signal is not seen;
  * keep the messages in SQLite and write the day again, as slack-archive.ts does, if that matters.
@@ -44,13 +44,15 @@ export interface GroupEnvelope {
     timestamp?: unknown; message?: unknown;
     groupInfo?: { groupId?: unknown; type?: unknown };
     mentions?: Mention[];
-    quote?: { authorNumber?: unknown; authorUuid?: unknown; text?: unknown };
+    quote?: { authorNumber?: unknown; authorUuid?: unknown; text?: unknown } | null;
     attachments?: { contentType?: unknown; filename?: unknown; size?: unknown }[];
   };
 }
 
 /** How long a group waits for the owner's answer before she leaves it. */
 export const GROUP_ANSWER_MS = 24 * 60 * 60 * 1000;
+/** How many times a question that could not be sent is tried again, on the sweeps after it. */
+const MAX_ASK_TRIES = 3;
 
 export interface SignalGroupsOptions {
   db: DatabaseSync;
@@ -64,7 +66,11 @@ export interface SignalGroupsOptions {
   };
   /** `sources/signal` in the data directory. */
   directory: string;
-  /** Directory name → group ID (base64), from the config: approved from the start, under that name. */
+  /**
+   * Directory name → group ID (base64), from the config: approved while it is listed, under that name. It is never
+   * written to the table, so a group taken out of the config is asked about like any other (unless the owner approved
+   * it before), and a name moved to another group moves with the config.
+   */
   groups: Readonly<Record<string, string>>;
   /** The number natsumi is registered as: a mention or quote of it is for her. */
   account: string;
@@ -76,65 +82,83 @@ export interface SignalGroupsOptions {
   log?: (line: string) => void;
 }
 
-interface GroupRow { group_id: string; name: string; title: string; state: 'pending' | 'approved' | 'refused'; invited: number; asked_at: string | null }
+interface GroupRow { group_id: string; name: string; title: string; state: 'pending' | 'approved' | 'refused'; asked_at: string; question: string; asked_ts: number | null; tries: number }
+/** A group as it stands: approved by the config, or as the table has it. */
+interface Standing { state: GroupRow['state']; name: string; title: string }
 
 export class SignalGroups {
   private readonly options: SignalGroupsOptions;
   private readonly now: () => number;
+  private readonly configured: Map<string, string>;
   /** Asking, joining and leaving go one at a time, so a group is never asked about twice. */
   private chain: Promise<void> = Promise.resolve();
   /** The profile names seen, by number and by UUID, so a mention can be written as a name. ponytail: in memory only. */
   private readonly names = new Map<string, string>();
+  /** The groups' names in Signal as the last listing had them, for the index. */
+  private readonly titles = new Map<string, string>();
+  /** Approved groups whose invitation could not be accepted, so the owner is told once. ponytail: in memory only. */
+  private readonly acceptFailed = new Set<string>();
   private writing: Promise<unknown> = Promise.resolve();
 
   constructor(options: SignalGroupsOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
+    this.configured = new Map(Object.entries(options.groups).map(([name, id]) => [id, name]));
     options.db.exec(`CREATE TABLE IF NOT EXISTS fork_signal_groups (
       group_id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
       state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'refused')),
-      invited INTEGER NOT NULL DEFAULT 0,
-      asked_at TEXT,
+      asked_at TEXT NOT NULL,
+      question TEXT NOT NULL DEFAULT '',
       asked_ts INTEGER UNIQUE,
+      tries INTEGER NOT NULL DEFAULT 0,
       decided_at TEXT
     ) STRICT`);
-    const approve = options.db.prepare(`INSERT INTO fork_signal_groups (group_id, name, state, decided_at) VALUES (?, ?, 'approved', ?)
-      ON CONFLICT (group_id) DO UPDATE SET name = excluded.name, state = 'approved'`);
-    for (const [name, id] of Object.entries(options.groups)) approve.run(id, name, isoAt(this.now()));
   }
 
   /**
-   * The groups signal-cli says she is in or invited to: any not known yet is asked about. A blocked one is left alone.
-   * ponytail: a group she was removed from looks like an invitation (isMember false) and is asked about too; read
-   * pendingMembers if that turns up.
+   * One sweep over the groups signal-cli lists: one she is in or invited to that is not known is asked about (a blocked
+   * one, or one she left, never is); a question that could not be sent is tried again; an approved group she is still
+   * only invited to is joined. A failed listing changes nothing.
    */
   sync(): Promise<void> {
     return this.enqueue(async () => {
-      const retitle = this.options.db.prepare(`UPDATE fork_signal_groups SET title = ? WHERE group_id = ?`);
-      for (const group of await this.list()) {
+      // Those that failed on an earlier sweep, not one asked just now.
+      const unsent = this.options.db.prepare(`SELECT * FROM fork_signal_groups WHERE state = 'pending' AND asked_ts IS NULL AND tries < ?`)
+        .all(MAX_ASK_TRIES) as unknown as GroupRow[];
+      const listed = await this.list();
+      for (const group of listed) {
         if (typeof group.id !== 'string') continue;
-        if (this.row(group.id)) { if (typeof group.name === 'string') retitle.run(oneLine(group.name), group.id); }
-        else if (group.isBlocked !== true) await this.ask(group.id, undefined, group);
+        if (typeof group.name === 'string') this.titles.set(group.id, oneLine(group.name));
+        const standing = this.standing(group.id);
+        if (!standing && group.isBlocked !== true && (group.isMember === true || this.invited(group))) await this.ask(group.id, undefined, group);
+        if (standing?.state === 'approved' && group.isMember !== true && this.invited(group)) await this.accept(group.id, standing.title);
       }
+      for (const row of unsent) if (!this.configured.has(row.group_id)) await this.send(row);
       await this.writeIndex();
     });
   }
 
-  /** The approvals the owner did not answer within a day: she leaves those groups and blocks them. */
+  /**
+   * The questions the owner did not answer within a day of being asked: she leaves those groups and blocks them. A
+   * group the config approves is never left.
+   */
   expire(): Promise<void> {
     const before = isoAt(this.now() - GROUP_ANSWER_MS);
     const late = this.options.db.prepare(`SELECT group_id FROM fork_signal_groups WHERE state = 'pending' AND asked_at <= ?`).all(before) as { group_id: string }[];
     return this.enqueue(async () => { for (const { group_id } of late) await this.refuse(group_id, '24 時間答えがなかったので'); });
   }
 
-  /** A reaction by the owner. True when it is on a group's question, so it is not also said to natsumi. */
+  /**
+   * A reaction by the owner. True when it is on a group's question, so it is not also said to natsumi; one on a question
+   * already decided (answered, or a day old) changes nothing.
+   */
   react(sentAt: number, emoji: string): boolean {
     const row = this.asked(sentAt);
     if (!row) return false;
     const decision = emoji.startsWith('👍') ? 'approve' : emoji.startsWith('👎') || emoji === '❌' ? 'refuse' : undefined;
-    if (decision) this.decide(row, decision);
+    if (decision) this.decide(row.group_id, decision);
     return true;
   }
 
@@ -144,48 +168,47 @@ export class SignalGroups {
     const word = text.trim().toLowerCase();
     const decision = word === '参加' || word === 'ok' ? 'approve' : word === '見送る' || word === 'no' ? 'refuse' : undefined;
     if (!row || !decision) return false;
-    this.decide(row, decision);
+    this.decide(row.group_id, decision);
     return true;
   }
 
-  /** Waits for the asking, joining and leaving started so far. */
+  /** Waits for the asking, joining, leaving and writing started so far. */
   async idle(): Promise<void> {
-    let current: Promise<void>;
-    do { current = this.chain; await current; } while (current !== this.chain);
+    let current: [Promise<unknown>, Promise<unknown>];
+    do { current = [this.chain, this.writing]; await Promise.all(current); } while (current[0] !== this.chain || current[1] !== this.writing);
   }
 
-  private decide(row: GroupRow, decision: 'approve' | 'refuse'): void {
+  private decide(groupId: string, decision: 'approve' | 'refuse'): void {
     void this.enqueue(async () => {
-      if (this.row(row.group_id)?.state !== 'pending') return;
-      if (decision === 'refuse') { await this.refuse(row.group_id, ''); return; }
-      this.options.db.prepare(`UPDATE fork_signal_groups SET state = 'approved', decided_at = ? WHERE group_id = ?`).run(isoAt(this.now()), row.group_id);
-      let joined = '';
-      if (row.invited) {
-        try { await this.options.api.acceptGroup?.(row.group_id); } catch (error) {
-          this.log(`an invitation could not be accepted (${describe(error)})`);
-          joined = '。ただし招待を受けられませんでした。Signal のアプリで確かめてください';
-        }
-      }
+      const row = this.row(groupId);
+      if (row?.state !== 'pending' || this.configured.has(groupId)) return;
+      if (decision === 'refuse') { await this.refuse(groupId, ''); return; }
+      this.options.db.prepare(`UPDATE fork_signal_groups SET state = 'approved', decided_at = ? WHERE group_id = ?`).run(isoAt(this.now()), groupId);
       await this.writeIndex();
-      await this.options.api.send(`→ 参加しました: 『${row.title}』。${SIGNAL_PATH}/${row.name} に記録します${joined}`);
+      await this.options.api.send(`→ 参加しました: 『${row.title}』。${SIGNAL_PATH}/${row.name} に記録します`);
+      // An invitation is accepted now rather than at the next sweep.
+      const group = (await this.list()).find(candidate => candidate.id === groupId);
+      if (group && group.isMember !== true && this.invited(group)) await this.accept(groupId, row.title);
     });
   }
 
-  /** `INDEX.md`: each approved group's directory and its name in Signal, which may change and is not a directory. */
-  private async writeIndex(): Promise<void> {
-    const rows = this.options.db.prepare(`SELECT name, title FROM fork_signal_groups WHERE state = 'approved' ORDER BY name`).all() as
-      { name: string; title: string }[];
-    const lines = ['# Signal のグループ', '', '参加しているグループの記録のディレクトリと、Signal でのグループ名です。読み方は /manual/signal.md にあります。', ''];
-    if (rows.length === 0) lines.push('まだ参加しているグループはありません。');
-    else lines.push('| ディレクトリ | グループ名 |', '| --- | --- |', ...rows.map(row => `| ${SIGNAL_PATH}/${row.name} | ${row.title.replaceAll('|', '\\|')} |`));
-    await mkdir(this.options.directory, { recursive: true, mode: 0o750 });
-    await writeFileAtomically(join(this.options.directory, 'INDEX.md'), `${lines.join('\n')}\n`, FILE_MODE);
+  /** Accepts the invitation to an approved group. A failure is tried again on every sweep, and told to the owner once. */
+  private async accept(groupId: string, title: string): Promise<void> {
+    try {
+      await this.options.api.acceptGroup?.(groupId);
+      this.acceptFailed.delete(groupId);
+    } catch (error) {
+      this.log(`an invitation could not be accepted (${describe(error)})`);
+      if (this.acceptFailed.has(groupId)) return;
+      this.acceptFailed.add(groupId);
+      await this.options.api.send(`→ 『${title}』の招待を受けられませんでした。毎分試し直します。Signal のアプリでも確かめてください`);
+    }
   }
 
   /** Leaves and blocks a group, records it as refused, and tells the owner what came of it. */
   private async refuse(groupId: string, why: string): Promise<void> {
     const row = this.row(groupId);
-    if (!row || row.state !== 'pending') return;
+    if (!row || row.state !== 'pending' || this.configured.has(groupId)) return;
     this.options.db.prepare(`UPDATE fork_signal_groups SET state = 'refused', decided_at = ? WHERE group_id = ?`).run(isoAt(this.now()), groupId);
     const failed: string[] = [];
     try { await this.options.api.quitGroup?.(groupId); } catch (error) { failed.push('退出'); this.log(`a group could not be left (${describe(error)})`); }
@@ -194,21 +217,64 @@ export class SignalGroups {
     await this.options.api.send(`→ ${why === '' ? '' : `${why}、`}『${row.title}』から${done}`);
   }
 
-  /** Asks the owner about a group once, and records it as waiting. */
+  /**
+   * Records a group as waiting and asks the owner about it. The row comes first, so a send that fails after it was
+   * delivered never asks again every minute: it is tried again on the next sweeps, a few times, and the day counts
+   * from the first try. A group listed as one she is neither in nor invited to (she left it) is not asked about.
+   */
   private async ask(groupId: string, adder: string | undefined, known?: ListedGroup): Promise<void> {
-    if (this.row(groupId)) return;
+    if (this.standing(groupId)) return;
     const group = known ?? (await this.list()).find(candidate => candidate.id === groupId);
+    if (group && group.isMember !== true && !this.invited(group)) return;
     const title = typeof group?.name === 'string' && group.name.trim() !== '' ? oneLine(group.name) : '名前のないグループ';
-    const invited = group?.isMember === false;
+    const invited = group !== undefined && group.isMember !== true;
     const members = Array.isArray(group?.members) ? `（メンバー ${group.members.length} 人）` : '';
     const who = adder === undefined ? '誰か' : `${adder}さん`;
-    const sentAt = await this.options.api.send([
+    const question = [
       `${who}が Signal のグループ『${title}』${members}に${this.options.selfName}を${invited ? '招待' : '追加'}しました。参加しますか？`,
       '👍 で参加、👎 で退出してブロック（引用して「参加」「見送る」でも）。24 時間答えがなければ退出してブロックします。',
-    ].join('\n'));
+    ].join('\n');
     const name = `g-${createHash('sha256').update(groupId).digest('hex').slice(0, 8)}`;
-    this.options.db.prepare(`INSERT INTO fork_signal_groups (group_id, name, title, state, invited, asked_at, asked_ts)
-      VALUES (?, ?, ?, 'pending', ?, ?, ?)`).run(groupId, name, title, invited ? 1 : 0, isoAt(this.now()), sentAt);
+    this.options.db.prepare(`INSERT INTO fork_signal_groups (group_id, name, title, state, asked_at, question) VALUES (?, ?, ?, 'pending', ?, ?)`)
+      .run(groupId, name, title, isoAt(this.now()), question);
+    await this.send(this.row(groupId)!);
+  }
+
+  /** Sends a waiting group's question, once it is sent no more. */
+  private async send(row: GroupRow): Promise<void> {
+    if (row.asked_ts !== null) return;
+    this.options.db.prepare('UPDATE fork_signal_groups SET tries = tries + 1 WHERE group_id = ?').run(row.group_id);
+    try {
+      const sentAt = await this.options.api.send(row.question);
+      this.options.db.prepare('UPDATE fork_signal_groups SET asked_ts = ? WHERE group_id = ?').run(sentAt, row.group_id);
+    } catch (error) {
+      this.log(`a question about a group could not be sent (${describe(error)}); it is tried again on the next sweep`);
+    }
+  }
+
+  /** Whether her own account is among a group's pending members: she is invited. */
+  private invited(group: ListedGroup): boolean {
+    return objects<{ number?: unknown }>(group.pendingMembers).some(member => member.number === this.options.account);
+  }
+
+  private standing(groupId: string): Standing | undefined {
+    const name = this.configured.get(groupId);
+    if (name !== undefined) return { state: 'approved', name, title: this.titles.get(groupId) ?? name };
+    const row = this.row(groupId);
+    return row && { state: row.state, name: row.name, title: row.title };
+  }
+
+  /** `INDEX.md`: each approved group's directory and its name in Signal, which may change and is not a directory. */
+  private async writeIndex(): Promise<void> {
+    const approved = this.options.db.prepare(`SELECT group_id, name, title FROM fork_signal_groups WHERE state = 'approved'`).all() as
+      { group_id: string; name: string; title: string }[];
+    const rows = [...approved.filter(row => !this.configured.has(row.group_id)),
+      ...[...this.configured].map(([id, name]) => ({ name, title: this.titles.get(id) ?? '' }))].sort((a, b) => a.name.localeCompare(b.name));
+    const lines = ['# Signal のグループ', '', '参加しているグループの記録のディレクトリと、Signal でのグループ名です。読み方は /manual/signal.md にあります。', ''];
+    if (rows.length === 0) lines.push('まだ参加しているグループはありません。');
+    else lines.push('| ディレクトリ | グループ名 |', '| --- | --- |', ...rows.map(row => `| ${SIGNAL_PATH}/${row.name} | ${row.title.replaceAll('|', '\\|')} |`));
+    await mkdir(this.options.directory, { recursive: true, mode: 0o750 });
+    await writeFileAtomically(join(this.options.directory, 'INDEX.md'), `${lines.join('\n')}\n`, FILE_MODE);
   }
 
   private async list(): Promise<ListedGroup[]> {
@@ -244,20 +310,20 @@ export class SignalGroups {
     const groupId = message?.groupInfo?.groupId;
     if (!message || typeof groupId !== 'string') return Promise.resolve();
     const from = typeof envelope.sourceName === 'string' && envelope.sourceName.trim() !== '' ? oneLine(envelope.sourceName) : 'someone';
-    const row = this.row(groupId);
-    if (!row) {
+    const standing = this.standing(groupId);
+    if (!standing) {
       const adder = message.groupInfo?.type === 'UPDATE' && from !== 'someone' ? from : undefined;
       return this.enqueue(() => this.ask(groupId, adder));
     }
-    if (row.state !== 'approved') return Promise.resolve();
-    const group = row.name;
+    if (standing.state !== 'approved') return Promise.resolve();
+    const group = standing.name;
     for (const key of [envelope.sourceNumber, envelope.sourceUuid]) if (typeof key === 'string' && from !== 'someone') this.names.set(key, from);
     const raw = typeof message.message === 'string' ? message.message : '';
-    const attachments = (Array.isArray(message.attachments) ? message.attachments : []).map(noted);
+    const attachments = objects<{ contentType?: unknown; filename?: unknown; size?: unknown }>(message.attachments).map(noted);
     if (raw.trim() === '' && attachments.length === 0) return Promise.resolve();
-    const mentions = Array.isArray(message.mentions) ? message.mentions : [];
+    const mentions = objects<Mention>(message.mentions);
     const mentioned = mentions.some(mention => this.isMe(mention.number));
-    const quote = message.quote;
+    const quote = typeof message.quote === 'object' && message.quote !== null ? message.quote : undefined;
     const quotedMe = quote !== undefined && this.isMe(quote.authorNumber);
     const ms = typeof message.timestamp === 'number' ? message.timestamp : typeof envelope.timestamp === 'number' ? envelope.timestamp : Date.now();
     const quoted = quote && typeof quote.text === 'string' ? {
@@ -322,7 +388,12 @@ function noted(attachment: { contentType?: unknown; filename?: unknown; size?: u
 }
 
 /** A group as signal-cli's listGroups shows it, as far as asking about it needs. */
-export interface ListedGroup { id?: unknown; name?: unknown; isMember?: unknown; isBlocked?: unknown; members?: unknown[] }
+export interface ListedGroup { id?: unknown; name?: unknown; isMember?: unknown; isBlocked?: unknown; members?: unknown[]; pendingMembers?: unknown[] }
+
+/** The objects of a list from the daemon; anything else in it (null, a string) is left out, as is a list that is not one. */
+export function objects<T extends object>(list: unknown): T[] {
+  return Array.isArray(list) ? list.filter((item): item is T => typeof item === 'object' && item !== null) : [];
+}
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown';

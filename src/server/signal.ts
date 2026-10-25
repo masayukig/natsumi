@@ -4,7 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { DecideInput, DecideOutcome } from './dove.ts';
 import { isWithin, realPathAllowingMissing } from './paths.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
-import type { GroupEnvelope, ListedGroup } from './signal-groups.ts';
+import { objects, type GroupEnvelope, type ListedGroup } from './signal-groups.ts';
 import { outcome, reason, where, type ApprovalRow, type Shown } from './slack-approvals.ts';
 import { WORK_PATH } from './view.ts';
 
@@ -103,7 +103,7 @@ interface Envelope {
   dataMessage?: {
     timestamp?: unknown; message?: unknown;
     reaction?: { emoji?: unknown; targetSentTimestamp?: unknown; isRemove?: unknown };
-    quote?: { id?: unknown };
+    quote?: { id?: unknown } | null;
     attachments?: { id?: unknown; contentType?: unknown; filename?: unknown; size?: unknown }[];
     groupInfo?: unknown;
   };
@@ -187,8 +187,12 @@ export class SignalOwner {
    */
   handle(event: Record<string, unknown>): void | Promise<void> {
     const envelope = event.envelope as Envelope | undefined;
-    // A group message is never the owner's 1:1 (ADR F06), whichever group and whoever wrote it.
-    if (envelope?.dataMessage?.groupInfo) return this.options.groups?.handle(envelope as GroupEnvelope);
+    // A group message is never the owner's 1:1 (ADR F06), whichever group and whoever wrote it. It is not awaited: asking
+    // about a group lists the groups and sends, which must not hold the owner's next message or answer.
+    if (envelope?.dataMessage?.groupInfo) {
+      void this.options.groups?.handle(envelope as GroupEnvelope).catch(() => { /* logged there */ });
+      return;
+    }
     // Early envelopes had no UUID, so the owner is known by the number.
     if (envelope?.sourceNumber !== this.options.owner) return;
     const message = envelope.dataMessage;
@@ -205,7 +209,7 @@ export class SignalOwner {
       return;
     }
     const text = typeof message.message === 'string' && message.message.trim() !== '' ? message.message : undefined;
-    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const attachments = objects<NonNullable<NonNullable<Envelope['dataMessage']>['attachments']>[number]>(message.attachments);
     if (text === undefined && attachments.length === 0) return;
     const quoted = message.quote?.id;
     if (text !== undefined && attachments.length === 0 && typeof quoted === 'number'

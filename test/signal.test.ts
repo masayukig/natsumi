@@ -371,39 +371,56 @@ const inGroup = (message: string | null, extra: Record<string, unknown> = {}, fr
 class FakeGroupSignal extends FakeSignal {
   groups: ListedGroup[] = [];
   done: string[] = [];
-  async listGroups() { return this.groups; }
+  failSends = 0;
+  failAccepts = 0;
+  hangListing = false;
+  async listGroups() { return this.hangListing ? new Promise<ListedGroup[]>(() => {}) : this.groups; }
   async quitGroup(groupId: string) { this.done.push(`quit ${groupId}`); }
   async block(groupId: string) { this.done.push(`block ${groupId}`); }
-  async acceptGroup(groupId: string) { this.done.push(`accept ${groupId}`); }
+  async acceptGroup(groupId: string) {
+    this.done.push(`accept ${groupId}`);
+    if (this.failAccepts-- > 0) throw new Error('rpc error -1');
+  }
+  override async send(message: string, attachments?: string[]) {
+    const at = await super.send(message, attachments);
+    if (this.failSends-- > 0) throw new Error('timed out after delivery');
+    return at;
+  }
 }
 
-async function groupsUnderTest(t: { after: (fn: () => Promise<void>) => void }) {
+async function groupsUnderTest(t: { after: (fn: () => Promise<void>) => void }, configured: Record<string, string> = { 'iori-test': GROUP }) {
   const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-groups-'));
   t.after(async () => { await rm(root, { recursive: true, force: true }); });
   const attentions: Attention[] = [];
   const said: { requestId: string; text: string }[] = [];
   const api = new FakeGroupSignal();
   const clock = { now: AT };
-  const groups = new SignalGroups({ db: new DatabaseSync(':memory:'), api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
-    account: BOT, selfName: 'いおり', timeZone: 'Asia/Tokyo', now: () => clock.now, attention: attention => { attentions.push(attention); } });
+  const db = new DatabaseSync(':memory:');
+  const make = (groups = configured) => new SignalGroups({ db, api, directory: join(root, 'signal'), groups, account: BOT, selfName: 'いおり',
+    timeZone: 'Asia/Tokyo', now: () => clock.now, attention: attention => { attentions.push(attention); } });
+  const groups = make();
   const owner = new SignalOwner({ api, owner: OWNER, groups, say: input => { said.push(input); } });
+  /** One event, and what it started. */
+  const event = async (envelope: Record<string, unknown>) => { owner.handle({ envelope }); await groups.idle(); };
   const lines = async (dir = 'iori-test') => (await readFile(join(root, 'signal', dir, '2026-10-25.jsonl'), 'utf8').catch(() => ''))
     .split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
-  return { root, api, clock, groups, owner, said, attentions, lines };
+  return { root, api, clock, db, make, groups, owner, event, said, attentions, lines };
 }
-const OTHER_DIR = `g-${createHash('sha256').update(OTHER_GROUP).digest('hex').slice(0, 8)}`;
+const dirOf = (id: string) => `g-${createHash('sha256').update(id).digest('hex').slice(0, 8)}`;
+const OTHER_DIR = dirOf(OTHER_GROUP);
+const THIRD_GROUP = 'BBBBKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=';
+const QUESTION = /参加しますか？/;
 
 test('a group not approved is asked about once in the owner\'s 1:1; until then nothing from it is written or said', async t => {
-  const { api, groups, owner, said, attentions, lines } = await groupsUnderTest(t);
+  const { api, event, said, attentions, lines } = await groupsUnderTest(t);
   api.groups = [{ id: OTHER_GROUP, name: '飲み会', isMember: true, members: [{}, {}, {}] }];
-  await owner.handle({ envelope: inGroup(null, {}, '+810000000009', OTHER_GROUP, 'UPDATE') });
-  await owner.handle({ envelope: inGroup('こんにちは', {}, OWNER, OTHER_GROUP) });
-  await groups.idle();
+  await event(inGroup(null, {}, '+810000000009', OTHER_GROUP, 'UPDATE'));
+  await event(inGroup('こんにちは', {}, OWNER, OTHER_GROUP));
   assert.deepEqual(api.sent.map(entry => entry.message), ['佐藤さんが Signal のグループ『飲み会』（メンバー 3 人）にいおりを追加しました。参加しますか？\n'
     + '👍 で参加、👎 で退出してブロック（引用して「参加」「見送る」でも）。24 時間答えがなければ退出してブロックします。']);
   assert.deepEqual(await lines(OTHER_DIR), []);
   // The owner's message in an approved group is written, and is not the owner's 1:1 either.
-  await owner.handle({ envelope: inGroup('グループでマスターが', {}, OWNER) });
+  await event(inGroup('グループでマスターが', {}, OWNER));
   // Without a groups handler, a group message is still never the owner's.
   const bare: { requestId: string; text: string }[] = [];
   new SignalOwner({ api: new FakeSignal(), owner: OWNER, say: input => { bare.push(input); } }).handle({ envelope: inGroup('x', {}, OWNER) });
@@ -411,33 +428,56 @@ test('a group not approved is asked about once in the owner\'s 1:1; until then n
   assert.deepEqual((await lines()).map(line => line.text), ['グループでマスターが']);
 });
 
-test('a 👍 approves a group (accepting an invitation), and what is said after is written and indexed', async t => {
-  const { root, api, groups, owner, said, lines } = await groupsUnderTest(t);
-  api.groups = [{ id: OTHER_GROUP, name: '飲み会', isMember: false, members: [{}] }];
-  await groups.sync();
-  assert.match(api.sent[0]!.message, /^誰かが Signal のグループ『飲み会』（メンバー 1 人）にいおりを招待しました/);
-  owner.handle({ envelope: reaction('👍', api.sent[0]!.at) });
-  await groups.idle();
-  assert.deepEqual(api.done, [`accept ${OTHER_GROUP}`]);
-  assert.equal(api.sent[1]!.message, `→ 参加しました: 『飲み会』。/sources/signal/${OTHER_DIR} に記録します`);
-  await owner.handle({ envelope: inGroup('ようこそ', {}, '+810000000009', OTHER_GROUP) });
-  assert.deepEqual((await lines(OTHER_DIR)).map(line => line.text), ['ようこそ']);
-  assert.match(await readFile(join(root, 'signal', 'INDEX.md'), 'utf8'), new RegExp(`\\| /sources/signal/${OTHER_DIR} \\| 飲み会 \\|`));
-  // It is not asked about again.
-  await groups.sync();
-  assert.equal(api.sent.length, 2);
-  assert.deepEqual(said, []);
+test('a message from an unknown group never holds the owner\'s next message, however long the asking takes', async t => {
+  const { api, owner, said } = await groupsUnderTest(t);
+  api.hangListing = true;
+  assert.equal(owner.handle({ envelope: inGroup('こんにちは', {}, '+810000000009', OTHER_GROUP) }), undefined);
+  owner.handle({ envelope: text('元気？') });
+  assert.deepEqual(said.map(entry => entry.text), ['元気？']);
 });
 
-test('a 👎 or no answer within a day makes her leave and block the group, which stays let go', async t => {
-  const { api, clock, groups, owner, lines } = await groupsUnderTest(t);
-  const third = 'BBBBKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=';
-  api.groups = [{ id: OTHER_GROUP, name: 'A', isMember: true }, { id: third, name: 'B', isMember: true },
-    { id: 'CCCCKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=', name: 'blocked', isBlocked: true }];
+test('a 👍 approves a group and accepts her invitation; what is said after is written and indexed, and it is not asked again', async t => {
+  const { root, api, groups, event, said, lines } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: '飲み会', isMember: false, members: [{}], pendingMembers: [{ number: BOT, uuid: 'uuid-bot' }] }];
+  await groups.sync();
+  assert.match(api.sent[0]!.message, /^誰かが Signal のグループ『飲み会』（メンバー 1 人）にいおりを招待しました/);
+  await event(reaction('👍', api.sent[0]!.at));
+  assert.deepEqual(api.done, [`accept ${OTHER_GROUP}`]);
+  assert.equal(api.sent[1]!.message, `→ 参加しました: 『飲み会』。/sources/signal/${OTHER_DIR} に記録します`);
+  await event(inGroup('ようこそ', {}, '+810000000009', OTHER_GROUP));
+  assert.deepEqual((await lines(OTHER_DIR)).map(line => line.text), ['ようこそ']);
+  assert.match(await readFile(join(root, 'signal', 'INDEX.md'), 'utf8'), new RegExp(`\\| /sources/signal/${OTHER_DIR} \\| 飲み会 \\|`));
+  api.groups = [{ id: OTHER_GROUP, name: '飲み会', isMember: true }];
+  await groups.sync();
+  assert.deepEqual([api.sent.length, said], [2, []]);
+});
+
+test('an approved group she is still only invited to is joined on every sweep until it works, and a failure is told once', async t => {
+  const { api, groups } = await groupsUnderTest(t);
+  // The config's group, which was never asked about.
+  api.groups = [{ id: GROUP, name: 'いおりテスト', isMember: false, pendingMembers: [{ number: BOT }] }];
+  api.failAccepts = 2;
+  await groups.sync();
+  await groups.sync();
+  await groups.sync();
+  assert.deepEqual(api.done, [`accept ${GROUP}`, `accept ${GROUP}`, `accept ${GROUP}`]);
+  assert.deepEqual(api.sent.map(entry => entry.message), ['→ 『いおりテスト』の招待を受けられませんでした。毎分試し直します。Signal のアプリでも確かめてください']);
+});
+
+test('a group she left, or blocked, is never asked about', async t => {
+  const { api, groups } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: '抜けた', isMember: false, pendingMembers: [{ number: '+810000000009' }] },
+    { id: THIRD_GROUP, name: 'blocked', isMember: true, isBlocked: true }];
+  await groups.sync();
+  assert.deepEqual(api.sent, []);
+});
+
+test('a 👎 or no answer within a day makes her leave and block the group, which stays let go; a late answer changes nothing', async t => {
+  const { api, clock, groups, event, lines } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: 'A', isMember: true }, { id: THIRD_GROUP, name: 'B', isMember: true }];
   await groups.sync();
   assert.equal(api.sent.length, 2);
-  owner.handle({ envelope: text('見送る', { quote: { id: api.sent[0]!.at, author: BOT, text: '…' } }) });
-  await groups.idle();
+  await event(text('見送る', { quote: { id: api.sent[0]!.at, author: BOT, text: '…' } }));
   assert.deepEqual(api.done, [`quit ${OTHER_GROUP}`, `block ${OTHER_GROUP}`]);
   assert.equal(api.sent[2]!.message, '→ 『A』から退出してブロックしました');
   clock.now += 23 * 60 * 60 * 1000;
@@ -445,21 +485,67 @@ test('a 👎 or no answer within a day makes her leave and block the group, whic
   assert.equal(api.done.length, 2);
   clock.now += 60 * 60 * 1000;
   await groups.expire();
-  assert.deepEqual(api.done.slice(2), [`quit ${third}`, `block ${third}`]);
+  assert.deepEqual(api.done.slice(2), [`quit ${THIRD_GROUP}`, `block ${THIRD_GROUP}`]);
   assert.equal(api.sent[3]!.message, '→ 24 時間答えがなかったので、『B』から退出してブロックしました');
-  await owner.handle({ envelope: inGroup('まだいる？', {}, '+810000000009', OTHER_GROUP) });
+  await event(reaction('👍', api.sent[1]!.at));
+  await event(inGroup('まだいる？', {}, '+810000000009', OTHER_GROUP));
   await groups.sync();
   await groups.idle();
-  assert.deepEqual([api.sent.length, await lines(OTHER_DIR)], [4, []]);
+  assert.deepEqual([api.sent.length, api.done.length, await lines(OTHER_DIR)], [4, 4, []]);
+});
+
+test('a question is left to expire across a restart, counted from when it was asked', async t => {
+  const { api, clock, make, groups } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: 'A', isMember: true }];
+  await groups.sync();
+  clock.now += 25 * 60 * 60 * 1000;
+  const again = make();
+  await again.sync();
+  await again.expire();
+  assert.deepEqual(api.done, [`quit ${OTHER_GROUP}`, `block ${OTHER_GROUP}`]);
+  assert.equal(api.sent.filter(entry => QUESTION.test(entry.message)).length, 1);
+});
+
+test('a question whose send failed is not asked again every minute: it is tried again a few times, and answered as usual once sent', async t => {
+  const { api, db, groups, event } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: 'A', isMember: true }];
+  api.failSends = 1; // delivered, but the answer was lost
+  await groups.sync();
+  assert.equal(api.sent.length, 1);
+  await groups.sync();
+  assert.equal(api.sent.length, 2);
+  await event(reaction('👍', api.sent[1]!.at));
+  assert.equal((db.prepare('SELECT state FROM fork_signal_groups').get() as { state: string }).state, 'approved');
+  // One that never goes is given up after three tries; the day still counts.
+  api.groups.push({ id: THIRD_GROUP, name: 'B', isMember: true });
+  api.failSends = 10;
+  for (let n = 0; n < 5; n++) await groups.sync();
+  assert.equal(api.sent.filter(entry => entry.message.includes('『B』')).length, 3);
+});
+
+test('the config\'s names may be renamed, swapped or taken away; a group taken out of it is asked about', async t => {
+  const { api, make } = await groupsUnderTest(t, { foo: GROUP, bar: OTHER_GROUP });
+  make({ foo: OTHER_GROUP, bar: GROUP });
+  make({ foo: THIRD_GROUP });
+  const groups = make({ foo: GROUP });
+  api.groups = [{ id: GROUP, name: 'x', isMember: true }, { id: OTHER_GROUP, name: 'y', isMember: true }];
+  await groups.sync();
+  assert.deepEqual(api.sent.map(entry => /『(.)』/.exec(entry.message)?.[1]), ['y']);
+});
+
+test('a malformed group message is written as far as it can be, and never throws', async t => {
+  const { event, lines } = await groupsUnderTest(t);
+  await event(inGroup('￼ やあ', { mentions: [null, { number: BOT, start: 0, length: 1 }], attachments: [null, 'x'], quote: null }));
+  assert.deepEqual(await lines(), [{ at: '2026-10-25 12:04:05', from: '佐藤', text: '@いおり やあ' }]);
 });
 
 test('every message in an approved group is written as a line of its local day; a mention or a quote of her is an attention', async t => {
-  const { owner, said, attentions, lines } = await groupsUnderTest(t);
-  await owner.handle({ envelope: inGroup('おはよう') });
-  await owner.handle({ envelope: inGroup('￼ 見て', { mentions: [{ number: BOT, uuid: 'uuid-bot', start: 0, length: 1 }],
-    attachments: [{ id: 'x', contentType: 'image/jpeg', filename: 'cat.jpg', size: 204_800 }] }, OWNER) });
-  await owner.handle({ envelope: inGroup('そうだね', { quote: { id: 1, authorNumber: BOT, text: 'いおりの発言' } }) });
-  await owner.handle({ envelope: inGroup(null, { reaction: { emoji: '👍', targetSentTimestamp: 1, isRemove: false } }) });
+  const { event, said, attentions, lines } = await groupsUnderTest(t);
+  await event(inGroup('おはよう'));
+  await event(inGroup('￼ 見て', { mentions: [{ number: BOT, uuid: 'uuid-bot', start: 0, length: 1 }],
+    attachments: [{ id: 'x', contentType: 'image/jpeg', filename: 'cat.jpg', size: 204_800 }] }, OWNER));
+  await event(inGroup('そうだね', { quote: { id: 1, authorNumber: BOT, text: 'いおりの発言' } }));
+  await event(inGroup(null, { reaction: { emoji: '👍', targetSentTimestamp: 1, isRemove: false } }));
   assert.deepEqual(await lines(), [
     { at: '2026-10-25 12:04:05', from: '佐藤', text: 'おはよう' },
     { at: '2026-10-25 12:04:05', from: 'マスター', text: '@いおり 見て', attachments: ['cat.jpg (image/jpeg, 200 KB)'] },

@@ -1053,6 +1053,7 @@ function parseSignal(value: unknown, path: string): SignalConfig {
     const entryPath = `${path}.groups.${name}`;
     // The name becomes a directory and the first part of every reference she writes, as a Slack workspace's does.
     if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    if (/^g-[0-9a-f]{8}$/.test(name)) throw new ConfigError(entryPath, 'g- and 8 hex digits is the name of a group the owner approved in Signal');
     if (typeof id !== 'string' || !GROUP_ID.test(id)) throw new ConfigError(entryPath, 'must be the group ID in base64, as signal-cli listGroups shows it');
     if (Object.values(groups).includes(id)) throw new ConfigError(entryPath, 'names a group already listed');
     groups[name] = id;
