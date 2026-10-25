@@ -39,6 +39,7 @@ import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
 import { SIGNAL_REGISTRATION, SIGNAL_SOURCE, SignalGroups } from './signal-groups.ts';
+import { RETRY_DELAY_MS } from './turn-retry.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
@@ -320,7 +321,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
       ...(config.signal ? { ownerOnSignal: true } : {}),
-      tellCutShort: true,
+      tellCutShort: true, retryFailedTurns: { delayMs: RETRY_DELAY_MS },
     });
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
     if (theDove) {

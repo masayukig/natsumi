@@ -43,6 +43,7 @@ import { checkLetter, Postbox, POSTBOX_DEFAULTS, PostboxLedger, type LetterRules
 import { judgePill, nightOf, type PillInProgress, type PillJudgement, type PillKind, type RotationKind } from './sleeping-pill.ts';
 import { parseView, viewImage } from './view.ts';
 import { CutShortNotices, waitedOnKinds } from './turn-notice.ts';
+import { hadOutsideEffect, TurnRetries } from './turn-retry.ts';
 import type { ShownAttachment } from '../shared/protocol/conversation.ts';
 
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
@@ -278,6 +279,8 @@ export interface LoopOptions {
   ownerOnSignal?: boolean;
   /** Fork (ADR F05): the server tells the owner when a turn someone waits on is cut short. Off unless the server sets it. */
   tellCutShort?: boolean;
+  /** Fork (ADR F08): an event turn whose model call failed with nothing sent is tried once more after `delayMs`. Off unless set. */
+  retryFailedTurns?: { delayMs: number };
   /** The files the owner attaches to a message (ADR 0071). Without it a message naming any is refused. */
   uploads?: LoopUploads;
   now?: () => number;
@@ -409,6 +412,7 @@ export class ThinkingLoop {
   private workspaceNotice = '';
   /** Fork (ADR F05): when the server last told the owner a turn was cut short. */
   private readonly cutShortNotices = new CutShortNotices();
+  private readonly turnRetries = new TurnRetries();
   /** The routes, the default, the route the session is on (unset until it is open) and the route chosen (ADR 0046). */
   private readonly routes: { list: LoopRoute[]; defaultRoute: string };
   private route: LoopRoute | undefined;
@@ -1118,6 +1122,20 @@ export class ThinkingLoop {
     });
   }
 
+  /**
+   * Fork (ADR F08): the events of a failed turn wait as queued, so a restart meanwhile picks them up, and go back on
+   * the queue after `delayMs`.
+   */
+  private retryLater(eventIds: string[], delayMs: number): void {
+    for (const eventId of eventIds) this.store.setEventState(eventId, 'queued');
+    this.log(`thinking loop: the turn failed (model-error) with nothing sent; retrying once in ${Math.round(delayMs / 1000)} s`);
+    setTimeout(() => {
+      if (this.closing) return;
+      this.queue.push(...eventIds.filter(eventId => !this.queue.includes(eventId)));
+      this.pump();
+    }, delayMs).unref();
+  }
+
   private settle() {
     if (this.running || this.queue.length > 0) return;
     for (const resolve of this.idleWaiters.splice(0)) resolve();
@@ -1188,8 +1206,12 @@ export class ThinkingLoop {
         eventId: handling.eventId, messageId: handling.messageId, status, ...(status === 'failed' ? { reason: failure } : {}),
       });
     }
+    // Fork (ADR F08): a model call that failed with nothing sent is tried once more, before anyone is told.
+    const retry = failure !== undefined && kind === 'events' && this.options.retryFailedTurns !== undefined
+      && this.turnRetries.take(failure, handledIds, hadOutsideEffect(session.messages.slice(before), this.declaredNames));
+    if (retry) this.retryLater(handledIds, this.options.retryFailedTurns!.delayMs);
     // Fork (ADR F05): she cannot say the turn was cut, so the server does, through the path of her notices.
-    const cutNotice = failure && kind === 'events' && this.options.tellCutShort === true
+    const cutNotice = !retry && failure && kind === 'events' && this.options.tellCutShort === true
       ? this.cutShortNotices.take({ failure, kinds: waitedOnKinds(this.options.db, handledIds, this.store.eventKinds(handledIds)), maxCalls, timeoutMinutes: timeoutMs / 60_000 }, endedAt)
       : undefined;
     if (cutNotice) {
