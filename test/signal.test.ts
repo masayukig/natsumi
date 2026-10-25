@@ -13,7 +13,7 @@ import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
-import { SignalGroups, type ListedGroup } from '../src/server/signal-groups.ts';
+import { followedUpSince, SignalGroups, type ListedGroup } from '../src/server/signal-groups.ts';
 import type { Attention } from '../src/server/sources.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { SlackMentionTyping } from '../src/server/slack.ts';
@@ -758,6 +758,41 @@ test('in a group, typing is sent again every interval and taken away when the tu
   listener();
   assert.equal(sent.at(-1), 'g1 stop');
   typing.stop();
+});
+
+test('in a group, typing after an agent\'s answer ends with the turn that follows it, even with no post', async () => {
+  const sent: string[] = [];
+  let waiting = 1;
+  let followedUp = false;
+  let listener = () => {};
+  const typing = new SlackMentionTyping({ loop: { subscribe: l => { listener = l as () => void; return () => {}; } }, intervalMs: 5, maxMs: 1_000,
+    holdForAgents: true, done: () => true, waitingAgents: () => waiting, followedUp: () => followedUp,
+    api: { setStatus: async (groupId, _ts, status) => { sent.push(`${groupId} ${status === '' ? 'stop' : 'on'}`); } } });
+  typing.start('g1', '', { file: 'f', path: '.[0]' });
+  listener();
+  waiting = 0; // the agent answered; the turn that reads it has not ended yet
+  listener();
+  assert.ok(!sent.includes('g1 stop'));
+  followedUp = true; // that turn ended with no reply
+  listener();
+  assert.equal(sent.at(-1), 'g1 stop');
+  typing.stop();
+});
+
+test('the turn that follows an agent\'s answer is found once it is over', () => {
+  const db = new DatabaseSync(':memory:');
+  migrate(db, MIGRATIONS);
+  const since = '2026-10-25T03:00:00.000Z';
+  assert.equal(followedUpSince(db, since), false);
+  db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at) VALUES ('web', 't1', 'c1', 'completed', ?, ?, ?)`)
+    .run('2026-10-25T03:01:00.000Z', '2026-10-25T03:01:00.000Z', '2026-10-25T03:05:00.000Z');
+  const event = db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES (?, 'sources-updated', ?, ?, ?)`);
+  event.run('before', 'no-reply', '2026-10-25T03:02:00.000Z', '2026-10-25T03:02:30.000Z'); // the turn that asked
+  assert.equal(followedUpSince(db, since), false);
+  event.run('after', 'processing', '2026-10-25T03:05:01.000Z', '2026-10-25T03:05:01.000Z');
+  assert.equal(followedUpSince(db, since), false);
+  db.prepare(`UPDATE loop_events SET state = 'no-reply' WHERE event_id = 'after'`).run();
+  assert.equal(followedUpSince(db, since), true);
 });
 
 test('in a group, typing goes on while an agent she asked is waiting, and past its answer until her next post', async () => {

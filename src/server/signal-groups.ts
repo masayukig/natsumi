@@ -626,6 +626,15 @@ function noted(attachment: { contentType?: unknown; filename?: unknown; size?: u
   return facts.length > 0 ? `${name} (${facts.join(', ')})` : name;
 }
 
+/**
+ * Fork (ADR F07): whether an event that came after the last answer of the agents asked at or after `since` is over:
+ * the turn that read the answer ended, whatever came of it. For the group's "typing…".
+ */
+export function followedUpSince(db: DatabaseSync, since: string): boolean {
+  return db.prepare(`SELECT 1 FROM loop_events WHERE state IN ('replied', 'no-reply', 'failed') AND created_at >=
+    (SELECT MAX(updated_at) FROM agent_tasks WHERE sent_at >= ? AND state <> 'waiting') LIMIT 1`).get(since) !== undefined;
+}
+
 /** What the dove keeps for a line (as `target_ts`): its Signal timestamp and its author, which only the server sees. */
 function lineKey(ts: number, author: string): string { return `${ts}:${author}`; }
 

@@ -38,7 +38,7 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
-import { SIGNAL_REGISTRATION, SIGNAL_SOURCE, SignalGroups } from './signal-groups.ts';
+import { followedUpSince, SIGNAL_REGISTRATION, SIGNAL_SOURCE, SignalGroups } from './signal-groups.ts';
 import { RETRY_DELAY_MS } from './turn-retry.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
@@ -419,6 +419,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         // Fork (ADR F07): Signal lets typing go after about 15 seconds, so it is sent every 10; agents may take a while.
         const typingInGroups = groupTyping = new SlackMentionTyping({ loop: thinkingLoop, waitingAgents, intervalMs: 10_000, maxMs: 15 * 60_000,
           holdForAgents: true,
+          followedUp: since => followedUpSince(db!, since),
           done: place => attentionDone('signal', place),
           api: { setStatus: async (groupId, _ts, status) => { await api.groupTyping?.(groupId, status === ''); } } });
         ownerStops.push(() => typingInGroups.stop());

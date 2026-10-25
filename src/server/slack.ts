@@ -434,7 +434,7 @@ export class SlackMentionTyping {
   private readonly intervalMs: number;
   private readonly maxMs: number;
   private readonly options: { api: Pick<SlackApi, 'setStatus'>; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number;
-    holdForAgents?: boolean };
+    holdForAgents?: boolean; followedUp?: (since: string) => boolean };
 
   constructor(options: {
     loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
@@ -452,6 +452,8 @@ export class SlackMentionTyping {
      * her next post there (`posted`), as OwnerTyping does for the owner. Off for Slack, whose behaviour stays.
      */
     holdForAgents?: boolean;
+    /** With `holdForAgents`: whether a turn that began after the answer of the agents asked since `since` is over. */
+    followedUp?: (since: string) => boolean;
     intervalMs?: number; maxMs?: number;
   }) {
     this.options = options;
@@ -502,7 +504,10 @@ export class SlackMentionTyping {
     for (const [key, shown] of this.shown) {
       const waiting = this.waiting(shown);
       if (waiting > 0 && this.options.holdForAgents) shown.agents = true;
-      if (Date.now() < shown.until && !(this.safely(() => this.options.done(shown.place), false) && waiting === 0 && !shown.agents)) continue;
+      // After an agent's answer, the turn that follows it ends it too, whether she posted or not.
+      const over = this.safely(() => this.options.done(shown.place), false) && waiting === 0
+        && (!shown.agents || this.safely(() => this.options.followedUp?.(shown.since) ?? false, false));
+      if (Date.now() < shown.until && !over) continue;
       this.shown.delete(key);
       this.send(shown.channel, shown.threadTs, false);
     }
