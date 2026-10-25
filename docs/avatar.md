@@ -144,6 +144,8 @@ natsumi は、自分が入る絵（自撮り、気分の絵、ほかの人と並
 - WebUI の拡張（always-on script）の設定は `alwayson_scripts` に書きます。txt2img・img2img・hires の要求にそのまま渡ります（例: ADetailer で顔を描き直す。拡張は WebUI 側に入っている必要があります）。
 - `prompt` は書きません。プロンプトは natsumi が毎回書くものです。
 - `/manual/avatar/images.md` の「既定はモデル…、896×1152（縦長）」の行は、この `override_settings.sd_model_checkpoint`・`width`・`height` から作られます。
+  「プロンプトの書き方」の節も、このモデルの名前の接頭辞で決まります（`anima_` は Anima、`moss-image_` は MOSS-Image の書き方。それ以外は、どのモデルでも通じる書き方だけ）。
+  モデルを替えるときは、`appearance.yaml` の品質の行や LoRA も、そのモデルの書き方に合わせます。
 
 ### 7. 性格・話し方の初期値を書く（任意）
 

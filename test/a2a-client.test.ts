@@ -8,13 +8,13 @@ import { FakeAgent } from './support/fake-agent.ts';
 import { PNG } from './support/fake-slack.ts';
 
 async function setup(t: test.TestContext, options: ConstructorParameters<typeof SdkA2AClient>[0] extends infer O ? Partial<O> : never = {},
-  extensions?: string[]) {
+  extensions?: string[], inputModes?: string[]) {
   const directory = await mkdtemp(join(tmpdir(), 'natsumi-a2a-'));
   const tokenFile = join(directory, 'token');
   await writeFile(tokenFile, 'first-token\n');
   const agent = await FakeAgent.start({ token: 'first-token', name: 'Fake Wiki Keeper', description: 'Keeps a wiki.',
     skills: [{ id: 'query', name: '問い合わせ', description: 'Wiki の内容に答える', examples: ['〜について教えて'] }],
-    ...(extensions ? { extensions } : {}) });
+    ...(extensions ? { extensions } : {}), ...(inputModes ? { inputModes } : {}) });
   t.after(async () => { await agent.close(); await rm(directory, { recursive: true, force: true }); });
   const client = new SdkA2AClient({ tokenFile, ...options });
   return { agent, client, tokenFile };
@@ -39,6 +39,55 @@ test('a message carries the metadata it is given, as it was given', async t => {
   const metadata = { postbox: { name: 'morning-news', lastReceivedAt: '2026-10-11T07:00:00+09:00' } };
   await client.send(agent.url, { text: '今朝のニュース', metadata });
   assert.deepEqual(agent.received[0]!.metadata, metadata);
+});
+
+// ADR 0080: files go as parts of their own after the text, as their bytes, with their names and types.
+test('files go after the text as parts carrying their bytes, base64 on the wire, and a message without files is as before', async t => {
+  const bodies: unknown[] = [];
+  const { agent, client } = await setup(t, { fetch: async (input, init) => {
+    if (typeof init?.body === 'string') bodies.push(JSON.parse(init.body));
+    return fetch(input, init);
+  } });
+  const pdf = Buffer.from('%PDF-1.7\n');
+  await client.send(agent.url, { text: 'この資料を読んで', files: [{ name: 'a.pdf', mediaType: 'application/pdf', data: pdf },
+    { name: 'b.png', mediaType: 'image/png', data: PNG }] });
+  assert.equal(agent.received[0]!.text, 'この資料を読んで');
+  assert.deepEqual(agent.received[0]!.files, [{ filename: 'a.pdf', mediaType: 'application/pdf', data: pdf },
+    { filename: 'b.png', mediaType: 'image/png', data: PNG }]);
+  const parts = (bodies.at(-1) as { params: { message: { parts: unknown[] } } }).params.message.parts;
+  assert.deepEqual(parts.slice(1), [{ raw: pdf.toString('base64'), filename: 'a.pdf', mediaType: 'application/pdf' },
+    { raw: PNG.toString('base64'), filename: 'b.png', mediaType: 'image/png' }]);
+
+  await client.send(agent.url, { text: 'ファイルなし' });
+  assert.equal(agent.received[1]!.files, undefined);
+  assert.equal((bodies.at(-1) as { params: { message: { parts: unknown[] } } }).params.message.parts.length, 1);
+});
+
+// ADR 0080: the answer to a send carries no history, which would be the message just sent, its files' bytes and all.
+test('a send asks for no history back, so the files sent do not come back with the task', async t => {
+  const answers: string[] = [];
+  const { agent, client } = await setup(t, { fetch: async (input, init) => {
+    const response = await fetch(input, init);
+    if (typeof init?.body === 'string' && init.body.includes('SendMessage')) answers.push(await response.clone().text());
+    return response;
+  } });
+  await client.send(agent.url, { text: '読んで', files: [{ name: 'b.png', mediaType: 'image/png', data: PNG }] });
+  assert.equal(agent.received[0]!.files!.length, 1);
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0]!.includes(PNG.toString('base64')), false);
+  assert.equal(answers[0]!.includes('"raw"'), false);
+});
+
+// ADR 0080: a host whose card takes text only may drop the files or refuse the body, and neither says so.
+test('files are not sent to an agent whose card takes text only, nor to one whose card could not be read', async t => {
+  const { agent, client } = await setup(t, {}, undefined, ['text/plain']);
+  const kind = (promise: Promise<unknown>) => promise.then(() => 'sent', error => (error as A2ACallError).kind);
+  const files = [{ name: 'b.png', mediaType: 'image/png', data: PNG }];
+  assert.equal(await kind(client.send(agent.url, { text: '読んで', files })), 'no-files');
+  assert.equal(agent.received.length, 0, 'nothing was sent');
+  assert.equal(await kind(client.send(agent.url, { text: '読んで' })), 'sent', 'text alone goes as before');
+  const cardless = new SdkA2AClient({ tokenFile: '/dev/null', fetch: async () => { throw new Error('down'); } });
+  assert.equal(await kind(cardless.send(agent.url, { text: '読んで', files })), 'no-files');
 });
 
 // ADR 0033: a projected token is replaced while the server runs, so it is read from the file on every call.

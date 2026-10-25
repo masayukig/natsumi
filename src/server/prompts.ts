@@ -275,12 +275,13 @@ export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の�
 /**
  * Fixed like every description here: which agents exist is the config's, so the list lives in the manual she reads
  * with run_shell, and this names only where it is (ADR 0036). The states are the attention's own words (ADR 0069), and
- * the dove's are its results' (ADR 0074).
+ * the dove's are its results' (ADR 0074). The limits on files are only said to be there; the manual has them (ADR 0080).
  */
 export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。'
   + 'agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。'
   + 'continue を true にすると、その相手との直近のやり取りに続けて送り、相手は前の文脈を覚えている。相手の聞き返しに答えるときも true にする。'
-  + 'false なら新しいやり取りとして始める。\n'
+  + 'false なら新しいやり取りとして始める。'
+  + 'files は省ける。相手にファイルを渡すときは、/work か /sources の下のパスを並べる（大きさと数に上限がある。受け取れない相手もいる。詳しくは /manual/ask-agent.md）。\n'
   + 'この道具は頼んだことだけを返す。頼むと、サーバーが依頼ごとのディレクトリを /sources/agents の下に作って request.md に頼んだことを置き、結果でその場所を伝える。'
   + '返事は後で同じディレクトリに置かれ、sources_updated の attention（kind: agent_reply）として届く。'
   + 'attention には相手の名前（agent）、state、要約（summary）、頼んだことの先頭の行（request）と頼んだ時刻（asked_at）が付き、file はそのディレクトリの README.md を指す。'
