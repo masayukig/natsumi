@@ -333,7 +333,7 @@ export class SignalGroups implements DoveSignalGroups {
     const row = this.options.db.prepare('SELECT * FROM fork_signal_lines WHERE group_id = ? AND file_date = ? AND line = ?')
       .get(groupId, day, index) as LineRow | undefined;
     if (!row) return refuse(`${to.file} に ${to.path} の行はありません。行の番号は 0 から数えます。ファイルの行か、出来事の attention の file と path を、そのまま写してください。`);
-    return { ok: true, target: this.target(groupId, String(row.sent_ts)) };
+    return { ok: true, target: this.target(groupId, lineKey(row.sent_ts, row.author)) };
   }
 
   target(groupId: string, ts: string | null): ResolvedTarget {
@@ -358,7 +358,8 @@ export class SignalGroups implements DoveSignalGroups {
 
   isEmoji(emoji: string): boolean {
     const segments = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(emoji)];
-    return segments.length === 1 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(emoji) && !/[\s:]/u.test(emoji);
+    // A keycap (1️⃣, #️⃣) is a digit or sign with U+20E3.
+    return segments.length === 1 && /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20E3/u.test(emoji) && !/[\s:]/u.test(emoji);
   }
 
   async post(groupId: string, text: string, options: { quote?: string; attachments?: string[] }): Promise<string> {
@@ -376,7 +377,7 @@ export class SignalGroups implements DoveSignalGroups {
       { groupId, ts: ms, author: this.options.account }));
     this.writing = run.catch(() => undefined);
     await run.catch(() => { this.log('her own group message could not be written'); });
-    return String(ms);
+    return lineKey(ms, this.options.account);
   }
 
   async putReaction(groupId: string, ts: string, emoji: string): Promise<void> {
@@ -393,9 +394,11 @@ export class SignalGroups implements DoveSignalGroups {
     return row && !this.configured.has(row.group_id) ? row.group_id : undefined;
   }
 
-  private lineAt(groupId: string, ts: string): LineRow | undefined {
-    return this.options.db.prepare('SELECT * FROM fork_signal_lines WHERE group_id = ? AND sent_ts = ? ORDER BY rowid LIMIT 1')
-      .get(groupId, Number(ts)) as LineRow | undefined;
+  /** A line by its key, `<Signal timestamp>:<author>`: two people may send in the same millisecond, one person never. */
+  private lineAt(groupId: string, key: string): LineRow | undefined {
+    const at = key.indexOf(':');
+    return this.options.db.prepare('SELECT * FROM fork_signal_lines WHERE group_id = ? AND sent_ts = ? AND author = ? ORDER BY rowid LIMIT 1')
+      .get(groupId, Number(key.slice(0, at)), key.slice(at + 1)) as LineRow | undefined;
   }
 
   /** A time as a line writes it: local date and time to the second. */
@@ -509,6 +512,9 @@ function noted(attachment: { contentType?: unknown; filename?: unknown; size?: u
   ];
   return facts.length > 0 ? `${name} (${facts.join(', ')})` : name;
 }
+
+/** What the dove keeps for a line (as `target_ts`): its Signal timestamp and its author, which only the server sees. */
+function lineKey(ts: number, author: string): string { return `${ts}:${author}`; }
 
 /** A group as signal-cli's listGroups shows it, as far as asking about it needs. */
 export interface ListedGroup { id?: unknown; name?: unknown; isMember?: unknown; isBlocked?: unknown; members?: unknown[]; pendingMembers?: unknown[] }

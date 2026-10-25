@@ -1,7 +1,7 @@
 import { realpath, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { DecideInput, DecideOutcome } from './dove.ts';
+import { DeliveryUnknown, type DecideInput, type DecideOutcome } from './dove.ts';
 import { isWithin, realPathAllowingMissing } from './paths.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
 import { objects, type GroupEnvelope, type ListedGroup } from './signal-groups.ts';
@@ -39,17 +39,30 @@ export interface SignalApi {
   reactInGroup?(groupId: string, emoji: string, target: { timestamp: number; author: string }): Promise<void>;
 }
 
-export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
+/** How long a JSON-RPC call may take: a daemon that hangs must not hold the dove's queue, Slack's posts included. */
+const RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * A JSON-RPC call is refused (`Error`: `rpc error N`, `http 4xx`, `send <type>`), or, when it timed out, the daemon
+ * failed (5xx) or its answer cannot be read, may or may not have been carried out (`DeliveryUnknown`).
+ */
+export function connectSignal(config: { url: string; account: string; owner: string; timeoutMs?: number }): SignalApi {
   let id = 0;
   const rpc = async (method: string, params: Record<string, unknown>) => {
-    const response = await fetch(`${config.url}/api/v1/rpc`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params: { account: config.account, ...params } }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${config.url}/api/v1/rpc`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(config.timeoutMs ?? RPC_TIMEOUT_MS),
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params: { account: config.account, ...params } }),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new DeliveryUnknown('timed out');
+      throw new Error('fetch failed');
+    }
+    if (response.status >= 500) throw new DeliveryUnknown(`http ${response.status}`);
     if (!response.ok) throw new Error(`http ${response.status}`);
-    const body = await response.json() as {
-      result?: { timestamp?: unknown; results?: { type?: unknown }[]; data?: unknown }; error?: { code?: unknown };
-    };
+    let body: { result?: { timestamp?: unknown; results?: { type?: unknown }[]; data?: unknown }; error?: { code?: unknown } };
+    try { body = await response.json() as typeof body; } catch { throw new DeliveryUnknown('bad json'); }
     if (body.error) throw new Error(`rpc error ${String(body.error.code)}`);
     return body;
   };
@@ -73,7 +86,7 @@ export function connectSignal(config: { url: string; account: string; owner: str
         ...(quote ? { quoteTimestamp: quote.timestamp, quoteAuthor: quote.author, quoteMessage: quote.text } : {}) });
       const results = body.result?.results ?? [];
       if (results.length > 0 && results.every(result => result.type !== 'SUCCESS')) throw new Error(`send ${String(results[0]!.type)}`);
-      if (typeof body.result?.timestamp !== 'number') throw new Error('no timestamp');
+      if (typeof body.result?.timestamp !== 'number') throw new DeliveryUnknown('no timestamp');
       return body.result.timestamp;
     },
     async reactInGroup(groupId, emoji, target) {
@@ -515,7 +528,10 @@ export class SignalApprovals {
     if (!sent || sent.closed || !approval || approval.state === 'pending') return;
     const { said, final } = outcome(approval);
     if (!final) return;
-    await this.options.api.send(`→ ${said}: ${where(JSON.parse(approval.payload) as Shown)} への投稿`);
+    const to = where(JSON.parse(approval.payload) as Shown);
+    // Fork (ADR F07): a Signal group's failure is recorded as Slack's word, which the devices know (docs/client-contract.md).
+    const words = to.startsWith('Signal のグループ') ? said.replace('Slack に断られた', 'Signal に断られたか、届いたか分からない') : said;
+    await this.options.api.send(`→ ${words}: ${to} への投稿`);
     this.options.db.prepare('UPDATE fork_signal_approval_messages SET closed = 1 WHERE approval_id = ?').run(approvalId);
   }
 

@@ -594,6 +594,9 @@ export function parseConfig(raw: unknown): ServerConfig {
   if (config.slack) {
     const judge = parseJudges((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
+    if (config.signal && (root.signal as Record<string, unknown>).judge !== undefined) {
+      throw new ConfigError('signal.judge', 'is read only without slack; with slack, the dove judges with slack.judge (ADR F07)');
+    }
   } else if (config.signal) {
     // Fork (ADR F07): without Slack, the dove posts to Signal groups alone, judged as a Slack post would be.
     const judge = parseJudges((root.signal as Record<string, unknown>).judge, 'signal.judge', config.pi);

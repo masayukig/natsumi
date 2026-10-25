@@ -54,6 +54,21 @@ export const DOVE_NAME = 'poppo';
  */
 export const SIGNAL_GROUPS = '#signal';
 
+/** Fork (ADR F07): a send that may or may not have reached Signal (timed out, the daemon failed, no answer to read). */
+export class DeliveryUnknown extends Error {
+  override name = 'DeliveryUnknown';
+}
+
+/**
+ * Fork (ADR F07): a Signal failure for the log, in the few words this fork's own errors use, which name no number and
+ * no ID; anything else only by its kind.
+ */
+export function describeSignalFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^(rpc error -?\d+|send [A-Z_]+|http \d{3}|timed out|no timestamp|bad json|fetch failed|not an approved group( or line)?)$/.test(message)
+    ? message : error instanceof Error ? error.name : 'error';
+}
+
 /**
  * Fork (ADR F07): the Signal groups the owner approved, as a place the dove posts to. A target's `label` names the group
  * as the owner and natsumi read it; a reply is sent as a quote, for Signal has no threads.
@@ -67,7 +82,7 @@ export interface DoveSignalGroups {
   lineOf(groupId: string, ts: string): MessageLine | undefined;
   /** Whether an emoji is one Signal can put on: one real emoji, not a Slack name. */
   isEmoji(emoji: string): boolean;
-  /** Posts, quoting the message at `quote`, records her line, and answers its Signal timestamp. */
+  /** Posts, quoting the message at `quote`, records her line, and answers its key (as `target` takes it). */
   post(groupId: string, text: string, options: { quote?: string; attachments?: string[] }): Promise<string>;
   putReaction(groupId: string, ts: string, emoji: string): Promise<void>;
 }
@@ -125,7 +140,7 @@ export interface SlackDoveOptions {
 }
 
 type Result = 'sent' | 'reacted' | 'to_owner' | 'returned' | 'rejected' | 'expired' | 'not_sent';
-type Failure = 'mechanical-check' | 'slack-error' | 'signal-error' | 'target-gone' | 'interrupted';
+type Failure = 'mechanical-check' | 'slack-error' | 'signal-error' | 'signal-unknown' | 'target-gone' | 'interrupted';
 /** What Slack took: the post's ts when it gave one (an upload gives none). */
 interface Delivered { ts?: string }
 
@@ -158,6 +173,7 @@ const FAILURE_WORDS: Record<Failure, string> = {
   'mechanical-check': '本文が送る前の検査に通らなかった',
   'slack-error': 'Slack に断られた',
   'signal-error': 'Signal に断られた',
+  'signal-unknown': 'Signal から答えが無かった',
   'target-gone': '返信先の発言かチャンネルが無くなっていた',
   interrupted: '送る途中でサーバーが止まったので、届いたか分からない',
 };
@@ -212,8 +228,9 @@ export class SlackDove {
     if (!parsed.ok) return refuse(parsed.text);
     const { to, kind, expression, body, images = [] } = parsed.request;
     // Fork (ADR F07): a Signal group is named under /sources/signal.
-    const signal = to.file.startsWith('/sources/signal/') ? this.options.signal : undefined;
-    if (to.file.startsWith('/sources/signal/') && !signal) return refuse('Signal のグループには投稿できない設定です。');
+    const toSignal = to.file === '/sources/signal' || to.file.startsWith('/sources/signal/');
+    const signal = toSignal ? this.options.signal : undefined;
+    if (toSignal && !signal) return refuse('Signal のグループには投稿できない設定です。');
     if (!signal && !this.options.archive) return refuse(`to.file「${to.file}」には投稿できません。Signal のグループなら /sources/signal の下のファイルを書いてください（/manual/signal.md）。`);
     const resolved = signal ? signal.resolve(to) : this.options.archive!.resolve(to);
     if (!resolved.ok) return refuse(resolved.text);
@@ -499,8 +516,8 @@ export class SlackDove {
     const signal = this.signalOf(post);
     if (signal) {
       try { await signal.putReaction(post.channel_id, post.target_ts!, post.text); } catch (error) {
-        this.log(`signal: reacting in a group failed (${describeFailure(error)})`);
-        return this.fail(post, 'signal-error');
+        this.log(`signal: reacting in a group failed (${describeSignalFailure(error)})`);
+        return this.fail(post, error instanceof DeliveryUnknown ? 'signal-unknown' : 'signal-error');
       }
       this.setPost(post.post_id, { state: 'sent', sent_text: post.text });
       this.tell(post.post_id, 'reacted', `ポッポ！ ${post.text} を付けたよ。`);
@@ -535,8 +552,8 @@ export class SlackDove {
           `data:${image.mime_type};base64,${(await readFile(this.options.images.path(image.file))).toString('base64')}`));
         return { ts: await signal.post(post.channel_id, text, { ...(post.target_ts ? { quote: post.target_ts } : {}), attachments }) };
       } catch (error) {
-        this.log(`signal: posting in a group failed (${describeFailure(error)})`);
-        return 'signal-error';
+        this.log(`signal: posting in a group failed (${describeSignalFailure(error)})`);
+        return error instanceof DeliveryUnknown ? 'signal-unknown' : 'signal-error';
       }
     }
     if (post.target_ts && !this.options.archive!.isPresent(post.workspace, post.channel_id, post.target_ts)) return 'target-gone';
@@ -581,7 +598,8 @@ export class SlackDove {
     const resolvedAt = this.iso();
     const approval = this.db.prepare(`SELECT approval_id, revision, state FROM approvals WHERE post_id = ?`).get(post.post_id) as
       { approval_id: string; revision: number; state: string } | undefined;
-    const reason = failure === 'interrupted' || failure === 'signal-error' ? 'slack-error' : failure;
+    // The devices know three reasons (docs/client-contract.md): a Signal failure is recorded as Slack's.
+    const reason = failure === 'interrupted' || failure === 'signal-error' || failure === 'signal-unknown' ? 'slack-error' : failure;
     this.transaction(() => {
       this.setPost(post.post_id, { state: 'failed', failure });
       if (approval) {
@@ -593,7 +611,9 @@ export class SlackDove {
       this.emit('approval.resolved', { approvalId: approval.approval_id, revision: approval.revision, state: approval.state, resolvedAt,
         delivery: 'failed', reason });
     }
-    this.tell(post.post_id, 'not_sent', `ポッポ…届けられなかったよ（${FAILURE_WORDS[failure]}）。`);
+    this.tell(post.post_id, 'not_sent', failure === 'signal-unknown'
+      ? `ポッポ…届いたかどうか分からないよ（${FAILURE_WORDS[failure]}）。グループで確かめてから、送り直すか決めてね。`
+      : `ポッポ…届けられなかったよ（${FAILURE_WORDS[failure]}）。`);
   }
 
   /** The drafts turned back on this target since anything else happened there, oldest first. */

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { SlackDove } from '../src/server/dove.ts';
+import { DeliveryUnknown, SlackDove } from '../src/server/dove.ts';
 import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
@@ -388,7 +388,9 @@ class FakeGroupSignal extends FakeSignal {
     if (this.failAccepts-- > 0) throw new Error('rpc error -1');
   }
   posted: { groupId: string; message: string; options: Record<string, unknown> }[] = [];
+  sendFailure: Error | undefined;
   async sendGroup(groupId: string, message: string, options: Record<string, unknown> = {}) {
+    if (this.sendFailure) throw this.sendFailure;
     this.posted.push({ groupId, message, options });
     return AT + 60_000 * this.posted.length;
   }
@@ -605,7 +607,8 @@ async function groupDoveSetup(t: test.TestContext, options: { judge?: boolean } 
   await groups.sync(); // titles the group, and asks about the other one
   await groups.handle(inGroup('明日の集合は何時？'));
   const judge = new QueuedJudge();
-  const dove = new SlackDove({
+  const logs: string[] = [];
+  const dove = new SlackDove({ log: line => { logs.push(line); },
     db, signal: groups, workspaces: {}, publicOrigin: 'https://natsumi.example.test', workDirectory: join(root, 'work'),
     images: new ImageStore(db, join(root, 'images')), timeZone: 'Asia/Tokyo', now: () => AT,
     place: { directory: join(root, 'agents'), record: () => true, notify: () => {}, takeIn: async () => {} },
@@ -629,7 +632,8 @@ async function groupDoveSetup(t: test.TestContext, options: { judge?: boolean } 
   const settle = async () => { await dove.idle(); await approvals.idle(); await groups.idle(); await dove.idle(); };
   const lines = async () => (await readFile(join(root, 'signal', 'iori-test', '2026-10-25.jsonl'), 'utf8')).split('\n').filter(Boolean)
     .map(line => JSON.parse(line) as Record<string, unknown>);
-  return { api, judge, dove, owner, ask, settle, lines };
+  const results = () => (db.prepare('SELECT text FROM dove_results ORDER BY result_id').all() as { text: string }[]).map(row => row.text);
+  return { api, judge, dove, owner, ask, settle, lines, logs, results };
 }
 const LINE = { file: '/sources/signal/iori-test/2026-10-25.jsonl', path: '.[0]' };
 
@@ -667,10 +671,42 @@ test('a group not approved, or not a group, is refused as it is asked; a reactio
   assert.equal(pending.ok, false);
   assert.match((await f.ask({ kind: 'post', to: { file: '/sources/signal/iori-test/2026-10-25.jsonl', path: '.[5]' }, text: 'x' })).text, /行はありません/);
   assert.match((await f.ask({ kind: 'reaction', to: LINE, emoji: '+1' })).text, /絵文字そのもの/);
+  assert.match((await f.ask({ kind: 'post', to: { file: '/sources/signal' }, text: 'x' })).text, /\/sources\/signal の下のグループのディレクトリ/);
+  assert.equal((await f.ask({ kind: 'reaction', to: LINE, emoji: '1️⃣' })).ok, true);
+  f.api.reactions.length = 0;
   const reacted = await f.ask({ kind: 'reaction', to: LINE, emoji: '👍🏻' });
   assert.equal(reacted.ok, true);
   assert.deepEqual(f.api.reactions, [{ groupId: GROUP, emoji: '👍🏻', target: { timestamp: AT, author: '+810000000009' } }]);
   assert.deepEqual(f.api.posted, []);
+});
+
+test('a send Signal refused is told as refused; one whose outcome is unknown is told as unknown, never as refused', async t => {
+  const f = await groupDoveSetup(t, { judge: true });
+  f.api.sendFailure = new Error('send UNREGISTERED_FAILURE');
+  await f.ask({ kind: 'post', to: LINE, text: '10 時です' });
+  f.api.sendFailure = new DeliveryUnknown('timed out');
+  await f.ask({ kind: 'post', to: LINE, text: '10 時です' });
+  const told = f.results().filter(text => text.startsWith('ポッポ…'));
+  assert.deepEqual(told, ['ポッポ…届けられなかったよ（Signal に断られた）。',
+    'ポッポ…届いたかどうか分からないよ（Signal から答えが無かった）。グループで確かめてから、送り直すか決めてね。']);
+  assert.deepEqual(f.logs.filter(line => line.startsWith('signal:')),
+    ['signal: posting in a group failed (send UNREGISTERED_FAILURE)', 'signal: posting in a group failed (timed out)']);
+});
+
+test('a JSON-RPC call that hangs is given up as of unknown outcome; the daemon\'s refusal is a refusal', async t => {
+  let answer: 'hang' | 'refuse' = 'hang';
+  const server = createServer((request, response) => {
+    if (answer === 'hang') return;
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -1, message: 'nope' } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const { port } = server.address() as { port: number };
+  const api = connectSignal({ url: `http://127.0.0.1:${port}`, account: BOT, owner: OWNER, timeoutMs: 100 });
+  await assert.rejects(api.sendGroup!(GROUP, 'x'), (error: Error) => error instanceof DeliveryUnknown && error.message === 'timed out');
+  answer = 'refuse';
+  await assert.rejects(api.sendGroup!(GROUP, 'x'), (error: Error) => !(error instanceof DeliveryUnknown) && error.message === 'rpc error -1');
 });
 
 test('with groups listed, the server writes what is said in them under sources/signal and never says it to natsumi as the owner\'s', async t => {
