@@ -1,11 +1,18 @@
 # Builds the server and workspace images for a version tag and pushes them to ghcr (ADR 0033).
 # The image tag is the version tag itself (v0.x.y); the environment pins the version it runs.
-# Only tag pushes: a pull request, a fork's included, never reaches the package write permission.
+# Only tag pushes, and the weekly release (weekly-release.yml), which calls this before it pushes its tag: a tag pushed
+# with GITHUB_TOKEN starts no workflow. A pull request, a fork's included, never reaches the package write permission.
 name: Images
 
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      version:
+        description: The version tag the images are pushed under, for the commit the caller runs on
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -56,7 +63,9 @@ jobs:
         id: meta
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
-          tags: type=ref,event=tag
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
           flavor: latest=false
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
