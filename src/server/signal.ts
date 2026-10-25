@@ -1,9 +1,10 @@
 import { realpath, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { DecideInput, DecideOutcome } from './dove.ts';
+import { DeliveryUnknown, type DecideInput, type DecideOutcome } from './dove.ts';
 import { isWithin, realPathAllowingMissing } from './paths.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
+import { objects, type GroupEnvelope, type ListedGroup } from './signal-groups.ts';
 import { outcome, reason, where, type ApprovalRow, type Shown } from './slack-approvals.ts';
 import { WORK_PATH } from './view.ts';
 
@@ -24,19 +25,48 @@ export interface SignalApi {
   attachment?(id: string): Promise<Buffer>;
   /** Shows the owner that she is typing, or, with `stop`, that she has stopped. */
   typing?(stop?: boolean): Promise<void>;
+  /** Fork (ADR F06): the groups she is in or invited to; leaving, blocking and accepting an invitation to one. */
+  listGroups?(): Promise<ListedGroup[]>;
+  quitGroup?(groupId: string): Promise<void>;
+  block?(groupId: string): Promise<void>;
+  acceptGroup?(groupId: string): Promise<void>;
+  /**
+   * Fork (ADR F07): posts in a group, quoting a message when `quote` names one, and answers Signal's timestamp of it.
+   * Throws only when no member took it.
+   */
+  sendGroup?(groupId: string, message: string, options?: { quote?: { timestamp: number; author: string; text: string }; attachments?: string[] }): Promise<number>;
+  /** Puts an emoji on a message in a group. */
+  reactInGroup?(groupId: string, emoji: string, target: { timestamp: number; author: string }): Promise<void>;
+  /** Marks a message in a group as read for its sender. */
+  receipt?(recipient: string, timestamp: number): Promise<void>;
+  /** Shows in a group that she is typing, or, with `stop`, that she has stopped. */
+  groupTyping?(groupId: string, stop?: boolean): Promise<void>;
 }
 
-export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
+/** How long a JSON-RPC call may take: a daemon that hangs must not hold the dove's queue, Slack's posts included. */
+const RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * A JSON-RPC call is refused (`Error`: `rpc error N`, `http 4xx`, `send <type>`), or, when it timed out, the daemon
+ * failed (5xx) or its answer cannot be read, may or may not have been carried out (`DeliveryUnknown`).
+ */
+export function connectSignal(config: { url: string; account: string; owner: string; timeoutMs?: number }): SignalApi {
   let id = 0;
   const rpc = async (method: string, params: Record<string, unknown>) => {
-    const response = await fetch(`${config.url}/api/v1/rpc`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params: { account: config.account, ...params } }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${config.url}/api/v1/rpc`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(config.timeoutMs ?? RPC_TIMEOUT_MS),
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params: { account: config.account, ...params } }),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new DeliveryUnknown('timed out');
+      throw new Error('fetch failed');
+    }
+    if (response.status >= 500) throw new DeliveryUnknown(`http ${response.status}`);
     if (!response.ok) throw new Error(`http ${response.status}`);
-    const body = await response.json() as {
-      result?: { timestamp?: unknown; results?: { type?: unknown }[]; data?: unknown }; error?: { code?: unknown };
-    };
+    let body: { result?: { timestamp?: unknown; results?: { type?: unknown }[]; data?: unknown }; error?: { code?: unknown } };
+    try { body = await response.json() as typeof body; } catch { throw new DeliveryUnknown('bad json'); }
     if (body.error) throw new Error(`rpc error ${String(body.error.code)}`);
     return body;
   };
@@ -45,6 +75,32 @@ export function connectSignal(config: { url: string; account: string; owner: str
       const body = await rpc('getAttachment', { id: attachmentId });
       if (typeof body.result?.data !== 'string') throw new Error('no data');
       return Buffer.from(body.result.data, 'base64');
+    },
+    async listGroups() {
+      const { result } = await rpc('listGroups', {}) as { result?: unknown };
+      return Array.isArray(result) ? result as ListedGroup[] : [];
+    },
+    async quitGroup(groupId) { await rpc('quitGroup', { groupId }); },
+    async block(groupId) { await rpc('block', { groupId: [groupId] }); },
+    // signal-cli: updateGroup by a member still invited accepts the invitation.
+    async acceptGroup(groupId) { await rpc('updateGroup', { groupId }); },
+    async sendGroup(groupId, message, options = {}) {
+      const { quote, attachments } = options;
+      const body = await rpc('send', { groupId, message, ...(attachments?.length ? { attachments } : {}),
+        ...(quote ? { quoteTimestamp: quote.timestamp, quoteAuthor: quote.author, quoteMessage: quote.text } : {}) });
+      const results = body.result?.results ?? [];
+      if (results.length > 0 && results.every(result => result.type !== 'SUCCESS')) throw new Error(`send ${String(results[0]!.type)}`);
+      if (typeof body.result?.timestamp !== 'number') throw new DeliveryUnknown('no timestamp');
+      return body.result.timestamp;
+    },
+    async groupTyping(groupId, stop) {
+      await rpc('sendTyping', { groupId: [groupId], ...(stop ? { stop: true } : {}) });
+    },
+    async receipt(recipient, timestamp) {
+      await rpc('sendReceipt', { recipient, targetTimestamp: [timestamp], type: 'read' });
+    },
+    async reactInGroup(groupId, emoji, target) {
+      await rpc('sendReaction', { groupId, emoji, targetAuthor: target.author, targetTimestamp: target.timestamp });
     },
     async typing(stop) {
       await rpc('sendTyping', { recipient: [config.owner], ...(stop ? { stop: true } : {}) });
@@ -89,8 +145,9 @@ interface Envelope {
   dataMessage?: {
     timestamp?: unknown; message?: unknown;
     reaction?: { emoji?: unknown; targetSentTimestamp?: unknown; isRemove?: unknown };
-    quote?: { id?: unknown };
+    quote?: { id?: unknown } | null;
     attachments?: { id?: unknown; contentType?: unknown; filename?: unknown; size?: unknown }[];
+    groupInfo?: unknown;
   };
 }
 
@@ -124,7 +181,8 @@ const MAX_BACKOFF_MS = 60_000;
 
 /**
  * What the owner says on Signal goes to `say` as a message of the conversation; a reaction or a quoted reply to an
- * approval goes to `approvals`. Everything else that arrives (receipts, typing, profile keys, other people) is let go.
+ * approval goes to `approvals`; a message in a group goes to `groups` (ADR F06). Everything else that arrives (receipts,
+ * typing, profile keys, other people) is let go.
  * The stream is reconnected with a growing wait whenever it drops.
  */
 export interface SignalOwnerOptions {
@@ -140,6 +198,15 @@ export interface SignalOwnerOptions {
   workDirectory?: string;
   /** The first wait before opening the stream again; it doubles up to a minute. */
   backoffMs?: number;
+  /**
+   * Fork (ADR F06): every message in a group, the owner's included, goes here and never to `say` or `approvals`; the
+   * owner's answers to its questions about joining a group are offered to it too.
+   */
+  groups?: {
+    handle(envelope: GroupEnvelope): Promise<void>;
+    react(sentAt: number, emoji: string): boolean;
+    answer(quotedAt: number, text: string): boolean;
+  };
 }
 
 export class SignalOwner {
@@ -162,6 +229,12 @@ export class SignalOwner {
    */
   handle(event: Record<string, unknown>): void | Promise<void> {
     const envelope = event.envelope as Envelope | undefined;
+    // A group message is never the owner's 1:1 (ADR F06), whichever group and whoever wrote it. It is not awaited: asking
+    // about a group lists the groups and sends, which must not hold the owner's next message or answer.
+    if (envelope?.dataMessage?.groupInfo) {
+      void this.options.groups?.handle(envelope as GroupEnvelope).catch(() => { /* logged there */ });
+      return;
+    }
     // Early envelopes had no UUID, so the owner is known by the number.
     if (envelope?.sourceNumber !== this.options.owner) return;
     const message = envelope.dataMessage;
@@ -170,7 +243,7 @@ export class SignalOwner {
     if (message.reaction) {
       const { emoji, targetSentTimestamp, isRemove } = message.reaction;
       if (isRemove === true || typeof emoji !== 'string' || typeof targetSentTimestamp !== 'number') return;
-      if (approvals?.react(targetSentTimestamp, emoji)) return;
+      if (approvals?.react(targetSentTimestamp, emoji) || this.options.groups?.react(targetSentTimestamp, emoji)) return;
       // Any other reaction is said to her as a short line, with the head of what it was put on when it is known.
       const line = this.options.sent?.get(targetSentTimestamp);
       const on = line === undefined ? '以前のメッセージ' : `「${line.length > QUOTE_CHARS ? `${line.slice(0, QUOTE_CHARS)}…` : line}」`;
@@ -178,10 +251,11 @@ export class SignalOwner {
       return;
     }
     const text = typeof message.message === 'string' && message.message.trim() !== '' ? message.message : undefined;
-    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const attachments = objects<NonNullable<NonNullable<Envelope['dataMessage']>['attachments']>[number]>(message.attachments);
     if (text === undefined && attachments.length === 0) return;
     const quoted = message.quote?.id;
-    if (text !== undefined && attachments.length === 0 && approvals && typeof quoted === 'number' && approvals.answer(quoted, text)) return;
+    if (text !== undefined && attachments.length === 0 && typeof quoted === 'number'
+      && (approvals?.answer(quoted, text) || this.options.groups?.answer(quoted, text))) return;
     const timestamp = message.timestamp ?? envelope.timestamp;
     if (typeof timestamp === 'number') this.options.api.read?.(timestamp).catch(() => { /* only a read mark */ });
     this.options.typing?.start();
@@ -464,7 +538,10 @@ export class SignalApprovals {
     if (!sent || sent.closed || !approval || approval.state === 'pending') return;
     const { said, final } = outcome(approval);
     if (!final) return;
-    await this.options.api.send(`→ ${said}: ${where(JSON.parse(approval.payload) as Shown)} への投稿`);
+    const to = where(JSON.parse(approval.payload) as Shown);
+    // Fork (ADR F07): a Signal group's failure is recorded as Slack's word, which the devices know (docs/client-contract.md).
+    const words = to.startsWith('Signal のグループ') ? said.replace('Slack に断られた', 'Signal に断られたか、届いたか分からない') : said;
+    await this.options.api.send(`→ ${words}: ${to} への投稿`);
     this.options.db.prepare('UPDATE fork_signal_approval_messages SET closed = 1 WHERE approval_id = ?').run(approvalId);
   }
 

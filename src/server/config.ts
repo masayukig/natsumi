@@ -594,6 +594,13 @@ export function parseConfig(raw: unknown): ServerConfig {
   if (config.slack) {
     const judge = parseJudges((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
+    if (config.signal && (root.signal as Record<string, unknown>).judge !== undefined) {
+      throw new ConfigError('signal.judge', 'is read only without slack; with slack, the dove judges with slack.judge (ADR F07)');
+    }
+  } else if (config.signal) {
+    // Fork (ADR F07): without Slack, the dove posts to Signal groups alone, judged as a Slack post would be.
+    const judge = parseJudges((root.signal as Record<string, unknown>).judge, 'signal.judge', config.pi);
+    if (judge) config.signal.judge = judge;
   }
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -1021,15 +1028,26 @@ function ownerUsername(value: unknown, path: string): string {
 
 /**
  * Fork (ADR F04): the signal-cli daemon's HTTP endpoint, the number natsumi is registered as, and the owner's number.
- * `approvals` also hands the owner the dove's drafts there.
+ * `approvals` also hands the owner the dove's drafts there. `groups` (ADR F06) are groups approved from the start, by
+ * the directory each is written to and its ID; any other group she is found in is asked about in the owner's 1:1.
  */
-export interface SignalConfig { url: string; account: string; owner: string; approvals: boolean }
+export interface SignalConfig {
+  url: string; account: string; owner: string; approvals: boolean; groups: Record<string, string>;
+  /** Fork (ADR F07): other names she answers to in a group without a mention, besides the avatar's. */
+  names: string[];
+  /** Fork (ADR F07): the dove's judges for posts to the groups when there is no `slack` (whose `judge` is used when there is). */
+  judge?: JudgesConfig;
+}
+
+/** A group ID as signal-cli writes it: base64 of 32 bytes for groups v2 (16 for v1). */
+const GROUP_ID = /^[A-Za-z0-9+/]{22,}={0,2}$/;
 
 const PHONE_NUMBER = /^\+[1-9][0-9]{6,14}$/;
 
 function parseSignal(value: unknown, path: string): SignalConfig {
   const signal = object(value, path);
-  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals']);
+  // `judge` is read by parseJudges once pi is known, as `slack.judge` is.
+  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals', 'groups', 'judge', 'names']);
   const urlPath = `${path}.url`;
   const url = parseUrl(required(signal, 'url', path), urlPath);
   // The daemon has no authentication of its own, so plain http reaches only a loopback host, such as a sidecar.
@@ -1044,7 +1062,22 @@ function parseSignal(value: unknown, path: string): SignalConfig {
   };
   const approvals = signal.approvals ?? false;
   if (typeof approvals !== 'boolean') throw new ConfigError(`${path}.approvals`, 'must be true or false');
-  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals };
+  const groups: Record<string, string> = {};
+  for (const [name, id] of Object.entries(signal.groups === undefined ? {} : object(signal.groups, `${path}.groups`))) {
+    const entryPath = `${path}.groups.${name}`;
+    // The name becomes a directory and the first part of every reference she writes, as a Slack workspace's does.
+    if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    if (/^g-[0-9a-f]{8}$/.test(name)) throw new ConfigError(entryPath, 'g- and 8 hex digits is the name of a group the owner approved in Signal');
+    if (typeof id !== 'string' || !GROUP_ID.test(id)) throw new ConfigError(entryPath, 'must be the group ID in base64, as signal-cli listGroups shows it');
+    if (Object.values(groups).includes(id)) throw new ConfigError(entryPath, 'names a group already listed');
+    groups[name] = id;
+  }
+  const names = signal.names ?? [];
+  // One character would match nearly every message.
+  if (!Array.isArray(names) || names.some(name => typeof name !== 'string' || [...name.trim()].length < 2 || [...name].length > 32)) {
+    throw new ConfigError(`${path}.names`, 'must be a list of names, each 2 to 32 characters');
+  }
+  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals, groups, names: names as string[] };
 }
 
 function parseCurator(value: unknown, path: string): CuratorConfig {

@@ -10,7 +10,7 @@ import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from './avatar-manual.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { catalogContextWindow } from '../pi/auth.ts';
-import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgesConfig,
+import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, SLACK_DEFAULTS, type JudgesConfig,
   type ServerConfig } from './config.ts';
 import { BrowserSessions } from './browser/session-cookie.ts';
 import { WebApp } from './browser/web-app.ts';
@@ -38,6 +38,8 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
+import { followedUpSince, SIGNAL_REGISTRATION, SIGNAL_SOURCE, SignalGroups } from './signal-groups.ts';
+import { RETRY_DELAY_MS } from './turn-retry.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
@@ -142,8 +144,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   }))) : [];
   const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
   for (const method of JUDGE_METHODS) {
-    const reference = config.slack?.judge?.[method]?.apiKey;
-    if (reference) judgeKeys[method] = await readSecret(reference, `slack.judge.${method}.apiKey`, options.env);
+    const reference = (config.slack?.judge ?? config.signal?.judge)?.[method]?.apiKey;
+    if (reference) judgeKeys[method] = await readSecret(reference, `${config.slack ? 'slack' : 'signal'}.judge.${method}.apiKey`, options.env);
   }
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
@@ -208,7 +210,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     };
     const { turnFold, eventModelCalls, eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes,
       timeZone } = config.loop;
-    const judges = config.slack?.judge;
+    const judges = config.slack?.judge ?? config.signal?.judge;
     const settings = await RuntimeSettings.open({ dataDirectory, routes: routeControl, now, log, defaults: { turnFold, eventModelCalls,
       eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes, timeZone,
       // The dove's judges (ADR 0059): on as the config has them, and only those it has an endpoint for can be turned on.
@@ -242,14 +244,25 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
       timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
+    // Fork (ADR F06): what she hears in the Signal groups the owner approved, written under sources/signal.
+    const signalApi = config.signal ? options.signal?.api ?? connectSignal(config.signal) : undefined;
+    const signalGroups = config.signal && signalApi ? new SignalGroups({ db, api: signalApi,
+      directory: join(dataDirectory, SOURCES_DIRECTORY, SIGNAL_SOURCE), groups: config.signal.groups, account: config.signal.account,
+      selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); },
+      names: config.signal.names, isOpen: place => !attentionDone('signal', place),
+      // "typing…" in the group while she works on what was for her there, made with the loop below.
+      typing: { start: (groupId, place) => groupTyping?.start(groupId, '', place), posted: groupId => groupTyping?.posted(groupId, '') } }) : undefined;
+    let groupTyping: SlackMentionTyping | undefined;
+    await signalGroups?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
     // her the files and no events, and neither an agent nor the dove can be asked; the server still starts.
-    let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    let sources: Sources | undefined = archive || config.a2a || signalGroups ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
-    if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
+    if (config.a2a || archive || signalGroups) sources?.register(AGENTS_REGISTRATION);
+    if (signalGroups) sources?.register(SIGNAL_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -262,22 +275,26 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const agentPlace = sources ? replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) : undefined;
     // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its results
     // are put under sources/agents/poppo (ADR 0074); the loop is opened next with the dove as one of the agents she can ask.
-    const theDove = dove = archive && slackConfig ? new SlackDove({
-      db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
-      judges: judgeSlots(slackConfig.judge, judgeKeys, options.judge?.clients), judgeChoice: () => settings.judges(),
-      config: { approvalDays: slackConfig.approvalExpiryDays, placementFollowing: slackConfig.placementFollowing,
-        judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
+    // Fork (ADR F07): it also posts to the Signal groups the owner approved, and is there for them alone without Slack,
+    // with Slack's defaults and the judges of `signal.judge`.
+    const doveSettings = slackConfig ?? (signalGroups ? { ...SLACK_DEFAULTS, judge: config.signal?.judge, avatarBaseUrl: undefined } : undefined);
+    const theDove = dove = doveSettings && (archive || signalGroups) ? new SlackDove({
+      db, ...(archive ? { archive } : {}), ...(signalGroups ? { signal: signalGroups } : {}),
+      workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
+      judges: judgeSlots(doveSettings.judge, judgeKeys, options.judge?.clients), judgeChoice: () => settings.judges(),
+      config: { approvalDays: doveSettings.approvalExpiryDays, placementFollowing: doveSettings.placementFollowing,
+        judgeContext: doveSettings.judgeContext, images: doveSettings.postImages },
       publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
-      ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR F01)
+      ...(doveSettings.avatarBaseUrl ? { avatarBaseUrl: doveSettings.avatarBaseUrl } : {}), // Fork (ADR F01)
       images, timeZone: config.loop.timeZone, ...(agentPlace ? { place: agentPlace } : {}),
       // Her own post goes into the record through its workspace's connection, in turn with what Slack sends.
       recordOwn: (workspace, channelId, post) => slackWorkspaces.get(workspace)?.recordOwn(channelId, post) ?? Promise.resolve(),
       now, log,
     }) : undefined;
-    if (slackConfig) {
-      const configured = JUDGE_METHODS.filter(method => slackConfig.judge?.[method]);
-      log(slackConfig.judge ? `slack: the judges are ${configured.map(method => `${method} (${slackConfig.judge![method]!.enabled ? 'on' : 'off'})`).join(', ')}; `
-        + `${slackConfig.judge.adopted} is adopted` : 'slack: no judge is configured; every draft goes to the owner');
+    if (doveSettings) {
+      const configured = JUDGE_METHODS.filter(method => doveSettings.judge?.[method]);
+      log(doveSettings.judge ? `${slackConfig ? 'slack' : 'signal'}: the judges are ${configured.map(method => `${method} (${doveSettings.judge![method]!.enabled ? 'on' : 'off'})`).join(', ')}; `
+        + `${doveSettings.judge.adopted} is adopted` : `${slackConfig ? 'slack' : 'signal'}: no judge is configured; every draft goes to the owner`);
     }
 
     // The manual's index goes into her instructions (ADR 0056). Without it she is pointed at /manual/INDEX.md instead,
@@ -304,7 +321,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
       ...(config.signal ? { ownerOnSignal: true } : {}),
-      tellCutShort: true,
+      tellCutShort: true, retryFailedTurns: { delayMs: RETRY_DELAY_MS },
     });
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
     if (theDove) {
@@ -321,6 +338,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const askedOn = (eventId: string) => (db!.prepare(`SELECT m.device_id FROM loop_events e
       JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
       { device_id: string | null } | undefined)?.device_id;
+    // Fork: whether the turn that took a source's attention at a place is over (replied, not replied or failed).
+    const attentionDone = (source: string, place: { file: string; path: string }) => ['replied', 'no-reply', 'failed'].includes(
+      (db!.prepare(`SELECT e.state FROM source_attention a JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = ? AND a.file = ?
+        AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`).get(source, place.file, place.path) as { state: string } | undefined)?.state ?? '');
     // Fork: how many agents she asked since an owner message or a mention have not answered yet ("typing…" stays up).
     const waitingAgents = (since: string) => (db!.prepare(`SELECT count(*) AS n FROM agent_tasks WHERE state = 'waiting' AND sent_at >= ?`)
       .get(since) as { n: number }).n;
@@ -335,10 +356,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           asked: eventId => askedOn(eventId) === 'slack',
           send: stop => typingAt && api.setStatus?.(typingAt.channel, typingAt.ts, stop ? '' : 'is typing...') }) : undefined;
         if (ownerTyping) ownerStops.push(() => ownerTyping.stop());
-        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents,
-          done: place => ['replied', 'no-reply', 'failed'].includes((db!.prepare(`SELECT e.state FROM source_attention a
-            JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = 'slack' AND a.file = ? AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`)
-            .get(place.file, place.path) as { state: string } | undefined)?.state ?? '') });
+        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents, done: place => attentionDone('slack', place) });
         ownerStops.push(() => mentionTyping.stop());
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
@@ -375,18 +393,18 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // Fork (ADR F04): the owner talks with her over Signal, and approves the dove's drafts there when asked to. The
     // daemon being out of reach holds nothing: the stream is tried again until it opens.
     const signalConfig = config.signal;
-    if (signalConfig && !thinkingLoop.unavailable) {
-      const api = options.signal?.api ?? connectSignal(signalConfig);
+    if (signalConfig && signalApi && !thinkingLoop.unavailable) {
+      const api = signalApi;
       const askedOnSignal = (eventId: string) => askedOn(eventId) === 'signal';
       const sent = new SentLines();
       ownerStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal, sent }));
       const typing = new OwnerTyping({ loop: thinkingLoop, send: stop => api.typing?.(stop), asked: askedOnSignal, waitingAgents });
       ownerStops.push(() => typing.stop());
-      if (signalConfig.approvals && !theDove) log('signal: approvals are on, but there is no dove without slack; nothing to approve');
       const approvals = signalConfig.approvals && theDove
         ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
       if (approvals) ownerStops.push(() => approvals.stop());
       signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, typing, sent, ...(approvals ? { approvals } : {}),
+        ...(signalGroups ? { groups: signalGroups } : {}),
         workDirectory: join(dataDirectory, WORK_DIRECTORY),
         say: ({ requestId, text }) => {
           const outcome = thinkingLoop.send({ requestId, deviceId: 'signal', text });
@@ -394,12 +412,27 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         } });
       signalOwner.start();
       approvals?.sync();
+      // The groups she is in are looked at now and every minute, as the dove's approvals are swept: an invitation may tell
+      // nothing on the stream. A question a day old is answered by leaving the group.
+      if (signalGroups) {
+        ownerStops.push(() => signalGroups.stop());
+        // Fork (ADR F07): Signal lets typing go after about 15 seconds, so it is sent every 10; agents may take a while.
+        const typingInGroups = groupTyping = new SlackMentionTyping({ loop: thinkingLoop, waitingAgents, intervalMs: 10_000, maxMs: 15 * 60_000,
+          holdForAgents: true,
+          followedUp: since => followedUpSince(db!, since),
+          done: place => attentionDone('signal', place),
+          api: { setStatus: async (groupId, _ts, status) => { await api.groupTyping?.(groupId, status === ''); } } });
+        ownerStops.push(() => typingInGroups.stop());
+        const sweep = () => { void signalGroups.sync().then(() => signalGroups.expire()); };
+        sweep();
+        timers.push(setInterval(sweep, APPROVAL_SWEEP_MS));
+      }
     }
 
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
     // background: an agent that is down must not hold the server's start.
     void writeAgentList({ directory: join(dataDirectory, AGENT_LIST_DIRECTORY), config: config.a2a, client: a2aClient,
-      now: now(), timeZone: config.loop.timeZone, dove: theDove !== undefined }).then(
+      now: now(), timeZone: config.loop.timeZone, dove: theDove !== undefined, doveSignal: signalGroups !== undefined }).then(
       ({ listed, unreachable }) => { log(`a2a: wrote the list of agents (${listed.length} listed, ${unreachable.length} out of reach)`); },
       () => { log('a2a: the list of agents could not be written'); },
     );

@@ -13,6 +13,7 @@ natsumi の番号で登録した signal-cli を daemon として動かし、そ�
 
 - 設定 `signal`（`url`・`account`・`owner`・`approvals`）があるとき、本人の番号（`sourceNumber`）からの本文のある `dataMessage` を、`ThinkingLoop.send()` に `deviceId: 'signal'` で渡す。
   `requestId` は `signal:<timestamp>` にし、同じ発言は 1 度だけ渡る。既読・入力中・プロフィールキーの更新・本人以外の発言は捨てる。
+  （2026-10-25 追記: グループでの発言は本人のものでも 1 対 1 としては渡さず、本人が参加を認めたグループのものだけ記録する。[ADR F06](F06-fork-listening-in-signal-groups.md)）
   早い時期の受信には UUID が無いことがあったので、番号で見る。
 - natsumi の会話の発言（返事と知らせ）は、ループの購読から `send` で本人に送る。返事は、答えたメッセージの端末が `signal` のときだけ送る（F01 の Slack と同じく、聞かれた場所で答える）。
   知らせと、どのメッセージにも答えていない返事も送る。Signal は本人の私的な場所なので、知らせが Slack と重なってもかまわない。Slack 側の動きは変えない。
@@ -41,5 +42,6 @@ natsumi の番号で登録した signal-cli を daemon として動かし、そ�
 
 - 本人は Slack なしで、Signal だけで natsumi と話せる。両方を設定すれば両方で話せ、返事はそれぞれ聞かれた方に出る。
 - ポッポさんは Slack に投稿するものなので、`slack` の設定が無ければポッポさんも承認も無い。`approvals: true` でも何も送らず、起動時にログに 1 行出す。
+  （2026-10-25 追記: ポッポさんは Signal のグループにも投稿するようになり、`signal` があれば `slack` が無くてもいる。[ADR F07](F07-fork-posting-to-signal-groups.md)）
 - 本人が送った添付は `/work/signal` に溜まる。natsumi の夜の片付けか手で消す。signal-cli 側の写しも PVC の `signal/attachments` に残る。
 - `slack.owner` と `signal` の両方があるとき、`reply_to_mac` の答えの文は Slack のチャンネルと言う（Signal に送った返事でも）。
