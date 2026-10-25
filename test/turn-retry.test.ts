@@ -6,6 +6,8 @@ import test from 'node:test';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
+import { SIGNAL_REGISTRATION } from '../src/server/signal-groups.ts';
+import { Sources, SOURCES_DEFAULTS } from '../src/server/sources.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent } from '../src/server/thinking-loop.ts';
 import { hadOutsideEffect, TurnRetries } from '../src/server/turn-retry.ts';
@@ -16,7 +18,7 @@ import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
 
 const DELAY_MS = 20;
 
-async function setup(t: test.TestContext, settings: Partial<LoopConfig> = {}) {
+async function setup(t: test.TestContext, settings: Partial<LoopConfig> = {}, withSources = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-turn-retry-')));
   const data = join(root, 'data');
   await mkdir(data);
@@ -28,12 +30,18 @@ async function setup(t: test.TestContext, settings: Partial<LoopConfig> = {}) {
   const model = new ScriptedModel();
   const events: LoopClientEvent[] = [];
   const logs: string[] = [];
-  const loop = await ThinkingLoop.open({
+  const sourcesDirectory = join(data, 'sources');
+  const sources = withSources ? new Sources({ db, directory: sourcesDirectory, gitDirectory: join(data, 'sources.git'), timeZone: 'Asia/Tokyo',
+    awakeHours: LOOP_DEFAULTS.awakeHours, activity: SOURCES_DEFAULTS.activity, historyDays: 7, now: Date.now }) : undefined;
+  sources?.register(SIGNAL_REGISTRATION);
+  await sources?.prepare();
+  const loop = await ThinkingLoop.open({ ...(sources ? { sources } : {}),
     db, dataDirectory: data, sessionDirectory: join(root, 'pi', 'sessions'), agentDirectory: join(root, 'pi', 'agent'), target: SUBSCRIPTION_TARGET,
     thinking: 'on', runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, ...settings }, tellCutShort: true, retryFailedTurns: { delayMs: DELAY_MS },
     configureSession: session => { session.agent.streamFunction = model.streamFunction; }, log: line => { logs.push(line); },
   });
   loop.subscribe(event => { events.push(event); });
+  sources?.connect(() => { loop.raiseSourcesUpdated(); });
   t.after(async () => {
     await loop.close();
     db.close();
@@ -50,7 +58,8 @@ async function setup(t: test.TestContext, settings: Partial<LoopConfig> = {}) {
   const notices = () => events.filter(e => e.type === 'conversation.message' && e.payload.kind === 'notice').map(e => e.payload.text);
   const retries = () => logs.filter(line => line.includes('retrying once')).length;
   const state = () => ({ ...db.prepare('SELECT state, reason FROM loop_events ORDER BY created_at DESC LIMIT 1').get() as { state: string; reason: string | null } });
-  return { model, send, notices, retries, state };
+  const completed = () => events.filter(e => e.type === 'conversation.event.completed').map(e => e.payload.status);
+  return { model, send, notices, retries, state, completed, loop, sources, sourcesDirectory, db };
 }
 
 /** Answers each user turn with `first` and every later call with `then`. */
@@ -62,11 +71,32 @@ test('a model error with nothing sent is tried once; when the retry fails too, t
   f.model.auto = script(() => ({ finish: 'error' }));
   await f.send('PDF を読んで');
   assert.equal(f.retries(), 1);
+  assert.deepEqual(f.completed(), ['failed']);
   assert.deepEqual(f.notices(), ['マスターのメッセージへの対応が途中で止まりました（モデルの呼び出しが失敗しました）。返事が届いていなければ、もう一度話しかけてください。']);
   assert.deepEqual(f.state(), { state: 'failed', reason: 'model-error' });
 });
 
-test('a retry that works answers the message, and the owner is told nothing', async t => {
+test('a sources update tried again shows the same attention, and nothing new is taken for it', async t => {
+  const f = await setup(t, {}, true);
+  let failed = false;
+  f.model.auto = script(() => {
+    if (!failed) { failed = true; return { finish: 'error' }; }
+    return { calls: [] };
+  });
+  await mkdir(join(f.sourcesDirectory, 'signal', 'iori-test'), { recursive: true });
+  await writeFile(join(f.sourcesDirectory, 'signal', 'iori-test', '2026-10-25.jsonl'), '{"at":"2026-10-25 12:04:05","from":"佐藤","text":"いおり？"}\n');
+  f.sources!.attention({ source: 'signal', kind: 'mention', file: '/sources/signal/iori-test/2026-10-25.jsonl', path: '.[0]' });
+  await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+  await f.loop.idle();
+  const prompts = f.model.contexts.filter(context => context.messages.at(-1)?.role === 'user')
+    .map(context => JSON.stringify(context.messages.at(-1)));
+  assert.equal(prompts.length, 2);
+  for (const prompt of prompts) assert.match(prompt, /mention.*\/sources\/signal\/iori-test\/2026-10-25\.jsonl/);
+  assert.equal(f.retries(), 1);
+  assert.deepEqual({ ...f.db.prepare(`SELECT state, reason FROM loop_events WHERE kind = 'sources-updated'`).get() as object }, { state: 'no-reply', reason: null });
+});
+
+test('a retry that works answers the message, the owner is told nothing, and no failure is shown before it', async t => {
   const f = await setup(t);
   let failed = false;
   f.model.auto = script(() => {
@@ -76,6 +106,7 @@ test('a retry that works answers the message, and the owner is told nothing', as
   await f.send('元気？');
   assert.deepEqual([f.retries(), f.notices()], [1, []]);
   assert.equal(f.state().state, 'replied');
+  assert.deepEqual(f.completed(), ['replied']);
 });
 
 test('a model error after a reply left the server is not tried again; the owner is told', async t => {
@@ -98,10 +129,13 @@ test('each event is tried again once; what reaches someone outside counts as an 
   const retries = new TurnRetries();
   assert.equal(retries.take('model-error', ['e1', 'e2'], false), true);
   assert.equal(retries.take('model-error', ['e2'], false), false);
+  retries.forget('e2');
+  assert.equal(retries.take('model-error', ['e2'], false), true, 'a mark goes once its event finished');
   assert.equal(retries.take('timeout', ['e3'], false), false);
   assert.equal(retries.take('model-error', ['e3'], true), false);
   const call = (name: string) => ({ role: 'assistant', content: [{ type: 'toolCall', name }] });
   assert.equal(hadOutsideEffect([call('read'), call('run_shell')], new Set()), false);
+  assert.equal(hadOutsideEffect([call('schedule_self_check')], new Set()), true);
   assert.equal(hadOutsideEffect([call('ask_agent')], new Set()), true);
   assert.equal(hadOutsideEffect([call('post_to_wiki')], new Set(['post_to_wiki'])), true);
   assert.equal(hadOutsideEffect([{ role: 'toolResult', toolName: 'codemode', nestedCalls: { calls: [{ name: 'notify_owner' }] } }], new Set()), true);

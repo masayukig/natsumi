@@ -413,6 +413,8 @@ export class ThinkingLoop {
   /** Fork (ADR F05): when the server last told the owner a turn was cut short. */
   private readonly cutShortNotices = new CutShortNotices();
   private readonly turnRetries = new TurnRetries();
+  /** Fork (ADR F08): failed turns waiting to be tried again, which `idle` waits for too; dropped as the loop closes. */
+  private readonly retrying = new Set<ReturnType<typeof setTimeout>>();
   /** The routes, the default, the route the session is on (unset until it is open) and the route chosen (ADR 0046). */
   private readonly routes: { list: LoopRoute[]; defaultRoute: string };
   private route: LoopRoute | undefined;
@@ -868,13 +870,17 @@ export class ThinkingLoop {
 
   /** Resolves when no turn is running and nothing is queued. */
   idle(): Promise<void> {
-    if (!this.running && this.queue.length === 0) return Promise.resolve();
+    if (!this.running && this.queue.length === 0 && this.retrying.size === 0) return Promise.resolve();
     return new Promise(resolve => this.idleWaiters.push(resolve));
   }
 
   /** Refuses new messages, stops the turn in progress, records its events and releases the Pi session. */
   close(): Promise<void> {
     this.closing ??= (async () => {
+      // Fork (ADR F08): a turn waiting to be tried again stays queued, for the next start.
+      for (const timer of this.retrying) clearTimeout(timer);
+      this.retrying.clear();
+      this.settle();
       this.agents.close();
       this.curatorStop?.abort();
       if (this.running && this.session) {
@@ -1129,15 +1135,16 @@ export class ThinkingLoop {
   private retryLater(eventIds: string[], delayMs: number): void {
     for (const eventId of eventIds) this.store.setEventState(eventId, 'queued');
     this.log(`thinking loop: the turn failed (model-error) with nothing sent; retrying once in ${Math.round(delayMs / 1000)} s`);
-    setTimeout(() => {
-      if (this.closing) return;
-      this.queue.push(...eventIds.filter(eventId => !this.queue.includes(eventId)));
+    const timer = setTimeout(() => {
+      this.retrying.delete(timer);
+      if (!this.closing) this.queue.push(...eventIds.filter(eventId => !this.queue.includes(eventId)));
       this.pump();
-    }, delayMs).unref();
+    }, delayMs);
+    this.retrying.add(timer);
   }
 
   private settle() {
-    if (this.running || this.queue.length > 0) return;
+    if (this.running || this.queue.length > 0 || this.retrying.size > 0) return;
     for (const resolve of this.idleWaiters.splice(0)) resolve();
   }
 
@@ -1195,9 +1202,15 @@ export class ThinkingLoop {
     const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
       : !last || (last.stopReason !== 'stop' && last.stopReason !== 'toolUse') ? 'model-error' : undefined;
     const handledIds = [...this.handling.keys()];
+    // Fork (ADR F08): a model call that failed with nothing sent is tried once more, before anyone is told; its events
+    // are not recorded as failed meanwhile, so the devices see no failure before the answer.
+    const retry = failure !== undefined && kind === 'events' && this.options.retryFailedTurns !== undefined
+      && this.turnRetries.take(failure, handledIds, hadOutsideEffect(session.messages.slice(before), this.declaredNames));
     let unanswered = 0;
     for (const handling of this.handling.values()) {
       if (handling.messageId !== undefined && handling.shown && !handling.replied) unanswered += 1;
+      if (retry) continue;
+      this.turnRetries.forget(handling.eventId);
       const status: EventState = handling.replied ? 'replied' : !failure ? 'no-reply' : 'failed';
       this.store.setEventState(handling.eventId, status, status === 'failed' ? failure : undefined);
       if (!handling.messageId) continue;
@@ -1206,9 +1219,6 @@ export class ThinkingLoop {
         eventId: handling.eventId, messageId: handling.messageId, status, ...(status === 'failed' ? { reason: failure } : {}),
       });
     }
-    // Fork (ADR F08): a model call that failed with nothing sent is tried once more, before anyone is told.
-    const retry = failure !== undefined && kind === 'events' && this.options.retryFailedTurns !== undefined
-      && this.turnRetries.take(failure, handledIds, hadOutsideEffect(session.messages.slice(before), this.declaredNames));
     if (retry) this.retryLater(handledIds, this.options.retryFailedTurns!.delayMs);
     // Fork (ADR F05): she cannot say the turn was cut, so the server does, through the path of her notices.
     const cutNotice = !retry && failure && kind === 'events' && this.options.tellCutShort === true
@@ -1816,6 +1826,8 @@ export class ThinkingLoop {
 
   /** Has the sources make a `sources_updated` event's line. One that fails shows nothing, and the event ends. */
   private async takeSources(eventId: string): Promise<boolean> {
+    // Fork (ADR F08): an event tried again keeps the line it was first given, with the same attentions.
+    if (this.options.db.prepare('SELECT 1 FROM source_events WHERE event_id = ?').get(eventId)) return true;
     try { return await this.options.sources?.take(eventId) ?? false; } catch {
       this.log('thinking loop: the sources could not make their event');
       return false;

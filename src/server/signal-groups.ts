@@ -552,7 +552,8 @@ export class SignalGroups implements DoveSignalGroups {
     if (kind) {
       if (heard === 'heard') this.attended.set(group, this.now());
       this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });
-      this.options.typing?.start(sent.groupId, place);
+      // Not for an old one from a backlog: she may well have nothing to say to it now.
+      if (heard === 'heard') this.options.typing?.start(sent.groupId, place);
     }
     if (heard !== 'heard' || kind) return;
     // Talk that raised nothing: once it settles, she is told of it once, to read the room (`conversation`).

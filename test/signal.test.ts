@@ -639,7 +639,7 @@ test('her name without a mention is a name, in kana either way, NFKC and the nam
 });
 
 test('a backlog raises no name, follow-up or conversation; a mention only within six hours; all of it is written', async t => {
-  const { root, clock, groups, say, kinds, quiet } = await hearingSetup(t);
+  const { root, clock, groups, say, kinds, quiet, typing } = await hearingSetup(t);
   clock.now = AT + 7 * 60 * 60_000;
   await say('いおりは？', clock.now - 11 * 60_000);
   await say('ただの話', clock.now - 11 * 60_000);
@@ -652,6 +652,7 @@ test('a backlog raises no name, follow-up or conversation; a mention only within
   await mention(AT);
   await quiet();
   assert.deepEqual(kinds(), ['mention .[2]']);
+  assert.deepEqual(typing, [], 'no typing for a backlog');
   const lines = (await readFile(join(root, 'signal', 'iori-test', '2026-10-25.jsonl'), 'utf8'))
     .split('\n').filter(Boolean);
   assert.equal(lines.length, 4);

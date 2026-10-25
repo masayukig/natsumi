@@ -12,10 +12,11 @@ export const RETRY_DELAY_MS = 30_000;
 /**
  * The tools whose call reaches someone outside the server: the owner (a reply or a notice), an outside agent or the
  * dove (ask_agent). Doing one twice could say or send it twice. The tools a config declares (ADR 0075) count as well,
- * since what they reach is not known here. Reading, run_shell, view and memory edits stay on the server's side, and
- * doing them again is harmless.
+ * since what they reach is not known here. Booking or cancelling a self-check and her face on the devices are counted too,
+ * to be safe. Reading, run_shell (the workspace has no network, ADR 0019), view and memory edits stay on the server's
+ * side, and doing them again is harmless.
  */
-const OUTSIDE = new Set(['reply_to_mac', 'notify_owner', 'ask_agent']);
+const OUTSIDE = new Set(['reply_to_mac', 'notify_owner', 'ask_agent', 'schedule_self_check', 'cancel_self_check', 'set_mac_avatar_expression']);
 
 interface Block { type?: unknown; name?: unknown }
 interface Message { role?: unknown; content?: unknown; toolName?: unknown; nestedCalls?: { calls?: { name?: unknown }[] } }
@@ -30,7 +31,7 @@ export function hadOutsideEffect(messages: readonly unknown[], declared: Readonl
 }
 
 /**
- * Which events were tried again already, so each is tried again once. ponytail: in memory; the events wait as queued,
+ * Which events were tried again already and have not finished, so each is tried again once. ponytail: in memory; the events wait as queued,
  * so a restart in between retries them at the start, and that one's failure may be retried once more.
  */
 export class TurnRetries {
@@ -42,4 +43,7 @@ export class TurnRetries {
     for (const id of eventIds) this.retried.add(id);
     return true;
   }
+
+  /** An event that finished: it can never be tried again, so its mark goes. */
+  forget(eventId: string): void { this.retried.delete(eventId); }
 }
