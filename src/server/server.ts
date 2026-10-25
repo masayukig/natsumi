@@ -10,7 +10,7 @@ import { AVATAR_MANUAL_DIRECTORY, writeAvatarManual } from './avatar-manual.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { catalogContextWindow } from '../pi/auth.ts';
-import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgesConfig,
+import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, SLACK_DEFAULTS, type JudgesConfig,
   type ServerConfig } from './config.ts';
 import { BrowserSessions } from './browser/session-cookie.ts';
 import { WebApp } from './browser/web-app.ts';
@@ -143,8 +143,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   }))) : [];
   const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
   for (const method of JUDGE_METHODS) {
-    const reference = config.slack?.judge?.[method]?.apiKey;
-    if (reference) judgeKeys[method] = await readSecret(reference, `slack.judge.${method}.apiKey`, options.env);
+    const reference = (config.slack?.judge ?? config.signal?.judge)?.[method]?.apiKey;
+    if (reference) judgeKeys[method] = await readSecret(reference, `${config.slack ? 'slack' : 'signal'}.judge.${method}.apiKey`, options.env);
   }
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
@@ -209,7 +209,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     };
     const { turnFold, eventModelCalls, eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes,
       timeZone } = config.loop;
-    const judges = config.slack?.judge;
+    const judges = config.slack?.judge ?? config.signal?.judge;
     const settings = await RuntimeSettings.open({ dataDirectory, routes: routeControl, now, log, defaults: { turnFold, eventModelCalls,
       eventTimeoutMinutes, reviewModelCalls, reviewTimeoutMinutes, awakeHours, pingIntervalMinutes, timeZone,
       // The dove's judges (ADR 0059): on as the config has them, and only those it has an endpoint for can be turned on.
@@ -256,7 +256,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
-    if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
+    if (config.a2a || archive || signalGroups) sources?.register(AGENTS_REGISTRATION);
     if (signalGroups) sources?.register(SIGNAL_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
@@ -270,22 +270,26 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const agentPlace = sources ? replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) : undefined;
     // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its results
     // are put under sources/agents/poppo (ADR 0074); the loop is opened next with the dove as one of the agents she can ask.
-    const theDove = dove = archive && slackConfig ? new SlackDove({
-      db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
-      judges: judgeSlots(slackConfig.judge, judgeKeys, options.judge?.clients), judgeChoice: () => settings.judges(),
-      config: { approvalDays: slackConfig.approvalExpiryDays, placementFollowing: slackConfig.placementFollowing,
-        judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
+    // Fork (ADR F07): it also posts to the Signal groups the owner approved, and is there for them alone without Slack,
+    // with Slack's defaults and the judges of `signal.judge`.
+    const doveSettings = slackConfig ?? (signalGroups ? { ...SLACK_DEFAULTS, judge: config.signal?.judge, avatarBaseUrl: undefined } : undefined);
+    const theDove = dove = doveSettings && (archive || signalGroups) ? new SlackDove({
+      db, ...(archive ? { archive } : {}), ...(signalGroups ? { signal: signalGroups } : {}),
+      workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
+      judges: judgeSlots(doveSettings.judge, judgeKeys, options.judge?.clients), judgeChoice: () => settings.judges(),
+      config: { approvalDays: doveSettings.approvalExpiryDays, placementFollowing: doveSettings.placementFollowing,
+        judgeContext: doveSettings.judgeContext, images: doveSettings.postImages },
       publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
-      ...(slackConfig.avatarBaseUrl ? { avatarBaseUrl: slackConfig.avatarBaseUrl } : {}), // Fork (ADR F01)
+      ...(doveSettings.avatarBaseUrl ? { avatarBaseUrl: doveSettings.avatarBaseUrl } : {}), // Fork (ADR F01)
       images, timeZone: config.loop.timeZone, ...(agentPlace ? { place: agentPlace } : {}),
       // Her own post goes into the record through its workspace's connection, in turn with what Slack sends.
       recordOwn: (workspace, channelId, post) => slackWorkspaces.get(workspace)?.recordOwn(channelId, post) ?? Promise.resolve(),
       now, log,
     }) : undefined;
-    if (slackConfig) {
-      const configured = JUDGE_METHODS.filter(method => slackConfig.judge?.[method]);
-      log(slackConfig.judge ? `slack: the judges are ${configured.map(method => `${method} (${slackConfig.judge![method]!.enabled ? 'on' : 'off'})`).join(', ')}; `
-        + `${slackConfig.judge.adopted} is adopted` : 'slack: no judge is configured; every draft goes to the owner');
+    if (doveSettings) {
+      const configured = JUDGE_METHODS.filter(method => doveSettings.judge?.[method]);
+      log(doveSettings.judge ? `${slackConfig ? 'slack' : 'signal'}: the judges are ${configured.map(method => `${method} (${doveSettings.judge![method]!.enabled ? 'on' : 'off'})`).join(', ')}; `
+        + `${doveSettings.judge.adopted} is adopted` : `${slackConfig ? 'slack' : 'signal'}: no judge is configured; every draft goes to the owner`);
     }
 
     // The manual's index goes into her instructions (ADR 0056). Without it she is pointed at /manual/INDEX.md instead,
@@ -390,7 +394,6 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ownerStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal, sent }));
       const typing = new OwnerTyping({ loop: thinkingLoop, send: stop => api.typing?.(stop), asked: askedOnSignal, waitingAgents });
       ownerStops.push(() => typing.stop());
-      if (signalConfig.approvals && !theDove) log('signal: approvals are on, but there is no dove without slack; nothing to approve');
       const approvals = signalConfig.approvals && theDove
         ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
       if (approvals) ownerStops.push(() => approvals.stop());
@@ -415,7 +418,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
     // background: an agent that is down must not hold the server's start.
     void writeAgentList({ directory: join(dataDirectory, AGENT_LIST_DIRECTORY), config: config.a2a, client: a2aClient,
-      now: now(), timeZone: config.loop.timeZone, dove: theDove !== undefined }).then(
+      now: now(), timeZone: config.loop.timeZone, dove: theDove !== undefined, doveSignal: signalGroups !== undefined }).then(
       ({ listed, unreachable }) => { log(`a2a: wrote the list of agents (${listed.length} listed, ${unreachable.length} out of reach)`); },
       () => { log('a2a: the list of agents could not be written'); },
     );

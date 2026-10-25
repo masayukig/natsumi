@@ -13,7 +13,7 @@ import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { describeFailure, SlackCallError, type SlackApi } from './slack-api.ts';
-import type { ResolvedTarget, SlackArchive } from './slack-archive.ts';
+import type { Flow, MessageLine, ResolvedTarget, SlackArchive } from './slack-archive.ts';
 import { SlackEmoji } from './slack-emoji.ts';
 import { postWithImages } from './slack-images.ts';
 
@@ -48,6 +48,29 @@ import { postWithImages } from './slack-images.ts';
  */
 
 export const DOVE_NAME = 'poppo';
+/**
+ * Fork (ADR F07): the `workspace` of a post to a Signal group, which no Slack workspace can be named (they are plain).
+ * Its `channel_id` is the group's ID and its `target_ts` the Signal timestamp of the message replied to.
+ */
+export const SIGNAL_GROUPS = '#signal';
+
+/**
+ * Fork (ADR F07): the Signal groups the owner approved, as a place the dove posts to. A target's `label` names the group
+ * as the owner and natsumi read it; a reply is sent as a quote, for Signal has no threads.
+ */
+export interface DoveSignalGroups {
+  /** What natsumi named under /sources/signal, matched against the record, or a sentence saying what to write instead. */
+  resolve(to: DoveTarget): { ok: true; target: ResolvedTarget } | { ok: false; text: string };
+  /** What the judges are shown of the group: its latest messages. A group has no thread. */
+  flows(target: ResolvedTarget, messages: number, chars: number): { now: string; channel: Flow; thread: Flow | null };
+  target(groupId: string, ts: string | null): ResolvedTarget;
+  lineOf(groupId: string, ts: string): MessageLine | undefined;
+  /** Whether an emoji is one Signal can put on: one real emoji, not a Slack name. */
+  isEmoji(emoji: string): boolean;
+  /** Posts, quoting the message at `quote`, records her line, and answers its Signal timestamp. */
+  post(groupId: string, text: string, options: { quote?: string; attachments?: string[] }): Promise<string>;
+  putReaction(groupId: string, ts: string, emoji: string): Promise<void>;
+}
 /** Returns on one target before the next one goes to the owner: two rewrites, as ADR 0012 set. */
 export const MAX_RETURNS = 2;
 /** How much of the message replied to an approval shows. */
@@ -69,7 +92,10 @@ export interface OwnPost { ts: string; threadTs?: string; text: string }
 
 export interface SlackDoveOptions {
   db: DatabaseSync;
-  archive: SlackArchive;
+  /** Absent when only Signal groups are configured (fork, ADR F07). */
+  archive?: SlackArchive;
+  /** Fork (ADR F07): the Signal groups she may post to. */
+  signal?: DoveSignalGroups;
   /** The Web API of each configured workspace, by its name in the config. */
   workspaces: Record<string, SlackApi>;
   /** The judges the config has an endpoint for, each with its thresholds. Without any every draft goes to the owner. */
@@ -99,7 +125,7 @@ export interface SlackDoveOptions {
 }
 
 type Result = 'sent' | 'reacted' | 'to_owner' | 'returned' | 'rejected' | 'expired' | 'not_sent';
-type Failure = 'mechanical-check' | 'slack-error' | 'target-gone' | 'interrupted';
+type Failure = 'mechanical-check' | 'slack-error' | 'signal-error' | 'target-gone' | 'interrupted';
 /** What Slack took: the post's ts when it gave one (an upload gives none). */
 interface Delivered { ts?: string }
 
@@ -131,6 +157,7 @@ const GONE = new Set(['channel_not_found', 'thread_not_found', 'message_not_foun
 const FAILURE_WORDS: Record<Failure, string> = {
   'mechanical-check': '本文が送る前の検査に通らなかった',
   'slack-error': 'Slack に断られた',
+  'signal-error': 'Signal に断られた',
   'target-gone': '返信先の発言かチャンネルが無くなっていた',
   interrupted: '送る途中でサーバーが止まったので、届いたか分からない',
 };
@@ -184,13 +211,21 @@ export class SlackDove {
     const parsed = parseDoveRequest(message);
     if (!parsed.ok) return refuse(parsed.text);
     const { to, kind, expression, body, images = [] } = parsed.request;
-    const resolved = this.options.archive.resolve(to);
+    // Fork (ADR F07): a Signal group is named under /sources/signal.
+    const signal = to.file.startsWith('/sources/signal/') ? this.options.signal : undefined;
+    if (to.file.startsWith('/sources/signal/') && !signal) return refuse('Signal のグループには投稿できない設定です。');
+    if (!signal && !this.options.archive) return refuse(`to.file「${to.file}」には投稿できません。Signal のグループなら /sources/signal の下のファイルを書いてください（/manual/signal.md）。`);
+    const resolved = signal ? signal.resolve(to) : this.options.archive!.resolve(to);
     if (!resolved.ok) return refuse(resolved.text);
     const { workspace } = resolved.target;
-    if (!this.options.workspaces[workspace]) {
+    if (signal) {
+      if (kind === 'reaction' && !signal.isEmoji(body)) {
+        return refuse(`リアクション「${body}」は付けられません。Signal では絵文字そのもの（例: "👍"）を 1 つ書きます。Slack の名前（"+1" など）は使えません。`);
+      }
+    } else if (!this.options.workspaces[workspace]) {
       return refuse(`ワークスペース「${workspace}」は Slack の設定にありません。/sources/slack/INDEX.md にあるチャンネルを書いてください。`);
     }
-    if (kind === 'reaction' && !await this.emoji.exists(workspace, body)) {
+    if (!signal && kind === 'reaction' && !await this.emoji.exists(workspace, body)) {
       return refuse(`リアクション「${body}」は付けられません。その名前の絵文字は、標準の絵文字にも ${workspace} のカスタム絵文字にもありません。名前の確かめ方は /manual/slack.md にあります。`);
     }
     if (kind === 'post' && body !== '') {
@@ -344,21 +379,23 @@ export class SlackDove {
     const { judgeContext } = this.options.config;
     const replyTo = target.message;
     const choice = this.options.judgeChoice();
-    const { now, ...conversation } = this.options.archive.flows(target, judgeContext.messages, judgeContext.chars);
+    const signal = this.signalOf(post);
+    const { now, ...conversation } = (signal ?? this.options.archive!).flows(target, judgeContext.messages, judgeContext.chars);
     const both = await judgeSideBySide(this.options.judges, choice, {
       channel: target.label, now,
       reply_to: replyTo ? { from: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, judgeContext.chars), in_thread: replyTo.threadTs !== undefined } : null,
       conversation,
       draft: post.text,
       // Fork: a reply to a message inside a thread stays in that thread; the judge is not asked where (fork 8e4b1b1).
-    }, { placement: replyTo !== undefined && replyTo.threadTs === undefined });
+    }, { placement: !signal && replyTo !== undefined && replyTo.threadTs === undefined });
     for (const method of JUDGE_METHODS) {
       const result = both.results[method];
       if (result && 'error' in result) this.log(`dove: judge (${method}): no verdict (${result.error})`);
     }
     const judged = both.decided;
     if (this.closed) return;
-    const placement: Placement = !target.message ? 'channel' : judged?.placement?.choice ?? this.defaultPlacement(target);
+    // A Signal group has no thread: a reply is a quote in the group itself.
+    const placement: Placement = !target.message || signal ? 'channel' : judged?.placement?.choice ?? this.defaultPlacement(target);
     const history = this.returnedBefore(post);
     const verdict = !judged ? 'no-verdict' : judged.verdict === 'return' && history.length >= MAX_RETURNS ? 'rewrite-limit' : judged.verdict;
     const kept = (method: JudgeMethod) => { const result = both.results[method]; return result ? JSON.stringify(result) : null; };
@@ -395,7 +432,7 @@ export class SlackDove {
 
   /** Images with no text (ADR 0044): nothing to judge, so neither a judge nor the owner; placed as without a verdict. */
   private async sendImagesAlone(post: PostRow, target: ResolvedTarget): Promise<void> {
-    const placement: Placement = !target.message ? 'channel' : this.defaultPlacement(target);
+    const placement: Placement = !target.message || this.signalOf(post) ? 'channel' : this.defaultPlacement(target);
     this.setPost(post.post_id, { placement, state: 'sending' });
     const delivered = await this.deliver(post, '', placement);
     if (typeof delivered !== 'object') return this.fail(post, delivered);
@@ -459,10 +496,20 @@ export class SlackDove {
   /** A reaction: no judge and no owner (ADR 0039, ADR 0042). */
   private async react(post: PostRow): Promise<void> {
     this.setPost(post.post_id, { state: 'sending' });
+    const signal = this.signalOf(post);
+    if (signal) {
+      try { await signal.putReaction(post.channel_id, post.target_ts!, post.text); } catch (error) {
+        this.log(`signal: reacting in a group failed (${describeFailure(error)})`);
+        return this.fail(post, 'signal-error');
+      }
+      this.setPost(post.post_id, { state: 'sent', sent_text: post.text });
+      this.tell(post.post_id, 'reacted', `ポッポ！ ${post.text} を付けたよ。`);
+      return;
+    }
     const api = this.options.workspaces[post.workspace];
     try {
       if (!api || !post.target_ts) throw new SlackCallError('reactions.add', 'not_configured');
-      if (!this.options.archive.isPresent(post.workspace, post.channel_id, post.target_ts)) return this.fail(post, 'target-gone');
+      if (!this.options.archive!.isPresent(post.workspace, post.channel_id, post.target_ts)) return this.fail(post, 'target-gone');
       await api.addReaction(post.channel_id, post.target_ts, post.text);
     } catch (error) {
       this.log(`slack (${post.workspace}): reacting failed (${describeFailure(error)})`);
@@ -480,7 +527,19 @@ export class SlackDove {
   private async deliver(post: PostRow, text: string, placement: Placement): Promise<Delivered | Failure> {
     const images = this.images(post.post_id);
     if ((text !== '' || images.length === 0) && !checkOutgoingText(text).ok) return 'mechanical-check';
-    if (post.target_ts && !this.options.archive.isPresent(post.workspace, post.channel_id, post.target_ts)) return 'target-gone';
+    const signal = this.signalOf(post);
+    if (signal) {
+      try {
+        // The copies taken when she asked, as data URIs, which the daemon takes as attachments.
+        const attachments = await Promise.all(images.map(async image =>
+          `data:${image.mime_type};base64,${(await readFile(this.options.images.path(image.file))).toString('base64')}`));
+        return { ts: await signal.post(post.channel_id, text, { ...(post.target_ts ? { quote: post.target_ts } : {}), attachments }) };
+      } catch (error) {
+        this.log(`signal: posting in a group failed (${describeFailure(error)})`);
+        return 'signal-error';
+      }
+    }
+    if (post.target_ts && !this.options.archive!.isPresent(post.workspace, post.channel_id, post.target_ts)) return 'target-gone';
     const api = this.options.workspaces[post.workspace];
     if (!api) return 'slack-error';
     const replyThread = post.target_ts ? post.target_thread_ts ?? post.target_ts : undefined;
@@ -522,7 +581,7 @@ export class SlackDove {
     const resolvedAt = this.iso();
     const approval = this.db.prepare(`SELECT approval_id, revision, state FROM approvals WHERE post_id = ?`).get(post.post_id) as
       { approval_id: string; revision: number; state: string } | undefined;
-    const reason = failure === 'interrupted' ? 'slack-error' : failure;
+    const reason = failure === 'interrupted' || failure === 'signal-error' ? 'slack-error' : failure;
     this.transaction(() => {
       this.setPost(post.post_id, { state: 'failed', failure });
       if (approval) {
@@ -559,12 +618,14 @@ export class SlackDove {
   private defaultPlacement(target: ResolvedTarget): Placement {
     const message = target.message!;
     if (message.threadTs) return 'thread';
-    return this.options.archive.following(target.workspace, target.channelId, message.ts) <= this.options.config.placementFollowing
+    return this.options.archive!.following(target.workspace, target.channelId, message.ts) <= this.options.config.placementFollowing
       ? 'channel' : 'thread';
   }
 
   private target(post: PostRow): ResolvedTarget {
-    const channel = this.options.archive.channel(post.workspace, post.channel_id);
+    const signal = this.signalOf(post);
+    if (signal) return signal.target(post.channel_id, post.target_ts);
+    const channel = this.options.archive!.channel(post.workspace, post.channel_id);
     const label = `${post.workspace}/${channel?.label ?? post.reference.split(' ')[0]!.split('/')[1]}`;
     if (!post.target_ts) return { workspace: post.workspace, channelId: post.channel_id, label };
     const [, date, time, ...speaker] = post.reference.split(' ');
@@ -634,8 +695,8 @@ export class SlackDove {
       return { path: post.place, directory: join(agents, relative) };
     }
     const target = this.target(post);
-    const line = target.message ? this.options.archive.lineOf(post.workspace, post.channel_id, target.message.ts) : undefined;
-    const channel = this.options.archive.channel(post.workspace, post.channel_id);
+    const line = target.message ? this.options.archive?.lineOf(post.workspace, post.channel_id, target.message.ts) : undefined;
+    const channel = this.options.archive?.channel(post.workspace, post.channel_id);
     const to: DoveTarget = line ?? { file: `/sources/slack/${post.workspace}/${channel?.directory ?? ''}` };
     const images = this.images(post.post_id).map(image => image.source);
     const at = Date.parse(post.created_at);
@@ -651,7 +712,9 @@ export class SlackDove {
 
   /** One result as results.jsonl keeps it, with her own post's line when it was sent and is in the record. */
   private resultLine(post: PostRow, row: ResultRow): DoveResultLine {
-    const own = row.posted_ts ? this.options.archive.lineOf(post.workspace, post.channel_id, row.posted_ts) : undefined;
+    const signal = this.signalOf(post);
+    const own = !row.posted_ts ? undefined : signal ? signal.lineOf(post.channel_id, row.posted_ts)
+      : this.options.archive?.lineOf(post.workspace, post.channel_id, row.posted_ts);
     return { at: this.local(Date.parse(row.created_at)), state: row.result, text: row.text,
       ...(own ? { slack_file: own.file, slack_path: own.path } : {}) };
   }
@@ -660,6 +723,11 @@ export class SlackDove {
   private requestOf(post: PostRow): { line: string; askedAt: string } {
     return { line: requestLine({ kind: post.kind, text: post.text, emoji: post.text, images: this.images(post.post_id).map(image => image.source) }),
       askedAt: this.local(Date.parse(post.created_at)) };
+  }
+
+  /** Fork (ADR F07): the Signal groups, when the post goes to one. */
+  private signalOf(post: PostRow): DoveSignalGroups | undefined {
+    return post.workspace === SIGNAL_GROUPS ? this.options.signal : undefined;
   }
 
   private emit(type: string, payload: Record<string, unknown>): void {

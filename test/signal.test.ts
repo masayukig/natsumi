@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { SlackDove } from '../src/server/dove.ts';
+import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
@@ -349,7 +350,8 @@ test('with only a signal section, the owner talks with her over Signal and her r
     await server.stop();
     await rm(root, { recursive: true, force: true });
   });
-  assert.match(logs.join('\n'), /signal: approvals are on, but there is no dove without slack/);
+  // Fork (ADR F07): the dove is there for the Signal groups even without Slack.
+  assert.doesNotMatch(logs.join('\n'), /no dove without slack/);
   await until(() => api.listening);
   api.emit(text('元気？'));
   await until(() => api.sent.length === 1);
@@ -374,13 +376,24 @@ class FakeGroupSignal extends FakeSignal {
   failSends = 0;
   failAccepts = 0;
   hangListing = false;
-  async listGroups() { return this.hangListing ? new Promise<ListedGroup[]>(() => {}) : this.groups; }
+  failListing = 0;
+  async listGroups() {
+    if (this.failListing-- > 0) throw new Error('http 500');
+    return this.hangListing ? new Promise<ListedGroup[]>(() => {}) : this.groups;
+  }
   async quitGroup(groupId: string) { this.done.push(`quit ${groupId}`); }
   async block(groupId: string) { this.done.push(`block ${groupId}`); }
   async acceptGroup(groupId: string) {
     this.done.push(`accept ${groupId}`);
     if (this.failAccepts-- > 0) throw new Error('rpc error -1');
   }
+  posted: { groupId: string; message: string; options: Record<string, unknown> }[] = [];
+  async sendGroup(groupId: string, message: string, options: Record<string, unknown> = {}) {
+    this.posted.push({ groupId, message, options });
+    return AT + 60_000 * this.posted.length;
+  }
+  reactions: { groupId: string; emoji: string; target: { timestamp: number; author: string } }[] = [];
+  async reactInGroup(groupId: string, emoji: string, target: { timestamp: number; author: string }) { this.reactions.push({ groupId, emoji, target }); }
   override async send(message: string, attachments?: string[]) {
     const at = await super.send(message, attachments);
     if (this.failSends-- > 0) throw new Error('timed out after delivery');
@@ -462,6 +475,18 @@ test('an approved group she is still only invited to is joined on every sweep un
   await groups.sync();
   assert.deepEqual(api.done, [`accept ${GROUP}`, `accept ${GROUP}`, `accept ${GROUP}`]);
   assert.deepEqual(api.sent.map(entry => entry.message), ['→ 『いおりテスト』の招待を受けられませんでした。毎分試し直します。Signal のアプリでも確かめてください']);
+});
+
+test('a listing that fails is logged once, and once again when it works again', async t => {
+  const logs: string[] = [];
+  const api = new FakeGroupSignal();
+  api.failListing = 2;
+  const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-list-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const groups = new SignalGroups({ db: new DatabaseSync(':memory:'), api, directory: join(root, 'signal'),
+    groups: {}, account: BOT, selfName: 'いおり', timeZone: 'Asia/Tokyo', log: line => { logs.push(line); } });
+  for (let n = 0; n < 4; n++) await groups.sync();
+  assert.deepEqual(logs, ['signal: the groups could not be listed (http 500); tried again every minute', 'signal: the groups can be listed again']);
 });
 
 test('a group she left, or blocked, is never asked about', async t => {
@@ -554,6 +579,98 @@ test('every message in an approved group is written as a line of its local day; 
   const file = '/sources/signal/iori-test/2026-10-25.jsonl';
   assert.deepEqual(attentions, [{ source: 'signal', kind: 'mention', file, path: '.[1]' }, { source: 'signal', kind: 'quote-reply', file, path: '.[2]' }]);
   assert.deepEqual(said, []);
+});
+
+/** Fork (ADR F07): the dove posts to the Signal groups the owner approved. */
+
+/** A judge that answers the scores queued, and records what it was asked. */
+class QueuedJudge implements JudgeClient {
+  readonly asked: { state: Record<string, unknown>; placement: boolean }[] = [];
+  readonly answers: number[][] = [];
+  async judge(state: Record<string, unknown>, options: { placement: boolean }): Promise<Judgement> {
+    this.asked.push({ state, placement: options.placement });
+    const values = this.answers.shift() ?? [];
+    return { issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: values[index] ?? 0.01 })) };
+  }
+}
+
+async function groupDoveSetup(t: test.TestContext, options: { judge?: boolean } = {}) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-signal-dove-')));
+  const db = openStateDatabase(join(root, 'state.sqlite'));
+  migrate(db, MIGRATIONS);
+  const api = new FakeGroupSignal();
+  api.groups = [{ id: GROUP, name: 'いおりテスト', isMember: true }, { id: OTHER_GROUP, name: 'まだ', isMember: true }];
+  const groups = new SignalGroups({ db, api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP }, account: BOT, selfName: 'いおり',
+    timeZone: 'Asia/Tokyo', now: () => AT });
+  await groups.sync(); // titles the group, and asks about the other one
+  await groups.handle(inGroup('明日の集合は何時？'));
+  const judge = new QueuedJudge();
+  const dove = new SlackDove({
+    db, signal: groups, workspaces: {}, publicOrigin: 'https://natsumi.example.test', workDirectory: join(root, 'work'),
+    images: new ImageStore(db, join(root, 'images')), timeZone: 'Asia/Tokyo', now: () => AT,
+    place: { directory: join(root, 'agents'), record: () => true, notify: () => {}, takeIn: async () => {} },
+    judges: options.judge ? { jev: { client: judge, thresholds: { owner: 0.3, return: 0.7 } } } : {},
+    judgeChoice: () => ({ logprobs: false, jev: options.judge === true, adopted: 'jev' }),
+    config: { approvalDays: 7, placementFollowing: 2, judgeContext: { messages: 5, chars: 500 }, images: { maxBytes: 1024, maxCount: 2 } },
+  });
+  const approvals = new SignalApprovals({ db, dove, api, timeZone: 'Asia/Tokyo' });
+  const owner = new SignalOwner({ api, owner: OWNER, approvals, groups, say: () => { throw new Error('not said'); } });
+  t.after(async () => {
+    approvals.stop();
+    dove.close();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const ask = async (request: Record<string, unknown>) => {
+    const outcome = await dove.ask(JSON.stringify(request));
+    await dove.idle(); await approvals.idle(); await groups.idle();
+    return outcome;
+  };
+  const settle = async () => { await dove.idle(); await approvals.idle(); await groups.idle(); await dove.idle(); };
+  const lines = async () => (await readFile(join(root, 'signal', 'iori-test', '2026-10-25.jsonl'), 'utf8')).split('\n').filter(Boolean)
+    .map(line => JSON.parse(line) as Record<string, unknown>);
+  return { api, judge, dove, owner, ask, settle, lines };
+}
+const LINE = { file: '/sources/signal/iori-test/2026-10-25.jsonl', path: '.[0]' };
+
+test('a reply the judge lets through is sent to the group as a quote, and her line is written as hers', async t => {
+  const f = await groupDoveSetup(t, { judge: true });
+  const outcome = await f.ask({ kind: 'post', to: LINE, text: '10 時です' });
+  assert.equal(outcome.ok, true);
+  assert.equal(f.judge.asked[0]!.placement, false);
+  assert.deepEqual(f.judge.asked[0]!.state.channel, 'Signal のグループ『いおりテスト』');
+  assert.deepEqual((f.judge.asked[0]!.state.reply_to as Record<string, unknown>).text, '明日の集合は何時？');
+  assert.deepEqual(f.api.posted, [{ groupId: GROUP, message: '10 時です',
+    options: { quote: { timestamp: AT, author: '+810000000009', text: '明日の集合は何時？' } } }]);
+  assert.deepEqual((await f.lines())[1], { at: '2026-10-25 12:05:05', from: 'いおり', mine: true, text: '10 時です',
+    quote: { from: '佐藤', text: '明日の集合は何時？' } });
+  // A post to the group itself quotes nothing.
+  await f.ask({ kind: 'post', to: { file: '/sources/signal/iori-test' }, text: 'おはようございます' });
+  assert.deepEqual(f.api.posted[1], { groupId: GROUP, message: 'おはようございます', options: {} });
+});
+
+test('a draft with no verdict goes to the owner on Signal, named as the Signal group; a 👍 sends it there', async t => {
+  const f = await groupDoveSetup(t);
+  await f.ask({ kind: 'post', to: LINE, text: '10 時です' });
+  const shown = f.api.sent.at(-1)!;
+  assert.match(shown.message, /^承認待ちの投稿: Signal のグループ『いおりテスト』 への投稿\n返信先: 佐藤（2026-10-25 12:04:05）「明日の集合は何時？」/);
+  assert.equal(f.api.posted.length, 0);
+  f.owner.handle({ envelope: reaction('👍', shown.at) });
+  await f.settle();
+  assert.equal(f.api.posted[0]!.message, '10 時です');
+});
+
+test('a group not approved, or not a group, is refused as it is asked; a reaction takes a real emoji alone', async t => {
+  const f = await groupDoveSetup(t, { judge: true });
+  const pending = await f.ask({ kind: 'post', to: { file: `/sources/signal/${OTHER_DIR}` }, text: 'やあ' });
+  assert.match(pending.text, /参加しているグループではありません/);
+  assert.equal(pending.ok, false);
+  assert.match((await f.ask({ kind: 'post', to: { file: '/sources/signal/iori-test/2026-10-25.jsonl', path: '.[5]' }, text: 'x' })).text, /行はありません/);
+  assert.match((await f.ask({ kind: 'reaction', to: LINE, emoji: '+1' })).text, /絵文字そのもの/);
+  const reacted = await f.ask({ kind: 'reaction', to: LINE, emoji: '👍🏻' });
+  assert.equal(reacted.ok, true);
+  assert.deepEqual(f.api.reactions, [{ groupId: GROUP, emoji: '👍🏻', target: { timestamp: AT, author: '+810000000009' } }]);
+  assert.deepEqual(f.api.posted, []);
 });
 
 test('with groups listed, the server writes what is said in them under sources/signal and never says it to natsumi as the owner\'s', async t => {

@@ -42,5 +42,6 @@ natsumi の番号で登録した signal-cli を daemon として動かし、そ�
 
 - 本人は Slack なしで、Signal だけで natsumi と話せる。両方を設定すれば両方で話せ、返事はそれぞれ聞かれた方に出る。
 - ポッポさんは Slack に投稿するものなので、`slack` の設定が無ければポッポさんも承認も無い。`approvals: true` でも何も送らず、起動時にログに 1 行出す。
+  （2026-10-25 追記: ポッポさんは Signal のグループにも投稿するようになり、`signal` があれば `slack` が無くてもいる。[ADR F07](F07-fork-posting-to-signal-groups.md)）
 - 本人が送った添付は `/work/signal` に溜まる。natsumi の夜の片付けか手で消す。signal-cli 側の写しも PVC の `signal/attachments` に残る。
 - `slack.owner` と `signal` の両方があるとき、`reply_to_mac` の答えの文は Slack のチャンネルと言う（Signal に送った返事でも）。

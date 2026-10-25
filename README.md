@@ -949,6 +949,9 @@ natsumi の番号で登録した signal-cli を `daemon --http` で動かして�
 - `groups`（既定は空）に `{ "<ディレクトリ名>": "<グループ ID>" }` を書いたグループは、書いてある間は聞かずに参加済みとして、その名前のディレクトリに記録します。
   設定から消すと、1 対 1 で承認していないグループは改めて聞かれます。
   ID は signal-cli の `listGroups` の `id` です。
+- 参加したグループには、natsumi がポッポさん経由で投稿・リアクションできます（[ADR F07](docs/adr/F07-fork-posting-to-signal-groups.md)）。
+  判定と承認は Slack の投稿と同じで、マスターへの承認は `approvals: true` なら Signal の 1 対 1 に、Slack の DM やアプリにも出ます。
+  `slack` が無いときは、判定の設定を `signal.judge`（書き方は `slack.judge` と同じ）に書きます。`slack` があれば `slack.judge` を使います。
 
 #### ターンが打ち切られたら本人に知らせる（fork）
 

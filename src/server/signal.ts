@@ -30,6 +30,13 @@ export interface SignalApi {
   quitGroup?(groupId: string): Promise<void>;
   block?(groupId: string): Promise<void>;
   acceptGroup?(groupId: string): Promise<void>;
+  /**
+   * Fork (ADR F07): posts in a group, quoting a message when `quote` names one, and answers Signal's timestamp of it.
+   * Throws only when no member took it.
+   */
+  sendGroup?(groupId: string, message: string, options?: { quote?: { timestamp: number; author: string; text: string }; attachments?: string[] }): Promise<number>;
+  /** Puts an emoji on a message in a group. */
+  reactInGroup?(groupId: string, emoji: string, target: { timestamp: number; author: string }): Promise<void>;
 }
 
 export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
@@ -60,6 +67,18 @@ export function connectSignal(config: { url: string; account: string; owner: str
     async block(groupId) { await rpc('block', { groupId: [groupId] }); },
     // signal-cli: updateGroup by a member still invited accepts the invitation.
     async acceptGroup(groupId) { await rpc('updateGroup', { groupId }); },
+    async sendGroup(groupId, message, options = {}) {
+      const { quote, attachments } = options;
+      const body = await rpc('send', { groupId, message, ...(attachments?.length ? { attachments } : {}),
+        ...(quote ? { quoteTimestamp: quote.timestamp, quoteAuthor: quote.author, quoteMessage: quote.text } : {}) });
+      const results = body.result?.results ?? [];
+      if (results.length > 0 && results.every(result => result.type !== 'SUCCESS')) throw new Error(`send ${String(results[0]!.type)}`);
+      if (typeof body.result?.timestamp !== 'number') throw new Error('no timestamp');
+      return body.result.timestamp;
+    },
+    async reactInGroup(groupId, emoji, target) {
+      await rpc('sendReaction', { groupId, emoji, targetAuthor: target.author, targetTimestamp: target.timestamp });
+    },
     async typing(stop) {
       await rpc('sendTyping', { recipient: [config.owner], ...(stop ? { stop: true } : {}) });
     },

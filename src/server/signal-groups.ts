@@ -3,7 +3,10 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
+import { SIGNAL_GROUPS, type DoveSignalGroups } from './dove.ts';
+import type { DoveTarget } from './dove-request.ts';
 import { writeFileAtomically } from './paths.ts';
+import type { Flow, MessageLine, ResolvedTarget } from './slack-archive.ts';
 import type { Attention, SourceRegistration } from './sources.ts';
 import { SOURCES_PATH } from './view.ts';
 
@@ -63,6 +66,8 @@ export interface SignalGroupsOptions {
     quitGroup?(groupId: string): Promise<void>;
     block?(groupId: string): Promise<void>;
     acceptGroup?(groupId: string): Promise<void>;
+    sendGroup?(groupId: string, message: string, options?: { quote?: { timestamp: number; author: string; text: string }; attachments?: string[] }): Promise<number>;
+    reactInGroup?(groupId: string, emoji: string, target: { timestamp: number; author: string }): Promise<void>;
   };
   /** `sources/signal` in the data directory. */
   directory: string;
@@ -85,8 +90,10 @@ export interface SignalGroupsOptions {
 interface GroupRow { group_id: string; name: string; title: string; state: 'pending' | 'approved' | 'refused'; asked_at: string; question: string; asked_ts: number | null; tries: number }
 /** A group as it stands: approved by the config, or as the table has it. */
 interface Standing { state: GroupRow['state']; name: string; title: string }
+/** A line written, as the server keeps it (ADR F07): with the Signal timestamp and author a quote or a reaction needs. */
+interface LineRow { group_id: string; file_date: string; line: number; sent_ts: number; author: string; speaker: string; at: string; text: string }
 
-export class SignalGroups {
+export class SignalGroups implements DoveSignalGroups {
   private readonly options: SignalGroupsOptions;
   private readonly now: () => number;
   private readonly configured: Map<string, string>;
@@ -96,6 +103,8 @@ export class SignalGroups {
   private readonly names = new Map<string, string>();
   /** The groups' names in Signal as the last listing had them, for the index. */
   private readonly titles = new Map<string, string>();
+  /** Whether the last listing failed, so a failure and the recovery after it are logged once each. */
+  private listing: 'ok' | 'failing' = 'ok';
   /** Approved groups whose invitation could not be accepted, so the owner is told once. ponytail: in memory only. */
   private readonly acceptFailed = new Set<string>();
   private writing: Promise<unknown> = Promise.resolve();
@@ -115,6 +124,19 @@ export class SignalGroups {
       tries INTEGER NOT NULL DEFAULT 0,
       decided_at TEXT
     ) STRICT`);
+    // Fork (ADR F07): what the dove needs of each line to quote it or react to it, never shown to natsumi (ADR 0024).
+    options.db.exec(`CREATE TABLE IF NOT EXISTS fork_signal_lines (
+      group_id TEXT NOT NULL,
+      file_date TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      sent_ts INTEGER NOT NULL,
+      author TEXT NOT NULL,
+      speaker TEXT NOT NULL,
+      at TEXT NOT NULL,
+      text TEXT NOT NULL,
+      PRIMARY KEY (group_id, file_date, line)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS fork_signal_lines_by_ts ON fork_signal_lines (group_id, sent_ts)`);
   }
 
   /**
@@ -278,10 +300,107 @@ export class SignalGroups {
   }
 
   private async list(): Promise<ListedGroup[]> {
-    try { return await this.options.api.listGroups?.() ?? []; } catch (error) {
-      this.log(`the groups could not be listed (${describe(error)})`);
+    try {
+      const listed = await this.options.api.listGroups?.() ?? [];
+      if (this.listing === 'failing') this.log('the groups can be listed again');
+      this.listing = 'ok';
+      return listed;
+    } catch (error) {
+      if (this.listing === 'ok') this.log(`the groups could not be listed (${describe(error)}); tried again every minute`);
+      this.listing = 'failing';
       return [];
     }
+  }
+
+  // The dove's side (ADR F07).
+
+  resolve(to: DoveTarget): { ok: true; target: ResolvedTarget } | { ok: false; text: string } {
+    const refuse = (text: string) => ({ ok: false as const, text });
+    const where = `to.file には、${SIGNAL_PATH} の下のグループのディレクトリ（例: ${SIGNAL_PATH}/iori-test）か、`
+      + `その中の日付のファイル（例: ${SIGNAL_PATH}/iori-test/2026-10-25.jsonl）を書いてください。`;
+    const parts = to.file.slice(SIGNAL_PATH.length + 1).replace(/\/+$/, '').split('/');
+    if (parts.some(part => part === '' || part === '.' || part === '..')) return refuse(`to.file「${to.file}」が読めません。${where}`);
+    const day = parts.length === 2 && /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(parts[1]!) ? parts[1]!.slice(0, -'.jsonl'.length) : undefined;
+    if (parts.length !== 1 && !day) return refuse(`to.file「${to.file}」は、グループのディレクトリでも日付のファイルでもありません。${where}`);
+    const groupId = this.groupNamed(parts[0]!);
+    if (!groupId) return refuse(`${SIGNAL_PATH}/${parts[0]!} は、参加しているグループではありません。${SIGNAL_PATH}/INDEX.md にあるディレクトリを書いてください。`);
+    if (!day) {
+      if (to.path !== undefined) return refuse(`グループのディレクトリに path は付けません。発言に返すなら、to.file にその発言のある日のファイルを書いてください。`);
+      return { ok: true, target: this.target(groupId, null) };
+    }
+    if (to.path === undefined) return refuse(`発言に返すなら、to.path にその行の場所（例: ".[3]"）を書いてください。グループそのものに投稿するなら、to.file にグループのディレクトリを書きます。`);
+    const index = Number(/^\.\[(\d+)\]$/.exec(to.path)?.[1] ?? Number.NaN);
+    const row = this.options.db.prepare('SELECT * FROM fork_signal_lines WHERE group_id = ? AND file_date = ? AND line = ?')
+      .get(groupId, day, index) as LineRow | undefined;
+    if (!row) return refuse(`${to.file} に ${to.path} の行はありません。行の番号は 0 から数えます。ファイルの行か、出来事の attention の file と path を、そのまま写してください。`);
+    return { ok: true, target: this.target(groupId, String(row.sent_ts)) };
+  }
+
+  target(groupId: string, ts: string | null): ResolvedTarget {
+    const label = `Signal のグループ『${this.standing(groupId)?.title ?? '?'}』`;
+    const row = ts === null ? undefined : this.lineAt(groupId, ts);
+    return { workspace: SIGNAL_GROUPS, channelId: groupId, label,
+      ...(ts !== null ? { message: { ts, speaker: row?.speaker ?? 'someone', at: row?.at ?? '', text: row?.text ?? '' } } : {}) };
+  }
+
+  flows(target: ResolvedTarget, messages: number, chars: number): { now: string; channel: Flow; thread: Flow | null } {
+    const rows = (this.options.db.prepare(`SELECT speaker, at, text FROM fork_signal_lines WHERE group_id = ? ORDER BY sent_ts DESC, rowid DESC LIMIT ?`)
+      .all(target.channelId, messages) as { speaker: string; at: string; text: string }[]).reverse();
+    return { now: this.at(this.now()), channel: { last_at: rows.at(-1)?.at ?? null, messages: rows.map(row => ({ from: row.speaker, at: row.at,
+      text: cut(row.text, chars) })) }, thread: null };
+  }
+
+  lineOf(groupId: string, ts: string): MessageLine | undefined {
+    const row = this.lineAt(groupId, ts);
+    const name = this.standing(groupId)?.name;
+    return row && name ? { file: `${SIGNAL_PATH}/${name}/${row.file_date}.jsonl`, path: `.[${row.line}]` } : undefined;
+  }
+
+  isEmoji(emoji: string): boolean {
+    const segments = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(emoji)];
+    return segments.length === 1 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(emoji) && !/[\s:]/u.test(emoji);
+  }
+
+  async post(groupId: string, text: string, options: { quote?: string; attachments?: string[] }): Promise<string> {
+    const standing = this.standing(groupId);
+    if (standing?.state !== 'approved' || !this.options.api.sendGroup) throw new Error('not an approved group');
+    const quoted = options.quote === undefined ? undefined : this.lineAt(groupId, options.quote);
+    const ms = await this.options.api.sendGroup(groupId, text, { ...(quoted ? { quote: { timestamp: quoted.sent_ts, author: quoted.author, text: quoted.text } } : {}),
+      ...(options.attachments?.length ? { attachments: options.attachments } : {}) });
+    const images = options.attachments?.length ?? 0;
+    const entry = { at: this.at(ms), from: this.options.selfName, mine: true, text,
+      ...(quoted ? { quote: { from: quoted.speaker, text: cut(oneLine(quoted.text), QUOTE_CHARS) } } : {}),
+      ...(images > 0 ? { attachments: [`画像 ${images} 枚`] } : {}) };
+    // It was sent whatever comes of this.
+    const run = this.writing.then(() => this.append(standing.name, localDate(ms, this.options.timeZone), entry, undefined,
+      { groupId, ts: ms, author: this.options.account }));
+    this.writing = run.catch(() => undefined);
+    await run.catch(() => { this.log('her own group message could not be written'); });
+    return String(ms);
+  }
+
+  async putReaction(groupId: string, ts: string, emoji: string): Promise<void> {
+    const row = this.lineAt(groupId, ts);
+    if (this.standing(groupId)?.state !== 'approved' || !row || !this.options.api.reactInGroup) throw new Error('not an approved group or line');
+    await this.options.api.reactInGroup(groupId, emoji, { timestamp: row.sent_ts, author: row.author });
+  }
+
+  /** An approved group's ID by its directory. */
+  private groupNamed(name: string): string | undefined {
+    for (const [id, configured] of this.configured) if (configured === name) return id;
+    const row = this.options.db.prepare(`SELECT group_id FROM fork_signal_groups WHERE name = ? AND state = 'approved'`).get(name) as
+      { group_id: string } | undefined;
+    return row && !this.configured.has(row.group_id) ? row.group_id : undefined;
+  }
+
+  private lineAt(groupId: string, ts: string): LineRow | undefined {
+    return this.options.db.prepare('SELECT * FROM fork_signal_lines WHERE group_id = ? AND sent_ts = ? ORDER BY rowid LIMIT 1')
+      .get(groupId, Number(ts)) as LineRow | undefined;
+  }
+
+  /** A time as a line writes it: local date and time to the second. */
+  private at(ms: number): string {
+    return `${localDateTime(ms, this.options.timeZone)}:${String(new Date(ms).getUTCSeconds()).padStart(2, '0')}`;
   }
 
   private row(groupId: string): GroupRow | undefined {
@@ -330,15 +449,17 @@ export class SignalGroups {
       from: quotedMe ? this.options.selfName : this.nameOf(quote.authorNumber, quote.authorUuid), text: cut(oneLine(quote.text), QUOTE_CHARS),
       ...(quotedMe ? { mine: true } : {}) } : undefined;
     const entry = {
-      at: `${localDateTime(ms, this.options.timeZone)}:${String(new Date(ms).getUTCSeconds()).padStart(2, '0')}`, from,
-      text: this.withNames(raw, mentions), ...(quoted ? { quote: quoted } : {}), ...(attachments.length > 0 ? { attachments } : {}),
+      at: this.at(ms), from, text: this.withNames(raw, mentions), ...(quoted ? { quote: quoted } : {}), ...(attachments.length > 0 ? { attachments } : {}),
     };
-    const run = this.writing.then(() => this.append(group, localDate(ms, this.options.timeZone), entry, mentioned ? 'mention' : quotedMe ? 'quote-reply' : undefined));
+    const author = typeof envelope.sourceNumber === 'string' ? envelope.sourceNumber : typeof envelope.sourceUuid === 'string' ? envelope.sourceUuid : '';
+    const run = this.writing.then(() => this.append(group, localDate(ms, this.options.timeZone), entry, mentioned ? 'mention' : quotedMe ? 'quote-reply' : undefined,
+      { groupId, ts: ms, author }));
     this.writing = run.catch(() => undefined);
     return run.catch(() => { this.log('a group message could not be written'); });
   }
 
-  private async append(group: string, date: string, entry: Record<string, unknown>, kind: string | undefined): Promise<void> {
+  private async append(group: string, date: string, entry: { at: string; from: string; text: string }, kind: string | undefined,
+    sent: { groupId: string; ts: number; author: string }): Promise<void> {
     const directory = join(this.options.directory, group);
     const path = join(directory, `${date}.jsonl`);
     await mkdir(directory, { recursive: true, mode: 0o750 });
@@ -346,6 +467,8 @@ export class SignalGroups {
     try { before = await readFile(path, 'utf8'); } catch { /* the day's first line */ }
     const index = before.split('\n').filter(Boolean).length;
     await appendFile(path, `${JSON.stringify(entry)}\n`, { mode: FILE_MODE });
+    this.options.db.prepare(`INSERT OR REPLACE INTO fork_signal_lines (group_id, file_date, line, sent_ts, author, speaker, at, text)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(sent.groupId, date, index, sent.ts, sent.author, entry.from, entry.at, entry.text);
     if (kind) this.options.attention?.({ source: SIGNAL_SOURCE, kind, file: `${SIGNAL_PATH}/${group}/${date}.jsonl`, path: `.[${index}]` });
   }
 

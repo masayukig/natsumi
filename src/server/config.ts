@@ -594,6 +594,10 @@ export function parseConfig(raw: unknown): ServerConfig {
   if (config.slack) {
     const judge = parseJudges((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
+  } else if (config.signal) {
+    // Fork (ADR F07): without Slack, the dove posts to Signal groups alone, judged as a Slack post would be.
+    const judge = parseJudges((root.signal as Record<string, unknown>).judge, 'signal.judge', config.pi);
+    if (judge) config.signal.judge = judge;
   }
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -1024,7 +1028,11 @@ function ownerUsername(value: unknown, path: string): string {
  * `approvals` also hands the owner the dove's drafts there. `groups` (ADR F06) are groups approved from the start, by
  * the directory each is written to and its ID; any other group she is found in is asked about in the owner's 1:1.
  */
-export interface SignalConfig { url: string; account: string; owner: string; approvals: boolean; groups: Record<string, string> }
+export interface SignalConfig {
+  url: string; account: string; owner: string; approvals: boolean; groups: Record<string, string>;
+  /** Fork (ADR F07): the dove's judges for posts to the groups when there is no `slack` (whose `judge` is used when there is). */
+  judge?: JudgesConfig;
+}
 
 /** A group ID as signal-cli writes it: base64 of 32 bytes for groups v2 (16 for v1). */
 const GROUP_ID = /^[A-Za-z0-9+/]{22,}={0,2}$/;
@@ -1033,7 +1041,8 @@ const PHONE_NUMBER = /^\+[1-9][0-9]{6,14}$/;
 
 function parseSignal(value: unknown, path: string): SignalConfig {
   const signal = object(value, path);
-  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals', 'groups']);
+  // `judge` is read by parseJudges once pi is known, as `slack.judge` is.
+  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals', 'groups', 'judge']);
   const urlPath = `${path}.url`;
   const url = parseUrl(required(signal, 'url', path), urlPath);
   // The daemon has no authentication of its own, so plain http reaches only a loopback host, such as a sidecar.
