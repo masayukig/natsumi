@@ -8,7 +8,7 @@ import {
 } from './dove-files.ts';
 import { parseDoveRequest, type DoveTarget } from './dove-request.ts';
 import { discardImages, type ImageLimits, type ImageStore, type TakenImage } from './images.ts';
-import { judgeSideBySide, JUDGE_METHODS, type JudgeChoice, type JudgeMethod, type JudgeSlot, type Placement, type ScoredIssue } from './judge.ts';
+import { judgeSideBySide, JUDGE_METHODS, SIGNAL_JUDGE_ISSUES, type JudgeChoice, type JudgeMethod, type JudgeSlot, type Placement, type ScoredIssue } from './judge.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt, localDateTime } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -404,7 +404,7 @@ export class SlackDove {
       conversation,
       draft: post.text,
       // Fork: a reply to a message inside a thread stays in that thread; the judge is not asked where (fork 8e4b1b1).
-    }, { placement: !signal && replyTo !== undefined && replyTo.threadTs === undefined });
+    }, { placement: !signal && replyTo !== undefined && replyTo.threadTs === undefined, ...(signal ? { issues: SIGNAL_JUDGE_ISSUES } : {}) });
     for (const method of JUDGE_METHODS) {
       const result = both.results[method];
       if (result && 'error' in result) this.log(`dove: judge (${method}): no verdict (${result.error})`);

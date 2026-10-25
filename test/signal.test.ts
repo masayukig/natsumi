@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { DeliveryUnknown, SlackDove } from '../src/server/dove.ts';
-import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
+import { JUDGE_ISSUES, SIGNAL_JUDGE_ISSUES, type JudgeClient, type JudgeIssue, type Judgement } from '../src/server/judge.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
@@ -592,7 +592,7 @@ test('every message in an approved group is written as a line of its local day; 
 
 /** Fork (ADR F07): what in an approved group is for her without a mention, and the read receipts. */
 
-async function hearingSetup(t: test.TestContext) {
+async function hearingSetup(t: test.TestContext, extra: { isOpen?: (place: { file: string; path: string }) => boolean; conversationEveryMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-hearing-'));
   const api = new FakeGroupSignal();
   const clock = { now: AT };
@@ -604,7 +604,8 @@ async function hearingSetup(t: test.TestContext) {
     typing: { start: (groupId, place) => { typing.push(`start ${groupId === GROUP ? 'iori-test' : groupId} ${place.path}`); },
       posted: groupId => { typing.push(`posted ${groupId === GROUP ? 'iori-test' : groupId}`); } },
     account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now,
-    timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); }, log: line => { logs.push(line); } });
+    timing: { quietMs: 30, conversationEveryMs: extra.conversationEveryMs ?? 60_000 }, ...(extra.isOpen ? { isOpen: extra.isOpen } : {}),
+    attention: attention => { attentions.push(attention); }, log: line => { logs.push(line); } });
   const groups = make();
   t.after(async () => { groups.stop(); await rm(root, { recursive: true, force: true }); });
   const say = async (message: string, at = AT, group = GROUP) => {
@@ -636,6 +637,38 @@ test('her name without a mention is a name, in kana either way, NFKC and the nam
   await groups.idle();
   groups.stop();
   assert.deepEqual(kinds(), ['name .[0]', 'name .[1]', 'name .[2]', 'name .[3]', 'name .[4]', 'mention .[6]']);
+});
+
+test('her question back after a conversation is followed up at once when that turn is done (rc6, 00:05)', async t => {
+  const open = new Set<string>();
+  const { clock, groups, say, kinds, quiet } = await hearingSetup(t, { isOpen: place => open.has(place.path) });
+  await say('明日は晴れるかな？', clock.now); // 00:03:07
+  await quiet(); // settled: a conversation (00:05:07)
+  assert.deepEqual(kinds(), ['conversation .[0]']);
+  // Her turn took it and is done; she asked a question back (00:05:25).
+  const sent = Number((await groups.post(GROUP, '何時ごろのことですか？', {})).split(':')[0]);
+  await say('はい', sent + 14_000); // 00:05:39, not held back by her post nor by the conversation's minute
+  await quiet();
+  groups.stop();
+  assert.deepEqual(kinds(), ['conversation .[0]', 'follow-up .[2]']);
+});
+
+test('a name or follow-up waits only while the attention before it is not yet done; a held-back conversation comes later', async t => {
+  const open = new Set<string>(['.[0]']);
+  const { clock, groups, say, kinds, quiet } = await hearingSetup(t, { isOpen: place => open.has(place.path), conversationEveryMs: 60 });
+  await say('いおりいる？', clock.now);
+  await say('いおり？', clock.now); // the first is still being worked on: she reads this with it
+  open.clear();
+  await say('いおり、聞いてる？', clock.now);
+  assert.deepEqual(kinds(), ['name .[0]', 'name .[2]']);
+  // Talk right after an attention is not dropped: its conversation comes once the window is over.
+  await say('ところで', clock.now);
+  await quiet();
+  assert.equal(kinds().length, 2);
+  clock.now += 100; // the window is over by the time it looks again
+  await new Promise(resolve => setTimeout(resolve, 120));
+  groups.stop();
+  assert.deepEqual(kinds(), ['name .[0]', 'name .[2]', 'conversation .[3]']);
 });
 
 test('a backlog raises no name, follow-up or conversation; a mention only within six hours; all of it is written', async t => {
@@ -816,9 +849,11 @@ test('in a group, typing goes on while an agent she asked is waiting, and past i
 /** A judge that answers the scores queued, and records what it was asked. */
 class QueuedJudge implements JudgeClient {
   readonly asked: { state: Record<string, unknown>; placement: boolean }[] = [];
+  readonly issues: (readonly JudgeIssue[])[] = [];
   readonly answers: number[][] = [];
-  async judge(state: Record<string, unknown>, options: { placement: boolean }): Promise<Judgement> {
+  async judge(state: Record<string, unknown>, options: { placement: boolean; issues?: readonly JudgeIssue[] }): Promise<Judgement> {
     this.asked.push({ state, placement: options.placement });
+    this.issues.push(options.issues ?? JUDGE_ISSUES);
     const values = this.answers.shift() ?? [];
     return { issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: values[index] ?? 0.01 })) };
   }
@@ -871,6 +906,7 @@ test('a reply the judge lets through is sent to the group as a quote, and her li
   assert.equal(outcome.ok, true);
   assert.equal(f.judge.asked[0]!.placement, false);
   assert.deepEqual(f.judge.asked[0]!.state.channel, 'Signal のグループ『いおりテスト』');
+  assert.ok(f.judge.issues[0]!.every(issue => issue.instructions.includes('Signal group chat') && !/Slack|thread of/.test(issue.instructions)));
   assert.deepEqual((f.judge.asked[0]!.state.reply_to as Record<string, unknown>).text, '明日の集合は何時？');
   assert.deepEqual(f.api.posted, [{ groupId: GROUP, message: '10 時です',
     options: { quote: { timestamp: AT, author: '+810000000009', text: '明日の集合は何時？' } } }]);
@@ -960,4 +996,10 @@ test('with groups listed, the server writes what is said in them under sources/s
   const file = join(data, 'sources', 'signal', 'iori-test', '2026-10-25.jsonl');
   await until(() => existsSync(file) && readFileSync(file, 'utf8').includes('グループで'));
   assert.equal(JSON.stringify(model.contexts).includes('グループで'), false);
+});
+
+test('the judge\'s questions for a Signal group keep Slack\'s issues, in a group\'s words; Slack\'s stay as they were', () => {
+  assert.deepEqual(SIGNAL_JUDGE_ISSUES.map(issue => issue.name), JUDGE_ISSUES.map(issue => issue.name));
+  for (const issue of JUDGE_ISSUES) assert.match(issue.instructions, /^The state holds a draft reply that an AI secretary wants to post in a Slack workspace/);
+  for (const issue of SIGNAL_JUDGE_ISSUES) assert.match(issue.instructions, /^The state holds a draft reply that an AI secretary wants to post in a Signal group chat/);
 });

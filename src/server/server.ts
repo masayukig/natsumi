@@ -249,7 +249,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const signalGroups = config.signal && signalApi ? new SignalGroups({ db, api: signalApi,
       directory: join(dataDirectory, SOURCES_DIRECTORY, SIGNAL_SOURCE), groups: config.signal.groups, account: config.signal.account,
       selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); },
-      names: config.signal.names,
+      names: config.signal.names, isOpen: place => !attentionDone('signal', place),
       // "typing…" in the group while she works on what was for her there, made with the loop below.
       typing: { start: (groupId, place) => groupTyping?.start(groupId, '', place), posted: groupId => groupTyping?.posted(groupId, '') } }) : undefined;
     let groupTyping: SlackMentionTyping | undefined;

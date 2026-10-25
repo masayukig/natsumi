@@ -109,6 +109,11 @@ export interface SignalGroupsOptions {
   typing?: { start(groupId: string, place: { file: string; path: string }): void; posted(groupId: string): void };
   /** The waits of the attentions without a mention; the defaults are `GROUP_TIMING`. Tests shorten them. */
   timing?: Partial<typeof GROUP_TIMING>;
+  /**
+   * Whether an attention raised before is still waiting for her, or for its turn to end (ADR F07): a `name` or a
+   * `follow-up` is held back only while one is, since she reads the new line with it. Without it, `burstMs` decides.
+   */
+  isOpen?: (place: { file: string; path: string }) => boolean;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -138,6 +143,10 @@ export class SignalGroups implements DoveSignalGroups {
   private readonly attended = new Map<string, number>();
   private readonly latest = new Map<string, { file: string; path: string }>();
   private readonly settling = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The place of the last attention raised in each group, and the order of what happened there, so a `conversation` knows what covered its line. */
+  private readonly lastPlace = new Map<string, { file: string; path: string }>();
+  private readonly order = new Map<string, { line: number; attention: number; own: number }>();
+  private step = 0;
   private stopped = false;
   /** The groups' names in Signal as the last listing had them, for the index. */
   private readonly titles = new Map<string, string>();
@@ -519,7 +528,10 @@ export class SignalGroups implements DoveSignalGroups {
     const fresh = age <= this.timing.staleMs;
     const own = this.lastOwn.get(group);
     const last = this.attended.get(group);
-    const burst = last !== undefined && this.now() - last < this.timing.burstMs;
+    const lastPlace = this.lastPlace.get(group);
+    const burst = this.options.isOpen
+      ? lastPlace !== undefined && (() => { try { return this.options.isOpen!(lastPlace); } catch { return false; } })()
+      : last !== undefined && this.now() - last < this.timing.burstMs;
     const kind = (mentioned || quotedMe) && age <= this.timing.staleMentionMs ? mentioned ? 'mention' : 'quote-reply'
       : !fresh || burst ? undefined
         : this.calls(raw) ? 'name'
@@ -543,11 +555,15 @@ export class SignalGroups implements DoveSignalGroups {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(sent.groupId, date, index, sent.ts, sent.author, entry.from, entry.at, entry.text);
     const place = { file: `${SIGNAL_PATH}/${group}/${date}.jsonl`, path: `.[${index}]` };
     // Her own post, or a message from a backlog: no wait for the talk to settle. Her post is the talk answered.
-    if (heard !== 'old' && heard !== 'hers') this.latest.set(group, place);
+    const order = this.orderOf(group);
+    if (heard !== 'old' && heard !== 'hers') { this.latest.set(group, place); order.line = ++this.step; }
+    if (heard === 'hers') order.own = ++this.step;
     clearTimeout(this.settling.get(group));
     this.settling.delete(group);
     if (heard === 'hers') this.options.typing?.posted(sent.groupId);
     if (kind) {
+      order.attention = ++this.step;
+      this.lastPlace.set(group, place);
       if (heard === 'heard') this.attended.set(group, this.now());
       this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });
       // Not for an old one from a backlog: she may well have nothing to say to it now.
@@ -555,20 +571,37 @@ export class SignalGroups implements DoveSignalGroups {
     }
     if (heard !== 'heard' || kind) return;
     // Talk that raised nothing: once it settles, she is told of it once, to read the room (`conversation`).
+    this.settle(group, this.timing.quietMs);
+  }
+
+  private settle(group: string, waitMs: number): void {
     if (this.stopped) return;
-    const timer = setTimeout(() => { this.settling.delete(group); this.converse(group); }, this.timing.quietMs);
+    const timer = setTimeout(() => { this.settling.delete(group); this.converse(group); }, waitMs);
     timer.unref();
     this.settling.set(group, timer);
+  }
+
+  private orderOf(group: string): { line: number; attention: number; own: number } {
+    let order = this.order.get(group);
+    if (!order) this.order.set(group, order = { line: 0, attention: 0, own: 0 });
+    return order;
   }
 
   /** The talk in a group settled: one `conversation` attention on its latest line, unless too soon (the people talking are awake, whatever the owner's hours). */
   private converse(group: string): void {
     const now = this.now();
-    const last = Math.max(this.attended.get(group) ?? 0, this.lastOwn.get(group) ?? 0);
     const place = this.latest.get(group);
-    // Her own post counts as the talk answered; it is not an attention, so it holds back no name or follow-up.
-    if (!place || now - last < this.timing.conversationEveryMs) return;
+    const order = this.orderOf(group);
+    // An attention or her own post since its latest line covered it: nothing to tell.
+    if (!place || order.attention > order.line || order.own > order.line) return;
+    // Too soon after another attention or her own post (which holds back no name or follow-up): told when the window
+    // ends instead, looked at again then.
+    const last = Math.max(this.attended.get(group) ?? 0, this.lastOwn.get(group) ?? 0);
+    const wait = last + this.timing.conversationEveryMs - now;
+    if (wait > 0) { this.settle(group, wait); return; }
     this.attended.set(group, now);
+    order.attention = ++this.step;
+    this.lastPlace.set(group, place);
     this.options.attention?.({ source: SIGNAL_SOURCE, kind: 'conversation', ...place });
   }
 
