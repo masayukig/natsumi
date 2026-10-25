@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { DecideInput, DecideOutcome } from './dove.ts';
 import { isWithin, realPathAllowingMissing } from './paths.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
+import type { GroupEnvelope, ListedGroup } from './signal-groups.ts';
 import { outcome, reason, where, type ApprovalRow, type Shown } from './slack-approvals.ts';
 import { WORK_PATH } from './view.ts';
 
@@ -24,6 +25,11 @@ export interface SignalApi {
   attachment?(id: string): Promise<Buffer>;
   /** Shows the owner that she is typing, or, with `stop`, that she has stopped. */
   typing?(stop?: boolean): Promise<void>;
+  /** Fork (ADR F06): the groups she is in or invited to; leaving, blocking and accepting an invitation to one. */
+  listGroups?(): Promise<ListedGroup[]>;
+  quitGroup?(groupId: string): Promise<void>;
+  block?(groupId: string): Promise<void>;
+  acceptGroup?(groupId: string): Promise<void>;
 }
 
 export function connectSignal(config: { url: string; account: string; owner: string }): SignalApi {
@@ -46,6 +52,14 @@ export function connectSignal(config: { url: string; account: string; owner: str
       if (typeof body.result?.data !== 'string') throw new Error('no data');
       return Buffer.from(body.result.data, 'base64');
     },
+    async listGroups() {
+      const { result } = await rpc('listGroups', {}) as { result?: unknown };
+      return Array.isArray(result) ? result as ListedGroup[] : [];
+    },
+    async quitGroup(groupId) { await rpc('quitGroup', { groupId }); },
+    async block(groupId) { await rpc('block', { groupId: [groupId] }); },
+    // signal-cli: updateGroup by a member still invited accepts the invitation.
+    async acceptGroup(groupId) { await rpc('updateGroup', { groupId }); },
     async typing(stop) {
       await rpc('sendTyping', { recipient: [config.owner], ...(stop ? { stop: true } : {}) });
     },
@@ -91,6 +105,7 @@ interface Envelope {
     reaction?: { emoji?: unknown; targetSentTimestamp?: unknown; isRemove?: unknown };
     quote?: { id?: unknown };
     attachments?: { id?: unknown; contentType?: unknown; filename?: unknown; size?: unknown }[];
+    groupInfo?: unknown;
   };
 }
 
@@ -124,7 +139,8 @@ const MAX_BACKOFF_MS = 60_000;
 
 /**
  * What the owner says on Signal goes to `say` as a message of the conversation; a reaction or a quoted reply to an
- * approval goes to `approvals`. Everything else that arrives (receipts, typing, profile keys, other people) is let go.
+ * approval goes to `approvals`; a message in a group goes to `groups` (ADR F06). Everything else that arrives (receipts,
+ * typing, profile keys, other people) is let go.
  * The stream is reconnected with a growing wait whenever it drops.
  */
 export interface SignalOwnerOptions {
@@ -140,6 +156,15 @@ export interface SignalOwnerOptions {
   workDirectory?: string;
   /** The first wait before opening the stream again; it doubles up to a minute. */
   backoffMs?: number;
+  /**
+   * Fork (ADR F06): every message in a group, the owner's included, goes here and never to `say` or `approvals`; the
+   * owner's answers to its questions about joining a group are offered to it too.
+   */
+  groups?: {
+    handle(envelope: GroupEnvelope): Promise<void>;
+    react(sentAt: number, emoji: string): boolean;
+    answer(quotedAt: number, text: string): boolean;
+  };
 }
 
 export class SignalOwner {
@@ -162,6 +187,8 @@ export class SignalOwner {
    */
   handle(event: Record<string, unknown>): void | Promise<void> {
     const envelope = event.envelope as Envelope | undefined;
+    // A group message is never the owner's 1:1 (ADR F06), whichever group and whoever wrote it.
+    if (envelope?.dataMessage?.groupInfo) return this.options.groups?.handle(envelope as GroupEnvelope);
     // Early envelopes had no UUID, so the owner is known by the number.
     if (envelope?.sourceNumber !== this.options.owner) return;
     const message = envelope.dataMessage;
@@ -170,7 +197,7 @@ export class SignalOwner {
     if (message.reaction) {
       const { emoji, targetSentTimestamp, isRemove } = message.reaction;
       if (isRemove === true || typeof emoji !== 'string' || typeof targetSentTimestamp !== 'number') return;
-      if (approvals?.react(targetSentTimestamp, emoji)) return;
+      if (approvals?.react(targetSentTimestamp, emoji) || this.options.groups?.react(targetSentTimestamp, emoji)) return;
       // Any other reaction is said to her as a short line, with the head of what it was put on when it is known.
       const line = this.options.sent?.get(targetSentTimestamp);
       const on = line === undefined ? '以前のメッセージ' : `「${line.length > QUOTE_CHARS ? `${line.slice(0, QUOTE_CHARS)}…` : line}」`;
@@ -181,7 +208,8 @@ export class SignalOwner {
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     if (text === undefined && attachments.length === 0) return;
     const quoted = message.quote?.id;
-    if (text !== undefined && attachments.length === 0 && approvals && typeof quoted === 'number' && approvals.answer(quoted, text)) return;
+    if (text !== undefined && attachments.length === 0 && typeof quoted === 'number'
+      && (approvals?.answer(quoted, text) || this.options.groups?.answer(quoted, text))) return;
     const timestamp = message.timestamp ?? envelope.timestamp;
     if (typeof timestamp === 'number') this.options.api.read?.(timestamp).catch(() => { /* only a read mark */ });
     this.options.typing?.start();

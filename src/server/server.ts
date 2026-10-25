@@ -38,6 +38,7 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackApprovals } from './slack-approvals.ts';
 import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
+import { SIGNAL_REGISTRATION, SIGNAL_SOURCE, SignalGroups } from './signal-groups.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
@@ -242,14 +243,21 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
       timeZone: config.loop.timeZone, now }) : undefined;
     await archive?.prepare();
+    // Fork (ADR F06): what she hears in the Signal groups the owner approved, written under sources/signal.
+    const signalApi = config.signal ? options.signal?.api ?? connectSignal(config.signal) : undefined;
+    const signalGroups = config.signal && signalApi ? new SignalGroups({ db, api: signalApi,
+      directory: join(dataDirectory, SOURCES_DIRECTORY, SIGNAL_SOURCE), groups: config.signal.groups, account: config.signal.account,
+      selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); } }) : undefined;
+    await signalGroups?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
     // her the files and no events, and neither an agent nor the dove can be asked; the server still starts.
-    let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    let sources: Sources | undefined = archive || config.a2a || signalGroups ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
     if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
+    if (signalGroups) sources?.register(SIGNAL_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -375,8 +383,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // Fork (ADR F04): the owner talks with her over Signal, and approves the dove's drafts there when asked to. The
     // daemon being out of reach holds nothing: the stream is tried again until it opens.
     const signalConfig = config.signal;
-    if (signalConfig && !thinkingLoop.unavailable) {
-      const api = options.signal?.api ?? connectSignal(signalConfig);
+    if (signalConfig && signalApi && !thinkingLoop.unavailable) {
+      const api = signalApi;
       const askedOnSignal = (eventId: string) => askedOn(eventId) === 'signal';
       const sent = new SentLines();
       ownerStops.push(relayToSignal({ loop: thinkingLoop, api, images, log, askedOnSignal, sent }));
@@ -387,6 +395,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         ? new SignalApprovals({ db, dove: theDove, api, timeZone: config.loop.timeZone, log }) : undefined;
       if (approvals) ownerStops.push(() => approvals.stop());
       signalOwner = new SignalOwner({ api, owner: signalConfig.owner, log, typing, sent, ...(approvals ? { approvals } : {}),
+        ...(signalGroups ? { groups: signalGroups } : {}),
         workDirectory: join(dataDirectory, WORK_DIRECTORY),
         say: ({ requestId, text }) => {
           const outcome = thinkingLoop.send({ requestId, deviceId: 'signal', text });
@@ -394,6 +403,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         } });
       signalOwner.start();
       approvals?.sync();
+      // The groups she is in are looked at now and every minute, as the dove's approvals are swept: an invitation may tell
+      // nothing on the stream. A question a day old is answered by leaving the group.
+      if (signalGroups) {
+        const sweep = () => { void signalGroups.sync().then(() => signalGroups.expire()); };
+        sweep();
+        timers.push(setInterval(sweep, APPROVAL_SWEEP_MS));
+      }
     }
 
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the

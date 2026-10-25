@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { SlackDove } from '../src/server/dove.ts';
 import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
+import { SignalGroups, type ListedGroup } from '../src/server/signal-groups.ts';
+import type { Attention } from '../src/server/sources.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
@@ -350,4 +355,142 @@ test('with only a signal section, the owner talks with her over Signal and her r
   await until(() => api.sent.length === 1);
   assert.equal(api.sent[0]!.message, '元気だよ');
   assert.match(JSON.stringify(model.contexts[0]), /マスターと Signal/);
+});
+
+/** Fork (ADR F06): what she hears in the Signal groups the owner approved. */
+
+const GROUP = 'pvqsKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=';
+const OTHER_GROUP = 'AAAAKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=';
+const AT = Date.UTC(2026, 9, 25, 3, 4, 5); // 12:04:05 in Tokyo
+const inGroup = (message: string | null, extra: Record<string, unknown> = {}, from = '+810000000009', group = GROUP, type = 'DELIVER') => ({
+  sourceNumber: from, sourceUuid: `uuid-${from}`, sourceName: from === OWNER ? 'マスター' : '佐藤', timestamp: AT,
+  dataMessage: { timestamp: AT, message, groupInfo: { groupId: group, type }, ...extra },
+});
+
+/** The daemon, with the groups she is in and what was done to them. */
+class FakeGroupSignal extends FakeSignal {
+  groups: ListedGroup[] = [];
+  done: string[] = [];
+  async listGroups() { return this.groups; }
+  async quitGroup(groupId: string) { this.done.push(`quit ${groupId}`); }
+  async block(groupId: string) { this.done.push(`block ${groupId}`); }
+  async acceptGroup(groupId: string) { this.done.push(`accept ${groupId}`); }
+}
+
+async function groupsUnderTest(t: { after: (fn: () => Promise<void>) => void }) {
+  const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-groups-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const attentions: Attention[] = [];
+  const said: { requestId: string; text: string }[] = [];
+  const api = new FakeGroupSignal();
+  const clock = { now: AT };
+  const groups = new SignalGroups({ db: new DatabaseSync(':memory:'), api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
+    account: BOT, selfName: 'いおり', timeZone: 'Asia/Tokyo', now: () => clock.now, attention: attention => { attentions.push(attention); } });
+  const owner = new SignalOwner({ api, owner: OWNER, groups, say: input => { said.push(input); } });
+  const lines = async (dir = 'iori-test') => (await readFile(join(root, 'signal', dir, '2026-10-25.jsonl'), 'utf8').catch(() => ''))
+    .split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+  return { root, api, clock, groups, owner, said, attentions, lines };
+}
+const OTHER_DIR = `g-${createHash('sha256').update(OTHER_GROUP).digest('hex').slice(0, 8)}`;
+
+test('a group not approved is asked about once in the owner\'s 1:1; until then nothing from it is written or said', async t => {
+  const { api, groups, owner, said, attentions, lines } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: '飲み会', isMember: true, members: [{}, {}, {}] }];
+  await owner.handle({ envelope: inGroup(null, {}, '+810000000009', OTHER_GROUP, 'UPDATE') });
+  await owner.handle({ envelope: inGroup('こんにちは', {}, OWNER, OTHER_GROUP) });
+  await groups.idle();
+  assert.deepEqual(api.sent.map(entry => entry.message), ['佐藤さんが Signal のグループ『飲み会』（メンバー 3 人）にいおりを追加しました。参加しますか？\n'
+    + '👍 で参加、👎 で退出してブロック（引用して「参加」「見送る」でも）。24 時間答えがなければ退出してブロックします。']);
+  assert.deepEqual(await lines(OTHER_DIR), []);
+  // The owner's message in an approved group is written, and is not the owner's 1:1 either.
+  await owner.handle({ envelope: inGroup('グループでマスターが', {}, OWNER) });
+  // Without a groups handler, a group message is still never the owner's.
+  const bare: { requestId: string; text: string }[] = [];
+  new SignalOwner({ api: new FakeSignal(), owner: OWNER, say: input => { bare.push(input); } }).handle({ envelope: inGroup('x', {}, OWNER) });
+  assert.deepEqual([said, bare, attentions], [[], [], []]);
+  assert.deepEqual((await lines()).map(line => line.text), ['グループでマスターが']);
+});
+
+test('a 👍 approves a group (accepting an invitation), and what is said after is written and indexed', async t => {
+  const { root, api, groups, owner, said, lines } = await groupsUnderTest(t);
+  api.groups = [{ id: OTHER_GROUP, name: '飲み会', isMember: false, members: [{}] }];
+  await groups.sync();
+  assert.match(api.sent[0]!.message, /^誰かが Signal のグループ『飲み会』（メンバー 1 人）にいおりを招待しました/);
+  owner.handle({ envelope: reaction('👍', api.sent[0]!.at) });
+  await groups.idle();
+  assert.deepEqual(api.done, [`accept ${OTHER_GROUP}`]);
+  assert.equal(api.sent[1]!.message, `→ 参加しました: 『飲み会』。/sources/signal/${OTHER_DIR} に記録します`);
+  await owner.handle({ envelope: inGroup('ようこそ', {}, '+810000000009', OTHER_GROUP) });
+  assert.deepEqual((await lines(OTHER_DIR)).map(line => line.text), ['ようこそ']);
+  assert.match(await readFile(join(root, 'signal', 'INDEX.md'), 'utf8'), new RegExp(`\\| /sources/signal/${OTHER_DIR} \\| 飲み会 \\|`));
+  // It is not asked about again.
+  await groups.sync();
+  assert.equal(api.sent.length, 2);
+  assert.deepEqual(said, []);
+});
+
+test('a 👎 or no answer within a day makes her leave and block the group, which stays let go', async t => {
+  const { api, clock, groups, owner, lines } = await groupsUnderTest(t);
+  const third = 'BBBBKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=';
+  api.groups = [{ id: OTHER_GROUP, name: 'A', isMember: true }, { id: third, name: 'B', isMember: true },
+    { id: 'CCCCKCycJ38JeLj+Oi61foVl4XQN+EVihKvOUtKpvd0=', name: 'blocked', isBlocked: true }];
+  await groups.sync();
+  assert.equal(api.sent.length, 2);
+  owner.handle({ envelope: text('見送る', { quote: { id: api.sent[0]!.at, author: BOT, text: '…' } }) });
+  await groups.idle();
+  assert.deepEqual(api.done, [`quit ${OTHER_GROUP}`, `block ${OTHER_GROUP}`]);
+  assert.equal(api.sent[2]!.message, '→ 『A』から退出してブロックしました');
+  clock.now += 23 * 60 * 60 * 1000;
+  await groups.expire();
+  assert.equal(api.done.length, 2);
+  clock.now += 60 * 60 * 1000;
+  await groups.expire();
+  assert.deepEqual(api.done.slice(2), [`quit ${third}`, `block ${third}`]);
+  assert.equal(api.sent[3]!.message, '→ 24 時間答えがなかったので、『B』から退出してブロックしました');
+  await owner.handle({ envelope: inGroup('まだいる？', {}, '+810000000009', OTHER_GROUP) });
+  await groups.sync();
+  await groups.idle();
+  assert.deepEqual([api.sent.length, await lines(OTHER_DIR)], [4, []]);
+});
+
+test('every message in an approved group is written as a line of its local day; a mention or a quote of her is an attention', async t => {
+  const { owner, said, attentions, lines } = await groupsUnderTest(t);
+  await owner.handle({ envelope: inGroup('おはよう') });
+  await owner.handle({ envelope: inGroup('￼ 見て', { mentions: [{ number: BOT, uuid: 'uuid-bot', start: 0, length: 1 }],
+    attachments: [{ id: 'x', contentType: 'image/jpeg', filename: 'cat.jpg', size: 204_800 }] }, OWNER) });
+  await owner.handle({ envelope: inGroup('そうだね', { quote: { id: 1, authorNumber: BOT, text: 'いおりの発言' } }) });
+  await owner.handle({ envelope: inGroup(null, { reaction: { emoji: '👍', targetSentTimestamp: 1, isRemove: false } }) });
+  assert.deepEqual(await lines(), [
+    { at: '2026-10-25 12:04:05', from: '佐藤', text: 'おはよう' },
+    { at: '2026-10-25 12:04:05', from: 'マスター', text: '@いおり 見て', attachments: ['cat.jpg (image/jpeg, 200 KB)'] },
+    { at: '2026-10-25 12:04:05', from: '佐藤', text: 'そうだね', quote: { from: 'いおり', text: 'いおりの発言', mine: true } },
+  ]);
+  const file = '/sources/signal/iori-test/2026-10-25.jsonl';
+  assert.deepEqual(attentions, [{ source: 'signal', kind: 'mention', file, path: '.[1]' }, { source: 'signal', kind: 'quote-reply', file, path: '.[2]' }]);
+  assert.deepEqual(said, []);
+});
+
+test('with groups listed, the server writes what is said in them under sources/signal and never says it to natsumi as the owner\'s', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-server-signal-groups-')));
+  const data = join(root, 'data');
+  await mkdir(data);
+  const config = join(root, 'config.json');
+  await writeFile(config, JSON.stringify({ ...serverConfig(root),
+    signal: { url: 'http://127.0.0.1:1', account: BOT, owner: OWNER, groups: { 'iori-test': GROUP } } }));
+  const model = new ScriptedModel();
+  const api = new FakeSignal();
+  const server = await startServer({
+    config, dataDir: data, cwd: '/', home: join(root, 'home'), env: { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET }, log: () => {},
+    pi: { runtime: fixtureRuntime, configureSession: session => { session.agent.streamFunction = model.streamFunction; } },
+    signal: { api },
+  });
+  t.after(async () => {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+  });
+  await until(() => api.listening);
+  api.emit(inGroup('グループで', {}, OWNER));
+  const file = join(data, 'sources', 'signal', 'iori-test', '2026-10-25.jsonl');
+  await until(() => existsSync(file) && readFileSync(file, 'utf8').includes('グループで'));
+  assert.equal(JSON.stringify(model.contexts).includes('グループで'), false);
 });

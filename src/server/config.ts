@@ -1021,15 +1021,19 @@ function ownerUsername(value: unknown, path: string): string {
 
 /**
  * Fork (ADR F04): the signal-cli daemon's HTTP endpoint, the number natsumi is registered as, and the owner's number.
- * `approvals` also hands the owner the dove's drafts there.
+ * `approvals` also hands the owner the dove's drafts there. `groups` (ADR F06) are groups approved from the start, by
+ * the directory each is written to and its ID; any other group she is found in is asked about in the owner's 1:1.
  */
-export interface SignalConfig { url: string; account: string; owner: string; approvals: boolean }
+export interface SignalConfig { url: string; account: string; owner: string; approvals: boolean; groups: Record<string, string> }
+
+/** A group ID as signal-cli writes it: base64 of 32 bytes for groups v2 (16 for v1). */
+const GROUP_ID = /^[A-Za-z0-9+/]{22,}={0,2}$/;
 
 const PHONE_NUMBER = /^\+[1-9][0-9]{6,14}$/;
 
 function parseSignal(value: unknown, path: string): SignalConfig {
   const signal = object(value, path);
-  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals']);
+  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals', 'groups']);
   const urlPath = `${path}.url`;
   const url = parseUrl(required(signal, 'url', path), urlPath);
   // The daemon has no authentication of its own, so plain http reaches only a loopback host, such as a sidecar.
@@ -1044,7 +1048,16 @@ function parseSignal(value: unknown, path: string): SignalConfig {
   };
   const approvals = signal.approvals ?? false;
   if (typeof approvals !== 'boolean') throw new ConfigError(`${path}.approvals`, 'must be true or false');
-  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals };
+  const groups: Record<string, string> = {};
+  for (const [name, id] of Object.entries(signal.groups === undefined ? {} : object(signal.groups, `${path}.groups`))) {
+    const entryPath = `${path}.groups.${name}`;
+    // The name becomes a directory and the first part of every reference she writes, as a Slack workspace's does.
+    if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    if (typeof id !== 'string' || !GROUP_ID.test(id)) throw new ConfigError(entryPath, 'must be the group ID in base64, as signal-cli listGroups shows it');
+    if (Object.values(groups).includes(id)) throw new ConfigError(entryPath, 'names a group already listed');
+    groups[name] = id;
+  }
+  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals, groups };
 }
 
 function parseCurator(value: unknown, path: string): CuratorConfig {
