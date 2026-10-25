@@ -102,6 +102,11 @@ export interface SignalGroupsOptions {
   attention?: (attention: Attention) => void;
   /** Other names she answers to in a group, besides `selfName` (ADR F07), such as a romaji spelling. */
   names?: readonly string[];
+  /**
+   * Called with each attention that asks for an answer (all but `conversation`), and with each post of hers sent, so
+   * "typing…" can be shown in the group while she works on it and taken away once she posted (ADR F07).
+   */
+  typing?: { start(groupId: string, place: { file: string; path: string }): void; end(groupId: string): void };
   /** Whether the owner is awake now: a `conversation` attention is raised only then. Always, when absent. */
   awake?: () => boolean;
   /** The waits of the attentions without a mention; the defaults are `GROUP_TIMING`. Tests shorten them. */
@@ -543,13 +548,13 @@ export class SignalGroups implements DoveSignalGroups {
     if (heard !== 'old' && heard !== 'hers') this.latest.set(group, place);
     clearTimeout(this.settling.get(group));
     this.settling.delete(group);
-    if (heard === 'old' && kind) this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });
-    if (heard !== 'heard') return;
+    if (heard === 'hers') this.options.typing?.end(sent.groupId);
     if (kind) {
-      this.attended.set(group, this.now());
+      if (heard === 'heard') this.attended.set(group, this.now());
       this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });
-      return;
+      this.options.typing?.start(sent.groupId, place);
     }
+    if (heard !== 'heard' || kind) return;
     // Talk that raised nothing: once it settles, she is told of it once, to read the room (`conversation`).
     if (this.stopped) return;
     const timer = setTimeout(() => { this.settling.delete(group); this.converse(group); }, this.timing.quietMs);

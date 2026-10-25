@@ -433,11 +433,12 @@ export class SlackMentionTyping {
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly intervalMs: number;
   private readonly maxMs: number;
-  private readonly options: { api: SlackApi; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number };
+  private readonly options: { api: Pick<SlackApi, 'setStatus'>; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number };
 
   constructor(options: {
     loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
-    api: SlackApi;
+    /** Fork (ADR F07): a Signal group's typing is shown through the same `setStatus`, by an adapter. */
+    api: Pick<SlackApi, 'setStatus'>;
     /**
      * Whether the turn that took the attention at `place` is over; false while it is not yet taken. The path alone is
      * not enough: it is a position inside one day's file, so an older day's attention has the same one.
@@ -461,6 +462,13 @@ export class SlackMentionTyping {
       this.check();
       for (const { channel, threadTs } of this.shown.values()) this.send(channel, threadTs, true);
     }, this.intervalMs);
+  }
+
+  /** Fork (ADR F07): takes it away from one place now, as when her post there was sent. */
+  end(channel: string, threadTs: string): void {
+    if (!this.shown.delete(`${channel}:${threadTs}`)) return;
+    this.send(channel, threadTs, false);
+    if (this.shown.size === 0) this.idle();
   }
 
   stop(): void {

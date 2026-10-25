@@ -50,6 +50,10 @@ Slack への投稿は、ポッポさん（`SlackDove`、[ADR 0040](0040-the-dove
   - Signal の時刻で 10 分より前の発言（つなぎ直したときに溜まって届いたものなど）は、記録はするが `name`・`follow-up`・`conversation` を出さない。
     `mention`・`quote-reply` は本人が見たいこともあるので出すが、6 時間より前のものは出さない。
   - 最後の投稿の時刻は、起動時に `fork_signal_lines` の natsumi の最新の行から戻す。ほかの待ちと時刻（`conversation` の待ち、最後の attention）は再起動で消える。
+- **入力中**: `mention`・`quote-reply`・`name`・`follow-up` の attention を出したら、そのグループに入力中（JSON-RPC `sendTyping`、`groupId: [<ID>]`、止めるときは `stop: true`）を出す。
+  Signal は 15 秒ほどで消すので 10 秒ごとに出し直す。その attention を受けたターンが終わったら（replied・no-reply・failed）、ただし頼んだエージェントの答えを待っている間は続け、
+  natsumi の投稿がそのグループに届いたときにも止める。最長 10 分。Slack のメンションの入力中（`SlackMentionTyping`）をそのまま使い、`setStatus` をグループの入力中につなぐ。
+  `conversation` では出さない（黙っていることも多いので）。
 - **既読**: 承認したグループの発言を記録したら、送り主に既読（`sendReceipt`、`type: read`）を返す（F04 の本人への既読と同じ）。待ち・断ったグループには返さない。失敗はログに出すだけ。
 - 外のエージェントの一覧（`/manual/agents/INDEX.md`）のポッポさんに、Signal のグループにも投稿できることを 1 行足す。
 - 第 1 段の小さな直し: グループの一覧が取れなくなったら 1 度、また取れるようになったら 1 度ログに出す。

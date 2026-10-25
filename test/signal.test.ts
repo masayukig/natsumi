@@ -16,6 +16,7 @@ import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, 
 import { SignalGroups, type ListedGroup } from '../src/server/signal-groups.ts';
 import type { Attention } from '../src/server/sources.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
+import { SlackMentionTyping } from '../src/server/slack.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
 import { fixtureRuntime } from './support/fixture.ts';
@@ -598,7 +599,10 @@ async function hearingSetup(t: test.TestContext) {
   const attentions: Attention[] = [];
   const logs: string[] = [];
   const db = new DatabaseSync(':memory:');
+  const typing: string[] = [];
   const make = () => new SignalGroups({ db, api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
+    typing: { start: (groupId, place) => { typing.push(`start ${groupId === GROUP ? 'iori-test' : groupId} ${place.path}`); },
+      end: groupId => { typing.push(`end ${groupId === GROUP ? 'iori-test' : groupId}`); } },
     account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now, awake: () => clock.awake,
     timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); }, log: line => { logs.push(line); } });
   const groups = make();
@@ -609,7 +613,7 @@ async function hearingSetup(t: test.TestContext) {
   };
   const kinds = () => attentions.map(attention => `${attention.kind} ${attention.path}`);
   const quiet = () => new Promise(resolve => setTimeout(resolve, 80));
-  return { root, api, clock, groups, make, say, kinds, quiet, logs };
+  return { root, api, clock, groups, make, say, kinds, quiet, logs, typing };
 }
 
 test('a message in an approved group is marked read for its sender; one in a group not approved is not', async t => {
@@ -720,6 +724,39 @@ test('talk that raised nothing is a conversation once it settles, at most once a
   await say('こんにちは', AT, OTHER_GROUP);
   await quiet();
   assert.equal(kinds().length, 3);
+});
+
+test('typing is started for what asks for an answer, not for a conversation nor a group not approved, and ended by her post', async t => {
+  const { clock, groups, say, quiet, typing, kinds } = await hearingSetup(t);
+  await say('いおりは来る？');
+  await say('こんにちは', AT, OTHER_GROUP);
+  clock.now += 61_000;
+  await say('雑談です', clock.now);
+  clock.now += 15 * 60_000;
+  await quiet();
+  await groups.post(GROUP, '行きます', {});
+  groups.stop();
+  assert.deepEqual(kinds(), ['name .[0]', 'conversation .[1]']);
+  assert.deepEqual(typing, ['start iori-test .[0]', 'end iori-test']);
+});
+
+test('in a group, typing is sent again every interval, taken away when the turn is done or her post went, and never past the limit', async () => {
+  const sent: string[] = [];
+  const done = new Set<string>();
+  let listener = () => {};
+  const typing = new SlackMentionTyping({ loop: { subscribe: l => { listener = l as () => void; return () => {}; } }, intervalMs: 5, maxMs: 200,
+    done: place => done.has(place.path),
+    api: { setStatus: async (groupId, _ts, status) => { sent.push(`${groupId} ${status === '' ? 'stop' : 'on'}`); } } });
+  typing.start('g1', '', { file: 'f', path: '.[0]' });
+  typing.start('g2', '', { file: 'f', path: '.[1]' });
+  await until(() => sent.filter(line => line === 'g1 on').length >= 3);
+  done.add('.[0]');
+  listener();
+  typing.end('g2', '');
+  const at = sent.length;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(sent.slice(at - 2), ['g1 stop', 'g2 stop']);
+  typing.stop();
 });
 
 /** Fork (ADR F07): the dove posts to the Signal groups the owner approved. */

@@ -248,7 +248,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const signalGroups = config.signal && signalApi ? new SignalGroups({ db, api: signalApi,
       directory: join(dataDirectory, SOURCES_DIRECTORY, SIGNAL_SOURCE), groups: config.signal.groups, account: config.signal.account,
       selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); },
-      names: config.signal.names, awake: () => isAwake(now(), settings.awakeHours(), config.loop.timeZone) }) : undefined;
+      names: config.signal.names, awake: () => isAwake(now(), settings.awakeHours(), config.loop.timeZone),
+      // "typing…" in the group while she works on what was for her there, made with the loop below.
+      typing: { start: (groupId, place) => groupTyping?.start(groupId, '', place), end: groupId => groupTyping?.end(groupId, '') } }) : undefined;
+    let groupTyping: SlackMentionTyping | undefined;
     await signalGroups?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
@@ -334,6 +337,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const askedOn = (eventId: string) => (db!.prepare(`SELECT m.device_id FROM loop_events e
       JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
       { device_id: string | null } | undefined)?.device_id;
+    // Fork: whether the turn that took a source's attention at a place is over (replied, not replied or failed).
+    const attentionDone = (source: string, place: { file: string; path: string }) => ['replied', 'no-reply', 'failed'].includes(
+      (db!.prepare(`SELECT e.state FROM source_attention a JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = ? AND a.file = ?
+        AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`).get(source, place.file, place.path) as { state: string } | undefined)?.state ?? '');
     // Fork: how many agents she asked since an owner message or a mention have not answered yet ("typing…" stays up).
     const waitingAgents = (since: string) => (db!.prepare(`SELECT count(*) AS n FROM agent_tasks WHERE state = 'waiting' AND sent_at >= ?`)
       .get(since) as { n: number }).n;
@@ -348,10 +355,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           asked: eventId => askedOn(eventId) === 'slack',
           send: stop => typingAt && api.setStatus?.(typingAt.channel, typingAt.ts, stop ? '' : 'is typing...') }) : undefined;
         if (ownerTyping) ownerStops.push(() => ownerTyping.stop());
-        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents,
-          done: place => ['replied', 'no-reply', 'failed'].includes((db!.prepare(`SELECT e.state FROM source_attention a
-            JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = 'slack' AND a.file = ? AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`)
-            .get(place.file, place.path) as { state: string } | undefined)?.state ?? '') });
+        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents, done: place => attentionDone('slack', place) });
         ownerStops.push(() => mentionTyping.stop());
         if (ownerHere) {
           relayToOwner({ loop: thinkingLoop, api, workspace: name, channel: ownerHere.channel, publicOrigin: config.publicOrigin,
@@ -411,6 +415,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       // nothing on the stream. A question a day old is answered by leaving the group.
       if (signalGroups) {
         ownerStops.push(() => signalGroups.stop());
+        // Fork (ADR F07): Signal lets typing go after about 15 seconds, so it is sent every 10.
+        const typingInGroups = groupTyping = new SlackMentionTyping({ loop: thinkingLoop, waitingAgents, intervalMs: 10_000,
+          done: place => attentionDone('signal', place),
+          api: { setStatus: async (groupId, _ts, status) => { await api.groupTyping?.(groupId, status === ''); } } });
+        ownerStops.push(() => typingInGroups.stop());
         const sweep = () => { void signalGroups.sync().then(() => signalGroups.expire()); };
         sweep();
         timers.push(setInterval(sweep, APPROVAL_SWEEP_MS));

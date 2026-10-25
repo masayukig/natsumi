@@ -39,6 +39,8 @@ export interface SignalApi {
   reactInGroup?(groupId: string, emoji: string, target: { timestamp: number; author: string }): Promise<void>;
   /** Marks a message in a group as read for its sender. */
   receipt?(recipient: string, timestamp: number): Promise<void>;
+  /** Shows in a group that she is typing, or, with `stop`, that she has stopped. */
+  groupTyping?(groupId: string, stop?: boolean): Promise<void>;
 }
 
 /** How long a JSON-RPC call may take: a daemon that hangs must not hold the dove's queue, Slack's posts included. */
@@ -90,6 +92,9 @@ export function connectSignal(config: { url: string; account: string; owner: str
       if (results.length > 0 && results.every(result => result.type !== 'SUCCESS')) throw new Error(`send ${String(results[0]!.type)}`);
       if (typeof body.result?.timestamp !== 'number') throw new DeliveryUnknown('no timestamp');
       return body.result.timestamp;
+    },
+    async groupTyping(groupId, stop) {
+      await rpc('sendTyping', { groupId: [groupId], ...(stop ? { stop: true } : {}) });
     },
     async receipt(recipient, timestamp) {
       await rpc('sendReceipt', { recipient, targetTimestamp: [timestamp], type: 'read' });
