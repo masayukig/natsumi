@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
-import { SIGNAL_GROUPS, type DoveSignalGroups } from './dove.ts';
+import { describeSignalFailure, SIGNAL_GROUPS, type DoveSignalGroups } from './dove.ts';
 import type { DoveTarget } from './dove-request.ts';
 import { writeFileAtomically } from './paths.ts';
 import type { Flow, MessageLine, ResolvedTarget } from './slack-archive.ts';
@@ -55,9 +55,17 @@ export interface GroupEnvelope {
 /**
  * Fork (ADR F07): when a message with no mention is still for her. `followUpMs`: after her own last post, what people
  * say is a `follow-up`. `quietMs`: a group quiet this long after talk that raised nothing is a `conversation`, at most
- * once every `conversationEveryMs` and never so soon after any other attention there.
+ * once every `conversationEveryMs` and never so soon after any other attention there or her own post. `burstMs`: a
+ * `name` or `follow-up` this soon after another attention there is not raised again. A message older than `staleMs`
+ * (by its Signal time, as when the stream comes back) raises none of those three, and one older than `staleMentionMs`
+ * not even a mention or a quote of her.
  */
-export const GROUP_TIMING = { followUpMs: 10 * 60_000, quietMs: 2 * 60_000, conversationEveryMs: 15 * 60_000 };
+export const GROUP_TIMING = {
+  followUpMs: 10 * 60_000, quietMs: 2 * 60_000, conversationEveryMs: 15 * 60_000, burstMs: 60_000,
+  staleMs: 10 * 60_000, staleMentionMs: 6 * 60 * 60_000,
+};
+/** How far a sender's clock may be behind hers, for a `follow-up`. */
+const CLOCK_SKEW_MS = 5_000;
 
 /** How long a group waits for the owner's answer before she leaves it. */
 export const GROUP_ANSWER_MS = 24 * 60 * 60 * 1000;
@@ -127,6 +135,7 @@ export class SignalGroups implements DoveSignalGroups {
   private readonly attended = new Map<string, number>();
   private readonly latest = new Map<string, { file: string; path: string }>();
   private readonly settling = new Map<string, ReturnType<typeof setTimeout>>();
+  private stopped = false;
   /** The groups' names in Signal as the last listing had them, for the index. */
   private readonly titles = new Map<string, string>();
   /** Whether the last listing failed, so a failure and the recovery after it are logged once each. */
@@ -144,8 +153,9 @@ export class SignalGroups implements DoveSignalGroups {
       const code = ch.codePointAt(0)!;
       return code >= from && code <= from + 0x55 ? String.fromCodePoint(code - from + to) : ch;
     });
-    this.callNames = [...new Set([options.selfName, ...options.names ?? []].filter(name => name.trim() !== '')
-      .flatMap(name => [name, kana(name, 0x3041, 0x30a1), kana(name, 0x30a1, 0x3041)]).map(name => name.toLowerCase()))];
+    // NFKC, so half-width kana and full-width Latin match too. A name of one character would match everything.
+    this.callNames = [...new Set([options.selfName, ...options.names ?? []].map(normal).filter(name => [...name].length >= 2)
+      .flatMap(name => [name, kana(name, 0x3041, 0x30a1), kana(name, 0x30a1, 0x3041)]))];
     options.db.exec(`CREATE TABLE IF NOT EXISTS fork_signal_groups (
       group_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -170,6 +180,12 @@ export class SignalGroups implements DoveSignalGroups {
       PRIMARY KEY (group_id, file_date, line)
     ) STRICT;
     CREATE INDEX IF NOT EXISTS fork_signal_lines_by_ts ON fork_signal_lines (group_id, sent_ts)`);
+    // Her last post in each group, so a follow-up is known across a restart.
+    for (const row of options.db.prepare(`SELECT group_id, MAX(sent_ts) AS at FROM fork_signal_lines WHERE author = ? GROUP BY group_id`)
+      .all(options.account) as { group_id: string; at: number }[]) {
+      const name = this.standing(row.group_id)?.name;
+      if (name) this.lastOwn.set(name, row.at);
+    }
   }
 
   /**
@@ -408,7 +424,7 @@ export class SignalGroups implements DoveSignalGroups {
     // It was sent whatever comes of this.
     this.lastOwn.set(standing.name, ms);
     const run = this.writing.then(() => this.append(standing.name, localDate(ms, this.options.timeZone), entry, undefined,
-      { groupId, ts: ms, author: this.options.account }, false));
+      { groupId, ts: ms, author: this.options.account }, 'hers'));
     this.writing = run.catch(() => undefined);
     await run.catch(() => { this.log('her own group message could not be written'); });
     return lineKey(ms, this.options.account);
@@ -481,7 +497,8 @@ export class SignalGroups implements DoveSignalGroups {
     const mentioned = mentions.some(mention => this.isMe(mention.number));
     const quote = typeof message.quote === 'object' && message.quote !== null ? message.quote : undefined;
     const quotedMe = quote !== undefined && this.isMe(quote.authorNumber);
-    const ms = typeof message.timestamp === 'number' ? message.timestamp : typeof envelope.timestamp === 'number' ? envelope.timestamp : Date.now();
+    const sentAt = typeof message.timestamp === 'number' ? message.timestamp : typeof envelope.timestamp === 'number' ? envelope.timestamp : undefined;
+    const ms = sentAt ?? this.now();
     const quoted = quote && typeof quote.text === 'string' ? {
       from: quotedMe ? this.options.selfName : this.nameOf(quote.authorNumber, quote.authorUuid), text: cut(oneLine(quote.text), QUOTE_CHARS),
       ...(quotedMe ? { mine: true } : {}) } : undefined;
@@ -490,20 +507,28 @@ export class SignalGroups implements DoveSignalGroups {
     };
     const author = typeof envelope.sourceNumber === 'string' ? envelope.sourceNumber : typeof envelope.sourceUuid === 'string' ? envelope.sourceUuid : '';
     // Read, as the owner's messages are (F04): a read receipt to whoever sent it.
-    if (author !== '' && author !== this.options.account) {
-      this.options.api.receipt?.(author, ms).catch(error => { this.log(`a read receipt could not be sent (${describe(error)})`); });
+    if (author !== '' && author !== this.options.account && sentAt !== undefined) {
+      this.options.api.receipt?.(author, sentAt).catch(error => { this.log(`a read receipt could not be sent (${describeSignalFailure(error)})`); });
     }
-    // Most for her first. A name without a mention, and what follows her own post, are hers to judge (ADR F07).
+    // Most for her first. A name without a mention, and what follows her own post, are hers to judge (ADR F07); none of
+    // those for what is old (a backlog after the stream comes back), nor a burst of them.
+    const age = this.now() - ms;
+    const fresh = age <= this.timing.staleMs;
     const own = this.lastOwn.get(group);
-    const kind = mentioned ? 'mention' : quotedMe ? 'quote-reply' : this.calls(raw) ? 'name'
-      : own !== undefined && ms >= own && ms - own <= this.timing.followUpMs ? 'follow-up' : undefined;
-    const run = this.writing.then(() => this.append(group, localDate(ms, this.options.timeZone), entry, kind, { groupId, ts: ms, author }, true));
+    const last = this.attended.get(group);
+    const burst = last !== undefined && this.now() - last < this.timing.burstMs;
+    const kind = (mentioned || quotedMe) && age <= this.timing.staleMentionMs ? mentioned ? 'mention' : 'quote-reply'
+      : !fresh || burst ? undefined
+        : this.calls(raw) ? 'name'
+          : own !== undefined && ms >= own - CLOCK_SKEW_MS && ms - own <= this.timing.followUpMs ? 'follow-up' : undefined;
+    const run = this.writing.then(() => this.append(group, localDate(ms, this.options.timeZone), entry, kind, { groupId, ts: ms, author },
+      fresh ? 'heard' : 'old'));
     this.writing = run.catch(() => undefined);
     return run.catch(() => { this.log('a group message could not be written'); });
   }
 
   private async append(group: string, date: string, entry: { at: string; from: string; text: string }, kind: string | undefined,
-    sent: { groupId: string; ts: number; author: string }, heard: boolean): Promise<void> {
+    sent: { groupId: string; ts: number; author: string }, heard: 'heard' | 'old' | 'hers'): Promise<void> {
     const directory = join(this.options.directory, group);
     const path = join(directory, `${date}.jsonl`);
     await mkdir(directory, { recursive: true, mode: 0o750 });
@@ -514,16 +539,19 @@ export class SignalGroups implements DoveSignalGroups {
     this.options.db.prepare(`INSERT OR REPLACE INTO fork_signal_lines (group_id, file_date, line, sent_ts, author, speaker, at, text)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(sent.groupId, date, index, sent.ts, sent.author, entry.from, entry.at, entry.text);
     const place = { file: `${SIGNAL_PATH}/${group}/${date}.jsonl`, path: `.[${index}]` };
-    if (!heard) return;
-    this.latest.set(group, place);
+    // Her own post, or a message from a backlog: no wait for the talk to settle. Her post is the talk answered.
+    if (heard !== 'old' && heard !== 'hers') this.latest.set(group, place);
     clearTimeout(this.settling.get(group));
     this.settling.delete(group);
+    if (heard === 'old' && kind) this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });
+    if (heard !== 'heard') return;
     if (kind) {
       this.attended.set(group, this.now());
       this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });
       return;
     }
     // Talk that raised nothing: once it settles, she is told of it once, to read the room (`conversation`).
+    if (this.stopped) return;
     const timer = setTimeout(() => { this.settling.delete(group); this.converse(group); }, this.timing.quietMs);
     timer.unref();
     this.settling.set(group, timer);
@@ -532,9 +560,10 @@ export class SignalGroups implements DoveSignalGroups {
   /** The talk in a group settled: one `conversation` attention on its latest line, unless too soon or out of hours. */
   private converse(group: string): void {
     const now = this.now();
-    const last = this.attended.get(group);
+    const last = Math.max(this.attended.get(group) ?? 0, this.lastOwn.get(group) ?? 0);
     const place = this.latest.get(group);
-    if (!place || (last !== undefined && now - last < this.timing.conversationEveryMs)) return;
+    // Her own post counts as the talk answered; it is not an attention, so it holds back no name or follow-up.
+    if (!place || now - last < this.timing.conversationEveryMs) return;
     if (this.options.awake && !this.options.awake()) return;
     this.attended.set(group, now);
     this.options.attention?.({ source: SIGNAL_SOURCE, kind: 'conversation', ...place });
@@ -542,12 +571,13 @@ export class SignalGroups implements DoveSignalGroups {
 
   /** Whether a text names her, by any name she answers to. */
   private calls(text: string): boolean {
-    const lower = text.toLowerCase();
-    return this.callNames.some(name => lower.includes(name));
+    const plain = normal(text);
+    return this.callNames.some(name => plain.includes(name));
   }
 
-  /** Drops the waits for talk to settle, as the server stops. */
+  /** Drops the waits for talk to settle, as the server stops; none is started after. */
   stop(): void {
+    this.stopped = true;
     for (const timer of this.settling.values()) clearTimeout(timer);
     this.settling.clear();
   }
@@ -604,6 +634,9 @@ export function objects<T extends object>(list: unknown): T[] {
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown';
 }
+
+/** A text as names are matched in it: NFKC and lower case. */
+function normal(text: string): string { return text.normalize('NFKC').toLowerCase(); }
 
 function oneLine(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();

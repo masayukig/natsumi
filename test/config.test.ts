@@ -841,6 +841,7 @@ test('fork (ADR F04): the signal section is off when absent, approvals are off b
   rejects({ ...base(), slack: slack(), signal: { ...signal, judge: {} } }, 'signal.judge', /slack\.judge/);
   assert.deepEqual(parseConfig({ ...base(), signal: { ...signal, names: ['iori'] } }).signal?.names, ['iori']);
   rejects({ ...base(), signal: { ...signal, names: [''] } }, 'signal.names');
+  rejects({ ...base(), signal: { ...signal, names: ['い'] } }, 'signal.names', /2 to 32/);
   rejects({ ...base(), signal: { ...signal, group: 'x' } }, 'signal.group');
 });
 

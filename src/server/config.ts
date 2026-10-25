@@ -1073,8 +1073,9 @@ function parseSignal(value: unknown, path: string): SignalConfig {
     groups[name] = id;
   }
   const names = signal.names ?? [];
-  if (!Array.isArray(names) || names.some(name => typeof name !== 'string' || name.trim() === '' || [...name].length > 32)) {
-    throw new ConfigError(`${path}.names`, 'must be a list of names, each 1 to 32 characters');
+  // One character would match nearly every message.
+  if (!Array.isArray(names) || names.some(name => typeof name !== 'string' || [...name.trim()].length < 2 || [...name].length > 32)) {
+    throw new ConfigError(`${path}.names`, 'must be a list of names, each 2 to 32 characters');
   }
   return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals, groups, names: names as string[] };
 }

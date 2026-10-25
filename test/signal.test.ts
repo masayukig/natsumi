@@ -395,7 +395,11 @@ class FakeGroupSignal extends FakeSignal {
     return AT + 60_000 * this.posted.length;
   }
   receipts: { recipient: string; timestamp: number }[] = [];
-  async receipt(recipient: string, timestamp: number) { this.receipts.push({ recipient, timestamp }); }
+  failReceipts = false;
+  async receipt(recipient: string, timestamp: number) {
+    if (this.failReceipts) throw new Error(`no such user ${recipient}`);
+    this.receipts.push({ recipient, timestamp });
+  }
   reactions: { groupId: string; emoji: string; target: { timestamp: number; author: string } }[] = [];
   async reactInGroup(groupId: string, emoji: string, target: { timestamp: number; author: string }) { this.reactions.push({ groupId, emoji, target }); }
   override async send(message: string, attachments?: string[]) {
@@ -592,9 +596,12 @@ async function hearingSetup(t: test.TestContext) {
   const api = new FakeGroupSignal();
   const clock = { now: AT, awake: true };
   const attentions: Attention[] = [];
-  const groups = new SignalGroups({ db: new DatabaseSync(':memory:'), api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
+  const logs: string[] = [];
+  const db = new DatabaseSync(':memory:');
+  const make = () => new SignalGroups({ db, api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
     account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now, awake: () => clock.awake,
-    timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); } });
+    timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); }, log: line => { logs.push(line); } });
+  const groups = make();
   t.after(async () => { groups.stop(); await rm(root, { recursive: true, force: true }); });
   const say = async (message: string, at = AT, group = GROUP) => {
     await groups.handle({ ...inGroup(message, {}, '+810000000009', group), timestamp: at, dataMessage: { ...inGroup(message, {}, '+810000000009', group).dataMessage, timestamp: at } });
@@ -602,7 +609,7 @@ async function hearingSetup(t: test.TestContext) {
   };
   const kinds = () => attentions.map(attention => `${attention.kind} ${attention.path}`);
   const quiet = () => new Promise(resolve => setTimeout(resolve, 80));
-  return { api, clock, groups, say, kinds, quiet };
+  return { root, api, clock, groups, make, say, kinds, quiet, logs };
 }
 
 test('a message in an approved group is marked read for its sender; one in a group not approved is not', async t => {
@@ -612,14 +619,67 @@ test('a message in an approved group is marked read for its sender; one in a gro
   assert.deepEqual(api.receipts, [{ recipient: '+810000000009', timestamp: AT }]);
 });
 
-test('her name without a mention is a name, in kana either way and the names configured; mention still comes first', async t => {
-  const { groups, say, kinds } = await hearingSetup(t);
-  await say('いおりちゃんはどう思う？');
-  await say('イオリに聞いてみよう');
-  await say('iori, are you there?');
-  await groups.handle(inGroup('￼ いおり', { mentions: [{ number: BOT, start: 0, length: 1 }] }));
+test('her name without a mention is a name, in kana either way, NFKC and the names configured; mention still comes first', async t => {
+  const { clock, groups, say, kinds } = await hearingSetup(t);
+  for (const text of ['いおりちゃんはどう思う？', 'イオリに聞いてみよう', 'iori, are you there?', 'ｲｵﾘはどこ', 'ＩＯＲＩ！']) {
+    await say(text, clock.now);
+    clock.now += 61_000;
+  }
+  clock.now -= 30_000;
+  await say('いおりもいおりも', clock.now); // a burst: within a minute of the last
+  await groups.handle({ ...inGroup('￼ いおり', { mentions: [{ number: BOT, start: 0, length: 1 }] }), timestamp: clock.now,
+    dataMessage: { ...inGroup('￼ いおり', { mentions: [{ number: BOT, start: 0, length: 1 }] }).dataMessage, timestamp: clock.now } });
   await groups.idle();
-  assert.deepEqual(kinds(), ['name .[0]', 'name .[1]', 'name .[2]', 'mention .[3]']);
+  groups.stop();
+  assert.deepEqual(kinds(), ['name .[0]', 'name .[1]', 'name .[2]', 'name .[3]', 'name .[4]', 'mention .[6]']);
+});
+
+test('a backlog raises no name, follow-up or conversation; a mention only within six hours; all of it is written', async t => {
+  const { root, clock, groups, say, kinds, quiet } = await hearingSetup(t);
+  clock.now = AT + 7 * 60 * 60_000;
+  await say('いおりは？', clock.now - 11 * 60_000);
+  await say('ただの話', clock.now - 11 * 60_000);
+  const mention = async (at: number) => {
+    const envelope = inGroup('￼', { mentions: [{ number: BOT, start: 0, length: 1 }] });
+    await groups.handle({ ...envelope, timestamp: at, dataMessage: { ...envelope.dataMessage, timestamp: at } });
+    await groups.idle();
+  };
+  await mention(clock.now - 60 * 60_000);
+  await mention(AT);
+  await quiet();
+  assert.deepEqual(kinds(), ['mention .[2]']);
+  const lines = (await readFile(join(root, 'signal', 'iori-test', '2026-10-25.jsonl'), 'utf8'))
+    .split('\n').filter(Boolean);
+  assert.equal(lines.length, 4);
+});
+
+test('her own post ends the wait for the talk to settle, and a follow-up is known across a restart', async t => {
+  const { groups, make, say, kinds, quiet } = await hearingSetup(t);
+  await say('今日は寒いね');
+  const sent = Number((await groups.post(GROUP, 'ほんとですね', {})).split(':')[0]);
+  await quiet();
+  assert.deepEqual(kinds(), []);
+  groups.stop();
+  const again = make();
+  t.after(() => { again.stop(); });
+  const envelope = inGroup('どう？');
+  await again.handle({ ...envelope, timestamp: sent + 3 * 60_000, dataMessage: { ...envelope.dataMessage, timestamp: sent + 3 * 60_000 } });
+  await again.idle();
+  again.stop();
+  assert.deepEqual(kinds(), ['follow-up .[2]']);
+});
+
+test('a receipt is not sent without a timestamp, and a failed one is logged in fixed words only', async t => {
+  const { api, groups, logs } = await hearingSetup(t);
+  const envelope = inGroup('a');
+  await groups.handle({ ...envelope, timestamp: undefined, dataMessage: { ...envelope.dataMessage, timestamp: undefined } });
+  assert.equal(api.receipts.length, 0);
+  api.failReceipts = true;
+  await groups.handle(inGroup('b'));
+  await groups.idle();
+  await new Promise(resolve => setImmediate(resolve));
+  groups.stop();
+  assert.deepEqual(logs, ['signal: a read receipt could not be sent (Error)']);
 });
 
 test('what people say within ten minutes of her own post is a follow-up; later it is not', async t => {
