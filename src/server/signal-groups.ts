@@ -61,7 +61,7 @@ export interface GroupEnvelope {
  * not even a mention or a quote of her.
  */
 export const GROUP_TIMING = {
-  followUpMs: 10 * 60_000, quietMs: 2 * 60_000, conversationEveryMs: 5 * 60_000, burstMs: 60_000,
+  followUpMs: 10 * 60_000, quietMs: 60_000, conversationEveryMs: 5 * 60_000, burstMs: 60_000,
   staleMs: 10 * 60_000, staleMentionMs: 6 * 60 * 60_000,
 };
 /** How far a sender's clock may be behind hers, for a `follow-up`. */
@@ -140,6 +140,8 @@ export class SignalGroups implements DoveSignalGroups {
    * the talk to settle. ponytail: in memory, so a restart forgets them; a conversation being waited on is simply lost.
    */
   private readonly lastOwn = new Map<string, number>();
+  /** Groups whose latest line is hers: whoever speaks next answers her, however long after (a `follow-up`). */
+  private readonly spokeLast = new Set<string>();
   private readonly attended = new Map<string, number>();
   private readonly latest = new Map<string, { file: string; path: string }>();
   private readonly settling = new Map<string, ReturnType<typeof setTimeout>>();
@@ -197,6 +199,11 @@ export class SignalGroups implements DoveSignalGroups {
       .all(options.account) as { group_id: string; at: number }[]) {
       const name = this.standing(row.group_id)?.name;
       if (name) this.lastOwn.set(name, row.at);
+    }
+    for (const row of options.db.prepare(`SELECT group_id, author FROM fork_signal_lines WHERE rowid IN
+      (SELECT MAX(rowid) FROM fork_signal_lines GROUP BY group_id)`).all() as { group_id: string; author: string }[]) {
+      const name = this.standing(row.group_id)?.name;
+      if (name && row.author === options.account) this.spokeLast.add(name);
     }
   }
 
@@ -435,6 +442,7 @@ export class SignalGroups implements DoveSignalGroups {
       ...(images > 0 ? { attachments: [`画像 ${images} 枚`] } : {}) };
     // It was sent whatever comes of this.
     this.lastOwn.set(standing.name, ms);
+    this.spokeLast.add(standing.name);
     const run = this.writing.then(() => this.append(standing.name, localDate(ms, this.options.timeZone), entry, undefined,
       { groupId, ts: ms, author: this.options.account }, 'hers'));
     this.writing = run.catch(() => undefined);
@@ -535,7 +543,8 @@ export class SignalGroups implements DoveSignalGroups {
     const kind = (mentioned || quotedMe) && age <= this.timing.staleMentionMs ? mentioned ? 'mention' : 'quote-reply'
       : !fresh || burst ? undefined
         : this.calls(raw) ? 'name'
-          : own !== undefined && ms >= own - CLOCK_SKEW_MS && ms - own <= this.timing.followUpMs ? 'follow-up' : undefined;
+          : this.spokeLast.has(group) || (own !== undefined && ms >= own - CLOCK_SKEW_MS && ms - own <= this.timing.followUpMs) ? 'follow-up' : undefined;
+    this.spokeLast.delete(group);
     const run = this.writing.then(() => this.append(group, localDate(ms, this.options.timeZone), entry, kind, { groupId, ts: ms, author },
       fresh ? 'heard' : 'old'));
     this.writing = run.catch(() => undefined);

@@ -952,7 +952,7 @@ natsumi の番号で登録した signal-cli を `daemon --http` で動かして�
 - 参加したグループには、natsumi がポッポさん経由で投稿・リアクションできます（[ADR F07](docs/adr/F07-fork-posting-to-signal-groups.md)）。
   判定と承認は Slack の投稿と同じで、マスターへの承認は `approvals: true` なら Signal の 1 対 1 に、Slack の DM やアプリにも出ます。
   `slack` が無いときは、判定の設定を `signal.judge`（書き方は `slack.judge` と同じ）に書きます。`slack` があれば `slack.judge` を使います。
-- 参加したグループでは、メンション・引用のほかに、名前の言及（`signal.names` に足せます。例: `["Iori"]`）、natsumi の投稿から 10 分以内の発言、
+- 参加したグループでは、メンション・引用のほかに、名前の言及（`signal.names` に足せます。例: `["Iori"]`）、natsumi の投稿から 10 分以内の発言と natsumi の投稿のすぐ次の発言、
   落ち着いた会話（5 分に 1 回まで）も natsumi に知らせ、発言には既読を返します。
 
 #### ターンが打ち切られたら本人に知らせる（fork）

@@ -13,7 +13,7 @@ import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { startServer } from '../src/server/server.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from '../src/server/signal.ts';
-import { followedUpSince, SignalGroups, type ListedGroup } from '../src/server/signal-groups.ts';
+import { followedUpSince, GROUP_TIMING, SignalGroups, type ListedGroup } from '../src/server/signal-groups.ts';
 import type { Attention } from '../src/server/sources.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { SlackMentionTyping } from '../src/server/slack.ts';
@@ -669,6 +669,22 @@ test('a name or follow-up waits only while the attention before it is not yet do
   await new Promise(resolve => setTimeout(resolve, 120));
   groups.stop();
   assert.deepEqual(kinds(), ['name .[0]', 'name .[2]', 'conversation .[3]']);
+});
+
+test('whoever speaks next after her, however long after, is a follow-up; once someone else spoke, the 10 minutes decide', async t => {
+  const { clock, groups, say, kinds, quiet } = await hearingSetup(t, { isOpen: () => false, conversationEveryMs: 10 });
+  const sent = Number((await groups.post(GROUP, '明日は 10 時集合です', {})).split(':')[0]);
+  clock.now = sent + 60 * 60_000 + 2_000; // live, not a backlog
+  await say('了解です', sent + 60 * 60_000); // an hour later, nothing between
+  await say('私も行きます', sent + 60 * 60_000 + 1_000); // she did not speak last any more, and it is past 10 minutes
+  clock.now += 100;
+  await quiet();
+  groups.stop();
+  assert.deepEqual(kinds(), ['follow-up .[1]', 'conversation .[2]']);
+});
+
+test('the conversation waits a minute of quiet by default', () => {
+  assert.equal(GROUP_TIMING.quietMs, 60_000);
 });
 
 test('a backlog raises no name, follow-up or conversation; a mention only within six hours; all of it is written', async t => {
