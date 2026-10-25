@@ -336,11 +336,15 @@ export function classify(head: Buffer, size: number, limit: number): Content {
   if (!shown.includes(0)) {
     try { return { type: 'text', text: decoder.decode(shown), truncated }; } catch { /* not UTF-8 */ }
   }
-  const known = BINARIES.find(({ bytes }) => {
+  return { type: 'binary', label: binaryLabel(head) ?? 'バイナリ' };
+}
+
+/** The name of a binary known by its first bytes, whether or not the rest reads as text: a PDF often does. */
+export function binaryLabel(head: Buffer): string | undefined {
+  return BINARIES.find(({ bytes }) => {
     const expected = typeof bytes === 'string' ? Buffer.from(bytes, 'latin1') : Buffer.from(bytes);
     return head.length >= expected.length && head.subarray(0, expected.length).equals(expected);
-  });
-  return { type: 'binary', label: known?.label ?? 'バイナリ' };
+  })?.label;
 }
 
 /** The bytes less a character cut in half at the end. */

@@ -1,10 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ShownImage } from '../shared/protocol/conversation.ts';
-import { isWithin } from './paths.ts';
-import { imageType, SOURCES_PATH, WORK_PATH } from './view.ts';
+import { imageType, resolveInPlace, SOURCES_PATH, WORK_PATH } from './view.ts';
 
 /** The replies of the outside agents, where the server puts the images they hand back (ADR 0069). */
 const AGENT_REPLIES_PATH = `${SOURCES_PATH}/agents`;
@@ -160,16 +159,10 @@ async function readImage(path: string, places: { prefix: string; directory: stri
   const refuse = (text: string) => ({ ok: false as const, text });
   const outside = refuse(`画像「${path}」は使えません。画像にできるのは ${places.map(place => `${place.prefix}/`).join(' か ')} の下のファイルだけです。`);
   const source = posix.normalize(path);
-  const place = places.find(candidate => source.startsWith(`${candidate.prefix}/`));
-  if (!place) return outside;
-  let root: string;
-  let real: string;
-  try {
-    root = await realpath(place.directory);
-    real = await realpath(join(root, source.slice(place.prefix.length + 1)));
-  } catch { return refuse(`画像 ${source} が見つかりません。`); }
-  // A link that leads out of its place is refused as if it were outside, and says nothing of where it leads.
-  if (!isWithin(real, root) || real === root) return outside;
+  const resolved = await resolveInPlace(path, places);
+  if (resolved === 'missing') return refuse(`画像 ${source} が見つかりません。`);
+  if (resolved === 'outside' || resolved.real === resolved.root) return outside;
+  const { real } = resolved;
   let handle;
   try { handle = await open(real, 'r'); } catch { return refuse(`画像 ${source} が見つかりません。`); }
   try {

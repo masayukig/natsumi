@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -26,7 +26,7 @@ const HOUR = 3_600_000;
  * /sources/agents as files and reaches her as an attention of a `sources_updated` event (ADR 0069). The agent here is
  * a fake one speaking the real protocol; the model is scripted.
  */
-async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[] } = {}) {
+async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[]; inputModes?: string[] } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-agents-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -36,7 +36,8 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   await mkdir(agentDirectory, { recursive: true });
   const tokenFile = join(root, 'a2a-token');
   await writeFile(tokenFile, 'fake-agent-token\n');
-  const agent = await FakeAgent.start(options.extensions ? { extensions: options.extensions } : {});
+  const agent = await FakeAgent.start({ ...(options.extensions ? { extensions: options.extensions } : {}),
+    ...(options.inputModes ? { inputModes: options.inputModes } : {}) });
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
@@ -203,6 +204,7 @@ test('ask_agent sends the message to the named agent and only says the answer wi
   assert.equal(f.agent.received.length, 1);
   assert.equal(f.agent.received[0]!.text, 'ねこの記事を要約して');
   assert.equal(f.agent.received[0]!.contextId, '');
+  assert.equal(f.agent.received[0]!.files, undefined, 'no files, no parts but the text');
   const [result] = toolResults(f.model);
   assert.equal(result!.isError, false);
   assert.match(result!.text, /wiki/);
@@ -776,4 +778,133 @@ test('the history keeps the request and the README of a reply, and leaves the bo
   const tracked = (await promisify(execFile)('git', ['--git-dir', f.gitDirectory, 'ls-tree', '-r', '--name-only', 'HEAD'])).stdout
     .split('\n').filter(Boolean).map(path => path.split('/').at(-1)).sort();
   assert.deepEqual(tracked, ['README.md', 'request.md']);
+});
+
+// ADR 0080: files under /work and /sources go with the message as their bytes, and request.md names them.
+const askWith = (message: string, files: string[]): ScriptedStep =>
+  ({ calls: [{ name: 'ask_agent', arguments: { agent: 'wiki', message, continue: false, files } }] });
+
+test('files under /work and /sources go with the message as their bytes, typed by their bytes, and request.md names them', async t => {
+  const f = await setup(t);
+  const uploads = join(f.root, 'data', 'sources', 'uploads', '20261006T010000Z-ab12');
+  await mkdir(uploads, { recursive: true });
+  const pdf = Buffer.from('%PDF-1.7\nmade up\n');
+  await writeFile(join(uploads, '資料.pdf'), pdf);
+  await writeFile(join(f.work, 'memo.md'), '# メモ\n');
+  await writeFile(join(f.work, 'blob.bin'), Buffer.from([0, 1, 2, 3]));
+  const { loop } = await f.open();
+  f.script(askWith('この 3 つを読んで', ['/sources/uploads/20261006T010000Z-ab12/資料.pdf', '/work/memo.md', '/work/blob.bin']));
+  await turn(f, loop);
+  const [result] = toolResults(f.model);
+  assert.equal(result!.isError, false, result!.text);
+  assert.equal(f.agent.received[0]!.text, 'この 3 つを読んで');
+  assert.deepEqual(f.agent.received[0]!.files, [
+    { filename: '資料.pdf', mediaType: 'application/pdf', data: pdf },
+    { filename: 'memo.md', mediaType: 'text/markdown', data: Buffer.from('# メモ\n') },
+    { filename: 'blob.bin', mediaType: 'application/octet-stream', data: Buffer.from([0, 1, 2, 3]) },
+  ]);
+  const request = await f.read(`${placeIn(result!.text)!}/request.md`);
+  assert.match(request, /- 送ったファイル: \/sources\/uploads\/20261006T010000Z-ab12\/資料\.pdf、\/work\/memo\.md、\/work\/blob\.bin/);
+});
+
+test('a file outside /work and /sources, one reached through .. or a link out, and one that is not there are refused; nothing is sent', async t => {
+  const f = await setup(t);
+  await writeFile(join(f.root, 'secret.txt'), 'secret');
+  await symlink(join(f.root, 'secret.txt'), join(f.work, 'link.txt'));
+  await writeFile(join(f.work, 'ok.txt'), 'ok');
+  const { loop } = await f.open();
+  f.script(askWith('a', ['/work/ok.txt', '/memory/always.md']), askWith('b', ['/work/../secret.txt']), askWith('c', ['/work/link.txt']),
+    askWith('d', ['/work/missing.txt']), askWith('e', ['/work']));
+  await turn(f, loop);
+  const results = toolResults(f.model);
+  assert.equal(results.length, 5);
+  for (const result of results) assert.equal(result.isError, true, result.text);
+  assert.match(results[0]!.text, /\/work\/ か \/sources\/ の下/);
+  assert.match(results[1]!.text, /\/work\/ か \/sources\/ の下/);
+  assert.match(results[2]!.text, /\/work\/ か \/sources\/ の下/, 'a link out says nothing of where it leads');
+  assert.equal(results[2]!.text.includes(f.root), false);
+  assert.match(results[3]!.text, /見つかりません/);
+  assert.equal(f.agent.received.length, 0);
+  assert.deepEqual(await readdir(join(f.replies, 'wiki')).catch(() => []), [], 'no request was made');
+});
+
+test('more than eight files, one over 20 MB, or more than 50 MB together are refused before anything is sent', async t => {
+  const f = await setup(t);
+  const paths: string[] = [];
+  for (let n = 1; n <= 9; n++) {
+    await writeFile(join(f.work, `${n}.txt`), `${n}`);
+    paths.push(`/work/${n}.txt`);
+  }
+  await writeFile(join(f.work, 'large.bin'), '');
+  await truncate(join(f.work, 'large.bin'), 20 * 1024 * 1024 + 1);
+  await writeFile(join(f.work, 'just.bin'), '');
+  await truncate(join(f.work, 'just.bin'), 20 * 1024 * 1024);
+  const { loop } = await f.open();
+  f.script(askWith('a', paths), askWith('b', ['/work/1.txt', '/work/large.bin']), askWith('c', paths.slice(0, 7).concat('/work/just.bin')));
+  await turn(f, loop);
+  const results = toolResults(f.model);
+  assert.match(results[0]!.text, /8 個までです（9 個ありました）/);
+  assert.equal(results[0]!.isError, true);
+  assert.match(results[1]!.text, /large\.bin は大きすぎます（1 個 20 MB まで）/);
+  assert.equal(results[1]!.isError, true);
+  assert.equal(results[2]!.isError, false, 'eight files, the last of exactly 20 MB, go');
+  assert.equal(f.agent.received.length, 1);
+  assert.equal(f.agent.received[0]!.files!.length, 8);
+  assert.equal(f.agent.received[0]!.files!.at(-1)!.data.length, 20 * 1024 * 1024);
+});
+
+test('eight files of exactly 50 MB together go, and one byte more is refused before anything is sent', async t => {
+  const f = await setup(t);
+  const total = 50 * 1024 * 1024;
+  const sizes = [20 * 1024 * 1024, 20 * 1024 * 1024, 10 * 1024 * 1024 - 5, 1, 1, 1, 1, 1];
+  assert.equal(sizes.reduce((sum, size) => sum + size, 0), total);
+  const paths: string[] = [];
+  for (const [n, size] of sizes.entries()) {
+    await writeFile(join(f.work, `${n}.bin`), '');
+    await truncate(join(f.work, `${n}.bin`), size);
+    paths.push(`/work/${n}.bin`);
+  }
+  await writeFile(join(f.work, 'over.bin'), '');
+  await truncate(join(f.work, 'over.bin'), 2);
+  const { loop } = await f.open();
+  f.script(askWith('a', paths), askWith('b', [...paths.slice(0, 7), '/work/over.bin']));
+  await turn(f, loop);
+  const results = toolResults(f.model);
+  assert.equal(results[0]!.isError, false, results[0]!.text);
+  assert.match(results[1]!.text, /合わせて 50 MB までです/);
+  assert.equal(results[1]!.isError, true);
+  assert.equal(f.agent.received.length, 1);
+  assert.equal(f.agent.received[0]!.files!.reduce((sum, file) => sum + file.data.length, 0), total);
+});
+
+test('an answer to a question cannot carry files: it is refused, and a new request may carry them', async t => {
+  const f = await setup(t);
+  await writeFile(join(f.work, 'memo.md'), '# メモ\n');
+  const { loop } = await f.open();
+  f.script(ask('wiki', '記事を直して', false));
+  await turn(f, loop);
+  f.agent.settle(f.agent.lastTask().id, 'input-required', 'どの記事ですか？');
+  f.script({ calls: [{ name: 'ask_agent', arguments: { agent: 'wiki', message: 'これです', continue: true, files: ['/work/memo.md'] } }] });
+  await loop.pollAgents();
+  await loop.idle();
+  const refused = toolResults(f.model).at(-1)!;
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /聞き返しへの答えには、ファイルを付けられません/);
+  assert.match(refused.text, /continue を false/);
+  assert.equal(f.agent.received.length, 1, 'nothing was sent');
+});
+
+test('files are refused for an agent whose card takes text only, and its request leaves no directory behind', async t => {
+  const f = await setup(t, { inputModes: ['text/plain'] });
+  await writeFile(join(f.work, 'memo.md'), '# メモ\n');
+  const { loop } = await f.open();
+  f.script(askWith('読んで', ['/work/memo.md']), ask('wiki', '読んで', false));
+  await turn(f, loop);
+  const [refused, asked] = toolResults(f.model);
+  assert.equal(refused!.isError, true);
+  assert.match(refused!.text, /ファイルを受け取れません/);
+  assert.equal(asked!.isError, false, 'text alone still goes');
+  assert.equal(f.agent.received.length, 1);
+  assert.equal(f.agent.received[0]!.files, undefined);
+  assert.equal((await readdir(join(f.replies, 'wiki'))).length, 1, 'only the request that went has a directory');
 });

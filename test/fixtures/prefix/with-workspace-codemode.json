@@ -254,7 +254,7 @@
     },
     {
       "name": "ask_agent",
-      "description": "外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。continue を true にすると、その相手との直近のやり取りに続けて送り、相手は前の文脈を覚えている。相手の聞き返しに答えるときも true にする。false なら新しいやり取りとして始める。\nこの道具は頼んだことだけを返す。頼むと、サーバーが依頼ごとのディレクトリを /sources/agents の下に作って request.md に頼んだことを置き、結果でその場所を伝える。返事は後で同じディレクトリに置かれ、sources_updated の attention（kind: agent_reply）として届く。attention には相手の名前（agent）、state、要約（summary）、頼んだことの先頭の行（request）と頼んだ時刻（asked_at）が付き、file はそのディレクトリの README.md を指す。state は completed（済んだ）、failed（できなかった）、input_required（相手が聞き返している。summary が質問）、gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。要約で足りなければ README.md を読み、要る節のファイルだけを読む。読み方は /manual/ask-agent.md にある。ポッポさん（poppo）は Slack への送信役で、message には JSON のオブジェクトをひとつ書く（書き方は /manual/slack.md）。ポッポさんへの依頼のディレクトリは /sources/agents/poppo の下にでき、request.json に頼んだことが置かれる。結果は出るたびに同じディレクトリの results.jsonl に一行ずつ足され、同じく attention（kind: agent_reply、agent: poppo）として届く。file は results.jsonl、path はその行で、state はその結果、summary はポッポさんの言葉。\n返事を待たずに、ほかのことをしてよい。相手とのやり取りはマスターには見えないので、マスターに伝えたいことは reply_to_mac か notify_owner で伝える。",
+      "description": "外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。continue を true にすると、その相手との直近のやり取りに続けて送り、相手は前の文脈を覚えている。相手の聞き返しに答えるときも true にする。false なら新しいやり取りとして始める。files は省ける。相手にファイルを渡すときは、/work か /sources の下のパスを並べる（大きさと数に上限がある。受け取れない相手もいる。詳しくは /manual/ask-agent.md）。\nこの道具は頼んだことだけを返す。頼むと、サーバーが依頼ごとのディレクトリを /sources/agents の下に作って request.md に頼んだことを置き、結果でその場所を伝える。返事は後で同じディレクトリに置かれ、sources_updated の attention（kind: agent_reply）として届く。attention には相手の名前（agent）、state、要約（summary）、頼んだことの先頭の行（request）と頼んだ時刻（asked_at）が付き、file はそのディレクトリの README.md を指す。state は completed（済んだ）、failed（できなかった）、input_required（相手が聞き返している。summary が質問）、gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。要約で足りなければ README.md を読み、要る節のファイルだけを読む。読み方は /manual/ask-agent.md にある。ポッポさん（poppo）は Slack への送信役で、message には JSON のオブジェクトをひとつ書く（書き方は /manual/slack.md）。ポッポさんへの依頼のディレクトリは /sources/agents/poppo の下にでき、request.json に頼んだことが置かれる。結果は出るたびに同じディレクトリの results.jsonl に一行ずつ足され、同じく attention（kind: agent_reply、agent: poppo）として届く。file は results.jsonl、path はその行で、state はその結果、summary はポッポさんの言葉。\n返事を待たずに、ほかのことをしてよい。相手とのやり取りはマスターには見えないので、マスターに伝えたいことは reply_to_mac か notify_owner で伝える。",
       "parameters": {
         "type": "object",
         "required": [
@@ -271,6 +271,12 @@
           },
           "continue": {
             "type": "boolean"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -319,7 +325,7 @@
     },
     {
       "name": "codemode",
-      "description": "Run JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a QuickJS sandbox: top-level `await` and `return` work. No Node, file system, network, or timers.\n- `await tools.<name>({ ...args })` resolves to a string, or an object if the tool's declaration says so, and rejects with an Error on failure. Calls still running when the script ends are cancelled.\n- Optional first line: `// @options: {\"max_output_tokens\": 10000, \"timeout_ms\": 60000}`\n\nGlobals:\n- `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and top-level `return` add output; `exit()` ends the script. `image()` also saves the image to a temp file and the result names its path.\n- `store(key, value)` and `load(key)` keep JSON values across codemode calls.\n- `ALL_TOOLS`, `searchTools(query, { limit?, namespace? })`, `describeTool(name)`, `describeNamespace(name)`: find unlisted tools, such as MCP tools.",
+      "description": "Run JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a QuickJS sandbox: top-level `await` and `return` work. No Node, file system, network, or timers.\n- `await tools.<name>({ ...args })` resolves to a string, or an object if the tool's declaration says so, and rejects with an Error on failure. A tool whose declaration returns an object resolves on failure too when it returned that object; check its fields. Calls still running when the script ends are cancelled.\n- Optional first line: `// @options: {\"max_output_tokens\": 10000, \"timeout_ms\": 60000}`\n\nGlobals:\n- `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and top-level `return` add output; `exit()` ends the script. With several text items, each starts with a `==> text N/M <==` line, and `console` lines follow the other output in one `<console_output>` block. `image()` also saves the image to a temp file and the result names its path.\n- `store(key, value)` and `load(key)` keep JSON values across codemode calls.\n- `ALL_TOOLS`, `await searchTools(query, { limit?, namespace? })`, `await describeTool(name)`, `await describeNamespace(name)`: find unlisted tools, such as MCP tools.",
       "parameters": {
         "type": "object",
         "required": [

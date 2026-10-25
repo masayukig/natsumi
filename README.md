@@ -761,6 +761,12 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   1 枚 10 MiB・1 回 8 枚までを、返事の `images/` に置き、`.natsumi/images/` にも写しを残します（migration 19）。
   `README.md` に置いた画像と説明、取らなかった画像とその理由を書きます。取れなくても文章の返事はそのまま届けます。
   natsumi は `reply_to_mac` の `images` に、`/sources/agents/` の下の画像をそのまま並べられます。
+- natsumi は `ask_agent` の `files` に `/work`・`/sources` の下のパスを並べて、ファイルを相手に渡せます（[ADR 0080](docs/adr/0080-sending-files-to-an-agent-with-the-request.md)）。
+  サーバーがファイルを読み、文面の後ろに A2A の Part として中身そのもの（`raw`、`filename`・`mediaType` 付き）を並べて送ります。
+  1 個 20 MiB・1 回 8 個・合わせて 50 MiB まで。場所の外（リンクや `..` で出るものも）・無い・大きすぎるファイルが 1 つでもあるか、合わせて大きすぎれば、何も送らずに断ります。
+  渡したファイルのパスは `request.md` に書きます。応答に送ったファイルが戻らないよう、`historyLength: 0` を付けます。
+  ファイルを付けた依頼は、相手の Agent Card の `defaultInputModes` に `text/plain` 以外（`*/*` など）があるときだけ送り、無ければ断ります。
+  聞き返しへの答えにはファイルを付けられません。
 - Slack の送信役（ポッポさん）の依頼と結果も `sources/agents/poppo/` に置き、同じ attention で知らせます（下の「Slack に投稿する（ポッポさん）」）。
 - 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
   待っている依頼は、新しい版で取りに行き、`sources/agents/` に返事のためのディレクトリを作って置きます（頼んだことの記録はありません）。
@@ -1116,12 +1122,14 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
   それにダッシュボードの「ファイル」でオーナーが開いたもの（読み取り専用）だけです。
 - 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
-  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.3。image の build でソースから入れます）を使い、
+  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.4.0。image の build でソースから入れます）を使い、
     Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの `/manual/avatar/images.md` にあります。
-    サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさを差し込んで書き出します。
+    サーバーが起動のたびに、雛形の [assets/manual/images.md](assets/manual/images.md) に、アバターの自分の姿（`appearance.yaml`）と既定の大きさ、既定のモデルの系統に合わせたプロンプトの書き方を差し込んで書き出します。
+    系統は既定の params のモデル名の接頭辞で決め、`anima_` は Anima、`moss-image_` は MOSS-Image、それ以外とモデルの名前が無いときは、どのモデルでも通じる書き方だけを書きます。
   - 既定の設定は `/manual/avatar/sdctl-params.yaml` です。設定の `avatar.sdctlParams` があればそのファイル、無ければアバターの `sdctl-params.yaml`、無ければサーバーの既定
     （名無しの [assets/avatars/nanashi/sdctl-params.yaml](assets/avatars/nanashi/sdctl-params.yaml)）を、サーバーが起動のたびに書き出します。
     サーバーの既定は、Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
+    params の `distilled_cfg_scale`（Flux の Distilled CFG、MOSS-Image のシフト）は、書いたときだけ要求に載ります。
     params には `alwayson_scripts` も書け、txt2img・img2img・hires の要求にそのまま渡ります（ADetailer で顔を描き直すなど。拡張は WebUI 側に要ります）。
   - 接続先・既定の設定・出力の既定の `/work/images` と形式の JPEG は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
     PATH の `sdctl` は、本物（`/usr/libexec/sdctl`）にいつもこのファイルを `--config` で渡すラッパーです。
@@ -1218,6 +1226,13 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 テストを通したうえで、`ghcr.io/yuanying/natsumi`（サーバー）と `ghcr.io/yuanying/natsumi-workspace`（作業環境）を
 amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。image の tag は版の tag そのものです。
 `latest` は付けません。動かす版は、環境の設定の側で固定します。
+
+### 依存の更新
+
+依存の版は固定しており、上げる PR は Renovate が出します（設定は [renovate.json](renovate.json)、
+[ADR 0079](docs/adr/0079-dependency-updates-with-renovate.md)）。公開から 7 日経った版だけを提案します。
+Dockerfile の Node と setup-node の Node は 1 つの PR で同じ版に上がり、Pi の 2 つのパッケージも 1 つの PR で上がります。
+typebox は Pi が固定する版に手で合わせます。保留中の更新は Dependency Dashboard の issue に載ります。
 
 ## Mac アプリ
 

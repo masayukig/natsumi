@@ -1,7 +1,7 @@
 # 0044. なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する
 
 - Date: 2026-09-26
-- Status: Accepted（2026-09-26: sdctl の既定を image の設定ファイルに置くことを「追記」の節に加えた。未決としていた画像を Mac に出すかと、画像を取る道が会話の行の画像も返すことは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定、既定の params を作業環境の image に焼き込む点は [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) で置き換え（サーバーが書き、作業環境の `/manual/avatar` で読む）、依頼の見出し `画像` は [ADR 0074](0074-asking-poppo-in-json-and-hearing-back-in-sources.md) で置き換え（JSON の `images` の欄））
+- Status: Accepted（2026-09-26: sdctl の既定を image の設定ファイルに置くことを「追記」の節に加えた。未決としていた画像を Mac に出すかと、画像を取る道が会話の行の画像も返すことは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定、既定の params を作業環境の image に焼き込む点は [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) で置き換え（サーバーが書き、作業環境の `/manual/avatar` で読む）、依頼の見出し `画像` は [ADR 0074](0074-asking-poppo-in-json-and-hearing-back-in-sources.md) で置き換え（JSON の `images` の欄）。2026-10-21: 手引きのプロンプトの書き方を既定のモデルの系統で分けることを「追記」の節に加えた）
 
 ## Context
 
@@ -147,3 +147,17 @@
 - 接続先は中継の loopback のアドレス（`127.0.0.1:17860`）を image に書く。環境の設定の約束と同じ値であり、変えるときは両方を直す。
   「作業環境の `SDCTL_URL` は、この中継の loopback のアドレスを指す」は、コンテナのシェル（本人の `kubectl exec` など）のための値として残る。sdctl では環境変数が設定ファイルより勝つが、値は同じである。
 - 既定を本人の HOME（永続領域）の下に置く形は取らない。image の版と既定の版がずれるからである。
+
+## 追記（2026-10-21）: プロンプトの書き方は既定のモデルの系統で分ける
+
+- 「モデルは Anima 系のもの、Negative prompt 付きとする」は、もう全部のアバターには当てはまらない。既定の params はアバターごとに違い（[ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md)）、Anima ではなく MOSS-Image を既定にするインスタンスが出てきた。
+  MOSS-Image は Anima と書き方が違う。重み `(x:1.2)` は効かずに文字のまま渡り、品質のタグは `best quality, highres` までで、画風・媒体を必ず書き、Negative prompt は空が勧められている。
+  手引きの「プロンプトの書き方」を Anima の書き方のまま全員に見せると、MOSS-Image のインスタンスは効かない書き方で描くことになる。
+- 手引きの雛形（`assets/manual/images.md`）の共通の部分には、どの系統にも固有の書き方を置かない。
+  サーバーは、既定の params の `override_settings.sd_model_checkpoint` の接頭辞から系統を決め、その系統の書き方の節（手順・例・規則）を差し込む。
+  接頭辞は sdctl の skill の分け方に従い、`anima_` を Anima、`moss-image_` を MOSS-Image とする。
+- 知らない接頭辞のときと、params にモデルの名前が無いときは、系統を推し量らない。英語で短い文とタグで書くこと、モデルによって効き方の違う書き方（重みなど）を使わないことだけを書き、sdctl の skill があればそこで系統を調べるよう案内する。
+- 書き方は skill（`anima-prompt`・`moss-prompt`）に任せきりにせず、手引きに要約して書く。skill を渡さないインスタンスも、手引きだけで描けるようにするためである。skill があれば詳しい書き方を読んでよいが、その skill の `sdctl` の例ではなく手引きに従う（既定の params を丸ごと置き換えないため）。
+- 「自分を描く」節（`appearance.yaml` から作る）は系統で変えない。品質の行や LoRA をそのモデルに合わせるのは、`appearance.yaml` を書く側である。
+- 手引きは作業環境のファイルであり、system prompt とツールの定義は変わらない（ADR 0036）。
+- MOSS-Image のシフトを params の `distilled_cfg_scale` で渡せるように、作業環境の sdctl を v0.4.0 に上げた。v0.3.3 はこの欄を黙って読み飛ばしていた。

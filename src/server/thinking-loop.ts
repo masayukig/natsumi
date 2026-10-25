@@ -490,6 +490,7 @@ export class ThinkingLoop {
       client: options.a2aClient ?? (a2a ? new SdkA2AClient({ tokenFile: a2a.tokenFile }) : undefined),
       ...(options.agentReplies ? { replies: options.agentReplies } : {}), log: line => this.log(line), images: this.images,
       timeZone: loop.timeZone, postbox: ledger,
+      workspace: { work: join(options.dataDirectory, WORK_DIRECTORY), sources: join(options.dataDirectory, SOURCES_DIRECTORY) },
     });
     this.postbox = new Postbox({ db: options.db, now: this.now, timeZone: loop.timeZone, enabled: postbox.enabled, rules: letterRules,
       repository: this.memoryRepository, sender: this.agents, ledger, log: line => this.log(line) });
@@ -1762,8 +1763,10 @@ export class ThinkingLoop {
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
       // The dove is one of the agents she can ask, and lives in the server: its name never reaches A2A (ADR 0040).
-      askAgent: (agent, message, goOn) => agent === DOVE_NAME && this.options.dove
-        ? this.askDove(message) : this.agents.ask(agent, message, goOn),
+      askAgent: (agent, message, goOn, files = []) => agent === DOVE_NAME && this.options.dove
+        ? files.length > 0 ? { ok: false, text: '頼んでいません。ポッポさんには files でファイルを渡せません。投稿に付ける画像は message の JSON の images に並べます（/manual/slack.md）。' }
+          : this.askDove(message)
+        : this.agents.ask(agent, message, goOn, files),
       ...(this.shell ? { runShell: (command: string) => this.runShell(command),
         capture: (command: string) => this.shell!.capture(command), skills: this.options.skills === true } : {}),
     };
