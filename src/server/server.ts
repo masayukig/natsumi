@@ -46,7 +46,7 @@ import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPu
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
-import { isAwake, Scheduler } from './scheduler.ts';
+import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 import { Uploads } from './uploads.ts';
 
@@ -249,7 +249,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const signalGroups = config.signal && signalApi ? new SignalGroups({ db, api: signalApi,
       directory: join(dataDirectory, SOURCES_DIRECTORY, SIGNAL_SOURCE), groups: config.signal.groups, account: config.signal.account,
       selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); },
-      names: config.signal.names, awake: () => isAwake(now(), settings.awakeHours(), config.loop.timeZone),
+      names: config.signal.names,
       // "typing…" in the group while she works on what was for her there, made with the loop below.
       typing: { start: (groupId, place) => groupTyping?.start(groupId, '', place), posted: groupId => groupTyping?.posted(groupId, '') } }) : undefined;
     let groupTyping: SlackMentionTyping | undefined;

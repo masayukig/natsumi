@@ -61,7 +61,7 @@ export interface GroupEnvelope {
  * not even a mention or a quote of her.
  */
 export const GROUP_TIMING = {
-  followUpMs: 10 * 60_000, quietMs: 2 * 60_000, conversationEveryMs: 15 * 60_000, burstMs: 60_000,
+  followUpMs: 10 * 60_000, quietMs: 2 * 60_000, conversationEveryMs: 5 * 60_000, burstMs: 60_000,
   staleMs: 10 * 60_000, staleMentionMs: 6 * 60 * 60_000,
 };
 /** How far a sender's clock may be behind hers, for a `follow-up`. */
@@ -107,8 +107,6 @@ export interface SignalGroupsOptions {
    * "typing…" can be shown in the group while she works on it, and again after a post while she still is (ADR F07).
    */
   typing?: { start(groupId: string, place: { file: string; path: string }): void; posted(groupId: string): void };
-  /** Whether the owner is awake now: a `conversation` attention is raised only then. Always, when absent. */
-  awake?: () => boolean;
   /** The waits of the attentions without a mention; the defaults are `GROUP_TIMING`. Tests shorten them. */
   timing?: Partial<typeof GROUP_TIMING>;
   now?: () => number;
@@ -563,14 +561,13 @@ export class SignalGroups implements DoveSignalGroups {
     this.settling.set(group, timer);
   }
 
-  /** The talk in a group settled: one `conversation` attention on its latest line, unless too soon or out of hours. */
+  /** The talk in a group settled: one `conversation` attention on its latest line, unless too soon (the people talking are awake, whatever the owner's hours). */
   private converse(group: string): void {
     const now = this.now();
     const last = Math.max(this.attended.get(group) ?? 0, this.lastOwn.get(group) ?? 0);
     const place = this.latest.get(group);
     // Her own post counts as the talk answered; it is not an attention, so it holds back no name or follow-up.
     if (!place || now - last < this.timing.conversationEveryMs) return;
-    if (this.options.awake && !this.options.awake()) return;
     this.attended.set(group, now);
     this.options.attention?.({ source: SIGNAL_SOURCE, kind: 'conversation', ...place });
   }

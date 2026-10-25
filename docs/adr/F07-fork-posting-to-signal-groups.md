@@ -41,12 +41,13 @@ Slack への投稿は、ポッポさん（`SlackDove`、[ADR 0040](0040-the-dove
   - `name`: メンションは無いが、本文に natsumi の名前（アバターの名前と、設定 `signal.names` に書いた名前。ひらがな・カタカナはどちらでも、英字は大文字小文字を問わない）がある発言。
     Slack では名前だけの言及は数えない（[ADR 0039](0039-slack-as-files-and-a-scored-dove.md)）が、Signal のグループは身内の小さな場なので、本人が数えることにした。
   - `follow-up`: natsumi がそのグループに投稿してから 10 分以内の、ほかの人の発言（Slack のスレッドの `thread-reply` にあたる。スレッドが無いので時間で見る）。
-  - `conversation`: どれにも当たらない発言が続き、2 分発言が無くなったら、最新の行を指して 1 度だけ。同じグループに 15 分以内にほかの attention（どの種類でも）があれば出さず、マスターの起きている時間（awakeHours）の外も出さない（朝に回さず捨てる）。
+  - `conversation`: どれにも当たらない発言が続き、2 分発言が無くなったら、最新の行を指して 1 度だけ。同じグループに 5 分以内にほかの attention（どの種類でも）があれば出さない。
+    マスターの起きている時間（awakeHours）には縛らない（話している人たちは起きている。2026-10-25、23 時過ぎのメンション無しの質問に反応しなかったことを受けて本人が決めた。最初は 15 分・awakeHours 内だけだった）。
     場の雰囲気を読んで加わってほしい、という本人の希望による。待ち時間はサーバーのメモリだけに持ち、再起動で消える（失ってよい）。
   - 種類の優先は `mention` > `quote-reply` > `name` > `follow-up`。
   - 名前は NFKC にして小文字で、部分一致で探す（日本語に単語の切れ目は無い）。設定の名前は 2 文字以上。別の人・別の言葉に当たることがあるとマニュアルに書いた。
   - `name`・`follow-up` は、同じグループでどれかの attention から 1 分以内なら出さない（続けざまの発言でまとめて 1 つ）。`follow-up` は送り主の時計の遅れを 5 秒まで見る。
-  - natsumi 自身の投稿は、待っている `conversation` を取り消し、そこから 15 分は `conversation` を出さない（attention ではないので `name`・`follow-up` は止めない）。
+  - natsumi 自身の投稿は、待っている `conversation` を取り消し、そこから 5 分は `conversation` を出さない（attention ではないので `name`・`follow-up` は止めない）。
   - Signal の時刻で 10 分より前の発言（つなぎ直したときに溜まって届いたものなど）は、記録はするが `name`・`follow-up`・`conversation` を出さない。
     `mention`・`quote-reply` は本人が見たいこともあるので出すが、6 時間より前のものは出さない。
   - 最後の投稿の時刻は、起動時に `fork_signal_lines` の natsumi の最新の行から戻す。ほかの待ちと時刻（`conversation` の待ち、最後の attention）は再起動で消える。

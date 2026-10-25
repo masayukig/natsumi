@@ -595,7 +595,7 @@ test('every message in an approved group is written as a line of its local day; 
 async function hearingSetup(t: test.TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-hearing-'));
   const api = new FakeGroupSignal();
-  const clock = { now: AT, awake: true };
+  const clock = { now: AT };
   const attentions: Attention[] = [];
   const logs: string[] = [];
   const db = new DatabaseSync(':memory:');
@@ -603,7 +603,7 @@ async function hearingSetup(t: test.TestContext) {
   const make = () => new SignalGroups({ db, api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
     typing: { start: (groupId, place) => { typing.push(`start ${groupId === GROUP ? 'iori-test' : groupId} ${place.path}`); },
       posted: groupId => { typing.push(`posted ${groupId === GROUP ? 'iori-test' : groupId}`); } },
-    account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now, awake: () => clock.awake,
+    account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now,
     timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); }, log: line => { logs.push(line); } });
   const groups = make();
   t.after(async () => { groups.stop(); await rm(root, { recursive: true, force: true }); });
@@ -696,7 +696,7 @@ test('what people say within ten minutes of her own post is a follow-up; later i
   assert.deepEqual(kinds(), ['follow-up .[1]']);
 });
 
-test('talk that raised nothing is a conversation once it settles, at most once a window, only while the owner is awake', async t => {
+test('talk that raised nothing is a conversation once it settles, at most once a window, whatever the owner\'s hours', async t => {
   const { clock, say, kinds, quiet } = await hearingSetup(t);
   await say('今日は寒いね');
   await say('ほんと、雪かも');
@@ -706,20 +706,15 @@ test('talk that raised nothing is a conversation once it settles, at most once a
   await quiet();
   assert.equal(kinds().length, 1, 'not again within the window');
   clock.now += 60_000;
-  clock.awake = false;
-  await say('明日は電車が心配');
-  await quiet();
-  assert.equal(kinds().length, 1, 'not out of the awake hours');
-  clock.awake = true;
   await say('早めに出よう');
   await quiet();
-  assert.deepEqual(kinds(), ['conversation .[1]', 'conversation .[4]']);
+  assert.deepEqual(kinds(), ['conversation .[1]', 'conversation .[3]']);
   // An attention of another kind counts too.
   clock.now += 60_000;
   await say('いおりは雪好き？');
   await say('どうだろうね');
   await quiet();
-  assert.deepEqual(kinds().slice(2), ['name .[5]']);
+  assert.deepEqual(kinds().slice(2), ['name .[4]']);
   // A group not approved raises none.
   clock.now += 60_000;
   await say('こんにちは', AT, OTHER_GROUP);
