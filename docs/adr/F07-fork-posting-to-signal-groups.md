@@ -51,8 +51,11 @@ Slack への投稿は、ポッポさん（`SlackDove`、[ADR 0040](0040-the-dove
     `mention`・`quote-reply` は本人が見たいこともあるので出すが、6 時間より前のものは出さない。
   - 最後の投稿の時刻は、起動時に `fork_signal_lines` の natsumi の最新の行から戻す。ほかの待ちと時刻（`conversation` の待ち、最後の attention）は再起動で消える。
 - **入力中**: `mention`・`quote-reply`・`name`・`follow-up` の attention を出したら、そのグループに入力中（JSON-RPC `sendTyping`、`groupId: [<ID>]`、止めるときは `stop: true`）を出す。
-  Signal は 15 秒ほどで消すので 10 秒ごとに出し直す。その attention を受けたターンが終わったら（replied・no-reply・failed）、ただし頼んだエージェントの答えを待っている間は続け、
-  natsumi の投稿がそのグループに届いたときにも止める。最長 10 分。Slack のメンションの入力中（`SlackMentionTyping`）をそのまま使い、`setStatus` をグループの入力中につなぐ。
+  Signal は 15 秒ほどで消すので 10 秒ごとに出し直す。止めるのは、その attention を受けたターンが終わり（replied・no-reply・failed）、そこから頼んだエージェントが誰も待っていないとき。
+  エージェントを頼んでいたら、答えが来た後も、natsumi の次のそのグループへの投稿までは続ける（本人の 1 対 1 の OwnerTyping と同じ）。最長 15 分。
+  natsumi の投稿が届くと Signal のアプリは入力中を消すので、まだ作業中なら投稿の直後にすぐ出し直す（「確認しています」のような途中の投稿の後も、入力中が続いて見える）。
+  Slack のメンションの入力中（`SlackMentionTyping`）を使い、`setStatus` をグループの入力中につなぐ。エージェントの答えの後も続ける動きは `holdForAgents` で Signal だけに入れ、Slack は変えない。
+  ponytail: エージェントの答えを受けたターンが投稿せずに終わったときは、最長の 15 分まで出たままになる。
   `conversation` では出さない（黙っていることも多いので）。
 - **既読**: 承認したグループの発言を記録したら、送り主に既読（`sendReceipt`、`type: read`）を返す（F04 の本人への既読と同じ）。待ち・断ったグループには返さない。失敗はログに出すだけ。
 - 外のエージェントの一覧（`/manual/agents/INDEX.md`）のポッポさんに、Signal のグループにも投稿できることを 1 行足す。

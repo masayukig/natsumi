@@ -602,7 +602,7 @@ async function hearingSetup(t: test.TestContext) {
   const typing: string[] = [];
   const make = () => new SignalGroups({ db, api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
     typing: { start: (groupId, place) => { typing.push(`start ${groupId === GROUP ? 'iori-test' : groupId} ${place.path}`); },
-      end: groupId => { typing.push(`end ${groupId === GROUP ? 'iori-test' : groupId}`); } },
+      posted: groupId => { typing.push(`posted ${groupId === GROUP ? 'iori-test' : groupId}`); } },
     account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now, awake: () => clock.awake,
     timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); }, log: line => { logs.push(line); } });
   const groups = make();
@@ -727,7 +727,7 @@ test('talk that raised nothing is a conversation once it settles, at most once a
   assert.equal(kinds().length, 3);
 });
 
-test('typing is started for what asks for an answer, not for a conversation nor a group not approved, and ended by her post', async t => {
+test('typing is started for what asks for an answer, not for a conversation nor a group not approved; her post is told', async t => {
   const { clock, groups, say, quiet, typing, kinds } = await hearingSetup(t);
   await say('いおりは来る？');
   await say('こんにちは', AT, OTHER_GROUP);
@@ -738,25 +738,46 @@ test('typing is started for what asks for an answer, not for a conversation nor 
   await groups.post(GROUP, '行きます', {});
   groups.stop();
   assert.deepEqual(kinds(), ['name .[0]', 'conversation .[1]']);
-  assert.deepEqual(typing, ['start iori-test .[0]', 'end iori-test']);
+  assert.deepEqual(typing, ['start iori-test .[0]', 'posted iori-test']);
 });
 
-test('in a group, typing is sent again every interval, taken away when the turn is done or her post went, and never past the limit', async () => {
+test('in a group, typing is sent again every interval and taken away when the turn is done, or at the limit', async () => {
   const sent: string[] = [];
   const done = new Set<string>();
   let listener = () => {};
   const typing = new SlackMentionTyping({ loop: { subscribe: l => { listener = l as () => void; return () => {}; } }, intervalMs: 5, maxMs: 200,
-    done: place => done.has(place.path),
+    holdForAgents: true, done: place => done.has(place.path),
     api: { setStatus: async (groupId, _ts, status) => { sent.push(`${groupId} ${status === '' ? 'stop' : 'on'}`); } } });
   typing.start('g1', '', { file: 'f', path: '.[0]' });
-  typing.start('g2', '', { file: 'f', path: '.[1]' });
   await until(() => sent.filter(line => line === 'g1 on').length >= 3);
+  // A post in the middle of the turn: shown again at once.
+  const before = sent.length;
+  typing.posted('g1', '');
+  assert.equal(sent[before], 'g1 on');
   done.add('.[0]');
   listener();
-  typing.end('g2', '');
-  const at = sent.length;
-  await new Promise(resolve => setTimeout(resolve, 30));
-  assert.deepEqual(sent.slice(at - 2), ['g1 stop', 'g2 stop']);
+  assert.equal(sent.at(-1), 'g1 stop');
+  typing.stop();
+});
+
+test('in a group, typing goes on while an agent she asked is waiting, and past its answer until her next post', async () => {
+  const sent: string[] = [];
+  let waiting = 1;
+  let turnDone = false;
+  let listener = () => {};
+  const typing = new SlackMentionTyping({ loop: { subscribe: l => { listener = l as () => void; return () => {}; } }, intervalMs: 5, maxMs: 1_000,
+    holdForAgents: true, done: () => turnDone, waitingAgents: () => waiting,
+    api: { setStatus: async (groupId, _ts, status) => { sent.push(`${groupId} ${status === '' ? 'stop' : 'on'}`); } } });
+  typing.start('g1', '', { file: 'f', path: '.[0]' });
+  typing.posted('g1', ''); // 「確認しています」, then she asks an agent
+  turnDone = true;
+  listener();
+  waiting = 0; // the agent answered
+  listener();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(!sent.includes('g1 stop'), 'still working on the answer');
+  typing.posted('g1', ''); // her answer
+  assert.equal(sent.at(-1), 'g1 stop');
   typing.stop();
 });
 

@@ -104,9 +104,9 @@ export interface SignalGroupsOptions {
   names?: readonly string[];
   /**
    * Called with each attention that asks for an answer (all but `conversation`), and with each post of hers sent, so
-   * "typing…" can be shown in the group while she works on it and taken away once she posted (ADR F07).
+   * "typing…" can be shown in the group while she works on it, and again after a post while she still is (ADR F07).
    */
-  typing?: { start(groupId: string, place: { file: string; path: string }): void; end(groupId: string): void };
+  typing?: { start(groupId: string, place: { file: string; path: string }): void; posted(groupId: string): void };
   /** Whether the owner is awake now: a `conversation` attention is raised only then. Always, when absent. */
   awake?: () => boolean;
   /** The waits of the attentions without a mention; the defaults are `GROUP_TIMING`. Tests shorten them. */
@@ -548,7 +548,7 @@ export class SignalGroups implements DoveSignalGroups {
     if (heard !== 'old' && heard !== 'hers') this.latest.set(group, place);
     clearTimeout(this.settling.get(group));
     this.settling.delete(group);
-    if (heard === 'hers') this.options.typing?.end(sent.groupId);
+    if (heard === 'hers') this.options.typing?.posted(sent.groupId);
     if (kind) {
       if (heard === 'heard') this.attended.set(group, this.now());
       this.options.attention?.({ source: SIGNAL_SOURCE, kind, ...place });

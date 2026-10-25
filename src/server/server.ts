@@ -251,7 +251,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); },
       names: config.signal.names, awake: () => isAwake(now(), settings.awakeHours(), config.loop.timeZone),
       // "typing…" in the group while she works on what was for her there, made with the loop below.
-      typing: { start: (groupId, place) => groupTyping?.start(groupId, '', place), end: groupId => groupTyping?.end(groupId, '') } }) : undefined;
+      typing: { start: (groupId, place) => groupTyping?.start(groupId, '', place), posted: groupId => groupTyping?.posted(groupId, '') } }) : undefined;
     let groupTyping: SlackMentionTyping | undefined;
     await signalGroups?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
@@ -416,8 +416,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       // nothing on the stream. A question a day old is answered by leaving the group.
       if (signalGroups) {
         ownerStops.push(() => signalGroups.stop());
-        // Fork (ADR F07): Signal lets typing go after about 15 seconds, so it is sent every 10.
-        const typingInGroups = groupTyping = new SlackMentionTyping({ loop: thinkingLoop, waitingAgents, intervalMs: 10_000,
+        // Fork (ADR F07): Signal lets typing go after about 15 seconds, so it is sent every 10; agents may take a while.
+        const typingInGroups = groupTyping = new SlackMentionTyping({ loop: thinkingLoop, waitingAgents, intervalMs: 10_000, maxMs: 15 * 60_000,
+          holdForAgents: true,
           done: place => attentionDone('signal', place),
           api: { setStatus: async (groupId, _ts, status) => { await api.groupTyping?.(groupId, status === ''); } } });
         ownerStops.push(() => typingInGroups.stop());
