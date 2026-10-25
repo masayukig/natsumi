@@ -823,7 +823,7 @@ test('the memory curator runs every night by default, on natsumi\'s route, with 
 test('fork (ADR F04): the signal section is off when absent, approvals are off by default, http reaches only loopback', () => {
   const signal = { url: 'http://127.0.0.1:18080/', account: '+810000000002', owner: '+810000000001' };
   assert.equal('signal' in parseConfig(base()), false);
-  assert.deepEqual(parseConfig({ ...base(), signal }).signal, { ...signal, url: 'http://127.0.0.1:18080', approvals: false, groups: {} });
+  assert.deepEqual(parseConfig({ ...base(), signal }).signal, { ...signal, url: 'http://127.0.0.1:18080', approvals: false, groups: {}, names: [] });
   assert.equal(parseConfig({ ...base(), signal: { ...signal, url: 'https://signal.example.test', approvals: true } }).signal?.approvals, true);
   rejects({ ...base(), signal: { ...signal, url: 'http://signal.example.test' } }, 'signal.url', /loopback/);
   rejects({ ...base(), signal: { ...signal, url: 'http://user:pw@127.0.0.1:18080' } }, 'signal.url');
@@ -839,6 +839,8 @@ test('fork (ADR F04): the signal section is off when absent, approvals are off b
   rejects({ ...base(), signal: { ...signal, groups: { 'g-0123abcd': id } } }, 'signal.groups.g-0123abcd');
   // ADR F07: the judges of the Signal groups are slack.judge when there is a slack section.
   rejects({ ...base(), slack: slack(), signal: { ...signal, judge: {} } }, 'signal.judge', /slack\.judge/);
+  assert.deepEqual(parseConfig({ ...base(), signal: { ...signal, names: ['iori'] } }).signal?.names, ['iori']);
+  rejects({ ...base(), signal: { ...signal, names: [''] } }, 'signal.names');
   rejects({ ...base(), signal: { ...signal, group: 'x' } }, 'signal.group');
 });
 

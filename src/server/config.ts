@@ -1033,6 +1033,8 @@ function ownerUsername(value: unknown, path: string): string {
  */
 export interface SignalConfig {
   url: string; account: string; owner: string; approvals: boolean; groups: Record<string, string>;
+  /** Fork (ADR F07): other names she answers to in a group without a mention, besides the avatar's. */
+  names: string[];
   /** Fork (ADR F07): the dove's judges for posts to the groups when there is no `slack` (whose `judge` is used when there is). */
   judge?: JudgesConfig;
 }
@@ -1045,7 +1047,7 @@ const PHONE_NUMBER = /^\+[1-9][0-9]{6,14}$/;
 function parseSignal(value: unknown, path: string): SignalConfig {
   const signal = object(value, path);
   // `judge` is read by parseJudges once pi is known, as `slack.judge` is.
-  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals', 'groups', 'judge']);
+  onlyKeys(signal, path, ['url', 'account', 'owner', 'approvals', 'groups', 'judge', 'names']);
   const urlPath = `${path}.url`;
   const url = parseUrl(required(signal, 'url', path), urlPath);
   // The daemon has no authentication of its own, so plain http reaches only a loopback host, such as a sidecar.
@@ -1070,7 +1072,11 @@ function parseSignal(value: unknown, path: string): SignalConfig {
     if (Object.values(groups).includes(id)) throw new ConfigError(entryPath, 'names a group already listed');
     groups[name] = id;
   }
-  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals, groups };
+  const names = signal.names ?? [];
+  if (!Array.isArray(names) || names.some(name => typeof name !== 'string' || name.trim() === '' || [...name].length > 32)) {
+    throw new ConfigError(`${path}.names`, 'must be a list of names, each 1 to 32 characters');
+  }
+  return { url: url.href.replace(/\/+$/, ''), account: number('account'), owner: number('owner'), approvals, groups, names: names as string[] };
 }
 
 function parseCurator(value: unknown, path: string): CuratorConfig {

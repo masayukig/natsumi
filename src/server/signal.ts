@@ -37,6 +37,8 @@ export interface SignalApi {
   sendGroup?(groupId: string, message: string, options?: { quote?: { timestamp: number; author: string; text: string }; attachments?: string[] }): Promise<number>;
   /** Puts an emoji on a message in a group. */
   reactInGroup?(groupId: string, emoji: string, target: { timestamp: number; author: string }): Promise<void>;
+  /** Marks a message in a group as read for its sender. */
+  receipt?(recipient: string, timestamp: number): Promise<void>;
 }
 
 /** How long a JSON-RPC call may take: a daemon that hangs must not hold the dove's queue, Slack's posts included. */
@@ -88,6 +90,9 @@ export function connectSignal(config: { url: string; account: string; owner: str
       if (results.length > 0 && results.every(result => result.type !== 'SUCCESS')) throw new Error(`send ${String(results[0]!.type)}`);
       if (typeof body.result?.timestamp !== 'number') throw new DeliveryUnknown('no timestamp');
       return body.result.timestamp;
+    },
+    async receipt(recipient, timestamp) {
+      await rpc('sendReceipt', { recipient, targetTimestamp: [timestamp], type: 'read' });
     },
     async reactInGroup(groupId, emoji, target) {
       await rpc('sendReaction', { groupId, emoji, targetAuthor: target.author, targetTimestamp: target.timestamp });

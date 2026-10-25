@@ -45,7 +45,7 @@ import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPu
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
-import { Scheduler } from './scheduler.ts';
+import { isAwake, Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 import { Uploads } from './uploads.ts';
 
@@ -247,7 +247,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const signalApi = config.signal ? options.signal?.api ?? connectSignal(config.signal) : undefined;
     const signalGroups = config.signal && signalApi ? new SignalGroups({ db, api: signalApi,
       directory: join(dataDirectory, SOURCES_DIRECTORY, SIGNAL_SOURCE), groups: config.signal.groups, account: config.signal.account,
-      selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); } }) : undefined;
+      selfName: avatar.name, timeZone: config.loop.timeZone, now, log, attention: attention => { sources?.attention(attention); },
+      names: config.signal.names, awake: () => isAwake(now(), settings.awakeHours(), config.loop.timeZone) }) : undefined;
     await signalGroups?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
@@ -409,6 +410,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       // The groups she is in are looked at now and every minute, as the dove's approvals are swept: an invitation may tell
       // nothing on the stream. A question a day old is answered by leaving the group.
       if (signalGroups) {
+        ownerStops.push(() => signalGroups.stop());
         const sweep = () => { void signalGroups.sync().then(() => signalGroups.expire()); };
         sweep();
         timers.push(setInterval(sweep, APPROVAL_SWEEP_MS));

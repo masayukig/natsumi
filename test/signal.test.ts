@@ -394,6 +394,8 @@ class FakeGroupSignal extends FakeSignal {
     this.posted.push({ groupId, message, options });
     return AT + 60_000 * this.posted.length;
   }
+  receipts: { recipient: string; timestamp: number }[] = [];
+  async receipt(recipient: string, timestamp: number) { this.receipts.push({ recipient, timestamp }); }
   reactions: { groupId: string; emoji: string; target: { timestamp: number; author: string } }[] = [];
   async reactInGroup(groupId: string, emoji: string, target: { timestamp: number; author: string }) { this.reactions.push({ groupId, emoji, target }); }
   override async send(message: string, attachments?: string[]) {
@@ -581,6 +583,83 @@ test('every message in an approved group is written as a line of its local day; 
   const file = '/sources/signal/iori-test/2026-10-25.jsonl';
   assert.deepEqual(attentions, [{ source: 'signal', kind: 'mention', file, path: '.[1]' }, { source: 'signal', kind: 'quote-reply', file, path: '.[2]' }]);
   assert.deepEqual(said, []);
+});
+
+/** Fork (ADR F07): what in an approved group is for her without a mention, and the read receipts. */
+
+async function hearingSetup(t: test.TestContext) {
+  const root = await mkdtemp(join(tmpdir(), 'natsumi-signal-hearing-'));
+  const api = new FakeGroupSignal();
+  const clock = { now: AT, awake: true };
+  const attentions: Attention[] = [];
+  const groups = new SignalGroups({ db: new DatabaseSync(':memory:'), api, directory: join(root, 'signal'), groups: { 'iori-test': GROUP },
+    account: BOT, selfName: 'いおり', names: ['Iori'], timeZone: 'Asia/Tokyo', now: () => clock.now, awake: () => clock.awake,
+    timing: { quietMs: 30, conversationEveryMs: 60_000 }, attention: attention => { attentions.push(attention); } });
+  t.after(async () => { groups.stop(); await rm(root, { recursive: true, force: true }); });
+  const say = async (message: string, at = AT, group = GROUP) => {
+    await groups.handle({ ...inGroup(message, {}, '+810000000009', group), timestamp: at, dataMessage: { ...inGroup(message, {}, '+810000000009', group).dataMessage, timestamp: at } });
+    await groups.idle();
+  };
+  const kinds = () => attentions.map(attention => `${attention.kind} ${attention.path}`);
+  const quiet = () => new Promise(resolve => setTimeout(resolve, 80));
+  return { api, clock, groups, say, kinds, quiet };
+}
+
+test('a message in an approved group is marked read for its sender; one in a group not approved is not', async t => {
+  const { api, say } = await hearingSetup(t);
+  await say('おはよう');
+  await say('だれ？', AT, OTHER_GROUP);
+  assert.deepEqual(api.receipts, [{ recipient: '+810000000009', timestamp: AT }]);
+});
+
+test('her name without a mention is a name, in kana either way and the names configured; mention still comes first', async t => {
+  const { groups, say, kinds } = await hearingSetup(t);
+  await say('いおりちゃんはどう思う？');
+  await say('イオリに聞いてみよう');
+  await say('iori, are you there?');
+  await groups.handle(inGroup('￼ いおり', { mentions: [{ number: BOT, start: 0, length: 1 }] }));
+  await groups.idle();
+  assert.deepEqual(kinds(), ['name .[0]', 'name .[1]', 'name .[2]', 'mention .[3]']);
+});
+
+test('what people say within ten minutes of her own post is a follow-up; later it is not', async t => {
+  const { groups, say, kinds } = await hearingSetup(t);
+  const sent = Number((await groups.post(GROUP, '集合は 10 時です', {})).split(':')[0]);
+  await say('了解', sent + 5 * 60_000);
+  await say('ところで', sent + 11 * 60_000);
+  groups.stop();
+  assert.deepEqual(kinds(), ['follow-up .[1]']);
+});
+
+test('talk that raised nothing is a conversation once it settles, at most once a window, only while the owner is awake', async t => {
+  const { clock, say, kinds, quiet } = await hearingSetup(t);
+  await say('今日は寒いね');
+  await say('ほんと、雪かも');
+  await quiet();
+  assert.deepEqual(kinds(), ['conversation .[1]']);
+  await say('積もるかな');
+  await quiet();
+  assert.equal(kinds().length, 1, 'not again within the window');
+  clock.now += 60_000;
+  clock.awake = false;
+  await say('明日は電車が心配');
+  await quiet();
+  assert.equal(kinds().length, 1, 'not out of the awake hours');
+  clock.awake = true;
+  await say('早めに出よう');
+  await quiet();
+  assert.deepEqual(kinds(), ['conversation .[1]', 'conversation .[4]']);
+  // An attention of another kind counts too.
+  clock.now += 60_000;
+  await say('いおりは雪好き？');
+  await say('どうだろうね');
+  await quiet();
+  assert.deepEqual(kinds().slice(2), ['name .[5]']);
+  // A group not approved raises none.
+  clock.now += 60_000;
+  await say('こんにちは', AT, OTHER_GROUP);
+  await quiet();
+  assert.equal(kinds().length, 3);
 });
 
 /** Fork (ADR F07): the dove posts to the Signal groups the owner approved. */
