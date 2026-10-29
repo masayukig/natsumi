@@ -335,7 +335,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           asked: eventId => askedOn(eventId) === 'slack',
           send: stop => typingAt && api.setStatus?.(typingAt.channel, typingAt.ts, stop ? '' : 'is typing...') }) : undefined;
         if (ownerTyping) ownerStops.push(() => ownerTyping.stop());
-        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents,
+        const mentionTyping = new SlackMentionTyping({ loop: thinkingLoop, api, waitingAgents, log,
           done: place => ['replied', 'no-reply', 'failed'].includes((db!.prepare(`SELECT e.state FROM source_attention a
             JOIN loop_events e ON e.event_id = a.event_id WHERE a.source = 'slack' AND a.file = ? AND a.path = ? ORDER BY a.attention_id DESC LIMIT 1`)
             .get(place.file, place.path) as { state: string } | undefined)?.state ?? '') });
