@@ -433,7 +433,8 @@ export class SlackMentionTyping {
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly intervalMs: number;
   private readonly maxMs: number;
-  private readonly options: { api: SlackApi; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number };
+  private readonly options: { api: SlackApi; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number;
+    log?: (line: string) => void };
 
   constructor(options: {
     loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
@@ -446,6 +447,8 @@ export class SlackMentionTyping {
     /** How many agents asked at or after `since` (an ISO time) have not answered yet. */
     waitingAgents?: (since: string) => number;
     intervalMs?: number; maxMs?: number;
+    /** Where a status Slack refused, and each taking away, is told: whether the status stays up past it is seen on screen. */
+    log?: (line: string) => void;
   }) {
     this.options = options;
     this.intervalMs = options.intervalMs ?? 90_000;
@@ -490,7 +493,10 @@ export class SlackMentionTyping {
   }
 
   private send(channel: string, threadTs: string, on: boolean): void {
-    this.options.api.setStatus?.(channel, threadTs, on ? 'is typing...' : '').catch(() => { /* only a hint */ });
+    const log = this.options.log ?? (() => {});
+    this.options.api.setStatus?.(channel, threadTs, on ? 'is typing...' : '').then(
+      () => { if (!on) log(`slack: typing taken away at ${channel}/${threadTs}`); },
+      (error: unknown) => { log(`slack: typing ${on ? 'not shown' : 'not taken away'} at ${channel}/${threadTs} (${(error as { reason?: string }).reason ?? String(error)})`); });
   }
 }
 
