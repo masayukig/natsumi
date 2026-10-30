@@ -422,17 +422,20 @@ export class SlackWorkspace {
  * Fork (ADR F01): "typing…" under the threads of mentions and DMs she was told of, until the turn that took each is
  * done (replied, not replied or failed) and no agent asked since is still waiting. Slack drops the status after 2
  * minutes, so it is sent again every `intervalMs`; a post of hers in the thread takes it away on Slack's side too.
+ * Whether it is done is looked at on every loop event and every `checkMs`: a turn on a mention ends without an event
+ * (it has no message), and a reply of hers at the top of a channel does not take it away on Slack's side.
  * After `maxMs` it stops whatever happens. An approval the dove waits for comes after the turn, so it is not covered.
  */
 /** Where a mention's attention points: the day's file and the position in it. */
 type AttentionPlace = { file: string; path: string };
 
 export class SlackMentionTyping {
-  private readonly shown = new Map<string, { channel: string; threadTs: string; place: AttentionPlace; since: string; until: number }>();
+  private readonly shown = new Map<string, { channel: string; threadTs: string; place: AttentionPlace; since: string; until: number; again: number }>();
   private readonly unsubscribe: () => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly intervalMs: number;
   private readonly maxMs: number;
+  private readonly checkMs: number;
   private readonly options: { api: SlackApi; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number;
     log?: (line: string) => void };
 
@@ -446,24 +449,30 @@ export class SlackMentionTyping {
     done: (place: AttentionPlace) => boolean;
     /** How many agents asked at or after `since` (an ISO time) have not answered yet. */
     waitingAgents?: (since: string) => number;
-    intervalMs?: number; maxMs?: number;
+    intervalMs?: number; maxMs?: number; checkMs?: number;
     /** Where a status Slack refused, and each taking away, is told: whether the status stays up past it is seen on screen. */
     log?: (line: string) => void;
   }) {
     this.options = options;
     this.intervalMs = options.intervalMs ?? 90_000;
     this.maxMs = options.maxMs ?? 600_000;
+    this.checkMs = options.checkMs ?? 5_000;
     // ponytail: checks on every loop event; throttle if the queries show up.
     this.unsubscribe = options.loop.subscribe(() => { if (this.shown.size > 0) this.check(); });
   }
 
   start(channel: string, threadTs: string, place: AttentionPlace): void {
-    this.shown.set(`${channel}:${threadTs}`, { channel, threadTs, place, since: new Date().toISOString(), until: Date.now() + this.maxMs });
+    this.shown.set(`${channel}:${threadTs}`, { channel, threadTs, place, since: new Date().toISOString(), until: Date.now() + this.maxMs,
+      again: Date.now() + this.intervalMs });
     this.send(channel, threadTs, true);
     this.timer ??= setInterval(() => {
       this.check();
-      for (const { channel, threadTs } of this.shown.values()) this.send(channel, threadTs, true);
-    }, this.intervalMs);
+      for (const shown of this.shown.values()) {
+        if (Date.now() < shown.again) continue;
+        shown.again = Date.now() + this.intervalMs;
+        this.send(shown.channel, shown.threadTs, true);
+      }
+    }, Math.min(this.checkMs, this.intervalMs));
   }
 
   stop(): void {
