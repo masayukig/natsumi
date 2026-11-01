@@ -1,7 +1,7 @@
 # 0079. 依存の更新は Renovate に追わせ、公開から 7 日経った版だけを受け取る
 
 - Date: 2026-10-16
-- Status: Accepted（2026-10-21: パッチ等の自動マージと、Renovate だけの変更の週次のリリースを「追記」の節に加えた）
+- Status: Accepted（2026-10-21: パッチ等の自動マージと、Renovate だけの変更の週次のリリースを「追記」の節に加えた。2026-11-01: image の Debian を bookworm から trixie に上げたことを 2 つ目の「追記」の節に加えた）
 
 ## Context
 
@@ -137,6 +137,16 @@ Renovate の設定はこのリポジトリにあるが、Renovate 自体はこ�
 - 自動のタグも、手のタグと同じく注釈つきにする。メッセージは「依存の更新」であることと、含まれる Renovate のコミットの subject の一覧である。
 - `GITHUB_TOKEN` で push したタグでは `images.yml` が動かない。そこで同じ run の中で `images.yml` を呼び、image を push してからタグを push する。
   image の push に失敗したときは、タグは残らない。手でタグを push したときは、今までどおり `images.yml` が動く。
+
+## 追記（2026-11-01）: image の Debian を bookworm（12）から trixie（13）に上げる
+
+上の「追わないもの」に書いたとおり、Debian の版は手で上げる。本番の脆弱性の報告（trivy-operator）で、修正版の無い Critical（zlib1g の CVE-2023-45853、libsqlite3 の CVE-2025-7458 など）が bookworm の image に集中していたため、すべての stage を trixie に揃えた。
+
+- Node の stage は `node:<版>-trixie-slim`、作業環境・kubectl・sops の stage は `debian:trixie-slim`、Ruby の stage は `ruby:<版>-slim-trixie` を tag と digest で固定する。Node の版の読み方（custom manager）と、Ruby の tag と digest を Renovate が一緒に上げることは変わらない。
+- `golang` の image は tag に Debian の名前を書かない。`golang:1.27` はすでに trixie である。runner と sdctl は静的に build するので、Debian に依らない。
+- apt で入れるもののうち、名前が変わったのは `libssl3` だけである（trixie では `libssl3t64`）。ほかはそのままの名前で入る。
+- trixie にも sops は無いので、これまでどおりリリースから取る。age は trixie のもの（1.2）になる。
+- 修正版の無い Critical のうち、zlib1g と libsqlite3 のものは trixie で消える。openssh-client と gawk のものは trixie にも残る。
 
 ## 関連 ADR
 

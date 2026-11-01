@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:24.22.2-bookworm-slim AS build
+FROM node:24.22.2-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ RUN npm run build
 
 # Holds the network namespace of the fixed-IPv6 layout (compose.ipv6.example.yaml) and sets the interface token.
 # Only this image carries iproute2, and only its container gets NET_ADMIN. Built on the same base to share layers.
-FROM node:24.22.2-bookworm-slim AS ipv6-netns
+FROM node:24.22.2-trixie-slim AS ipv6-netns
 RUN apt-get update \
   && apt-get install -y --no-install-recommends iproute2 \
   && rm -rf /var/lib/apt/lists/*
@@ -33,7 +33,7 @@ RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yu
 
 # kubectl for the workspace (ADR 0085), a fixed release of the clusters' minor, checked against the checksum published
 # beside it. Renovate reads the version from the ARG line as a Kubernetes release.
-FROM debian:bookworm-slim AS kubectl
+FROM debian:trixie-slim AS kubectl
 ARG KUBECTL_VERSION=v1.37.2
 ARG TARGETARCH
 RUN apt-get update \
@@ -45,9 +45,9 @@ RUN mkdir /out && cd /out \
   && echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check \
   && chmod 755 kubectl && rm kubectl.sha256
 
-# sops for the workspace (ADR 0088), a fixed release, checked against the checksums published with it. Debian bookworm
+# sops for the workspace (ADR 0088), a fixed release, checked against the checksums published with it. Debian trixie
 # has none. Renovate reads the version from the ARG line as a release of getsops/sops.
-FROM debian:bookworm-slim AS sops
+FROM debian:trixie-slim AS sops
 ARG SOPS_VERSION=v3.13.3
 ARG TARGETARCH
 RUN apt-get update \
@@ -70,7 +70,7 @@ RUN sed -i 's/^GOTOOLCHAIN=.*/GOTOOLCHAIN=local/' /usr/local/go/go.env \
 # interpreter, libraries, headers and default gems are gathered into /out/local to be laid over /usr/local, and the
 # bundle and bundler it ships into /out/bundler, out of PATH, behind the wrapper in the workspace. Its ENV (GEM_HOME and
 # BUNDLE_*) is not taken: the runner passes none of it (ADR 0019). Renovate moves the tag and the digest together.
-FROM ruby:4.0.9-slim-bookworm@sha256:f999b3be00ed747bf7b2e450155ab1482d77300eb71ec7d3ada49ccc921c6ed4 AS ruby
+FROM ruby:4.0.9-slim-trixie@sha256:32fdd19c0a001077d1711f1afa6d8a0ac9d497c4eac20e47ae7e1c7f7a8c49df AS ruby
 RUN mkdir -p /out/local/lib /out/local/include /out/bundler \
   && cp -a /usr/local/bin /usr/local/etc /out/local/ \
   && cp -a /usr/local/lib/ruby /usr/local/lib/libruby.so* /usr/local/lib/pkgconfig /out/local/lib/ \
@@ -85,16 +85,16 @@ RUN mkdir -p /out/local/lib /out/local/include /out/bundler \
 # kubectl, ssh's client and curl are for the relays of ADR 0085, which an instance chooses in its deployment; in one that
 # does not, they reach nothing. libnss-wrapper is for the ssh wrapper below.
 # Ruby, from the stage above, is for the Ruby CLIs an instance runs from a clone, installing their gems with bundle (ADR
-# 0088). libyaml-0-2, libffi8, libgmp10, libssl3 and zlib1g are what the official image installs for it to run. gcc,
+# 0088). libyaml-0-2, libffi8, libgmp10, libssl3t64 and zlib1g are what the official image installs for it to run. gcc,
 # make and libc6-dev build a gem's C extension; build-essential would add g++ and dpkg-dev, which no C extension needs.
 # age makes the keys sops encrypts with; Debian's is enough for that, and apt checks it, where age's releases publish no
 # checksum.
-FROM debian:bookworm-slim AS workspace
+FROM debian:trixie-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata poppler-utils poppler-data \
        openssh-client libnss-wrapper curl ca-certificates \
-       libyaml-0-2 libffi8 libgmp10 libssl3 zlib1g gcc make libc6-dev age \
+       libyaml-0-2 libffi8 libgmp10 libssl3t64 zlib1g gcc make libc6-dev age \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=ruby /out/local/ /usr/local/
 COPY --from=ruby /out/bundler/ /usr/libexec/bundler/
@@ -143,7 +143,7 @@ WORKDIR /work
 ENTRYPOINT ["/usr/libexec/natsumi-workspace-runner"]
 CMD ["serve"]
 
-FROM node:24.22.2-bookworm-slim
+FROM node:24.22.2-trixie-slim
 ENV NODE_ENV=production
 # git commits the memory repository (ADR 0018). Committing is the server's alone: natsumi has git in the workspace
 # container above, but there /memory/.git is mounted read-only, so she can read the history and not write it.
