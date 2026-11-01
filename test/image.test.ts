@@ -11,6 +11,17 @@ import { writeAvatarManual } from '../src/server/avatar-manual.ts';
 
 const dockerfile = () => readFile(new URL('../Dockerfile', import.meta.url).pathname, 'utf8');
 
+// Every stage is built on the same Debian, trixie (13): the Node, Debian and Ruby bases name it in their tags, and Go's
+// tag, which names none, is on it too, so nothing built in one stage meets another Debian's libraries in the next.
+test('every stage of the Dockerfile is built on Debian trixie', async () => {
+  const bases = [...(await dockerfile()).matchAll(/^FROM (\S+)/gm)].map(match => match[1] ?? '');
+  assert.ok(bases.length > 0);
+  for (const base of bases) {
+    assert.doesNotMatch(base, /bookworm/, base);
+    if (/^(node|debian|ruby):/.test(base)) assert.match(base, /trixie/, base);
+  }
+});
+
 // The stage that ships is the one with no name: every stage above it is a builder or a separate image.
 async function shippingStage() {
   const lines = (await dockerfile()).split('\n');
@@ -214,7 +225,7 @@ test('the workspace image installs what the official Ruby runs with and a C comp
   const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(await workspaceStage());
   assert.ok(install, 'the workspace stage installs no packages');
   const packages = install[0].split(/\s+/);
-  for (const name of ['libyaml-0-2', 'libffi8', 'libgmp10', 'libssl3', 'zlib1g', 'gcc', 'make', 'libc6-dev']) {
+  for (const name of ['libyaml-0-2', 'libffi8', 'libgmp10', 'libssl3t64', 'zlib1g', 'gcc', 'make', 'libc6-dev']) {
     assert.ok(packages.includes(name), `${name}: ${install[0]}`);
   }
   for (const name of ['ruby', 'ruby-dev', 'ruby-bundler', 'build-essential']) assert.ok(!packages.includes(name), `${name}: ${install[0]}`);
@@ -222,8 +233,8 @@ test('the workspace image installs what the official Ruby runs with and a C comp
 
 test('the workspace image has Ruby 4.0 from the official image of the same Debian, pinned by tag and digest', async () => {
   const stage = await rubyStage();
-  assert.match(stage, /^FROM ruby:4\.0\.\d+-slim-bookworm@sha256:[0-9a-f]{64} AS ruby$/m);
-  assert.match(await dockerfile(), /^FROM debian:bookworm-slim AS workspace$/m);
+  assert.match(stage, /^FROM ruby:4\.0\.\d+-slim-trixie@sha256:[0-9a-f]{64} AS ruby$/m);
+  assert.match(await dockerfile(), /^FROM debian:trixie-slim AS workspace$/m);
   const workspace = await workspaceStage();
   assert.match(workspace, /^COPY --from=ruby \/out\/local\/ \/usr\/local\/$/m);
   assert.match(workspace, /^COPY --from=ruby \/out\/bundler\/ \/usr\/libexec\/bundler\/$/m);
@@ -245,7 +256,7 @@ test('bundler has no version of its own in the Dockerfile or in Renovate\'s conf
 });
 
 // ADR 0088: sops encrypts the secrets a Ruby CLI renders, when it is asked to, with an age key. Debian
-// bookworm has no sops, so it is fetched like kubectl; age is Debian's, whose package apt checks, as age's releases
+// trixie has no sops, so it is fetched like kubectl; age is Debian's, whose package apt checks, as age's releases
 // publish no checksum to check them against.
 const sopsStage = async () => {
   const text = await dockerfile();

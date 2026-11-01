@@ -1,7 +1,7 @@
 # 0088. 作業環境に Ruby・sops・age・Go を入れる
 
 - Date: 2026-10-30
-- Status: Accepted
+- Status: Accepted（2026-11-01: 作業環境と Ruby の image の Debian を bookworm から trixie に上げた。age は trixie の 1.2 になる。[ADR 0079](0079-dependency-updates-with-renovate.md) の 2 つ目の「追記」）
 
 ## Context
 
