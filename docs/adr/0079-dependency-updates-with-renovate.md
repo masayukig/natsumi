@@ -1,7 +1,7 @@
 # 0079. 依存の更新は Renovate に追わせ、公開から 7 日経った版だけを受け取る
 
 - Date: 2026-10-16
-- Status: Accepted（2026-10-21: パッチ等の自動マージと、Renovate だけの変更の週次のリリースを「追記」の節に加えた。2026-11-01: image の Debian を bookworm から trixie に上げたことを 2 つ目の「追記」の節に加えた）
+- Status: Accepted（2026-10-21: パッチ等の自動マージと、Renovate だけの変更の週次のリリースを「追記」の節に加えた。2026-11-01: image の Debian を bookworm から trixie に上げたことを 2 つ目の「追記」の節に加えた。2026-11-04: 更新のマージをコードオーナーの承認で GitHub に任せることを 3 つ目の「追記」の節に加え、1 つ目の「追記」の「自動マージ」をそれで置き換えた）
 
 ## Context
 
@@ -116,6 +116,8 @@ Renovate の設定はこのリポジトリにあるが、Renovate 自体はこ�
 
 ### 自動マージ
 
+> この項は「追記（2026-11-04）」で置き換えた。以下は置き換える前の決定として残す。
+
 - patch・digest・pin・pinDigest の更新は、PR の CI が通ったら Renovate 自身がマージする（`automerge`）。minor と major は今までどおり PR が開くだけ。
 - `platformAutomerge` は切る。GitHub の auto-merge の許可や branch protection に頼らず、Renovate がチェックの通過を待ってマージする。
 - `ci.yml` は `pull_request` を絞り込まずに動くので、Renovate の PR はどれも CI を通ってからマージされる。
@@ -147,6 +149,35 @@ Renovate の設定はこのリポジトリにあるが、Renovate 自体はこ�
 - apt で入れるもののうち、名前が変わったのは `libssl3` だけである（trixie では `libssl3t64`）。ほかはそのままの名前で入る。
 - trixie にも sops は無いので、これまでどおりリリースから取る。age は trixie のもの（1.2）になる。
 - 修正版の無い Critical のうち、zlib1g と libsqlite3 のものは trixie で消える。openssh-client と gawk のものは trixie にも残る。
+
+## 追記（2026-11-04）: 更新は、コードオーナーの承認で GitHub がマージする
+
+1 つ目の「追記」の「自動マージ」を、次のとおり置き換える。週に一度のリリースと PR での image の build は変えない。
+
+### なぜ変えるか
+
+- Renovate 自身のマージは、Renovate が次にこのリポジトリを走査したときにしか起きない。Renovate は Mend がホストする GitHub App で動いており、走査の間隔はこちらでは決められない。同じ App で動く持ち主の別のリポジトリでは、CI が通ってから半日以上マージされない PR があった。
+- 届いた更新は、持ち主のオペレーターの agent（GitHub のアカウント `penelope-the-operator`）が差分と CI を確かめて承認している。minor と major は、その承認のあとに人がマージを押すまで `main` に入らない。マージしてよいかの判断は承認で済んでいる。
+
+### 決めたこと
+
+- Renovate は、PR を開いたときに、すべての更新（minor と major を含む）に GitHub の auto-merge を予約する。
+- マージを止めるのは `main` のルールセットである。ルールセットは、マージに次のすべてを求める。揃った時点で GitHub がマージし、Renovate の走査は待たない。
+  - `main` への変更は PR を経る。
+  - コードオーナーの承認が 1 つある。コードオーナーは持ち主とオペレーターの agent で、`.github/CODEOWNERS` に書く。
+  - 承認のあとにコミットが push されたら、その承認は取り消される。
+  - `ci.yml` の `test` が通っている。GitHub の auto-merge は、求められていない検査を待たずにマージするので、検査もルールセットで求める。
+- ルールセットを迂回できるのは持ち主だけとする。Renovate の GitHub App は迂回できない。
+- 依存によって承認のあとも人がマージを決めたいときは、`renovate.json` の packageRules で automerge を切る。その PR には auto-merge が予約されない。
+
+### 結果として
+
+- 承認された更新は、Renovate の走査を待たずに `main` に入る。minor と major も、承認されれば人がマージを押さずに入り、Renovate だけの週には週に一度のリリースでパッチ版として出る。
+- オペレーターの agent が承認しなければ、どの更新もマージされない。patch も止まる。人の目を通すことを、マージの速さより優先した。
+- 承認は push のたびに取り消されるので、Renovate がブランチを rebase すると承認をやり直す。
+- 持ち主以外の人の変更も承認を要する。持ち主は迂回できる。
+- マージを押すのが GitHub になっても、マージされたコミットの作者は `renovate[bot]` のままであることを前提にしている。作者が変われば、週に一度のリリースはそれを人のコミットとして数え、出ない側に倒れる。
+- 参照: Renovate Docs「Configuration Options」の `platformAutomerge`（https://docs.renovatebot.com/configuration-options/#platformautomerge 、2026-11-04 確認）。
 
 ## 関連 ADR
 

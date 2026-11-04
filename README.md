@@ -1351,6 +1351,8 @@ amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-ku
 [ADR 0079](docs/adr/0079-dependency-updates-with-renovate.md)）。公開から 7 日経った版だけを提案します。
 Dockerfile の Node と setup-node の Node は 1 つの PR で同じ版に上がり、Pi の 2 つのパッケージも 1 つの PR で上がります。
 typebox は Pi が固定する版に手で合わせます。保留中の更新は Dependency Dashboard の issue に載ります。
+Renovate はすべての更新に GitHub の auto-merge を予約し、`main` のルールセットがコードオーナー（[.github/CODEOWNERS](.github/CODEOWNERS)）の
+承認と CI の成功を求めます。両方が揃った時点で GitHub がマージします。
 
 ## Mac アプリ
 
