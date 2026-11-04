@@ -1,7 +1,7 @@
 # 0086. Alertmanager の通知を受けて /sources に置き、sources_updated で知らせる
 
 - Date: 2026-10-30
-- Status: Accepted
+- Status: Accepted（受け口 `POST /v1/alertmanager/<送り手の名前>`、置き場所 `/sources/alertmanager/<送り手の名前>/`、更新元 `alertmanager`、config の最上位 `alertmanager`、JSON として読めない本文の 400 は [ADR 0091](0091-one-way-in-for-webhooks-with-formats-in-the-code.md) で置き換え（`POST /v1/webhooks/<名前>`、`/sources/webhooks/<名前>/`、`webhooks` の型 `alertmanager` の webhook、415）。状態の差分・`firing.jsonl`・印 `alert`・本文の上限・token の照らし方は同 ADR の型 `alertmanager` に引き継ぐ）
 
 ## Context
 
