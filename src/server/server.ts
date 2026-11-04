@@ -39,6 +39,7 @@ import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { AlertmanagerWebhook } from './alertmanager.ts';
+import { GithubWebhook } from './github-webhook.ts';
 import { RawWebhook, WEBHOOKS_REGISTRATION, WEBHOOKS_SOURCE, Webhooks, type WebhookCredential } from './webhooks.ts';
 import { InboxEndpoint, inboxSenders } from './a2a-server.ts';
 import { AssertionVerifier, audienceOf } from './gated-assertion.ts';
@@ -277,6 +278,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         const shared = { db: webhookDb, name: webhook.name, directory: webhooksDirectory, timeZone: config.loop.timeZone, now, log, ...(sources ? { sources } : {}) };
         return { config: webhook, credential: webhookCredentials[index]!,
           format: webhook.format === 'raw' ? new RawWebhook({ ...shared, headers: webhook.headers, attention: webhook.attention })
+            : webhook.format === 'github' ? new GithubWebhook({ ...shared, authors: webhook.authors, reviewers: webhook.reviewers, attention: webhook.attention })
             : new AlertmanagerWebhook({ ...shared, attentionSeverities: webhook.attentionSeverities }) };
       }) }) : undefined;
     await webhooks?.prepare();

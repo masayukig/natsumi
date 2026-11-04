@@ -987,7 +987,7 @@ test('webhooks are named, each with its format, one way to check a call and a de
   for (const name of ['Fraction', 'a_b', '-a', '', 'a/b', 'x'.repeat(33), 3]) rejects(one({ ...plain, name }), 'webhooks[0].name');
   rejects(one({ ...plain, name: undefined }), 'webhooks[0].name', /required/);
   rejects({ ...base(), webhooks: [plain, { ...alerts, name: 'plain' }] }, 'webhooks[1].name', /twice/);
-  for (const format of [undefined, 'github', 'Raw', 1]) rejects(one({ ...plain, format }), 'webhooks[0].format');
+  for (const format of [undefined, 'GitHub', 'github-pr', 'Raw', 1]) rejects(one({ ...plain, format }), 'webhooks[0].format');
   for (const description of [undefined, '', '  ', 3]) rejects(one({ ...plain, description }), 'webhooks[0].description');
 
   // One way to check a call, never both and never none.
@@ -1010,6 +1010,32 @@ test('webhooks are named, each with its format, one way to check a call and a de
   for (const header of ['Authorization', 'cookie', 'X-Hub-Signature-256', 'X-Hub-Signature', 'Proxy-Authorization']) {
     rejects(one({ ...plain, headers: [header] }), 'webhooks[0].headers', /secret/);
   }
+});
+
+test('a github webhook names the authors and the reviewers, one or more each, and marks nothing unless told (ADR 0093)', () => {
+  const github = { name: 'github', format: 'github', secretFile: '/run/secrets/webhook-github', description: 'Renovate の PR のレビュー依頼',
+    authors: ['renovate[bot]'], reviewers: ['penelope-the-operator'] };
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [github] }).webhooks, [{ ...github, attention: false }]);
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...github, attention: true, authors: ['renovate[bot]', 'dependabot[bot]'] }] }).webhooks?.[0],
+    { ...github, attention: true, authors: ['renovate[bot]', 'dependabot[bot]'] });
+  const { secretFile: _secretFile, ...unchecked } = github;
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...unchecked, tokenFile: '/run/t' }] }).webhooks?.[0],
+    { ...unchecked, tokenFile: '/run/t', attention: false }, 'how a call is checked is the webhook’s, whatever its format');
+
+  const one = (webhook: Record<string, unknown>) => ({ ...base(), webhooks: [webhook] });
+  const { authors: _authors, reviewers: _reviewers, ...bare } = github;
+  rejects(one({ ...bare, reviewers: github.reviewers }), 'webhooks[0].authors', /required/);
+  rejects(one({ ...bare, authors: github.authors }), 'webhooks[0].reviewers', /required/);
+  for (const logins of [[], 'renovate[bot]', [''], [' a'], ['a b'], [3], ['renovate[bot]', 'Renovate[bot]']]) {
+    rejects(one({ ...github, authors: logins }), 'webhooks[0].authors');
+    rejects(one({ ...github, reviewers: logins }), 'webhooks[0].reviewers');
+  }
+  for (const attention of ['yes', 1, null]) rejects(one({ ...github, attention }), 'webhooks[0].attention');
+  // The settings of the other formats cannot be written, nor its own on another.
+  rejects(one({ ...github, headers: ['X-GitHub-Event'] }), 'webhooks[0].headers', /unknown setting/);
+  rejects(one({ ...github, attentionSeverities: ['critical'] }), 'webhooks[0].attentionSeverities', /unknown setting/);
+  rejects(one({ ...bare, format: 'raw', authors: ['a'] }), 'webhooks[0].authors', /unknown setting/);
+  rejects(one({ ...bare, format: 'alertmanager', reviewers: ['a'] }), 'webhooks[0].reviewers', /unknown setting/);
 });
 
 test('the old alertmanager section stops the start and says to write it as a webhook (ADR 0091)', () => {

@@ -16,17 +16,21 @@ import { startFixture, type Fixture, type FixtureOptions } from './support/serve
 const FRACTION_TOKEN = 'fixture-webhook-fraction-7c1d';
 const PLAIN_TOKEN = 'fixture-webhook-plain-2b9e';
 const GITHUB_SECRET = 'fixture-webhook-github-4e8a';
+const REVIEWS_SECRET = 'fixture-webhook-reviews-61f0';
 
 const hooks: FixtureOptions = {
   webhooks: async root => {
     await writeFile(join(root, 'fraction-token'), `${FRACTION_TOKEN}\n`);
     await writeFile(join(root, 'plain-token'), PLAIN_TOKEN);
     await writeFile(join(root, 'github-secret'), `${GITHUB_SECRET}\n`);
+    await writeFile(join(root, 'reviews-secret'), REVIEWS_SECRET);
     return [
       { name: 'fraction', format: 'alertmanager', tokenFile: join(root, 'fraction-token'), description: 'クラスタ fraction のアラート。' },
       { name: 'plain', format: 'raw', tokenFile: join(root, 'plain-token'), description: '試しの送り手。' },
       { name: 'github', format: 'raw', secretFile: join(root, 'github-secret'), description: 'GitHub の issue。',
         headers: ['X-GitHub-Event', 'X-GitHub-Delivery'] },
+      { name: 'reviews', format: 'github', secretFile: join(root, 'reviews-secret'), description: 'Renovate の PR のレビュー依頼。',
+        authors: ['renovate[bot]'], reviewers: ['penelope-the-operator'] },
     ];
   },
 };
@@ -142,6 +146,43 @@ test('each webhook’s directory has the README.md of its config, written at sta
   const alerts = await readFile(join(f.data, 'sources', 'webhooks', 'fraction', 'README.md'), 'utf8');
   assert.match(alerts, /`alertmanager`/);
   assert.equal(alerts.includes(FRACTION_TOKEN) || alerts.includes('fraction-token'), false, 'nothing of the token');
+}));
+
+const REPOSITORY = { id: 1296269, name: 'natsumi', full_name: 'octo-owner/natsumi', owner: { login: 'octo-owner', id: 1 } };
+const reviewRequested = (action = 'review_requested') => ({
+  action, number: 42,
+  pull_request: {
+    number: 42, html_url: 'https://github.com/octo-owner/natsumi/pull/42', title: 'Update dependency typescript to v6', state: 'open',
+    user: { login: 'renovate[bot]', id: 2, type: 'Bot' }, body: 'the body is not kept',
+    head: { ref: 'renovate/typescript-6.x', sha: 'a'.repeat(40), repo: REPOSITORY }, base: { ref: 'main', sha: 'b'.repeat(40), repo: REPOSITORY },
+    merged: false,
+  },
+  requested_reviewer: { login: 'penelope-the-operator', id: 3, type: 'User' },
+  repository: REPOSITORY, sender: { login: 'octo-owner', id: 1 },
+});
+const github = (body: string, event: string | undefined, delivery: string) =>
+  ({ ...signed(body, REVIEWS_SECRET), ...(event ? { 'x-github-event': event } : {}), 'x-github-delivery': delivery });
+
+test('a github webhook writes a review asked of a reviewer, passes a ping over, reads a delivery once, and refuses what it cannot read', () => withFixture(async f => {
+  const ping = JSON.stringify({ zen: 'Keep it logically awesome.', hook_id: 1 });
+  const pong = await post(f, 'reviews', ping, github(ping, 'ping', 'd-ping'));
+  assert.deepEqual([pong.status, pong.json()], [200, { recorded: 0 }]);
+  const asked = JSON.stringify(reviewRequested());
+  const res = await post(f, 'reviews', asked, github(asked, 'pull_request', 'd-1'));
+  assert.deepEqual([res.status, res.json()], [200, { recorded: 1 }], res.text);
+  const again = await post(f, 'reviews', asked, github(asked, 'pull_request', 'd-1'));
+  assert.deepEqual([again.status, again.json()], [200, { recorded: 0 }], 'Redeliver keeps the ID');
+  assert.deepEqual((await lines(f, 'reviews')).map(line => [line.action, line.number, line.reviewer, line.delivery]),
+    [['review_requested', 42, 'penelope-the-operator', 'd-1']]);
+  const noEvent = await post(f, 'reviews', asked, github(asked, undefined, 'd-2'));
+  assert.deepEqual([noEvent.status, noEvent.json().error], [400, 'invalid-request']);
+  const odd = JSON.stringify({ action: 'synchronize', pull_request: { number: 'x' } });
+  assert.equal((await post(f, 'reviews', odd, github(odd, 'pull_request', 'd-3'))).status, 400);
+  const wrong = { ...github(asked, 'pull_request', 'd-4'), ...signed(asked) };
+  assert.equal((await post(f, 'reviews', asked, wrong)).status, 401, 'another webhook’s secret');
+  const readme = await readFile(join(f.data, 'sources', 'webhooks', 'reviews', 'README.md'), 'utf8');
+  assert.match(readme, /`github`/);
+  assert.match(readme, /renovate\[bot\]/);
 }));
 
 test('without the config there is no way in, and Alertmanager’s own way in is gone', () => withFixture(async f => {

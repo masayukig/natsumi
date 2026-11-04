@@ -1147,4 +1147,36 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX agent_tasks_by_push_digest ON agent_tasks (push_digest) WHERE push_digest IS NOT NULL;
     `,
   },
+  {
+    version: 38,
+    name: 'webhook-pull-requests',
+    sql: `
+      -- The pull requests a webhook of the format github remembers (ADR 0093): from a review asked of one of its reviewers
+      -- on a pull request by one of its authors, until the pull request is closed. Keyed by the repository's ID, which a
+      -- check suite names its pull requests by. The title, the URL, the author and the branches are those of the last
+      -- pull_request event, which the line of a check suite, naming none of them, is written with.
+      CREATE TABLE webhook_pull_requests (
+        webhook TEXT NOT NULL,
+        repository_id INTEGER NOT NULL,
+        number INTEGER NOT NULL,
+        repository TEXT NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        author TEXT NOT NULL,
+        head_ref TEXT NOT NULL,
+        base_ref TEXT NOT NULL,
+        remembered_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (webhook, repository_id, number)
+      ) STRICT;
+      -- The deliveries (X-GitHub-Delivery) a webhook of the format github wrote a line of. One sent again, as GitHub's
+      -- Redeliver does with the same ID, is not read again. Only those that wrote a line: no other changed anything.
+      CREATE TABLE webhook_deliveries (
+        webhook TEXT NOT NULL,
+        delivery TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        PRIMARY KEY (webhook, delivery)
+      ) STRICT;
+    `,
+  },
 ];
