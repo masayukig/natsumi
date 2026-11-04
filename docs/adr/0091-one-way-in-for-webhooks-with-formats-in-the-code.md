@@ -173,6 +173,22 @@
 - ADR 0033
   - 追加: Ingress の後ろの待ち受けの Alertmanager の受け口は、bearer token か HMAC で守る webhook の受け口になる。`/` の Ingress では今までどおり認証を掛けない。
 
+### 実装で決めたこと
+
+ADR では決めず、実装の PR で決めたものは次のとおりである。
+
+- **config の形**: `webhooks` は webhook の並び（1 つ以上）で、各要素は `name`・`format`・`tokenFile` か `secretFile`・`description` と型ごとの欄を持つ。
+  `raw` は `headers`（既定 `[]`）と `attention`（既定 `false`）、`alertmanager` は `attentionSeverities`（既定 `["critical"]`）。
+- **`raw` の行の欄**: `at`（受け取った時刻、`loop.timeZone` の `YYYY-MM-DD HH:MM:SS`）・`headers`・`body`。
+  `headers` は config で名指したヘッダーのうち届いたものを、config に書いた綴りの名前で置く。名指していない webhook では欄を置かない。
+- **残せないヘッダー**: `Authorization`・`Proxy-Authorization`・`Cookie`・`Set-Cookie`・`X-Hub-Signature`・`X-Hub-Signature-256` は `headers` に書けない（起動を止める）。秘密に近いものを行に残さないためである。
+- **応答**: 書き終えたら 200（本文は `{"recorded": <足した行の数>}`）。401 は `unauthorized`、413 は `too-large`、JSON として読めなければ 415 `not-json`、
+  型の形でなければ 400 `invalid-request`、書けなければ 503 `not-recorded`。名前を知らない webhook は、token の webhook と同じく本文を読む前に 401 にする。
+- **署名の照らし方**: 届いた `X-Hub-Signature-256` の値と、本文から計算した `sha256=<16 進の小文字>` を、それぞれ SHA-256 にしてから時間に依らない比べ方をする。
+- **SQLite の表**: migration 36 で `alertmanager_alerts`・`alertmanager_lines` を消し、`webhook_alerts`（webhook の名前と `fingerprint` が鍵）と、
+  どの型も使う `webhook_lines`（日付のファイルの行）を作る。`raw` の行も表に持ち、日付のファイルはそこから書き直す（`alertmanager` と同じく、書けなかった行は次に届いたときか次の起動で書く）。
+- **`README.md`**: 型、型ごとの設定（残すヘッダー、印の付く条件）、`description` を書く。token や秘密のファイルの場所は書かない。書けなくても起動は止めない。
+
 ## Consequences
 
 - 外の仕組みからなつみに知らせる道が、config だけで足せる。JSON を POST できて、bearer token か GitHub 形の HMAC を付けられる送り手なら、`raw` で受けられる。

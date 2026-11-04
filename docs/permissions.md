@@ -14,7 +14,7 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 ## 秘密の渡し方
 
 - 秘密は設定ファイルに書きません。`...Env`（環境変数の名前）か `...File`（secret mount の絶対パス）で指します。
-  例外は `a2a.tokenFile` と `a2a.agents.<名前>.tokenFile` で、ファイルだけを受け付けます（呼ぶたびに読み直すため）。`alertmanager.senders[].tokenFile` と `inbox.senders[].tokenFile` もファイルだけです（起動時に読みます）。
+  例外は `a2a.tokenFile` と `a2a.agents.<名前>.tokenFile` で、ファイルだけを受け付けます（呼ぶたびに読み直すため）。`webhooks[].tokenFile`・`webhooks[].secretFile` と `inbox.senders[].tokenFile` もファイルだけです（起動時に読みます）。
 - 設定の中に秘密らしいキー（`secret`・`token`・`apiKey` など）に値が直接書いてあったり、token の形の値（`xoxb-`、`ghp_`、PEM など）があれば、起動を止めます。
 - 参照した秘密は、起動時に読みます（`a2a.tokenFile`・`a2a.agents.<名前>.tokenFile` と、思考ループのモデルの認証・API キーを除く）。読めなければ、その設定の名前だけを示して起動を止めます。変数名・パス・値はエラーにもログにも出しません。
 - 秘密は natsumi のコンテナにだけ渡します。作業環境（natsumi-workspace）には、秘密も、SQLite も、Pi の状態領域も見せません（[ADR 0019](adr/0019-a-workspace-not-a-memory-tool.md)、[ADR 0033](adr/0033-running-on-kubernetes.md)）。
@@ -96,7 +96,7 @@ config で宣言したツール（`tools`、[ADR 0075](adr/0075-tools-declared-i
 | `GET /v1/images/<imageId>` | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。bearer が無ければセッションの cookie（GET だけで状態を変えず、`SameSite=Strict` なので別のサイトからは cookie が付きません）。セッションを確かめてから画像を探します | サーバーが写し取った画像（承認待ちの `images` と会話の返事の画像）。使うたびにセッションが延びます | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md)、[0058](adr/0058-settings-and-chat-in-the-browser.md) |
 | `POST /v1/uploads`（チャットのファイルの添付） | アプリと本人のブラウザ | bearer token（`allowedUserId` のセッションだけ）。bearer が無ければセッションの cookie で、Origin が `publicOrigin` のときだけ受け付けます（無い・違えば 403）。使うたびにセッションが延びます | 本文のファイルを 1 つ、`.natsumi/uploads/` に書いてから data directory の `sources/uploads/<UTC の日時>-<16 進 4 桁>/<名前>` に移します。1 ファイル `uploads.maxFileBytes`（既定 25MB）まで。超えれば 413 で断り、何も残しません。どのメッセージにも付かなかったものは 1 日で消します | [0071](adr/0071-attaching-files-to-a-chat-message.md) |
 | `GET /v1/uploads/<uploadId>` | アプリと本人のブラウザ | 上の `GET /v1/images/<imageId>` と同じ（bearer、無ければ cookie） | 本人のメッセージに付いたファイルだけ。PNG・JPEG・WebP はその種類で、ほかは `application/octet-stream` と `Content-Disposition: attachment` で返します。どちらも `nosniff` と `Content-Security-Policy: sandbox` を付けます | [0071](adr/0071-attaching-files-to-a-chat-message.md) |
-| `POST /v1/alertmanager/<name>`（Alertmanager の通知） | 設定の `alertmanager.senders` に書いた送り手（クラスタの Alertmanager） | 送り手ごとの bearer token（`tokenFile`）。SHA-256 にしてから時間に依らない比べ方で照らします。名前を知らない送り手、token の違い、token 無しは同じ 401 で、どれが外れたかを返しません。ブラウザのログインの cookie では通しません。`alertmanager` の設定が無ければ 404 | 本文（1 MiB まで。超えれば 413。webhook の形の JSON でなければ 400）のアラートを、状態が変わったものだけ data directory の `sources/alertmanager/<name>/<日付>.jsonl` に足し、いま鳴っているものを `firing.jsonl` に書き直します。書き終えてから 200、書けなければ 503 です。中身はなつみが読む外からの文章として扱います | [0086](adr/0086-alertmanager-notifications-as-sources.md) |
+| `POST /v1/webhooks/<name>`（webhook） | 設定の `webhooks` に書いた送り手（クラスタの Alertmanager、GitHub など） | webhook ごとの bearer token（`tokenFile`）か、本文の HMAC-SHA256 の署名（`secretFile`、`X-Hub-Signature-256`）。どちらも時間に依らない比べ方で照らします。名前を知らない webhook、token や署名の違い、token や署名の無い呼び出しは同じ 401 で、どれが外れたかを返しません。ブラウザのログインの cookie では通しません。`webhooks` の設定が無ければ 404 | 本文（1 MiB まで。超えれば 413。署名の webhook は確かめる前に 413。JSON でなければ 415、型 `alertmanager` の形でなければ 400）を、data directory の `sources/webhooks/<name>/` に型ごとに書きます（`raw` は届いた 1 回を `<日付>.jsonl` の 1 行に、`alertmanager` は状態が変わったアラートだけを行に足し、いま鳴っているものを `firing.jsonl` に書き直します）。書き終えてから 200、書けなければ 503 です。中身はなつみが読む外からの文章として扱います | [0091](adr/0091-one-way-in-for-webhooks-with-formats-in-the-code.md) |
 | `GET /a2a/.well-known/agent-card.json`（A2A の Agent Card） | 誰でも | なし。`inbox` の設定が無ければ 404 | 設定の名前・説明・公開の URL（`inbox.card`・`inbox.publicUrl`）と、JSON-RPC・文章だけを受けることだけ。秘密も個人データも含みません | [0089](adr/0089-hearing-from-agents-over-a2a.md) |
 | `POST /a2a/`（A2A の `SendMessage`・`GetTask`） | 設定の `inbox.senders` に書いた送り手（ほかのなつみ、本人の Claude・Pi など） | 送り手ごとに、gated の assertion（`Gated-Assertion`。署名・発行元・宛先のホスト・時刻を確かめ、`sub` を `gatedSubject` と照らします）か、bearer token（`tokenFile`。SHA-256 にしてから時間に依らない比べ方で照らします）。知らない送り手、token の違い、確かめられない assertion、どちらも無いものは同じ 401 です。ブラウザのログインの cookie では通しません。`inbox` の設定が無ければ 404 | 文章だけのメッセージ（1 MiB まで。呼び出しの body は 2 MiB まで、超えれば 413）を、data directory の `sources/inbox/<name>/<UTC の日時>-<短い印>/` に書いてから Task を返します。書けなければ失敗を返します。`GetTask` で見えるのはその送り手の Task だけです。送り手ごとに開いた Task が上限（`inbox.maxOpenTasksPerSender`、既定 3）を超えれば、何も書かずに `rejected` にします。中身はなつみが読む外からの文章として扱います | [0089](adr/0089-hearing-from-agents-over-a2a.md) |
 | `GET /`・`GET /settings` | 本人のブラウザ | セッションの cookie。無ければ GitHub のログインから始め、済むと開いたページに戻ります | JS の束を読み込むだけの HTML（個人データを含みません。画面は束が WebSocket で組みます）。束が無ければその旨の文だけ。CSP は `script-src 'self'`・`connect-src 'self'` と `publicOrigin` の wss・`frame-ancestors 'none'` です | [0058](adr/0058-settings-and-chat-in-the-browser.md) |
@@ -111,7 +111,7 @@ config で宣言したツール（`tools`、[ADR 0075](adr/0075-tools-declared-i
 | ACME の HTTP-01（`listen.tls.acme.httpPort`、既定 80） | CA | なし | 発行中の challenge への応答（`/.well-known/acme-challenge/`）と、`publicOrigin` の https への redirect だけ。ログイン・API・WebSocket にはつながりません | [0007](adr/0007-acme-and-fixed-ipv6.md) |
 
 Slack は Socket Mode で natsumi から外へつなぐので、Slack から届く公開の入口はありません。外のエージェントの返事も、サーバーが取りに行きます。
-機械から呼ばれる受け口は、Alertmanager の通知（上の `POST /v1/alertmanager/<name>`）と、ほかのエージェントからの依頼（上の `/a2a/`）です。token が漏れれば偽のアラートや依頼を書き込めますが、書けるのはその送り手のディレクトリのファイルだけです。
+機械から呼ばれる受け口は、webhook（上の `POST /v1/webhooks/<name>`）と、ほかのエージェントからの依頼（上の `/a2a/`）です。token や秘密が漏れれば偽のアラートや依頼を書き込めますが、書けるのはその送り手のディレクトリのファイルだけです。
 依頼は本人以外の文が思考ループに入る入口でもあります。なつみは送り手を名前付きの第三者として扱い（マニュアル）、外に作用する行為はサーバーの承認記録で止まります。
 
 ## 作業環境
@@ -150,7 +150,7 @@ config で宣言したツール（[ADR 0075](adr/0075-tools-declared-in-the-conf
 
 読み取り専用で見せるものもあります。
 
-- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事、ポッポさんへの依頼とその結果、Alertmanager のアラート、ほかのエージェントから届いた依頼）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事、ポッポさんへの依頼とその結果、webhook で届いたもの、ほかのエージェントから届いた依頼）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
   [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)、[ADR 0074](adr/0074-asking-poppo-in-json-and-hearing-back-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
   なつみは `reply_to_mac` でそこから見せられます（サーバーが写しを取って見せます）。
 - `/sources/uploads`: 本人がチャットでメッセージに添えたファイル（[ADR 0071](adr/0071-attaching-files-to-a-chat-message.md)）。ディレクトリは 0750、ファイルは 0640 で、
