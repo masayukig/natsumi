@@ -699,3 +699,18 @@ test('schema 33 gives each switch its kind, the night\'s for every row from befo
   // The CHECK of before still holds: a finished switch names the session it went to.
   assert.throws(() => insert.run('bad-switch', 'event-bad', 'nap', 'switched'), /CHECK/);
 }));
+
+test('schema 37 keeps the digest of a waiting task\'s push token beside it, one task a digest, and leaves the tasks before it without one', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 35));
+  const now = '2026-11-04T00:00:00.000Z';
+  const insert = (taskId: string, digest?: string) => db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at,
+    updated_at${digest ? ', push_digest' : ''}) VALUES ('wiki', ?, 'context', 'waiting', ?, ?, ?${digest ? ', ?' : ''})`)
+    .run(taskId, now, now, now, ...digest ? [digest] : []);
+  insert('before');
+  migrate(db, MIGRATIONS);
+  assert.deepEqual({ ...db.prepare('SELECT push_digest FROM agent_tasks WHERE task_id = ?').get('before') }, { push_digest: null });
+  insert('one', 'a'.repeat(64));
+  insert('two');
+  insert('three');
+  assert.throws(() => insert('four', 'a'.repeat(64)), /UNIQUE/);
+}));
