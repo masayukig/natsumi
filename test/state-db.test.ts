@@ -700,6 +700,30 @@ test('schema 33 gives each switch its kind, the night\'s for every row from befo
   assert.throws(() => insert.run('bad-switch', 'event-bad', 'nap', 'switched'), /CHECK/);
 }));
 
+/**
+ * Schema 36 keeps the state of the webhooks by their names (ADR 0091): Alertmanager's alerts and the day files' lines of
+ * every format, in place of the tables keyed by the senders of Alertmanager's own way in, whose rows are not carried over.
+ */
+test('schema 36 keeps the webhooks\' alerts and lines by the webhook\'s name, and drops those of before', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 35));
+  db.prepare(`INSERT INTO alertmanager_alerts (sender, fingerprint, status, starts_at, line, updated_at)
+    VALUES ('fraction', 'a1', 'firing', 'x', '{}', 'x')`).run();
+  db.prepare(`INSERT INTO alertmanager_lines (sender, file_date, line, created_at) VALUES ('fraction', '2026-10-30', '{}', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 36)).applied, [36]);
+  assert.equal(tables(db).includes('alertmanager_alerts'), false);
+  assert.equal(tables(db).includes('alertmanager_lines'), false);
+  const alert = db.prepare(`INSERT INTO webhook_alerts (webhook, fingerprint, status, starts_at, line, updated_at) VALUES (?, ?, ?, 'x', '{}', 'x')`);
+  alert.run('fraction', 'a1', 'firing');
+  alert.run('other', 'a1', 'resolved');
+  assert.throws(() => alert.run('fraction', 'a1', 'resolved'), /UNIQUE|PRIMARY/);
+  assert.throws(() => alert.run('fraction', 'b2', 'pending'), /CHECK/);
+  const line = db.prepare(`INSERT INTO webhook_lines (webhook, file_date, line, created_at) VALUES (?, ?, ?, 'x')`);
+  line.run('github', '2026-11-04', '{"a":1}');
+  line.run('github', '2026-11-04', '{"a":2}');
+  assert.deepEqual(plainRows(db.prepare(`SELECT webhook, line FROM webhook_lines ORDER BY line_id`).all()),
+    [{ webhook: 'github', line: '{"a":1}' }, { webhook: 'github', line: '{"a":2}' }]);
+}));
+
 test('schema 37 keeps the digest of a waiting task\'s push token beside it, one task a digest, and leaves the tasks before it without one', () => withDb(db => {
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 35));
   const now = '2026-11-04T00:00:00.000Z';

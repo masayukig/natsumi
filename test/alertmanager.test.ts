@@ -3,17 +3,18 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ALERTMANAGER_REGISTRATION, AlertmanagerInbox, parseNotification, senderGate } from '../src/server/alertmanager.ts';
+import { AlertmanagerWebhook, parseNotification } from '../src/server/alertmanager.ts';
 import { ConversationStore } from '../src/server/conversation-store.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SOURCES_DEFAULTS, Sources } from '../src/server/sources.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
+import { WEBHOOKS_REGISTRATION } from '../src/server/webhooks.ts';
 
 /**
- * Alertmanager's notifications as a source (ADR 0086): one line a change of an alert's state in the day's file under
- * `/sources/alertmanager/<sender>/`, what fires now in `firing.jsonl`, which the history leaves out, and an attention
- * when an alert of a heavy severity begins to fire. The state of every alert is kept, so a notification sent again
- * writes nothing, across a restart as well.
+ * The webhook format `alertmanager` (ADR 0091, as ADR 0086 had it): one line a change of an alert's state in the day's
+ * file under `/sources/webhooks/<name>/`, what fires now in `firing.jsonl`, which the history leaves out, and an
+ * attention when an alert of a heavy severity begins to fire. The state of every alert is kept by the webhook's name,
+ * so a notification sent again writes nothing, across a restart as well.
  */
 
 const TIME_ZONE = 'Asia/Tokyo';
@@ -66,10 +67,15 @@ async function setup(t: test.TestContext, options: { attentionSeverities?: strin
       db, directory, gitDirectory: join(root, 'sources.git'), timeZone: TIME_ZONE, awakeHours: { start: '08:00', end: '23:00' },
       activity: SOURCES_DEFAULTS.activity, historyDays: SOURCES_DEFAULTS.historyDays, now, raise: () => { raised += 1; }, random: () => AT_MEAN,
     });
-    sources.register(ALERTMANAGER_REGISTRATION);
-    const inbox = new AlertmanagerInbox({ db, directory: join(directory, 'alertmanager'), timeZone: TIME_ZONE,
-      attentionSeverities: options.attentionSeverities ?? ['critical'], now, sources });
-    return { sources, inbox };
+    sources.register(WEBHOOKS_REGISTRATION);
+    const hooks = new Map<string, AlertmanagerWebhook>();
+    const hook = (name: string) => {
+      let made = hooks.get(name);
+      if (!made) hooks.set(name, made = new AlertmanagerWebhook({ db, name, directory: join(directory, 'webhooks'), timeZone: TIME_ZONE,
+        attentionSeverities: options.attentionSeverities ?? ['critical'], now, sources }));
+      return made;
+    };
+    return { sources, hook, prepare: () => Promise.all(['fraction', 'test'].map(name => hook(name).prepare())) };
   };
   let raised = 0;
   let made = make();
@@ -77,12 +83,12 @@ async function setup(t: test.TestContext, options: { attentionSeverities?: strin
     db.close();
     await rm(root, { recursive: true, force: true });
   });
-  const send = (sender: string, body: unknown) => {
-    const parsed = parseNotification(body);
-    assert.ok(parsed, 'the notification is read');
-    return made.inbox.receive(sender, parsed);
+  const send = (name: string, body: unknown) => {
+    const received = made.hook(name).receive(body);
+    assert.ok(received, 'the notification is read');
+    return received;
   };
-  const read = (path: string) => readFile(join(directory, 'alertmanager', path), 'utf8');
+  const read = (path: string) => readFile(join(directory, 'webhooks', path), 'utf8');
   const lines = async (path: string) => (await read(path)).split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
   const take = async () => {
     const eventId = new ConversationStore(db, now).insertEvent('sources-updated');
@@ -92,7 +98,7 @@ async function setup(t: test.TestContext, options: { attentionSeverities?: strin
   return {
     root, directory, send, read, lines, take,
     get sources() { return made.sources; },
-    get inbox() { return made.inbox; },
+    hook: (name: string) => made.hook(name),
     raised: () => raised,
     /** The core started over files already there, so that a directory appearing later is a change, shown whole. */
     async start() {
@@ -100,14 +106,14 @@ async function setup(t: test.TestContext, options: { attentionSeverities?: strin
       await made.sources.prepare();
     },
     advance: (ms: number) => { clock += ms; },
-    /** As the server starts again: the same database and files, a new inbox and a new core. */
+    /** As the server starts again: the same database and files, new webhooks and a new core. */
     async restart() {
       db.close();
       db = openStateDatabase(join(root, 'state.sqlite'));
       migrate(db, MIGRATIONS);
       made = make();
       await made.sources.prepare();
-      await made.inbox.prepare();
+      await made.prepare();
     },
   };
 }
@@ -126,15 +132,10 @@ test('a notification is read only in the shape Alertmanager sends', () => {
   }
 });
 
-test('a sender is let in by its own token only, and an unknown one as a wrong token', () => {
-  const allowed = senderGate(new Map([['fraction', 'token-of-fraction'], ['test', 'token-of-test']]));
-  assert.equal(allowed('fraction', 'token-of-fraction'), true);
-  assert.equal(allowed('test', 'token-of-test'), true);
-  assert.equal(allowed('fraction', 'token-of-test'), false, 'another sender’s token');
-  assert.equal(allowed('fraction', 'token-of-fraction-'), false);
-  assert.equal(allowed('fraction', undefined), false);
-  assert.equal(allowed('elsewhere', 'token-of-fraction'), false);
-  assert.equal(allowed('__proto__', 'token-of-fraction'), false);
+test('a body not in the shape Alertmanager sends is not taken', async t => {
+  const f = await setup(t);
+  assert.equal(f.hook('fraction').receive({ alerts: 'none' }), undefined);
+  assert.equal(f.hook('fraction').receive(null), undefined);
 });
 
 test('an alert that begins to fire is a line of the day, and is in firing.jsonl', async t => {
@@ -186,7 +187,7 @@ test('firing.jsonl holds what fires now in the order it began, and is emptied wh
   assert.equal(await f.read('fraction/firing.jsonl'), '');
 });
 
-test('each sender has a directory of its own, and the same fingerprint in two is two alerts', async t => {
+test('each webhook has a directory of its own, and the same fingerprint in two is two alerts', async t => {
   const f = await setup(t);
   await f.send('fraction', notification(alert({ fingerprint: 'a1' })));
   assert.deepEqual(await f.send('test', notification(alert({ fingerprint: 'a1' }))), { recorded: 1 });
@@ -213,9 +214,9 @@ test('a critical alert that begins to fire is an attention at its line; warnings
   const line = await f.take();
   assert.ok(line);
   const [changed] = line.changed;
-  assert.equal(changed.dir, '/sources/alertmanager/fraction');
-  assert.deepEqual(changed.files, ['/sources/alertmanager/fraction/2026-10-30.jsonl'], 'firing.jsonl is out of the history');
-  assert.deepEqual(changed.attention, [{ source: 'alertmanager', kind: 'alert', file: '/sources/alertmanager/fraction/2026-10-30.jsonl',
+  assert.equal(changed.dir, '/sources/webhooks/fraction');
+  assert.deepEqual(changed.files, ['/sources/webhooks/fraction/2026-10-30.jsonl'], 'firing.jsonl is out of the history');
+  assert.deepEqual(changed.attention, [{ source: 'webhooks', kind: 'alert', file: '/sources/webhooks/fraction/2026-10-30.jsonl',
     path: '.[1]', alertname: 'NodeDown', severity: 'critical' }]);
 
   await f.send('fraction', notification(alert({ fingerprint: 'c1', severity: 'critical', alertname: 'NodeDown', status: 'resolved' })));
@@ -251,10 +252,10 @@ test('a change of firing.jsonl alone is no change of the source', async t => {
 
 test('what could not be written is refused, and written when the notification comes again', async t => {
   const f = await setup(t);
-  await mkdir(join(f.directory, 'alertmanager'), { recursive: true });
-  await writeFile(join(f.directory, 'alertmanager', 'fraction'), 'not a directory');
+  await mkdir(join(f.directory, 'webhooks'), { recursive: true });
+  await writeFile(join(f.directory, 'webhooks', 'fraction'), 'not a directory');
   await assert.rejects(f.send('fraction', notification(alert({ fingerprint: 'a1' }))));
-  await rm(join(f.directory, 'alertmanager', 'fraction'));
+  await rm(join(f.directory, 'webhooks', 'fraction'));
   assert.deepEqual(await f.send('fraction', notification(alert({ fingerprint: 'a1' }))), { recorded: 0 }, 'its state was kept');
   assert.deepEqual((await f.lines('fraction/2026-10-30.jsonl')).map(line => line.fingerprint), ['a1'], 'and its line is written once');
 });
@@ -272,10 +273,10 @@ test('the state of every alert outlives a restart', async t => {
 test('a restart writes again what a refused notification left unwritten', async t => {
   const f = await setup(t);
   await f.sources.prepare();
-  await mkdir(join(f.directory, 'alertmanager'), { recursive: true });
-  await writeFile(join(f.directory, 'alertmanager', 'fraction'), 'not a directory');
+  await mkdir(join(f.directory, 'webhooks'), { recursive: true });
+  await writeFile(join(f.directory, 'webhooks', 'fraction'), 'not a directory');
   await assert.rejects(f.send('fraction', notification(alert({ fingerprint: 'a1' }))));
-  await rm(join(f.directory, 'alertmanager', 'fraction'));
+  await rm(join(f.directory, 'webhooks', 'fraction'));
   await f.restart();
   assert.deepEqual((await f.lines('fraction/2026-10-30.jsonl')).map(line => line.fingerprint), ['a1']);
   assert.deepEqual((await f.lines('fraction/firing.jsonl')).map(line => line.fingerprint), ['a1']);

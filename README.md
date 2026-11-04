@@ -83,7 +83,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
    - `postbox`（省略可）: 記憶に置いた定期便をサーバーが cron で送る郵便ポストの設定です。下記「定期便を送る（郵便ポスト）」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
-   - `alertmanager`（省略可）: クラスタの Alertmanager からアラートを受け取るための設定です。下記「Alertmanager のアラートを受け取る」を見てください。
+   - `webhooks`（省略可）: 外の仕組み（クラスタの Alertmanager、GitHub など）から webhook を受け取るための設定です。下記「webhook を受け取る」を見てください。
    - `inbox`（省略可）: ほかのエージェント（ほかのなつみ、Claude・Pi など）から A2A で依頼を受けるための設定です。下記「ほかのエージェントから依頼を受ける（A2A の受け口）」を見てください。
    - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
@@ -974,46 +974,78 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   例: `slack (work): filling in a conversation failed (conversations.history: missing_scope, needed im:history)`。
   埋め直しの間は、同じ失敗は 1 度だけ出し、残りは最後の 1 行の件数に数えます。
 
-### Alertmanager のアラートを受け取る
+### webhook を受け取る
 
-クラスタの Alertmanager の webhook を受け、アラートを `/sources` の下のファイルにして、`sources_updated` で natsumi に知らせます
-（[ADR 0086](docs/adr/0086-alertmanager-notifications-as-sources.md)）。設定に `alertmanager` がなければ、受け口はありません（404）。
+外の仕組みが POST する JSON を、`/sources` の下のファイルにして、`sources_updated` で natsumi に知らせます
+（[ADR 0091](docs/adr/0091-one-way-in-for-webhooks-with-formats-in-the-code.md)）。設定に `webhooks` がなければ、受け口はありません（404）。
 
-1. 送り手（Alertmanager）ごとに token を作ります（例: `openssl rand -base64 32`）。token は natsumi と Alertmanager の両方に置きます。
-2. 設定に `alertmanager` を足します。値は架空の例です。
+webhook ごとに、名前と、届いたものの読み方（型）と、呼び出しの確かめ方を決めます。型は natsumi のコードが持つ次の 2 つです。
+
+- `raw`: 届いた 1 回を、そのまま日付のファイルの 1 行にします。JSON を POST できる送り手なら、何でも受けられます（GitHub など）。
+- `alertmanager`: Alertmanager の webhook として読み、アラートの状態が変わったときだけ行を書きます。
+
+1. webhook ごとに token か秘密を作ります（例: `openssl rand -base64 32`）。natsumi と送り手の両方に置きます。webhook ごとに別にします。
+2. 設定に `webhooks` を足します。値は架空の例です。
 
    ```json
-   "alertmanager": {
-     "senders": [
-       { "name": "fraction", "tokenFile": "/run/secrets/natsumi_alertmanager_fraction_token" }
-     ],
-     "attentionSeverities": ["critical"]
-   }
+   "webhooks": [
+     {
+       "name": "fraction",
+       "format": "alertmanager",
+       "tokenFile": "/run/secrets/natsumi_webhook_fraction_token",
+       "description": "クラスタ fraction の Alertmanager のアラート。",
+       "attentionSeverities": ["critical"]
+     },
+     {
+       "name": "github-issues",
+       "format": "raw",
+       "secretFile": "/run/secrets/natsumi_webhook_github_secret",
+       "description": "yuanying/natsumi の issue とコメント。X-GitHub-Event がイベントの種類です。",
+       "headers": ["X-GitHub-Event", "X-GitHub-Delivery"],
+       "attention": false
+     }
+   ]
    ```
 
    | 項目 | 必須 | 既定 | 中身 |
    | --- | --- | --- | --- |
-   | `alertmanager.senders` | 必須 | | 送り手の並び（1 つ以上）。`name` は英小文字・数字・ハイフンで 32 文字まで、重ねられません。受け口のパスとディレクトリに使います。`tokenFile` は token のファイルの絶対パスで、起動時に読みます。読めなければ起動を止めます |
-   | `alertmanager.attentionSeverities` | | `["critical"]` | 鳴り始めたときに `attention` にするラベル `severity` の値の並び。`[]` なら印を付けません |
+   | `name` | 必須 | | 英小文字・数字・ハイフンで 32 文字まで、重ねられません。受け口のパスとディレクトリに使います |
+   | `format` | 必須 | | `raw` か `alertmanager` |
+   | `tokenFile` | どちらか 1 つ | | `Authorization: Bearer <token>` の token のファイルの絶対パス。Alertmanager はこちらです |
+   | `secretFile` | どちらか 1 つ | | GitHub 形の HMAC の秘密のファイルの絶対パス。届いた本文の HMAC-SHA256 を `X-Hub-Signature-256: sha256=<16 進>` と照らします。GitHub はこちらです |
+   | `description` | 必須 | | 何が送られてくるか、どう読むか。webhook のディレクトリの `README.md` に書き、natsumi はそれを読みます |
+   | `headers` | | `[]` | `raw` だけ。行に残すヘッダーの名前の並び。`Authorization`・`Cookie`・`X-Hub-Signature(-256)` は書けません |
+   | `attention` | | `false` | `raw` だけ。`true` なら、届くたびに `attention`（`kind` が `webhook`）として、待たずに、夜でも知らせます |
+   | `attentionSeverities` | | `["critical"]` | `alertmanager` だけ。鳴り始めたときに `attention`（`kind` が `alert`）にするラベル `severity` の値の並び。`[]` なら印を付けません |
 
-3. Alertmanager に natsumi への receiver を足します。`url` は `<publicOrigin>/v1/alertmanager/<name>`、`http_config.authorization.credentials_file` に同じ token を置きます。
-   送るアラートの選び方（`Watchdog` を除くなど）は route で決めます。natsumi は届いたものを絞りません。`max_alerts` は設けません（切られたアラートは届きません）。
-   Slack などへの通知は別の receiver のまま残せます。
+   `tokenFile` と `secretFile` は、両方を書くことも、どちらも書かないこともできません（起動を止めます）。ファイルは起動時に読み、読めなければ設定の名前だけを示して起動を止めます。
+   型の違う欄（`raw` の `attentionSeverities` など）も起動を止めます。
 
-- 受け口は `POST /v1/alertmanager/<name>` で、ブラウザと同じ待ち受けにあります。認証は `Authorization: Bearer <token>` だけで、ブラウザのログインの cookie では通しません。
-  名前を知らない送り手、token の違う呼び出し、token の無い呼び出しは、どれも同じ 401 です。本文は 1 MiB まで（超えれば 413）、Alertmanager の webhook の形の JSON でなければ 400 です。
-  token は TLS の中に置くため、公開の入口（Ingress、HTTPS）を通す道を勧めます。クラスタの中の Service を直接叩いても、同じ token で受けます。
-- 書くのは data directory の `sources/alertmanager/<name>/` です。
-  - `<日付>.jsonl`: アラートの状態が変わったときだけ、1 行 1 アラートで足します（初めての `firing`、`resolved` からの `firing`、`firing` からの `resolved`、知らないアラートの `resolved`）。
-    `repeat_interval` の送り直しと、2xx 以外の応答の後の送り直しでは足しません。日付と時刻（`at`）は `loop.timeZone` の秒までです。
-  - `firing.jsonl`: いま `firing` のアラートを、始まった順に 1 行ずつ。届くたびに書き直し、差分の履歴からは外します。
-  - 行の欄と読み方は、なつみ向けのマニュアル（`manual/alertmanager.md`）にあります。古いファイルは消しません。
-- アラートごとの最後の状態と、日付のファイルの行は `.natsumi/state.sqlite`（migration 34）に持ち、ファイルはそこから書き直します。
-  書き終えてから 200 を返し、書けなければ 503 を返して Alertmanager の送り直しに任せます。送り直しでも、状態が変わっていないので行は二重になりません。
-  書けなかった行は、次に届いたときか、次の起動で書きます。
-- `severity` が `attentionSeverities` にあるアラートが `firing` になった行は、`attention`（`kind` が `alert`、その行の `jq -s` のパス、`alertname`・`severity`）として、待たずに、夜でも知らせます。
-  ほかの行は、ふつうの変化として下の「読みものの更新」の待ちの後に知らせます。
-- token を入れ替えるときは、natsumi と Alertmanager の両方を直して、natsumi を再起動します。ログには送り手の名前と失敗の種類だけを出し、アラートの中身と token は出しません。
+3. 送り手に natsumi への宛先を足します。URL は `<publicOrigin>/v1/webhooks/<name>` です。
+   - Alertmanager: receiver の `webhook_configs` の `url` に書き、`http_config.authorization.credentials_file` に同じ token を置きます。
+     送るアラートの選び方（`Watchdog` を除くなど）は route で決めます。natsumi は届いたものを絞りません。`max_alerts` は設けません（切られたアラートは届きません）。
+     Slack などへの通知は別の receiver のまま残せます。
+   - GitHub: webhook の Payload URL に書き、Content type を `application/json`、Secret に同じ秘密を置きます。
+     急ぐイベントと急がないイベントは、`attention` の違う webhook に分けて送ります。
+
+- 受け口は `POST /v1/webhooks/<name>` で、ブラウザと同じ待ち受けにあります。ブラウザのログインの cookie では通しません。
+  - 名前を知らない webhook、token や署名の違う呼び出し、token や署名の無い呼び出しは、どれも同じ 401 です。token と署名は、時間に依らない比べ方で照らします。
+  - 本文は 1 MiB まで（超えれば 413）。`tokenFile` の webhook は token を確かめてから、`secretFile` の webhook は本文を読み終えてから署名を確かめるので、上限を超えた本文は確かめる前に 413 です。
+  - JSON として読めない本文は 415、`alertmanager` の webhook で Alertmanager の webhook の形でなければ 400 です。`raw` はどんな JSON でも受けます。
+  - token と秘密は TLS の中に置くため、公開の入口（Ingress、HTTPS）を通す道を勧めます。クラスタの中の Service を直接叩いても、同じ token と秘密で受けます。
+  - 書き終えてから 200（`{"recorded": <書いた行の数>}`）を返し、書けなければ 503 を返して送り手の送り直しに任せます。書けなかった行は、次に届いたときか、次の起動で書きます。
+- 書くのは data directory の `sources/webhooks/<name>/` です。日付と時刻（`at`）は `loop.timeZone` の秒までです。古いファイルは消しません。config から外した webhook のディレクトリも消しません。
+  - `README.md`: 型と、型ごとの設定と、`description`。起動のたびに書き直し、差分の履歴からは外します。
+  - `raw` の `<日付>.jsonl`: 届いた 1 回が 1 行で、`at`、`headers`（`headers` で名指したヘッダーのうち届いたもの。名指していなければ欄なし）、`body`（届いた JSON）です。送り直しの重複は除きません。
+  - `alertmanager` の `<日付>.jsonl`: アラートの状態が変わったときだけ、1 行 1 アラートで足します（初めての `firing`、`resolved` からの `firing`、`firing` からの `resolved`、知らないアラートの `resolved`）。
+    `repeat_interval` の送り直しと、2xx 以外の応答の後の送り直しでは足しません。
+  - `alertmanager` の `firing.jsonl`: いま `firing` のアラートを、始まった順に 1 行ずつ。届くたびに書き直し、差分の履歴からは外します。
+  - 行の欄と読み方は、なつみ向けのマニュアル（`manual/webhooks.md`）にあります。
+- 日付のファイルの行と、アラートごとの最後の状態は `.natsumi/state.sqlite`（migration 36 の `webhook_lines`・`webhook_alerts`）に webhook の名前で持ち、ファイルはそこから書き直します。
+- 印の無い行は、ふつうの変化として下の「読みものの更新」の待ちの後に知らせます。
+- token や秘密を入れ替えるときは、natsumi と送り手の両方を直して、natsumi を再起動します。ログには webhook の名前と失敗の種類だけを出し、届いた中身と token・秘密は出しません。
+- 以前の `alertmanager` の設定と受け口 `POST /v1/alertmanager/<name>` はありません。設定に `alertmanager` が残っていれば、起動を止めて、型 `alertmanager` の webhook として `webhooks` に書き直すよう示します。
+  以前の置き場所 `sources/alertmanager/` が data directory に残っていても、読まず、消しません。
 
 ### ほかのエージェントから依頼を受ける（A2A の受け口）
 
@@ -1079,7 +1111,7 @@ natsumi はツール `reply_to_agent` で返します。返事は送り手が Ge
 
 ### 読みものの更新（sources_updated）
 
-`/sources` の下の読みもの（Slack と、外のエージェントの返事と、Alertmanager のアラートと、ほかのエージェントから届いた依頼）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
+`/sources` の下の読みもの（Slack と、外のエージェントの返事と、webhook で届いたものと、ほかのエージェントから届いた依頼）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
 （[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)、[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。
 
 - サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。
