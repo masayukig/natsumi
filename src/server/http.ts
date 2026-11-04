@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { InboxEndpoint } from './a2a-server.ts';
 import { MAX_ALERTMANAGER_BODY_BYTES, parseNotification, type AlertNotification } from './alertmanager.ts';
 import { avatarManifest, type Avatar } from './avatar.ts';
-import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
+import { A2A_PUSH_PATH, ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
 import type { BrowserSessions } from './browser/session-cookie.ts';
 import { WebApp } from './browser/web-app.ts';
@@ -26,6 +26,11 @@ const SLACK_ICON_PATH = /^\/avatar\/([a-z]+)\.png$/;
 const AVATAR_FILE_PATH = /^\/v1\/avatar\/([0-9a-f]{32})\/(.+)$/;
 /** One sender of Alertmanager's notifications (ADR 0086): `POST /v1/alertmanager/<sender>`. */
 const ALERTMANAGER_PATH = /^\/v1\/alertmanager\/([^/]*)$/;
+/**
+ * The most of a push's body taken in (ADR 0092). It is never read, only drained: what an agent pushes is a whole task,
+ * artifacts and all, at its largest, and the push that ends a task is far smaller.
+ */
+export const MAX_A2A_PUSH_BODY_BYTES = 1024 * 1024;
 
 export interface ListenerOptions {
   listen: ListenConfig;
@@ -58,6 +63,11 @@ export interface ListenerOptions {
   };
   /** The way in over A2A under /a2a/ (ADR 0089), when the config has senders; without it, /a2a/ is not found. */
   a2a?: Pick<InboxEndpoint, 'handle'>;
+  /**
+   * The pushes of the agents natsumi asked (ADR 0092), when `a2a.pushUrl` is set; without it, `/v1/a2a-push` is not
+   * found. `push` says whether a token is one of a waiting task, and with `ring` asks for that task's GetTask.
+   */
+  a2aPush?: { push(token: string, ring: boolean): boolean };
 }
 
 export interface Listener {
@@ -180,6 +190,7 @@ async function route(request: IncomingMessage, response: ServerResponse, options
   }
   const sender = method === 'POST' && options.alertmanager ? ALERTMANAGER_PATH.exec(url.pathname)?.[1] : undefined;
   if (sender !== undefined) return receiveAlerts(request, response, sender, options.alertmanager!, options.log);
+  if (method === 'POST' && url.pathname === A2A_PUSH_PATH && options.a2aPush) return receivePush(request, response, options.a2aPush);
   // The senders' own token or gated's assertion, never the browser's cookie (ADR 0089).
   if (options.a2a && InboxEndpoint.owns(url.pathname)) return options.a2a.handle(request, response, url);
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
@@ -257,6 +268,27 @@ async function receiveAlerts(request: IncomingMessage, response: ServerResponse,
     log(`alertmanager: a notification of ${sender} could not be written; it is refused for Alertmanager to send again`);
     json(response, 503, { error: 'not-recorded' });
   }
+}
+
+/**
+ * A push of an agent natsumi asked (ADR 0092): a doorbell for the task its bearer token names, and nothing more. The
+ * token is the only way in, never the browser's cookie; an unknown one, none, and one not a bearer are the same 401.
+ * A known one is answered at once, before the body and before the GetTask it rings for; the body is drained unread up
+ * to its limit. One that says it is larger is refused without ringing.
+ */
+function receivePush(request: IncomingMessage, response: ServerResponse, push: NonNullable<ListenerOptions['a2aPush']>) {
+  const token = bearerToken(request);
+  const large = Number(request.headers['content-length'] ?? 0) > MAX_A2A_PUSH_BODY_BYTES;
+  response.setHeader('connection', 'close');
+  if (!token || !push.push(token, !large)) return json(response, 401, { error: 'unauthorized' });
+  if (large) return json(response, 413, { error: 'too-large' });
+  let size = 0;
+  request.on('data', (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > MAX_A2A_PUSH_BODY_BYTES) request.destroy();
+  });
+  request.on('error', () => {});
+  response.writeHead(204).end();
 }
 
 function answer(response: ServerResponse, outcome: Outcome) {

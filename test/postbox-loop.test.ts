@@ -26,7 +26,7 @@ import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
 
 const tokyo = (local: string) => Date.parse(`${local.replace(' ', 'T')}:00+09:00`);
 
-async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; extensions?: string[] } = {}) {
+async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; extensions?: string[]; push?: boolean } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-postbox-loop-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -36,7 +36,7 @@ async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; ex
   await mkdir(agentDirectory, { recursive: true });
   const tokenFile = join(root, 'a2a-token');
   await writeFile(tokenFile, 'fake-agent-token\n');
-  const agent = await FakeAgent.start(options.extensions ? { extensions: options.extensions } : {});
+  const agent = await FakeAgent.start({ ...(options.extensions ? { extensions: options.extensions } : {}), ...(options.push ? { pushNotifications: true } : {}) });
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
@@ -58,7 +58,8 @@ async function setup(t: test.TestContext, options: { postbox?: PostboxConfig; ex
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
         runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 6, timeZone: 'Asia/Tokyo' }, now: () => clock.now,
         configureSession: session => { session.agent.streamFunction = model.streamFunction; },
-        a2a: { tokenFile, pollIntervalSeconds: 15, giveUpAfterHours: 24, agents: { news: { url: agent.url } } },
+        a2a: { tokenFile, pollIntervalSeconds: 15, giveUpAfterHours: 24, agents: { news: { url: agent.url } },
+          ...(options.push ? { pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds: 300 } : {}) },
         sources, agentReplies: replyPlaceOf(sources, sourcesDirectory), ...(options.postbox ? { postbox: options.postbox } : {}),
       });
       sources.connect(() => { loop.raiseSourcesUpdated(); });
@@ -338,4 +339,25 @@ test('postbox.enabled: false sends no letter', async t => {
   f.clock.now = tokyo('2026-10-11 07:00');
   await loop.tickPostbox();
   assert.equal(f.agent.received.length, 0);
+});
+
+// ADR 0092: a run of a letter asks for a push on the same terms as ask_agent, and its push fetches it.
+test('a letter\'s run asks an agent that pushes to push, and the push brings its reply without a round', async t => {
+  const f = await setup(t, { push: true });
+  const loop = await f.open();
+  f.commit('morning-news', LETTER());
+  await loop.tickPostbox();
+  const task = await run(f, loop, tokyo('2026-10-11 07:00'));
+  const push = f.agent.received[0]!.push as { url: string; authentication: { scheme: string; credentials: string } };
+  assert.equal(push.url, 'https://natsumi.example.test/v1/a2a-push');
+  assert.equal(push.authentication.scheme, 'Bearer');
+  f.agent.settle(task.id, 'completed', '運用に関わるニュースが 1 件あります。');
+  assert.equal(loop.agentPush(push.authentication.credentials), true);
+  const deadline = Date.now() + 5_000;
+  while (f.letter('morning-news')?.lastResult !== 'received') {
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(f.agent.polls.length, 1);
+  assert.equal(loop.agentPush(push.authentication.credentials), false);
 });

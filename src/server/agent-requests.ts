@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -8,7 +9,7 @@ import {
   writeAgentReply, writeAgentRequest, writeRequestFile, type ReplyData, type ReplyForm, type ReplyPlace, type ReplyState, type RequestKind,
   type RequestPlace, type WrittenReply,
 } from './agent-replies.ts';
-import type { A2AConfig } from './config.ts';
+import { A2A_PUSH_PATH, DEFAULT_A2A_PUSH_POLL_INTERVAL_SECONDS, type A2AConfig } from './config.ts';
 import type { ImageStore } from './images.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt, localDateTime } from './nightly.ts';
@@ -35,8 +36,22 @@ interface TaskRow {
   agent: string; task_id: string; context_id: string; state: string; sent_at: string; place: string | null; request: string | null;
   /** The letter a request of the postbox was sent on, and when that run was sent (ADR 0076). */
   postbox: string | null; postbox_sent_at: string | null;
+  /** The digest of the token its agent was asked to push with, while it waits (ADR 0092). */
+  push_digest: string | null;
 }
-const TASK_COLUMNS = 'agent, task_id, context_id, state, sent_at, place, request, postbox, postbox_sent_at';
+const TASK_COLUMNS = 'agent, task_id, context_id, state, sent_at, place, request, postbox, postbox_sent_at, push_digest';
+
+/** A push asked for with a request (ADR 0092): where to, the bearer token, and its digest, which is all that is kept. */
+interface PushAsk { url: string; token: string; digest: string }
+
+/** The bytes of a push token: far too many to guess, so a digest may be looked up as it is. */
+const PUSH_TOKEN_BYTES = 32;
+
+/** The digest a push token is kept and looked up by. */
+function pushDigest(token: string): string { return createHash('sha256').update(token).digest('hex'); }
+
+/** A task's key in the maps kept in memory. */
+const taskKey = (agent: string, taskId: string) => `${agent}\u0000${taskId}`;
 interface ContextRow { agent: string; context_id: string; task_id: string | null; place: string | null }
 
 /** A request as it was made: where it was put, what it said, and when. */
@@ -106,6 +121,18 @@ export class AgentRequests {
   private closed = false;
   /** Agents whose last fetch failed, so an outage is logged when it starts and when it ends rather than every round. */
   private readonly failing = new Set<string>();
+  /**
+   * The digests of the push tokens of requests being sent, which have no row yet, and whether a push came for one
+   * (ADR 0092). In memory only, and dropped once the send is over, whichever way it went.
+   */
+  private readonly sending = new Map<string, { rung: boolean }>();
+  /** The GetTask of each task under way, and whether a push came while it ran, which asks for one more after it. */
+  private readonly fetching = new Map<string, { again: boolean; run: Promise<void> }>();
+  /**
+   * When each task was last fetched or sent, which a task with a push is fetched by the rounds after. Empty after a
+   * start, so every task is fetched once then: a push sent while the server was down is lost.
+   */
+  private readonly fetchedAt = new Map<string, number>();
 
   constructor(options: AgentRequestsOptions) {
     this.options = options;
@@ -167,10 +194,12 @@ export class AgentRequests {
       this.log(`a2a: the request to ${agent} could not be taken in by the sources; it may be shown as an update`);
     }
 
+    const push = this.pushAsk();
     let sent: SendResult;
     try {
-      sent = await client.send(target.url, { text: message, ...to, ...(files.length > 0 ? { files } : {}) });
+      sent = await client.send(target.url, { text: message, ...to, ...(files.length > 0 ? { files } : {}), ...(push ? { push: { url: push.url, token: push.token } } : {}) });
     } catch (error) {
+      if (push) this.sending.delete(push.digest);
       await rm(made.place.directory, { recursive: true, force: true });
       const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
       this.log(`a2a: sending to ${agent} failed (${kind})`);
@@ -183,8 +212,13 @@ export class AgentRequests {
       if (kind === 'refused') return { ok: false, text: `頼めませんでした。「${agent}」が受け付けませんでした。` };
       return { ok: false, text: `頼めませんでした。「${agent}」につながりません。時間をおいてもう一度頼むか、急ぎならマスターに伝えてください。` };
     }
-    if (this.closed) return { ok: false, text: '頼んだかどうか分かりません。サーバーが止まるところです。' };
-    await this.record(agent, sent, made);
+    if (this.closed) {
+      if (push) this.sending.delete(push.digest);
+      return { ok: false, text: '頼んだかどうか分かりません。サーバーが止まるところです。' };
+    }
+    try {
+      await this.record(agent, sent, made, sent.kind === 'task' && sent.pushed ? push?.digest : undefined);
+    } finally { this.afterSend(agent, sent, push); }
     const done = how === 'answer' ? 'の聞き返しに答えました' : how === 'continue' ? 'との前のやり取りに続けて送りました' : 'に頼みました';
     return { ok: true, text: `「${agent}」${done}。頼んだことは ${made.place.path}/request.md に置きました。`
       + `返事は後で同じ ${made.place.path}/ に置かれ、sources_updated の attention（kind: agent_reply）で届きます。`
@@ -235,35 +269,99 @@ export class AgentRequests {
         await this.settle(task, 'gave_up', { reply: serverReply(`${config.giveUpAfterHours} 時間待っても返事が来なかったので、サーバーが待つのをやめました。`), form: 'text' });
         continue;
       }
-      const target = config.agents[task.agent];
       // An agent taken out of the config cannot be asked any more; what it was doing is lost to her.
-      if (!target) {
+      if (!config.agents[task.agent]) {
         await this.settle(task, 'failed', { reply: serverReply('この相手は頼める相手から外されたので、返事を受け取れなくなりました。'), form: 'text' });
         continue;
       }
-      let state: AgentTaskState;
-      let text: string;
-      let files: AgentFile[] | undefined;
-      let data: unknown;
-      try {
-        ({ state, text, files, data } = await client.getTask(target.url, task.task_id));
-      } catch (error) {
-        const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
-        if (kind === 'not-found') {
-          this.log(`a2a: ${task.agent} no longer knows a task`);
-          await this.settle(task, 'failed', { reply: serverReply('相手がこの頼みごとを覚えていませんでした。頼み直すなら continue を false にします。'), form: 'text' });
-          continue;
-        }
-        if (!this.failing.has(task.agent)) this.log(`a2a: fetching from ${task.agent} failed (${kind}); trying again each round`);
-        this.failing.add(task.agent);
-        continue;
-      }
-      if (this.failing.delete(task.agent)) this.log(`a2a: ${task.agent} answers again`);
-      if (state === 'waiting') continue;
-      const replyState: ReplyState = state === 'input-required' ? 'input_required' : state;
-      const reply = state === 'completed' && data !== undefined ? this.dataReply(task.agent, text, data) : fromText(replyState, text);
-      await this.settle(task, replyState, reply, state === 'completed' ? { url: target.url, files } : undefined);
+      // A task with a push is waited for by it, and fetched by the rounds only as a safety net (ADR 0092).
+      const last = this.fetchedAt.get(taskKey(task.agent, task.task_id));
+      if (task.push_digest !== null && last !== undefined && this.options.now() - last < this.pushIntervalMs()) continue;
+      await this.fetchTask(task.agent, task.task_id, false);
     }
+  }
+
+  /**
+   * A push from an agent (ADR 0092): the bearer token it came with is matched by its digest to a task that waits, whose
+   * GetTask is then run once, after the answer, as a round would. What the push said is never read. A push for a request
+   * still being sent is known as well, and its task is fetched as soon as it is recorded. With `ring` false the token is
+   * only looked up. Anything else is not known, and nothing is done.
+   */
+  push(token: string, ring = true): boolean {
+    if (!this.options.config?.pushUrl || this.closed) return false;
+    const digest = pushDigest(token);
+    const sending = this.sending.get(digest);
+    if (sending) {
+      if (ring) sending.rung = true;
+      return true;
+    }
+    const task = this.db.prepare(`SELECT agent, task_id FROM agent_tasks WHERE push_digest = ? AND state = 'waiting'`)
+      .get(digest) as { agent: string; task_id: string } | undefined;
+    if (!task) return false;
+    if (ring) this.ring(task.agent, task.task_id);
+    return true;
+  }
+
+  /** Runs a GetTask a push asked for in the background; it fails as a round's does, and is left to the next round. */
+  private ring(agent: string, taskId: string): void {
+    this.fetchTask(agent, taskId, true).catch(() => { this.log(`a2a: a fetch from ${agent} after a push failed`); });
+  }
+
+  /**
+   * One GetTask of a task, by a round or a push, never two at once (ADR 0092). A round that comes while one runs joins
+   * it. Pushes that come while one runs are one more after it, however many they are: what the running one brings back
+   * may be from before the change the push tells of.
+   */
+  private fetchTask(agent: string, taskId: string, rung: boolean): Promise<void> {
+    const key = taskKey(agent, taskId);
+    const running = this.fetching.get(key);
+    if (running) {
+      if (rung) running.again = true;
+      return running.run;
+    }
+    const entry = { again: false, run: Promise.resolve() };
+    this.fetching.set(key, entry);
+    entry.run = (async () => {
+      do {
+        entry.again = false;
+        if (this.closed) return;
+        const task = this.task(agent, taskId);
+        // A task that stopped waiting meanwhile is left as it is.
+        if (task?.state !== 'waiting') return;
+        this.fetchedAt.set(key, this.options.now());
+        await this.fetchOnce(task);
+      } while (entry.again);
+    })().finally(() => { this.fetching.delete(key); });
+    return entry.run;
+  }
+
+  /** One GetTask of a waiting task, and the reply put when it settled. A fetch that fails is tried again by the rounds. */
+  private async fetchOnce(task: TaskRow): Promise<void> {
+    const { config, client } = this.options;
+    const target = config?.agents[task.agent];
+    if (!config || !client || !this.options.replies || !target) return;
+    let state: AgentTaskState;
+    let text: string;
+    let files: AgentFile[] | undefined;
+    let data: unknown;
+    try {
+      ({ state, text, files, data } = await client.getTask(target.url, task.task_id));
+    } catch (error) {
+      const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
+      if (kind === 'not-found') {
+        this.log(`a2a: ${task.agent} no longer knows a task`);
+        await this.settle(task, 'failed', { reply: serverReply('相手がこの頼みごとを覚えていませんでした。頼み直すなら continue を false にします。'), form: 'text' });
+        return;
+      }
+      if (!this.failing.has(task.agent)) this.log(`a2a: fetching from ${task.agent} failed (${kind}); trying again each round`);
+      this.failing.add(task.agent);
+      return;
+    }
+    if (this.failing.delete(task.agent)) this.log(`a2a: ${task.agent} answers again`);
+    if (state === 'waiting') return;
+    const replyState: ReplyState = state === 'input-required' ? 'input_required' : state;
+    const reply = state === 'completed' && data !== undefined ? this.dataReply(task.agent, text, data) : fromText(replyState, text);
+    await this.settle(task, replyState, reply, state === 'completed' ? { url: target.url, files } : undefined);
   }
 
   /**
@@ -278,7 +376,9 @@ export class AgentRequests {
   private async settle(task: TaskRow, state: ReplyState, reply: Reply, handed?: { url: string; files: AgentFile[] | undefined }):
     Promise<void> {
     const update = (path: string | null) => {
-      this.db.prepare(`UPDATE agent_tasks SET state = ?, place = coalesce(?, place), updated_at = ? WHERE agent = ? AND task_id = ?`)
+      // The task stops waiting, and its push token with it (ADR 0092).
+      this.db.prepare(`UPDATE agent_tasks SET state = ?, place = coalesce(?, place), push_digest = NULL, updated_at = ?
+        WHERE agent = ? AND task_id = ?`)
         .run(TASK_END[state], path, this.iso(), task.agent, task.task_id);
     };
     const letter = task.postbox !== null && task.postbox_sent_at !== null ? { name: task.postbox, sentAt: Date.parse(task.postbox_sent_at) } : undefined;
@@ -327,15 +427,25 @@ export class AgentRequests {
       await fail('定期便を送れませんでした（この相手に頼む設定がありません）。');
       return;
     }
+    const push = this.pushAsk();
     let sent: SendResult;
     try {
-      sent = await client.send(target.url, { text, metadata });
+      sent = await client.send(target.url, { text, metadata, ...(push ? { push: { url: push.url, token: push.token } } : {}) });
     } catch (error) {
+      if (push) this.sending.delete(push.digest);
       const kind = error instanceof A2ACallError ? error.kind : 'unavailable';
       this.log(`a2a: the letter ${input.name} could not be sent to ${input.agent} (${kind})`);
       await fail(kind === 'refused' ? `「${input.agent}」が定期便を受け付けませんでした。` : `「${input.agent}」につながらないので、定期便を送れませんでした。`);
       return;
     }
+    try {
+      await this.recordRun(input, sent, text, ledger, sent.kind === 'task' && sent.pushed ? push?.digest : undefined);
+    } finally { this.afterSend(input.agent, sent, push); }
+  }
+
+  /** What a run of a letter started: the task to fetch, or the answer that already came. */
+  private async recordRun(input: PostboxSend, sent: SendResult, text: string, ledger: PostboxLedger, digest: string | undefined): Promise<void> {
+    const run: PostboxRun = { name: input.name, text, at: input.at };
     if (this.closed) return;
     if (sent.kind === 'message') {
       if (!await this.deliverRun(run, input.agent, 'completed', fromText('completed', sent.text), undefined, () => {}, () => {})) {
@@ -346,9 +456,9 @@ export class AgentRequests {
     const now = this.iso();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, place, request, postbox, postbox_sent_at, created_at,
-        updated_at) VALUES (?, ?, ?, 'waiting', ?, NULL, ?, ?, ?, ?, ?)`)
-        .run(input.agent, sent.taskId, sent.contextId, isoAt(input.at), text, input.name, isoAt(input.at), now, now);
+      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, place, request, postbox, postbox_sent_at, push_digest,
+        created_at, updated_at) VALUES (?, ?, ?, 'waiting', ?, NULL, ?, ?, ?, ?, ?, ?)`)
+        .run(input.agent, sent.taskId, sent.contextId, isoAt(input.at), text, input.name, isoAt(input.at), digest ?? null, now, now);
       ledger.record(input.name, 'waiting', this.options.now(), input.at);
       this.db.exec('COMMIT');
     } catch (error) {
@@ -456,7 +566,7 @@ export class AgentRequests {
   }
 
   /** What a send started: the agent's latest exchange, and the task to fetch or the answer that already came. */
-  private async record(agent: string, sent: SendResult, made: MadeRequest): Promise<void> {
+  private async record(agent: string, sent: SendResult, made: MadeRequest, digest: string | undefined): Promise<void> {
     const now = this.iso();
     const remember = () => { this.remember(agent, sent.contextId, sent.kind === 'task' ? sent.taskId : null, made.place.path); };
     if (sent.kind === 'message') {
@@ -472,16 +582,46 @@ export class AgentRequests {
     try {
       remember();
       // An answer to a question goes on with the same task: the reply after it belongs to the answer, and goes there.
-      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, place, request, created_at, updated_at)
-        VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?)
+      // An answer is asked to push with a token of its own; the question's was dropped when it came (ADR 0092).
+      this.db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, place, request, push_digest, created_at, updated_at)
+        VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?)
         ON CONFLICT (agent, task_id) DO UPDATE SET state = 'waiting', sent_at = excluded.sent_at, place = excluded.place,
-          request = excluded.request, updated_at = excluded.updated_at`)
-        .run(agent, sent.taskId, sent.contextId, isoAt(made.at), made.place.path, made.text, now, now);
+          request = excluded.request, push_digest = excluded.push_digest, updated_at = excluded.updated_at`)
+        .run(agent, sent.taskId, sent.contextId, isoAt(made.at), made.place.path, made.text, digest ?? null, now, now);
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  /**
+   * A push to ask for with the next request (ADR 0092), when the config says where natsumi is reached: a fresh token,
+   * known from now on while the request is being sent. Whether it is asked for is up to the agent's card.
+   */
+  private pushAsk(): PushAsk | undefined {
+    const pushUrl = this.options.config?.pushUrl;
+    if (!pushUrl) return undefined;
+    const token = randomBytes(PUSH_TOKEN_BYTES).toString('base64url');
+    const ask = { url: `${pushUrl}${A2A_PUSH_PATH}`, token, digest: pushDigest(token) };
+    this.sending.set(ask.digest, { rung: false });
+    return ask;
+  }
+
+  /**
+   * A send is over and recorded: its token is no longer known as one being sent, the rounds count from now, and a task
+   * a push came for meanwhile is fetched now.
+   */
+  private afterSend(agent: string, sent: SendResult, push: PushAsk | undefined): void {
+    const rung = push ? this.sending.get(push.digest)?.rung ?? false : false;
+    if (push) this.sending.delete(push.digest);
+    if (sent.kind !== 'task') return;
+    this.fetchedAt.set(taskKey(agent, sent.taskId), this.options.now());
+    if (rung && sent.pushed && !this.closed) this.ring(agent, sent.taskId);
+  }
+
+  private pushIntervalMs(): number {
+    return (this.options.config?.pushPollIntervalSeconds ?? DEFAULT_A2A_PUSH_POLL_INTERVAL_SECONDS) * 1000;
   }
 
   /** The agent's latest exchange, which `continue` goes on with. */

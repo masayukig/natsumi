@@ -1104,4 +1104,15 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 37,
+    name: 'agent-task-push-digests',
+    sql: `
+      -- The SHA-256 (hex) of the bearer token a waiting task's agent was asked to push with (ADR 0092), never the token.
+      -- A push is matched to its task by it; it is emptied as the task stops waiting, so a later push is not known.
+      -- NULL for a task asked without a push, and for every task before this.
+      ALTER TABLE agent_tasks ADD COLUMN push_digest TEXT;
+      CREATE UNIQUE INDEX agent_tasks_by_push_digest ON agent_tasks (push_digest) WHERE push_digest IS NOT NULL;
+    `,
+  },
 ];

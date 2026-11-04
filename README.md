@@ -778,6 +778,8 @@ natsumi は、Wiki の管理人のような外の特化エージェントに `as
    | `a2a.tokenFile` | 自分の token を持たない相手がいれば必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます。すべての相手が `tokenFile` を持てば省けます |
    | `a2a.pollIntervalSeconds` | | 15 | 返事を待っている依頼を取りに行く間隔（秒、5 以上） |
    | `a2a.giveUpAfterHours` | | 24 | 返事を待ち続ける上限（時間）。最後に送ってからこの時間が過ぎると、待つのをやめて natsumi に知らせます |
+   | `a2a.pushUrl` | | | 相手から見た natsumi の公開の origin（`https://natsumi.example.net` など。パスは書きません）。書くと、push を名乗る相手に push を頼み、受け口 `POST /v1/a2a-push` を開きます（下の「返事の push」） |
+   | `a2a.pushPollIntervalSeconds` | | 300 | push を頼んだ依頼を、それでも取りに行く間隔（秒、`a2a.pollIntervalSeconds` 以上）。`a2a.pushUrl` があるときだけ書けます |
 
 3. Compose では override の [compose.a2a.example.yaml](compose.a2a.example.yaml) を足して、token を `/run/secrets/natsumi_a2a_token` にマウントします。
    既定ではホストの `secrets/a2a-token` を読みます（`NATSUMI_A2A_TOKEN_FILE` で変更できます）。
@@ -824,6 +826,19 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
 - 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
   待っている依頼は、新しい版で取りに行き、`sources/agents/` に返事のためのディレクトリを作って置きます（頼んだことの記録はありません）。
 - 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
+- 返事の push（[ADR 0092](docs/adr/0092-a-push-from-an-agent-as-a-doorbell.md)）: `a2a.pushUrl` を書き、相手の Agent Card が
+  `capabilities.pushNotifications: true` を名乗るときだけ、依頼（聞き返しへの答えと定期便も）に push の設定を付けます。
+  送り先は `<a2a.pushUrl>/v1/a2a-push`、認証は依頼ごとに作るランダムな token の `Authorization: Bearer` です（legacy の `token` は使いません）。
+  Card が読めない・名乗らない相手には付けずに頼みます。
+  - push は呼び鈴です。届いた token の SHA-256 で待っている依頼を引き、すぐ 204 を返してから、その依頼の GetTask を 1 回走らせます。本文は読まずに読み捨てます（1 MiB まで。それより大きいと名乗るものは 413）。
+    知らない token・`Authorization` が無い・Bearer でない呼び出しは、どれも同じ 401 です。ブラウザの cookie では通しません。
+  - 同じ依頼の GetTask は同時に 1 つまでです。走っている間に届いた push は、何件でも走り終えた後の 1 回にまとめます。
+    相手が送り終える前（SendMessage の答えが返る前）に届いた push も受け、依頼を記録した直後に 1 回取りに行きます。
+  - token そのものは残さず、digest を `.natsumi/state.sqlite`（migration 37）の待っている依頼の記録に持ちます。依頼が待つのをやめたら消すので、以後の push は 401 になります。
+    聞き返しへ答えるときは新しい token で付け直します。token はログにも `/sources` にも natsumi にも出しません。
+  - push を頼んだ依頼も、`a2a.pushPollIntervalSeconds` ごとに取りに行きます（push が落ちたときの保険）。サーバーの起動のあとは、すべての依頼を 1 度取りに行きます。
+  - 受け口は `/` の待ち受けに置きます。Kubernetes では gated で守らない `/` の Ingress を通し、相手から natsumi の公開の host へ出る道（相手の側の出口の許可と、相手の push の送り先の許可）を環境の設定で開けます。
+    どれかが欠けても、今までどおり取りに行く形で返事は届きます。
 - 頼める相手の一覧は、サーバーが起動のたびに各相手の Agent Card（token は付けずに取ります）から data directory の
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
   取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
