@@ -1,7 +1,7 @@
 # 0091. webhook の受け口を 1 つにし、届いたものの読み方は型としてコードに持つ
 
 - Date: 2026-11-04
-- Status: Accepted
+- Status: Accepted（型の集合に `github`（レビューを頼まれた PR の出来事だけを通す）を [ADR 0093](0093-a-github-format-for-pull-requests-asked-to-review.md) で追加）
 
 ## Context
 
