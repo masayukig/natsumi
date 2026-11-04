@@ -139,6 +139,21 @@ GitHub の webhook について確かめた事実は次のとおりである（R
 - ADR 0050
   - 変えない。更新元の登録も印の種類も足さない。型 `github` の印は、ADR 0091 で足した `webhook` を使う。
 
+### 実装で決めたこと
+
+ADR では決めず、実装の PR で決めたものは次のとおりである。
+
+- **config の欄**: `authors`・`reviewers` は GitHub のログインの並び（1 つ以上、`[bot]` で終わる App のログインも書ける）。同じログインを大文字と小文字だけ変えて 2 度書くと起動を止める。照らすときも大文字と小文字は区別しない（GitHub のログインがそうであるため）。`attention` の既定は `false`。
+- **行の欄**: `at`・`event`・`action`・`delivery`・`repository`（`owner/name`）・`number`・`title`・`url`（PR のページ）・`author`・`head_sha`・`head_ref`・`base_ref`。
+  `review_requested`・`review_request_removed` には `reviewer`、`check_suite` には `conclusion`、`closed` には `merged` を足す。
+  `check_suite` の本文には PR の題・URL・作者が無いので、覚えた PR の表に、最後に届いた `pull_request` の出来事のときの値を持ち、それで書く。`head_sha` は suite の `head_sha`、`head_ref`・`base_ref` は `pull_requests` の要素の値である。
+- **覚えた PR の鍵**: webhook の名前・リポジトリの ID・PR の番号。`check_suite` の `pull_requests` の要素が名指すのは `base.repo.id` で、`full_name` を持たないためである。リポジトリの名前が変わっても同じ PR として扱える。
+- **SQLite の表**: migration 38 で `webhook_pull_requests`（覚えた PR）と `webhook_deliveries`（行を書いた配送の ID）を足す。
+  配送の ID は、行を 1 つ以上書いた配送だけを覚える。覚える・忘れるは必ず行を伴うので、行を書かなかった配送をもう一度読んでも何も変わらない。残った PR と古い配送の ID は消さない。
+- **配送の ID の無い呼び出し**: 読むイベントで `X-GitHub-Delivery` が無いものは、400 で断る（重ねて読まないことを確かめられないため）。読まないイベントでは見ない。
+- **応答**: 読まないイベントと読み捨てたものは 200 で `{"recorded": 0}`、行を書いたものは `{"recorded": <行の数>}`（ADR 0091 のまま）。2 回目以後の配送も 200 で `{"recorded": 0}` で、前の配送が書けずに残した日付のファイルはそのときに書く。
+- **読み捨てるもの**: 覚えた PR への、`reviewers` でない人やチームへの `review_requested`・`review_request_removed` は行にしない。覚えた PR に `reviewers` の誰かへの `review_requested` がもう一度届いたら（頼み直し）、行にする。
+
 ## Consequences
 
 - レビューを頼まれた PR が、開いてから待ちの後に受け手に届く。週に一度の見回りを待たずにレビューと承認が進み、auto-merge のリポジトリでは承認のあとすぐにマージされる。

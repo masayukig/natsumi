@@ -738,3 +738,22 @@ test('schema 37 keeps the digest of a waiting task\'s push token beside it, one 
   insert('three');
   assert.throws(() => insert('four', 'a'.repeat(64)), /UNIQUE/);
 }));
+
+/**
+ * Schema 38 keeps the pull requests a webhook of the format github remembers (ADR 0093), by the webhook's name, the
+ * repository and the number, and the deliveries it read, by the webhook's name and the delivery's ID.
+ */
+test('schema 38 keeps the remembered pull requests and the deliveries read, each by the webhook\'s name', () => withDb(db => {
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 37)).applied.at(-1), 37);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 38)).applied, [38]);
+  const pull = db.prepare(`INSERT INTO webhook_pull_requests (webhook, repository_id, number, repository, title, url, author, head_ref, base_ref,
+    remembered_at, updated_at) VALUES (?, ?, ?, 'o/r', 't', 'u', 'a', 'h', 'main', 'x', 'x')`);
+  pull.run('github', 1, 42);
+  pull.run('github', 2, 42);
+  pull.run('other', 1, 42);
+  assert.throws(() => pull.run('github', 1, 42), /UNIQUE|PRIMARY/);
+  const delivery = db.prepare(`INSERT INTO webhook_deliveries (webhook, delivery, received_at) VALUES (?, ?, 'x')`);
+  delivery.run('github', 'd-1');
+  delivery.run('other', 'd-1');
+  assert.throws(() => delivery.run('github', 'd-1'), /UNIQUE|PRIMARY/);
+}));

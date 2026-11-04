@@ -14,7 +14,8 @@ import { SOURCES_PATH } from './view.ts';
  * bearer token or by GitHub's HMAC of the body, and each read as its format. What comes is put under
  * `sources/webhooks/<name>/` and told to her with `sources_updated`. The formats are natsumi's own, a closed set: `raw`,
  * here, puts each body as it came as a line of the day's file, and `alertmanager` (`alertmanager.ts`) keeps the state of
- * every alert and writes a line only when it changes.
+ * every alert and writes a line only when it changes, and `github` (`github-webhook.ts`, ADR 0093) only what befalls a
+ * pull request whose review was asked.
  */
 
 /** The source's name, its directory under `sources/`. */
@@ -100,6 +101,13 @@ export async function writeReadme(directory: string, webhook: WebhookReadme): Pr
       `- 型: \`raw\`（届いた 1 回が、日付のファイルの 1 行。読み方は \`${MANUAL}\` の「型 raw」）`,
       `- 行に残すヘッダー: ${webhook.headers.length > 0 ? webhook.headers.map(header => `\`${header}\``).join('・') : 'なし'}`,
       `- 印（attention）: ${webhook.attention ? '届くたびに付きます（`kind` は `webhook`）' : '付きません。ふつうの変化として届きます'}`,
+    ]
+    : webhook.format === 'github'
+    ? [
+      `- 型: \`github\`（レビューを頼まれた PR の出来事だけが、日付のファイルの 1 行。読み方は \`${MANUAL}\` の「型 github」）`,
+      `- 扱う PR の作者: ${webhook.authors.map(login => `\`${login}\``).join('・')}`,
+      `- レビューを頼まれる人: ${webhook.reviewers.map(login => `\`${login}\``).join('・')}`,
+      `- 印（attention）: ${webhook.attention ? '行を書くたびに付きます（`kind` は `webhook`）' : '付きません。ふつうの変化として届きます'}`,
     ]
     : [
       `- 型: \`alertmanager\`（Alertmanager のアラート。読み方は \`${MANUAL}\` の「型 alertmanager」）`,

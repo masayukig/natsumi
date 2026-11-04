@@ -477,12 +477,16 @@ const MAX_POSTBOX_MIN_INTERVAL_MINUTES = 24 * 60;
 export type WebhookConfig = { name: string; description: string } & ({ tokenFile: string } | { secretFile: string }) & WebhookFormatConfig;
 /**
  * `raw` keeps the headers it names on each line and marks every line for her only when told; `alertmanager` marks an
- * alert that begins to fire with one of the severities.
+ * alert that begins to fire with one of the severities; `github` (ADR 0093) lets through only what befalls a pull
+ * request by one of the authors whose review was asked of one of the reviewers, and marks every line only when told.
  */
-export type WebhookFormatConfig = { format: 'raw'; headers: string[]; attention: boolean } | { format: 'alertmanager'; attentionSeverities: string[] };
+export type WebhookFormatConfig = { format: 'raw'; headers: string[]; attention: boolean } | { format: 'alertmanager'; attentionSeverities: string[] }
+  | { format: 'github'; authors: string[]; reviewers: string[]; attention: boolean };
 /** The severities an alert of a webhook of the format `alertmanager` is marked for, unless the config says otherwise. */
 export const ALERTMANAGER_DEFAULTS = { attentionSeverities: ['critical'] };
-export const WEBHOOK_FORMATS: readonly WebhookFormatConfig['format'][] = ['raw', 'alertmanager'];
+export const WEBHOOK_FORMATS: readonly WebhookFormatConfig['format'][] = ['raw', 'alertmanager', 'github'];
+/** A GitHub login as a webhook of the format `github` names it: a user's, or an app's with its `[bot]`. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/;
 /** An HTTP header's name. */
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 /** The headers that carry a secret or a login, which a line never keeps. */
@@ -1371,7 +1375,7 @@ function parseWebhook(value: unknown, path: string): WebhookConfig {
     throw new ConfigError(`${path}.format`, `must be one of ${WEBHOOK_FORMATS.join(', ')}`);
   }
   // The settings of the other format cannot be written.
-  const own = format === 'raw' ? ['headers', 'attention'] : ['attentionSeverities'];
+  const own = format === 'raw' ? ['headers', 'attention'] : format === 'github' ? ['authors', 'reviewers', 'attention'] : ['attentionSeverities'];
   onlyKeys(webhook, path, ['name', 'format', 'tokenFile', 'secretFile', 'description', ...own]);
   const name = required(webhook, 'name', path);
   if (typeof name !== 'string' || !SENDER_NAME.test(name)) {
@@ -1383,10 +1387,14 @@ function parseWebhook(value: unknown, path: string): WebhookConfig {
   if (webhook.tokenFile !== undefined) check = { tokenFile: absolutePath(webhook.tokenFile, `${path}.tokenFile`) };
   else if (webhook.secretFile !== undefined) check = { secretFile: absolutePath(webhook.secretFile, `${path}.secretFile`) };
   else throw new ConfigError(path, 'needs tokenFile or secretFile: a webhook is never taken unchecked');
-  if (format === 'raw') {
+  if (format === 'raw' || format === 'github') {
     const attention = webhook.attention === undefined ? false : webhook.attention;
     if (typeof attention !== 'boolean') throw new ConfigError(`${path}.attention`, 'must be true or false');
-    return { name, format, ...check, description, headers: parseHeaderNames(webhook.headers ?? [], `${path}.headers`), attention };
+    if (format === 'raw') return { name, format, ...check, description, headers: parseHeaderNames(webhook.headers ?? [], `${path}.headers`), attention };
+    // Never every pull request: without the authors and the reviewers it does not start (ADR 0093).
+    const authors = parseGithubLogins(required(webhook, 'authors', path), `${path}.authors`);
+    const reviewers = parseGithubLogins(required(webhook, 'reviewers', path), `${path}.reviewers`);
+    return { name, format, ...check, description, authors, reviewers, attention };
   }
   const severitiesPath = `${path}.attentionSeverities`;
   const severities = webhook.attentionSeverities ?? ALERTMANAGER_DEFAULTS.attentionSeverities;
@@ -1395,6 +1403,16 @@ function parseWebhook(value: unknown, path: string): WebhookConfig {
     throw new ConfigError(severitiesPath, 'must be a list of distinct severities, such as ["critical"]');
   }
   return { name, format: 'alertmanager', ...check, description, attentionSeverities: [...severities as string[]] };
+}
+
+/** The logins a `github` webhook matches, as written: one or more, none twice, GitHub's logins being of no case. */
+function parseGithubLogins(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== 'string' || !GITHUB_LOGIN.test(item))) {
+    throw new ConfigError(path, 'must be a list of one GitHub login or more, such as ["renovate[bot]"]');
+  }
+  const logins = value as string[];
+  if (new Set(logins.map(login => login.toLowerCase())).size !== logins.length) throw new ConfigError(path, 'names a login twice');
+  return [...logins];
 }
 
 /** The headers a `raw` webhook keeps on its lines, as written; none that carries a secret, and none twice. */
