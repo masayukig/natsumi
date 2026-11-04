@@ -38,7 +38,8 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
-import { ALERTMANAGER_REGISTRATION, ALERTMANAGER_SOURCE, AlertmanagerInbox, senderGate } from './alertmanager.ts';
+import { AlertmanagerWebhook } from './alertmanager.ts';
+import { RawWebhook, WEBHOOKS_REGISTRATION, WEBHOOKS_SOURCE, Webhooks, type WebhookCredential } from './webhooks.ts';
 import { InboxEndpoint, inboxSenders } from './a2a-server.ts';
 import { AssertionVerifier, audienceOf } from './gated-assertion.ts';
 import { INBOX_REGISTRATION, INBOX_SOURCE, Inbox } from './inbox.ts';
@@ -142,10 +143,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
     appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
   }))) : [];
-  // Each sender of Alertmanager's notifications has its own token (ADR 0086); a new one is read at the next start.
-  const alertSenders = config.alertmanager ? new Map(await Promise.all(config.alertmanager.senders.map(async ({ name, tokenFile }, index) =>
-    [name, await readSecret({ file: tokenFile }, `alertmanager.senders[${index}].token`, options.env)] as const))) : undefined;
-  // Each sender of the way in over A2A checked by a token has its own (ADR 0089), read at start as Alertmanager's are.
+  // Each webhook has its own token or secret (ADR 0091); a new one is read at the next start.
+  const webhookCredentials = config.webhooks ? await Promise.all(config.webhooks.map(async (webhook, index): Promise<WebhookCredential> =>
+    'tokenFile' in webhook ? { token: await readSecret({ file: webhook.tokenFile }, `webhooks[${index}].token`, options.env) }
+      : { secret: await readSecret({ file: webhook.secretFile }, `webhooks[${index}].secret`, options.env) })) : undefined;
+  // Each sender of the way in over A2A checked by a token has its own (ADR 0089), read at start as the webhooks' are.
   const inboxTokens = config.inbox ? new Map(await Promise.all(config.inbox.senders.flatMap((sender, index) => 'tokenFile' in sender
     ? [(async () => [sender.name, await readSecret({ file: sender.tokenFile }, `inbox.senders[${index}].token`, options.env)] as const)()] : []))) : undefined;
   const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
@@ -254,23 +256,30 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await archive?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
-    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. Alertmanager's
-    // notifications are written there too (ADR 0086), and what the agents ask her (ADR 0089).
-    let sources: Sources | undefined = archive || config.a2a || config.alertmanager || config.inbox ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. What the
+    // webhooks send is written there too (ADR 0091), and what the agents ask her (ADR 0089).
+    let sources: Sources | undefined = archive || config.a2a || config.webhooks || config.inbox ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
     if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
-    if (config.alertmanager) sources?.register(ALERTMANAGER_REGISTRATION);
+    if (config.webhooks) sources?.register(WEBHOOKS_REGISTRATION);
     if (config.inbox) sources?.register(INBOX_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
     }
-    const alertInbox = config.alertmanager ? new AlertmanagerInbox({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, ALERTMANAGER_SOURCE),
-      timeZone: config.loop.timeZone, attentionSeverities: config.alertmanager.attentionSeverities, now, log,
-      ...(sources ? { sources } : {}) }) : undefined;
-    await alertInbox?.prepare();
+    // The webhooks (ADR 0091), each read as its format under sources/webhooks/<name>/ with its README.md from the config.
+    const webhooksDirectory = join(dataDirectory, SOURCES_DIRECTORY, WEBHOOKS_SOURCE);
+    const webhookDb = db;
+    const webhooks = config.webhooks && webhookCredentials ? new Webhooks({ directory: webhooksDirectory, log,
+      webhooks: config.webhooks.map((webhook, index) => {
+        const shared = { db: webhookDb, name: webhook.name, directory: webhooksDirectory, timeZone: config.loop.timeZone, now, log, ...(sources ? { sources } : {}) };
+        return { config: webhook, credential: webhookCredentials[index]!,
+          format: webhook.format === 'raw' ? new RawWebhook({ ...shared, headers: webhook.headers, attention: webhook.attention })
+            : new AlertmanagerWebhook({ ...shared, attentionSeverities: webhook.attentionSeverities }) };
+      }) }) : undefined;
+    await webhooks?.prepare();
     // What the agents ask her over A2A (ADR 0089): the tasks are kept in the database, so the open ones stay across a start.
     const inbox = config.inbox ? new Inbox({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, INBOX_SOURCE), timeZone: config.loop.timeZone,
       awakeHours: () => settings.awakeHours(), now, log, ...(sources ? { sources } : {}),
@@ -469,8 +478,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
           pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
         uploads,
-        ...(alertInbox && alertSenders ? { alertmanager: { allowed: senderGate(alertSenders),
-          receive: (sender, notification) => alertInbox.receive(sender, notification) } } : {}),
+        ...(webhooks ? { webhooks } : {}),
         ...(inboxEndpoint ? { a2a: inboxEndpoint } : {}),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });

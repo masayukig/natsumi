@@ -13,9 +13,9 @@
 | Slack のメンションや DM に応える、チャンネルの記録を読む、差分を見る（`sources-diff`）、画像を見る（`view`）、PDF を読む | `/manual/slack.md` |
 | Slack に投稿する、リアクションを付ける、画像を投稿する（ポッポさんに頼む） | `/manual/slack.md` |
 | 絵・画像を作る（sdctl）、自分の絵を描く（自撮り・気分の絵も） | `/manual/avatar/images.md` |
-| クラスタのアラート（Alertmanager）を読む、いま鳴っているものを見る | `/manual/alertmanager.md` |
+| webhook で届いたもの（クラスタのアラート、GitHub など）を読む、いま鳴っているアラートを見る | `/manual/webhooks.md` |
 | 出来事 sources_updated の attention を読む（Slack） | `/manual/slack.md` |
-| 出来事 sources_updated の attention を読む（アラート、`kind` が `alert`） | `/manual/alertmanager.md` |
+| 出来事 sources_updated の attention を読む（webhook、`kind` が `webhook`・`alert`） | `/manual/webhooks.md` |
 | 出来事 sources_updated の attention を読む（届いた依頼、`kind` が `agent_request`・`agent_answer`） | `/manual/inbox.md` |
 | マスターがチャットに添えた PDF を読む | `/manual/slack.md` の「PDF を読む」 |
 

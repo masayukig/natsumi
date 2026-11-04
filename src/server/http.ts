@@ -3,7 +3,6 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { InboxEndpoint } from './a2a-server.ts';
-import { MAX_ALERTMANAGER_BODY_BYTES, parseNotification, type AlertNotification } from './alertmanager.ts';
 import { avatarManifest, type Avatar } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
@@ -13,6 +12,7 @@ import { Dashboard } from './dashboard.ts';
 import type { GitHubLogin, Outcome } from './github-login.ts';
 import type { SessionStore, VerifiedSession } from './sessions.ts';
 import type { Received } from './uploads.ts';
+import { MAX_WEBHOOK_BODY_BYTES, SIGNATURE_HEADER, type Webhooks } from './webhooks.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;
 /** `/v1/images/<imageId>`: the ID is the server's own, of letters, digits and hyphens. */
@@ -24,8 +24,8 @@ const UPLOAD_PATH = /^\/v1\/uploads\/(upload-[0-9a-f-]{36})$/;
 const SLACK_ICON_PATH = /^\/avatar\/([a-z]+)\.png$/;
 /** One file of the avatar's bundle under its version (ADR 0057): `/v1/avatar/<version>/<path>`. */
 const AVATAR_FILE_PATH = /^\/v1\/avatar\/([0-9a-f]{32})\/(.+)$/;
-/** One sender of Alertmanager's notifications (ADR 0086): `POST /v1/alertmanager/<sender>`. */
-const ALERTMANAGER_PATH = /^\/v1\/alertmanager\/([^/]*)$/;
+/** One webhook of the config (ADR 0091): `POST /v1/webhooks/<name>`. */
+const WEBHOOK_PATH = /^\/v1\/webhooks\/([^/]*)$/;
 
 export interface ListenerOptions {
   listen: ListenConfig;
@@ -51,11 +51,8 @@ export interface ListenerOptions {
     receive(body: AsyncIterable<Buffer>, input: { name: string; githubUserId: number }): Promise<Received>;
     read(uploadId: string): Promise<{ name: string; bytes: number; mimeType?: string; file: string } | undefined>;
   };
-  /** Alertmanager's notifications (ADR 0086), when the config has senders: who may send, and where it is written. */
-  alertmanager?: {
-    allowed(sender: string, token: string | undefined): boolean;
-    receive(sender: string, notification: AlertNotification): Promise<{ recorded: number }>;
-  };
+  /** The webhooks (ADR 0091), when the config has any: who may call which, and the format each body goes to. */
+  webhooks?: Pick<Webhooks, 'gate' | 'receive'>;
   /** The way in over A2A under /a2a/ (ADR 0089), when the config has senders; without it, /a2a/ is not found. */
   a2a?: Pick<InboxEndpoint, 'handle'>;
 }
@@ -178,8 +175,8 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     stream.pipe(response);
     return;
   }
-  const sender = method === 'POST' && options.alertmanager ? ALERTMANAGER_PATH.exec(url.pathname)?.[1] : undefined;
-  if (sender !== undefined) return receiveAlerts(request, response, sender, options.alertmanager!, options.log);
+  const webhook = method === 'POST' && options.webhooks ? WEBHOOK_PATH.exec(url.pathname)?.[1] : undefined;
+  if (webhook !== undefined) return receiveWebhook(request, response, webhook, options.webhooks!, options.log);
   // The senders' own token or gated's assertion, never the browser's cookie (ADR 0089).
   if (options.a2a && InboxEndpoint.owns(url.pathname)) return options.a2a.handle(request, response, url);
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
@@ -237,24 +234,29 @@ async function receiveUpload(request: IncomingMessage, response: ServerResponse,
 }
 
 /**
- * A notification of Alertmanager (ADR 0086). The sender's own bearer token only, never the browser's cookie; an unknown
- * sender is refused as a wrong token is. The body is read up to its limit, and answered with a 2xx only once it is
- * written: a 5xx has Alertmanager send it again, which the state kept of every alert makes harmless.
+ * A body of a webhook (ADR 0091). Its own bearer token or GitHub's signature of the body, never the browser's cookie;
+ * an unknown name is refused as a wrong token is, before its body is read. A webhook checked by its signature can only
+ * be checked once the body is read, so a body past the limit is refused before it. The body must be JSON (415), in the
+ * webhook format's shape (400), and is answered with a 2xx only once it is written: a 5xx has the sender send it again.
  */
-async function receiveAlerts(request: IncomingMessage, response: ServerResponse, sender: string,
-  alertmanager: NonNullable<ListenerOptions['alertmanager']>, log: (line: string) => void) {
+async function receiveWebhook(request: IncomingMessage, response: ServerResponse, name: string,
+  webhooks: NonNullable<ListenerOptions['webhooks']>, log: (line: string) => void) {
   const refuse = (status: number, error: string) => { response.setHeader('connection', 'close'); json(response, status, { error }); };
-  if (!alertmanager.allowed(sender, bearerToken(request))) return refuse(401, 'unauthorized');
-  if (Number(request.headers['content-length'] ?? 0) > MAX_ALERTMANAGER_BODY_BYTES) return refuse(413, 'too-large');
-  const body = await readBody(request, MAX_ALERTMANAGER_BODY_BYTES);
+  const signed = webhooks.gate.scheme(name) === 'signature';
+  if (!signed && !webhooks.gate.allowed(name, { token: bearerToken(request) })) return refuse(401, 'unauthorized');
+  if (Number(request.headers['content-length'] ?? 0) > MAX_WEBHOOK_BODY_BYTES) return refuse(413, 'too-large');
+  const body = await readBody(request, MAX_WEBHOOK_BODY_BYTES);
   if (body === undefined) return refuse(413, 'too-large');
-  let notification: AlertNotification | undefined;
-  try { notification = parseNotification(JSON.parse(body.toString('utf8'))); } catch { /* answered below */ }
-  if (!notification) return json(response, 400, { error: 'invalid-request' });
+  const signature = request.headers[SIGNATURE_HEADER];
+  if (signed && !webhooks.gate.allowed(name, { body, ...(typeof signature === 'string' ? { signature } : {}) })) return refuse(401, 'unauthorized');
+  let value: unknown;
+  try { value = JSON.parse(body.toString('utf8')); } catch { return json(response, 415, { error: 'not-json' }); }
+  const received = webhooks.receive(name, value, request.headers);
+  if (!received) return json(response, 400, { error: 'invalid-request' });
   try {
-    json(response, 200, await alertmanager.receive(sender, notification));
+    json(response, 200, await received);
   } catch {
-    log(`alertmanager: a notification of ${sender} could not be written; it is refused for Alertmanager to send again`);
+    log(`webhooks: a body of ${name} could not be written; it is refused for the sender to send again`);
     json(response, 503, { error: 'not-recorded' });
   }
 }

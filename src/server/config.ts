@@ -11,7 +11,6 @@ import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
 import { POSTBOX_DEFAULTS } from './postbox.ts';
-import { ALERTMANAGER_DEFAULTS } from './alertmanager.ts';
 import { UPLOAD_DEFAULTS, type UploadLimits } from './uploads.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES,
@@ -458,14 +457,24 @@ export interface PostboxConfig { enabled: boolean; minIntervalMinutes: number }
 const MAX_POSTBOX_MIN_INTERVAL_MINUTES = 24 * 60;
 
 /**
- * Alertmanager's notifications (ADR 0086): who may send them to `POST /v1/alertmanager/<name>`, each with a token of its
- * own read from its file at start, and the `severity` labels that are an attention when such an alert begins to fire.
- * Without it there is no such way in.
+ * A webhook (ADR 0091): its name, the last part of `POST /v1/webhooks/<name>` and its directory under
+ * `sources/webhooks/`; its format, with that format's own settings; how a call is checked, by a bearer token or by
+ * GitHub's HMAC of the body with a secret, either read from its file at start; and the description written into its
+ * README.md, which is how she is to read what it sends. Without any there is no such way in.
  */
-export interface AlertmanagerConfig {
-  senders: { name: string; tokenFile: string }[];
-  attentionSeverities: string[];
-}
+export type WebhookConfig = { name: string; description: string } & ({ tokenFile: string } | { secretFile: string }) & WebhookFormatConfig;
+/**
+ * `raw` keeps the headers it names on each line and marks every line for her only when told; `alertmanager` marks an
+ * alert that begins to fire with one of the severities.
+ */
+export type WebhookFormatConfig = { format: 'raw'; headers: string[]; attention: boolean } | { format: 'alertmanager'; attentionSeverities: string[] };
+/** The severities an alert of a webhook of the format `alertmanager` is marked for, unless the config says otherwise. */
+export const ALERTMANAGER_DEFAULTS = { attentionSeverities: ['critical'] };
+export const WEBHOOK_FORMATS: readonly WebhookFormatConfig['format'][] = ['raw', 'alertmanager'];
+/** An HTTP header's name. */
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/** The headers that carry a secret or a login, which a line never keeps. */
+const SECRET_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-hub-signature', 'x-hub-signature-256']);
 /** A sender's name, its directory and the last part of its path: as an agent's. */
 const SENDER_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
@@ -507,7 +516,7 @@ export interface ServerConfig {
   curator: CuratorConfig;
   skills: SkillsConfig;
   postbox: PostboxConfig;
-  alertmanager?: AlertmanagerConfig;
+  webhooks?: WebhookConfig[];
   inbox?: InboxConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
@@ -588,7 +597,7 @@ const SECTIONS = {
   curator: parseCurator,
   skills: parseSkills,
   postbox: parsePostbox,
-  alertmanager: parseAlertmanager,
+  webhooks: parseWebhooks,
   inbox: parseInbox,
   avatar: parseAvatar,
   tools: (value: unknown, path: string) => parseTools(value, path),
@@ -601,6 +610,8 @@ const RENAMED_LOOP_KEYS: Record<string, string> = {
 
 const MOVED: Record<string, string> = {
   dataDirectory: 'the data directory is chosen with --data-dir or the launch directory, not in the config',
+  alertmanager: 'is replaced by webhooks (ADR 0091): write each sender as a webhook of format "alertmanager" in webhooks, '
+    + 'with its name, tokenFile, a description, and attentionSeverities if they were set; it is then sent to /v1/webhooks/<name>',
 };
 
 export async function loadConfig(file: string): Promise<ServerConfig> {
@@ -636,7 +647,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
     skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
     postbox: SECTIONS.postbox(root.postbox ?? {}, 'postbox'),
-    ...(root.alertmanager === undefined ? {} : { alertmanager: SECTIONS.alertmanager(root.alertmanager, 'alertmanager') }),
+    ...(root.webhooks === undefined ? {} : { webhooks: SECTIONS.webhooks(root.webhooks, 'webhooks') }),
     ...(root.inbox === undefined ? {} : { inbox: SECTIONS.inbox(root.inbox, 'inbox') }),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
@@ -1309,32 +1320,58 @@ function parsePostbox(value: unknown, path: string): PostboxConfig {
   return { enabled, minIntervalMinutes: floor as number };
 }
 
-function parseAlertmanager(value: unknown, path: string): AlertmanagerConfig {
-  const alertmanager = object(value, path);
-  onlyKeys(alertmanager, path, ['senders', 'attentionSeverities']);
-  const sendersPath = `${path}.senders`;
-  const listed = required(alertmanager, 'senders', path);
-  if (!Array.isArray(listed) || listed.length === 0) throw new ConfigError(sendersPath, 'must be a list of one sender or more');
-  const senders = listed.map((entry: unknown, index) => {
-    const entryPath = `${sendersPath}[${index}]`;
-    const sender = object(entry, entryPath);
-    onlyKeys(sender, entryPath, ['name', 'tokenFile']);
-    const name = required(sender, 'name', entryPath);
-    if (typeof name !== 'string' || !SENDER_NAME.test(name)) {
-      throw new ConfigError(`${entryPath}.name`, 'the name must be lower-case letters, digits and hyphens, at most 32');
-    }
-    return { name, tokenFile: absolutePath(required(sender, 'tokenFile', entryPath), `${entryPath}.tokenFile`) };
+function parseWebhooks(value: unknown, path: string): WebhookConfig[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ConfigError(path, 'must be a list of one webhook or more');
+  const webhooks = value.map((entry: unknown, index) => parseWebhook(entry, `${path}[${index}]`));
+  webhooks.forEach((webhook, index) => {
+    if (webhooks.findIndex(other => other.name === webhook.name) !== index) throw new ConfigError(`${path}[${index}].name`, 'is named twice');
   });
-  senders.forEach((sender, index) => {
-    if (senders.findIndex(other => other.name === sender.name) !== index) throw new ConfigError(`${sendersPath}[${index}].name`, 'is named twice');
-  });
+  return webhooks;
+}
+
+function parseWebhook(value: unknown, path: string): WebhookConfig {
+  const webhook = object(value, path);
+  const format = webhook.format;
+  if (format === undefined) throw new ConfigError(`${path}.format`, 'is required');
+  if (!WEBHOOK_FORMATS.includes(format as WebhookFormatConfig['format'])) {
+    throw new ConfigError(`${path}.format`, `must be one of ${WEBHOOK_FORMATS.join(', ')}`);
+  }
+  // The settings of the other format cannot be written.
+  const own = format === 'raw' ? ['headers', 'attention'] : ['attentionSeverities'];
+  onlyKeys(webhook, path, ['name', 'format', 'tokenFile', 'secretFile', 'description', ...own]);
+  const name = required(webhook, 'name', path);
+  if (typeof name !== 'string' || !SENDER_NAME.test(name)) {
+    throw new ConfigError(`${path}.name`, 'the name must be lower-case letters, digits and hyphens, at most 32');
+  }
+  const description = nonEmptyString(required(webhook, 'description', path), `${path}.description`);
+  if (webhook.tokenFile !== undefined && webhook.secretFile !== undefined) throw new ConfigError(path, 'give only one of tokenFile and secretFile');
+  let check: { tokenFile: string } | { secretFile: string };
+  if (webhook.tokenFile !== undefined) check = { tokenFile: absolutePath(webhook.tokenFile, `${path}.tokenFile`) };
+  else if (webhook.secretFile !== undefined) check = { secretFile: absolutePath(webhook.secretFile, `${path}.secretFile`) };
+  else throw new ConfigError(path, 'needs tokenFile or secretFile: a webhook is never taken unchecked');
+  if (format === 'raw') {
+    const attention = webhook.attention === undefined ? false : webhook.attention;
+    if (typeof attention !== 'boolean') throw new ConfigError(`${path}.attention`, 'must be true or false');
+    return { name, format, ...check, description, headers: parseHeaderNames(webhook.headers ?? [], `${path}.headers`), attention };
+  }
   const severitiesPath = `${path}.attentionSeverities`;
-  const severities = alertmanager.attentionSeverities ?? ALERTMANAGER_DEFAULTS.attentionSeverities;
+  const severities = webhook.attentionSeverities ?? ALERTMANAGER_DEFAULTS.attentionSeverities;
   if (!Array.isArray(severities) || severities.some(item => typeof item !== 'string' || item === '')
     || new Set(severities).size !== severities.length) {
     throw new ConfigError(severitiesPath, 'must be a list of distinct severities, such as ["critical"]');
   }
-  return { senders, attentionSeverities: [...severities as string[]] };
+  return { name, format: 'alertmanager', ...check, description, attentionSeverities: [...severities as string[]] };
+}
+
+/** The headers a `raw` webhook keeps on its lines, as written; none that carries a secret, and none twice. */
+function parseHeaderNames(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || !HEADER_NAME.test(item))) {
+    throw new ConfigError(path, 'must be a list of header names, such as ["X-GitHub-Event"]');
+  }
+  const names = value as string[];
+  if (new Set(names.map(name => name.toLowerCase())).size !== names.length) throw new ConfigError(path, 'names a header twice');
+  if (names.some(name => SECRET_HEADERS.has(name.toLowerCase()))) throw new ConfigError(path, 'must not name a header that carries a secret or a login');
+  return [...names];
 }
 
 function parseInbox(value: unknown, path: string): InboxConfig {

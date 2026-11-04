@@ -943,27 +943,57 @@ test('a parameter named like a file or a secret is a name, not a secret referenc
   rejects(withTools({ ...weather(), command: ['/tools/x', 'sk-abcdef'] }), 'tools[0].command[1]', /secrets/);
 });
 
-test('Alertmanager’s senders are named with their token files, and her mark is on critical unless told (ADR 0086)', () => {
-  assert.equal(parseConfig(base()).alertmanager, undefined, 'without it, there is no way in');
-  const senders = [{ name: 'fraction', tokenFile: '/run/secrets/alertmanager-fraction' }, { name: 'test-2', tokenFile: '/run/secrets/alertmanager-test' }];
-  assert.deepEqual(parseConfig({ ...base(), alertmanager: { senders } }).alertmanager, { senders, attentionSeverities: ['critical'] });
-  assert.deepEqual(parseConfig({ ...base(), alertmanager: { senders, attentionSeverities: ['critical', 'page'] } }).alertmanager?.attentionSeverities,
-    ['critical', 'page']);
-  assert.deepEqual(parseConfig({ ...base(), alertmanager: { senders, attentionSeverities: [] } }).alertmanager?.attentionSeverities, []);
-  const one = (sender: Record<string, unknown>) => ({ ...base(), alertmanager: { senders: [sender] } });
-  rejects({ ...base(), alertmanager: {} }, 'alertmanager.senders', /required/);
-  rejects({ ...base(), alertmanager: { senders: [] } }, 'alertmanager.senders');
-  rejects({ ...base(), alertmanager: { senders: {} } }, 'alertmanager.senders');
-  rejects({ ...base(), alertmanager: { senders, extra: true } }, 'alertmanager.extra');
-  for (const name of ['Fraction', 'a_b', '-a', '', 'a/b', 'x'.repeat(33)]) rejects(one({ name, tokenFile: '/run/t' }), 'alertmanager.senders[0].name');
-  rejects(one({ name: 'fraction' }), 'alertmanager.senders[0].tokenFile', /required/);
-  rejects(one({ name: 'fraction', tokenFile: 'relative/token' }), 'alertmanager.senders[0].tokenFile');
-  rejects(one({ name: 'fraction', tokenFile: '/run/t', url: 'https://x.example.test' }), 'alertmanager.senders[0].url');
-  rejects(one({ name: 'fraction', token: 'written-in-place' }), 'alertmanager.senders[0].token', /secrets must not be written/);
-  rejects({ ...base(), alertmanager: { senders: [senders[0], { ...senders[1], name: 'fraction' }] } }, 'alertmanager.senders[1].name', /twice/);
+test('webhooks are named, each with its format, one way to check a call and a description (ADR 0091)', () => {
+  assert.equal(parseConfig(base()).webhooks, undefined, 'without it, there is no way in');
+  const alerts = { name: 'fraction', format: 'alertmanager', tokenFile: '/run/secrets/webhook-fraction', description: 'クラスタ fraction のアラート' };
+  const github = { name: 'github-push', format: 'raw', secretFile: '/run/secrets/webhook-github', description: 'GitHub の push',
+    headers: ['X-GitHub-Event', 'X-GitHub-Delivery'], attention: true };
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [alerts, github] }).webhooks, [
+    { ...alerts, attentionSeverities: ['critical'] },
+    github,
+  ]);
+  const plain = { name: 'plain', format: 'raw', tokenFile: '/run/t', description: '何か' };
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [plain] }).webhooks, [{ ...plain, headers: [], attention: false }],
+    'a raw webhook names no header and marks nothing unless told');
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...alerts, attentionSeverities: ['critical', 'page'] }] }).webhooks?.[0],
+    { ...alerts, attentionSeverities: ['critical', 'page'] });
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...alerts, attentionSeverities: [] }] }).webhooks?.[0], { ...alerts, attentionSeverities: [] });
+
+  const one = (webhook: Record<string, unknown>) => ({ ...base(), webhooks: [webhook] });
+  rejects({ ...base(), webhooks: [] }, 'webhooks');
+  rejects({ ...base(), webhooks: {} }, 'webhooks');
+  rejects(one({ ...plain, extra: true }), 'webhooks[0].extra', /unknown setting/);
+  for (const name of ['Fraction', 'a_b', '-a', '', 'a/b', 'x'.repeat(33), 3]) rejects(one({ ...plain, name }), 'webhooks[0].name');
+  rejects(one({ ...plain, name: undefined }), 'webhooks[0].name', /required/);
+  rejects({ ...base(), webhooks: [plain, { ...alerts, name: 'plain' }] }, 'webhooks[1].name', /twice/);
+  for (const format of [undefined, 'github', 'Raw', 1]) rejects(one({ ...plain, format }), 'webhooks[0].format');
+  for (const description of [undefined, '', '  ', 3]) rejects(one({ ...plain, description }), 'webhooks[0].description');
+
+  // One way to check a call, never both and never none.
+  rejects(one({ ...plain, secretFile: '/run/s' }), 'webhooks[0]', /only one of tokenFile and secretFile/);
+  const { tokenFile: _tokenFile, ...unchecked } = plain;
+  rejects(one(unchecked), 'webhooks[0]', /tokenFile or secretFile/);
+  rejects(one({ ...plain, tokenFile: 'relative/token' }), 'webhooks[0].tokenFile');
+  rejects(one({ ...unchecked, secretFile: 'relative' }), 'webhooks[0].secretFile');
+  rejects(one({ ...unchecked, secret: 'written-in-place' }), 'webhooks[0].secret', /secrets must not be written/);
+
+  // The fields of the other format cannot be written.
+  rejects(one({ ...plain, attentionSeverities: ['critical'] }), 'webhooks[0].attentionSeverities', /unknown setting/);
+  rejects(one({ ...alerts, headers: ['X-A'] }), 'webhooks[0].headers', /unknown setting/);
+  rejects(one({ ...alerts, attention: true }), 'webhooks[0].attention', /unknown setting/);
   for (const severities of ['critical', [''], [3], ['critical', 'critical']]) {
-    rejects({ ...base(), alertmanager: { senders, attentionSeverities: severities } }, 'alertmanager.attentionSeverities');
+    rejects(one({ ...alerts, attentionSeverities: severities }), 'webhooks[0].attentionSeverities');
   }
+  for (const attention of ['yes', 1, null]) rejects(one({ ...plain, attention }), 'webhooks[0].attention');
+  for (const headers of ['X-A', [''], ['X A'], ['X:A'], [3], ['X-A', 'x-a']]) rejects(one({ ...plain, headers }), 'webhooks[0].headers');
+  for (const header of ['Authorization', 'cookie', 'X-Hub-Signature-256', 'X-Hub-Signature', 'Proxy-Authorization']) {
+    rejects(one({ ...plain, headers: [header] }), 'webhooks[0].headers', /secret/);
+  }
+});
+
+test('the old alertmanager section stops the start and says to write it as a webhook (ADR 0091)', () => {
+  const old = { senders: [{ name: 'fraction', tokenFile: '/run/secrets/alertmanager-fraction' }] };
+  rejects({ ...base(), alertmanager: old }, 'alertmanager', /webhooks.*format "alertmanager"/);
 });
 
 test('an agent may have a token file of its own, and a2a.tokenFile is needed only by the agents without one (ADR 0089)', () => {
