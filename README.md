@@ -979,10 +979,12 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
 外の仕組みが POST する JSON を、`/sources` の下のファイルにして、`sources_updated` で natsumi に知らせます
 （[ADR 0091](docs/adr/0091-one-way-in-for-webhooks-with-formats-in-the-code.md)）。設定に `webhooks` がなければ、受け口はありません（404）。
 
-webhook ごとに、名前と、届いたものの読み方（型）と、呼び出しの確かめ方を決めます。型は natsumi のコードが持つ次の 2 つです。
+webhook ごとに、名前と、届いたものの読み方（型）と、呼び出しの確かめ方を決めます。型は natsumi のコードが持つ次の 3 つです。
 
 - `raw`: 届いた 1 回を、そのまま日付のファイルの 1 行にします。JSON を POST できる送り手なら、何でも受けられます（GitHub など）。
 - `alertmanager`: Alertmanager の webhook として読み、アラートの状態が変わったときだけ行を書きます。
+- `github`: GitHub App の webhook として読み、決めた作者の PR で、決めたレビュアーにレビューが頼まれたものの出来事だけを行にします
+  （[ADR 0093](docs/adr/0093-a-github-format-for-pull-requests-asked-to-review.md)）。
 
 1. webhook ごとに token か秘密を作ります（例: `openssl rand -base64 32`）。natsumi と送り手の両方に置きます。webhook ごとに別にします。
 2. 設定に `webhooks` を足します。値は架空の例です。
@@ -1003,6 +1005,15 @@ webhook ごとに、名前と、届いたものの読み方（型）と、呼び
        "description": "yuanying/natsumi の issue とコメント。X-GitHub-Event がイベントの種類です。",
        "headers": ["X-GitHub-Event", "X-GitHub-Delivery"],
        "attention": false
+     },
+     {
+       "name": "github-reviews",
+       "format": "github",
+       "secretFile": "/run/secrets/natsumi_webhook_github_reviews_secret",
+       "description": "Renovate の PR で、レビューを頼まれたもの。依頼・push・CI の結果・閉じたことが届きます。",
+       "authors": ["renovate[bot]"],
+       "reviewers": ["example-reviewer"],
+       "attention": false
      }
    ]
    ```
@@ -1010,16 +1021,18 @@ webhook ごとに、名前と、届いたものの読み方（型）と、呼び
    | 項目 | 必須 | 既定 | 中身 |
    | --- | --- | --- | --- |
    | `name` | 必須 | | 英小文字・数字・ハイフンで 32 文字まで、重ねられません。受け口のパスとディレクトリに使います |
-   | `format` | 必須 | | `raw` か `alertmanager` |
+   | `format` | 必須 | | `raw`・`alertmanager`・`github` のどれか |
    | `tokenFile` | どちらか 1 つ | | `Authorization: Bearer <token>` の token のファイルの絶対パス。Alertmanager はこちらです |
    | `secretFile` | どちらか 1 つ | | GitHub 形の HMAC の秘密のファイルの絶対パス。届いた本文の HMAC-SHA256 を `X-Hub-Signature-256: sha256=<16 進>` と照らします。GitHub はこちらです |
    | `description` | 必須 | | 何が送られてくるか、どう読むか。webhook のディレクトリの `README.md` に書き、natsumi はそれを読みます |
    | `headers` | | `[]` | `raw` だけ。行に残すヘッダーの名前の並び。`Authorization`・`Cookie`・`X-Hub-Signature(-256)` は書けません |
-   | `attention` | | `false` | `raw` だけ。`true` なら、届くたびに `attention`（`kind` が `webhook`）として、待たずに、夜でも知らせます |
+   | `attention` | | `false` | `raw` と `github`。`true` なら、行を書くたびに `attention`（`kind` が `webhook`）として、待たずに、夜でも知らせます（`raw` は届くたび） |
    | `attentionSeverities` | | `["critical"]` | `alertmanager` だけ。鳴り始めたときに `attention`（`kind` が `alert`）にするラベル `severity` の値の並び。`[]` なら印を付けません |
+   | `authors` | `github` は必須 | | `github` だけ。扱う PR の作者の GitHub のログインの並び（1 つ以上、例: `["renovate[bot]"]`）。大文字と小文字は区別しません |
+   | `reviewers` | `github` は必須 | | `github` だけ。レビューを頼まれる人の GitHub のログインの並び（1 つ以上）。人への依頼だけを照らし、チームへの依頼は照らしません |
 
    `tokenFile` と `secretFile` は、両方を書くことも、どちらも書かないこともできません（起動を止めます）。ファイルは起動時に読み、読めなければ設定の名前だけを示して起動を止めます。
-   型の違う欄（`raw` の `attentionSeverities` など）も起動を止めます。
+   型の違う欄（`raw` の `attentionSeverities` など）も起動を止めます。`github` で `authors` か `reviewers` が無い・空なら起動を止めます（すべての PR を通す設定は作れません）。
 
 3. 送り手に natsumi への宛先を足します。URL は `<publicOrigin>/v1/webhooks/<name>` です。
    - Alertmanager: receiver の `webhook_configs` の `url` に書き、`http_config.authorization.credentials_file` に同じ token を置きます。
@@ -1027,11 +1040,15 @@ webhook ごとに、名前と、届いたものの読み方（型）と、呼び
      Slack などへの通知は別の receiver のまま残せます。
    - GitHub: webhook の Payload URL に書き、Content type を `application/json`、Secret に同じ秘密を置きます。
      急ぐイベントと急がないイベントは、`attention` の違う webhook に分けて送ります。
+   - GitHub App（型 `github`）: App の Webhook URL に書き、Webhook secret に同じ秘密を置きます。権限は Pull requests と Checks の read、購読するイベントは Pull request と Check suite に絞ります。
+     App の webhook は 1 つの URL にすべてのリポジトリのイベントを送るので、`github` の webhook は App に 1 つです。
 
 - 受け口は `POST /v1/webhooks/<name>` で、ブラウザと同じ待ち受けにあります。ブラウザのログインの cookie では通しません。
   - 名前を知らない webhook、token や署名の違う呼び出し、token や署名の無い呼び出しは、どれも同じ 401 です。token と署名は、時間に依らない比べ方で照らします。
   - 本文は 1 MiB まで（超えれば 413）。`tokenFile` の webhook は token を確かめてから、`secretFile` の webhook は本文を読み終えてから署名を確かめるので、上限を超えた本文は確かめる前に 413 です。
   - JSON として読めない本文は 415、`alertmanager` の webhook で Alertmanager の webhook の形でなければ 400 です。`raw` はどんな JSON でも受けます。
+  - `github` の webhook は、`X-GitHub-Event` の無い呼び出しと、読むイベント（`pull_request` の `review_requested`・`review_request_removed`・`synchronize`・`closed`、`check_suite` の `completed`）なのに形の合わない本文か `X-GitHub-Delivery` の無いものを 400 にします。
+    ほかのイベントと action（`ping` を含む）は、読まずに 200（`{"recorded": 0}`）です。
   - token と秘密は TLS の中に置くため、公開の入口（Ingress、HTTPS）を通す道を勧めます。クラスタの中の Service を直接叩いても、同じ token と秘密で受けます。
   - 書き終えてから 200（`{"recorded": <書いた行の数>}`）を返し、書けなければ 503 を返して送り手の送り直しに任せます。書けなかった行は、次に届いたときか、次の起動で書きます。
 - 書くのは data directory の `sources/webhooks/<name>/` です。日付と時刻（`at`）は `loop.timeZone` の秒までです。古いファイルは消しません。config から外した webhook のディレクトリも消しません。
@@ -1040,8 +1057,13 @@ webhook ごとに、名前と、届いたものの読み方（型）と、呼び
   - `alertmanager` の `<日付>.jsonl`: アラートの状態が変わったときだけ、1 行 1 アラートで足します（初めての `firing`、`resolved` からの `firing`、`firing` からの `resolved`、知らないアラートの `resolved`）。
     `repeat_interval` の送り直しと、2xx 以外の応答の後の送り直しでは足しません。
   - `alertmanager` の `firing.jsonl`: いま `firing` のアラートを、始まった順に 1 行ずつ。届くたびに書き直し、差分の履歴からは外します。
+  - `github` の `<日付>.jsonl`: `authors` の作者の PR に `reviewers` の誰かへの `review_requested` が届くと、その PR を覚えて行にします。
+    覚えた PR の `synchronize`、`check_suite` の `completed`（PR ごとに 1 行）、`reviewers` の誰かの `review_request_removed`、`closed` を行にします。忘れるのは `closed` のときだけです。
+    行は決まった欄（`at`・`event`・`action`・`delivery`・`repository`・`number`・`title`・`url`・`author`・`head_sha`・`head_ref`・`base_ref` と、`reviewer`・`conclusion`・`merged`）だけで、PR の本文は残しません。
+    同じ `X-GitHub-Delivery` の 2 回目以後（GitHub の Redeliver）は行にせず、覚える・忘れるにも使わず 200 を返します。
   - 行の欄と読み方は、なつみ向けのマニュアル（`manual/webhooks.md`）にあります。
 - 日付のファイルの行と、アラートごとの最後の状態は `.natsumi/state.sqlite`（migration 36 の `webhook_lines`・`webhook_alerts`）に webhook の名前で持ち、ファイルはそこから書き直します。
+  `github` の覚えた PR と、行を書いた配送の ID は、migration 38 の `webhook_pull_requests`・`webhook_deliveries` に webhook の名前で持ちます。閉じられないまま残った PR と古い配送の ID は消しません。
 - 印の無い行は、ふつうの変化として下の「読みものの更新」の待ちの後に知らせます。
 - token や秘密を入れ替えるときは、natsumi と送り手の両方を直して、natsumi を再起動します。ログには webhook の名前と失敗の種類だけを出し、届いた中身と token・秘密は出しません。
 - 以前の `alertmanager` の設定と受け口 `POST /v1/alertmanager/<name>` はありません。設定に `alertmanager` が残っていれば、起動を止めて、型 `alertmanager` の webhook として `webhooks` に書き直すよう示します。
