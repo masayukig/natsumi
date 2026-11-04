@@ -561,6 +561,27 @@ test('the polling interval and the wait limit are whole numbers with a floor', (
   rejects({ ...base(), a2a: { ...a2a(), retries: 3 } }, 'a2a.retries', /unknown/);
 });
 
+test('a2a.pushUrl is the origin the agents reach natsumi at, and turns on asking them to push (ADR 0092)', () => {
+  const push = (value: Record<string, unknown>) => ({ ...base(), a2a: { ...a2a(), ...value } });
+  assert.deepEqual(parseConfig(push({ pushUrl: 'https://natsumi.example.test' })).a2a, {
+    tokenFile: '/var/run/secrets/natsumi/a2a-token', pollIntervalSeconds: 15, giveUpAfterHours: 24,
+    agents: { wiki: { url: 'https://agents.example.test/wiki-keeper/' } },
+    pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds: 300,
+  });
+  assert.equal(parseConfig(push({ pushUrl: 'https://natsumi.example.test/' })).a2a?.pushUrl, 'https://natsumi.example.test');
+  assert.equal(parseConfig(push({ pushUrl: 'http://127.0.0.1:8443' })).a2a?.pushUrl, 'http://127.0.0.1:8443');
+  assert.equal(parseConfig(push({ pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds: 900 })).a2a?.pushPollIntervalSeconds, 900);
+  for (const pushUrl of ['http://natsumi.example.test', 'https://user:pass@natsumi.example.test', 'https://natsumi.example.test/?a=1',
+    'https://natsumi.example.test/#x', 'https://natsumi.example.test/natsumi/', 'https://natsumi.example.test/v1/a2a-push', 'natsumi', 42]) {
+    rejects(push({ pushUrl }), 'a2a.pushUrl');
+  }
+  // Longer than the rounds, or a task with a push would be fetched as often as one without.
+  for (const pushPollIntervalSeconds of [14, 0, 30.5, '300']) {
+    rejects(push({ pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds }), 'a2a.pushPollIntervalSeconds');
+  }
+  rejects(push({ pushPollIntervalSeconds: 300 }), 'a2a.pushPollIntervalSeconds', /pushUrl/);
+});
+
 const slack = () => ({
   workspaces: { work: { botTokenEnv: 'NATSUMI_SLACK_WORK_BOT_TOKEN', appTokenFile: '/run/secrets/slack-work-app-token' } },
 });

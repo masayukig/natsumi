@@ -480,6 +480,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         uploads,
         ...(webhooks ? { webhooks } : {}),
         ...(inboxEndpoint ? { a2a: inboxEndpoint } : {}),
+        // The agents' pushes (ADR 0092), only when natsumi asks them to push.
+        ...(config.a2a?.pushUrl ? { a2aPush: { push: (token: string, ring: boolean) => thinkingLoop.agentPush(token, ring) } } : {}),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

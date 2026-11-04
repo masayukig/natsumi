@@ -836,6 +836,16 @@ export class ThinkingLoop {
   }
 
   /**
+   * A push from an outside agent, by the bearer token it came with (ADR 0092): true when it is the token of a task
+   * still waiting, whose GetTask then runs once in the background; false for any other, and nothing is done. With
+   * `ring` false the token is only looked up. What the push said is never read.
+   */
+  agentPush(token: string, ring = true): boolean {
+    if (this.unavailable) return false;
+    return this.agents.push(token, ring);
+  }
+
+  /**
    * One look at the postbox (ADR 0076), from the scheduler's tick whatever the hour: memory's HEAD read again when it
    * moved, and each letter whose run has come sent once. No turn of hers is used, and no model is called.
    */

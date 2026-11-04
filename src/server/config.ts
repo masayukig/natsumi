@@ -260,9 +260,21 @@ export interface A2AConfig {
    * guards (ADR 0089). natsumi only ever sees the names.
    */
   agents: Record<string, { url: string; tokenFile?: string }>;
+  /**
+   * The origin the agents reach natsumi at, such as `https://natsumi.example.net` (ADR 0092). Writing it turns on asking
+   * an agent whose card says it pushes to push to `<pushUrl>/v1/a2a-push`, and opens that way in. Not `publicOrigin`:
+   * the agents' way to her need not be the browsers'.
+   */
+  pushUrl?: string;
+  /** How often a task asked to push is fetched all the same, for a push that never came. There only with `pushUrl`. */
+  pushPollIntervalSeconds?: number;
 }
 
 export const DEFAULT_A2A_POLL_INTERVAL_SECONDS = 15;
+/** Long, for it only bounds how late a reply is when its push is lost (ADR 0092). */
+export const DEFAULT_A2A_PUSH_POLL_INTERVAL_SECONDS = 300;
+/** Where an agent pushes to (ADR 0092), under `a2a.pushUrl`. The same for every request: the token tells the task. */
+export const A2A_PUSH_PATH = '/v1/a2a-push';
 export const DEFAULT_A2A_GIVE_UP_AFTER_HOURS = 24;
 /** Under this the server would ask the agents more often than any answer could change. */
 const MIN_A2A_POLL_INTERVAL_SECONDS = 5;
@@ -981,7 +993,7 @@ function parseApns(value: unknown, path: string): ApnsConfig {
 
 function parseA2A(value: unknown, path: string): A2AConfig {
   const a2a = object(value, path);
-  onlyKeys(a2a, path, ['tokenFile', 'pollIntervalSeconds', 'giveUpAfterHours', 'agents']);
+  onlyKeys(a2a, path, ['tokenFile', 'pollIntervalSeconds', 'giveUpAfterHours', 'agents', 'pushUrl', 'pushPollIntervalSeconds']);
   const interval = a2a.pollIntervalSeconds ?? DEFAULT_A2A_POLL_INTERVAL_SECONDS;
   if (!positiveInteger(interval, MIN_A2A_POLL_INTERVAL_SECONDS)) {
     throw new ConfigError(`${path}.pollIntervalSeconds`, `must be an integer of at least ${MIN_A2A_POLL_INTERVAL_SECONDS}`);
@@ -1014,8 +1026,30 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     ? undefined : absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`);
   return {
     ...(shared === undefined ? {} : { tokenFile: shared }),
-    pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
+    pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents, ...parsePush(a2a, path, interval as number),
   };
+}
+
+/** `a2a.pushUrl` and the interval that goes with it (ADR 0092), or nothing when the agents are not asked to push. */
+function parsePush(a2a: Record<string, unknown>, path: string, interval: number): Pick<A2AConfig, 'pushUrl' | 'pushPollIntervalSeconds'> {
+  const intervalPath = `${path}.pushPollIntervalSeconds`;
+  if (a2a.pushUrl === undefined) {
+    if (a2a.pushPollIntervalSeconds !== undefined) throw new ConfigError(intervalPath, 'is read only with pushUrl');
+    return {};
+  }
+  const urlPath = `${path}.pushUrl`;
+  const url = parseUrl(a2a.pushUrl, urlPath);
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+  }
+  // The way in is served at /v1/a2a-push of the listener, and a path here would send the pushes somewhere it is not.
+  if (url.pathname !== '/') throw new ConfigError(urlPath, `must be an origin only; ${A2A_PUSH_PATH} is added to it`);
+  const pushInterval = a2a.pushPollIntervalSeconds ?? DEFAULT_A2A_PUSH_POLL_INTERVAL_SECONDS;
+  if (!positiveInteger(pushInterval, interval)) {
+    throw new ConfigError(intervalPath, `must be an integer of at least pollIntervalSeconds (${interval})`);
+  }
+  return { pushUrl: url.origin, pushPollIntervalSeconds: pushInterval as number };
 }
 
 function parseSlack(value: unknown, path: string): SlackConfig {
