@@ -65,11 +65,18 @@ GitHub の webhook について確かめた事実は次のとおりである（R
   - `pull_request` の `synchronize`。
   - `check_suite` の `completed` のうち、`pull_requests` に覚えた PR が載っているもの。1 つの suite に覚えた PR が複数載っていれば、PR ごとに 1 行にする。
   - `pull_request` の `closed`。行にしてから忘れる。
-  - `pull_request` の `review_request_removed` のうち、外された相手が `reviewers` のどれかで、その PR に `reviewers` の誰への依頼も残っていないもの。行にしてから忘れる。
+  - `pull_request` の `review_request_removed` のうち、外された相手が `reviewers` のどれかであるもの。行にするだけで、覚えた PR は忘れない。
+- 覚えた PR を忘れるのは、`closed` のときだけである。
 - 覚えていない PR のイベント、覚えた PR のほかの action は、読み捨てて 2xx を返す。
-- 同じ配送の ID が届いたものは、2 回目以後は行にも、覚える・忘れるにもせず、2xx を返す。GitHub の送り直しは人の Redeliver だけで、そのときの配送の ID は同じである。
-- `closed` も `review_request_removed` も届かずに残った PR（届いたときに natsumi が落ちていた、など）は、最初の版では消さない。その PR のイベントが通り続けるだけである。
+- 同じ配送の ID が届いたものは、2 回目以後は行にも、覚える・忘れるにも使わず、2xx を返す。GitHub の送り直しは人の Redeliver だけで、そのときの配送の ID は同じである。
+- `closed` が届かずに残った PR（届いたときに natsumi が落ちていた、など）は、最初の版では消さない。その PR のイベントが通り続けるだけである。
 - `closed` の後に開き直された PR は、新しい `review_requested` が届くまで覚えない。
+
+退けた案:
+
+- **`review_request_removed` で忘れる**: レビューを出したとき（承認を含む）に GitHub が `review_request_removed` を送るかは、文書から分からない。
+  送るなら、承認した PR はその時点で忘れられる。承認のあとに push されるとルールセットが承認を取り消すが（ADR 0079 の「追記（2026-11-04）」）、その `synchronize` が通らず、受け手は承認をやり直す機会を知らない。
+  `closed` だけで忘れれば、GitHub がどちらの振る舞いでも、承認のあとの push と CI の結果は届く。
 
 ### 1 行に残すもの
 
@@ -118,8 +125,8 @@ GitHub の webhook について確かめた事実は次のとおりである（R
 
 ### 実装で確かめること
 
-- レビュアーがレビューを出したとき（承認を含む）に、GitHub が `review_request_removed` を送るか。送るなら、承認した PR はその時点で忘れられ、承認のあとの push や `closed` は通らない。
-  承認のあとは auto-merge が進めるので、レビューの依頼は済んでおり、取り消された承認は週ごとの日課が拾う。困るようなら忘れる条件を見直す。
+- レビュアーがレビューを出したとき（承認を含む）に、GitHub が `review_request_removed` を送るか。忘れ方には効かないが、行の読み方に要る。
+  送るなら、承認のたびに `review_request_removed` の行が書かれ、手で依頼を外された行と見分けられない。マニュアルの型 `github` の節で、その行をどう読むかを書く。
 - Renovate の PR で CODEOWNERS による自動の依頼が、`requested_reviewer` を持つ `review_requested` として届くこと。
 
 ### 置き換える既存の決定
@@ -139,6 +146,8 @@ GitHub の webhook について確かめた事実は次のとおりである（R
 - fork のブランチの PR は、`check_suite` の `pull_requests` が空になるので、CI の結果が通らない。依頼・push・閉じたことだけが通る。受け手自身が fork から出した直しの PR は、作者が `authors` に入らないので、もともと覚えない。
 - 型は GitHub に問い合わせないので、取りこぼした出来事は埋まらない。natsumi が落ちていた間の配送や 5xx を返した配送は、人が Redeliver しない限り失われる。webhook を入れる前に開いていた PR も届かない。どちらも週ごとの日課が拾う。
 - 消さない残った PR の行が、表に少しずつ溜まる。数は扱う PR の数を超えない。
+- 依頼を手で外された PR も、`closed` まで覚えたままになる。その PR の push・CI の結果・閉じたことは、外された後も受け手に届き続ける。
+  受け手は `review_request_removed` の行で外されたことを知り、それより後の行を読み流す。
 - `X-GitHub-Event` は署名の外にある。署名の合う本文を見た者は、イベントの種類を変えて送り直せる。本文の形がイベントごとに違うので、多くは 400 か読み捨てになる。
   秘密が漏れていなければ、新しい本文は作れない（ADR 0091 の Consequences の「騙るものへの答え」のまま）。
 - PR の題、ブランチの名前は外の人が書いた文字列で、行に入る。なつみはそれを外の文章として読む（ADR 0091 のまま）。
