@@ -101,7 +101,7 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   const text = await dockerfile();
   const stage = text.slice(text.indexOf(' AS sdctl\n'), text.indexOf('\nFROM ', text.indexOf(' AS sdctl\n')));
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
-  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.4\.0\b/);
+  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v\d+\.\d+\.\d+\b/);
   assert.doesNotMatch(stage, /@latest/);
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });

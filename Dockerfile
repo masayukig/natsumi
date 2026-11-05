@@ -29,7 +29,7 @@ RUN go test ./... \
 # sdctl, which natsumi draws with (ADR 0044). Its releases carry no binary, so it is built from its source at a fixed
 # version, static like the runner.
 FROM golang:1.27 AS sdctl
-RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.4.0
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.5.0
 
 # kubectl for the workspace (ADR 0085), a fixed release of the clusters' minor, checked against the checksum published
 # beside it. Renovate reads the version from the ARG line as a Kubernetes release.
