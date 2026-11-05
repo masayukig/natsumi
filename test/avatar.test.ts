@@ -509,14 +509,14 @@ test('aki has her own name, complete assets and Anima drawing settings', async (
   assert.deepEqual(avatar.defaults, []);
   assert.equal(avatar.personality, await readFile(join(BUILT_IN_DIRECTORY, 'aki', 'personality.md'), 'utf8'));
   assert.match(avatar.personality!, /^# 性格・話し方\n[\s\S]*一人称は「ぼく」。二人称は「きみ」/);
-  assert.equal(avatar.appearance?.lora, 'kutara_anima.v6');
+  assert.equal(avatar.appearance?.lora, 'kutara_anima.v12');
   assert.match(avatar.appearance!.body, /kutara aki, 1girl, black hair, bob cut,/);
   assert.ok(!avatar.appearance!.body.includes('femboy'));
   assert.deepEqual(avatar.appearance?.keep, ['black hair', 'bob cut', 'gray eyes', 'freckles']);
   for (const word of avatar.appearance!.keep) {
     assert.ok(avatar.appearance!.body.includes(word), `body must contain keep word: ${word}`);
   }
-  assert.equal(avatar.appearance?.outfitName, '白いタンクトップと青い短パン');
+  assert.equal(avatar.appearance?.outfitName, 'グレーのパーカー');
   assert.match(avatar.sdctlParams, /anima_2_9_Anima-2.9B-preview-v1/);
   assert.match(avatar.sdctlParams, /twins, duplicate/);
 });
