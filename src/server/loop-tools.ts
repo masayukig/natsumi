@@ -48,7 +48,8 @@ export interface LoopToolHost {
    */
   replyToAgent(to: string, text: string | undefined, state: 'completed' | 'input-required'): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
-  runShell?(command: string): Outcome;
+  /** A command in the workspace, waited for `waitSeconds` when she chose a wait (ADR 0094). */
+  runShell?(command: string, waitSeconds?: number): Outcome;
   /** The runner's raw answer, for `read` (ADR 0047). Present exactly when `runShell` is. */
   capture?: RunnerCapture;
   /** Whether `read` reads the owner's skills in /skills too (ADR 0073). Its description stays as it is either way. */
@@ -90,8 +91,8 @@ export function createLoopTools(host: LoopToolHost) {
     ...(shell ? [defineTool({
       name: RUN_SHELL_TOOL_NAME, label: 'Work in the workspace',
       description: RUN_SHELL_DESCRIPTION,
-      parameters: Type.Object({ command: Type.String() }),
-      execute: async (_id, params) => result(shell(params.command)),
+      parameters: Type.Object({ command: Type.String(), wait_seconds: Type.Optional(Type.Number()) }),
+      execute: async (_id, params) => result(shell(params.command, params.wait_seconds)),
     })] : []),
     defineTool({
       name: 'reply_to_mac', label: 'Reply to the owner',

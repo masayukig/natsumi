@@ -72,8 +72,8 @@ test('the run_shell description is a fixed string, not built from settings or fr
   assert.equal(first!.description, RUN_SHELL_DESCRIPTION);
   assert.equal(second!.description, RUN_SHELL_DESCRIPTION);
 
-  // The only number in it is the one limit that does not change with the deployment, and it is the real one.
-  assert.deepEqual([...RUN_SHELL_DESCRIPTION.matchAll(/\d+/g)].map(match => match[0]), [String(MAX_COMMAND_CHARS)]);
+  // The only numbers in it do not change with the deployment: a wait of 0 (ADR 0094), and the one limit, the real one.
+  assert.deepEqual([...RUN_SHELL_DESCRIPTION.matchAll(/\d+/g)].map(match => match[0]), ['0', String(MAX_COMMAND_CHARS)]);
   assert.equal(MAX_COMMAND_CHARS, 8000);
 });
 
@@ -81,6 +81,14 @@ test('the run_shell description says where writing lands and how a long command 
   for (const phrase of ['bash -c', '/memory', '/work', '/home/natsumi', 'ps', 'kill', '8000']) {
     assert.ok(RUN_SHELL_DESCRIPTION.includes(phrase), phrase);
   }
+  // ADR 0094: the wait she chooses, the background, how its end is told, and the head and tail of a long output.
+  for (const phrase of ['wait_seconds', '0 なら', '裏', 'sources_updated', '/sources/jobs', '先頭と末尾', 'リダイレクト', 'ps や sleep']) {
+    assert.ok(RUN_SHELL_DESCRIPTION.includes(phrase), phrase);
+  }
+  // The tool to wait with comes in a later change; the description does not promise it yet.
+  assert.equal(RUN_SHELL_DESCRIPTION.includes('wait_for_events'), false);
+  // The old promise that the rest of the output is thrown away no longer holds for her commands.
+  assert.equal(RUN_SHELL_DESCRIPTION.includes('読み捨て'), false);
   // Which commands the image holds is not promised: that list is what ADR 0019 did away with.
   for (const listed of ['ripgrep', 'coreutils', 'findutils', 'gawk', 'tzdata']) {
     assert.equal(RUN_SHELL_DESCRIPTION.includes(listed), false, listed);
@@ -94,6 +102,19 @@ test('run_shell hands the command to the host and carries its sentence back', as
   const result = await tool.execute('call-1', { command: 'rg -n 合言葉 /memory' } as never, undefined, undefined, {} as never);
   assert.deepEqual(commands, ['rg -n 合言葉 /memory']);
   assert.equal((result.content[0] as { text: string }).text, '動きました');
+});
+
+test('run_shell takes an optional wait_seconds and hands it to the host as it came', async () => {
+  const calls: [string, number | undefined][] = [];
+  const tool = createLoopTools(host({ runShell: (command: string, waitSeconds?: number) => { calls.push([command, waitSeconds]); return ok('ran'); } }))
+    .find(t => t.name === RUN_SHELL_TOOL_NAME)!;
+  const schema = tool.parameters as { properties: Record<string, { type?: string }>; required?: string[] };
+  assert.deepEqual(Object.keys(schema.properties), ['command', 'wait_seconds']);
+  assert.equal(schema.properties.wait_seconds!.type, 'number');
+  assert.deepEqual(schema.required, ['command']);
+  await tool.execute('call-1', { command: 'make', wait_seconds: 0 } as never, undefined, undefined, {} as never);
+  await tool.execute('call-2', { command: 'ls' } as never, undefined, undefined, {} as never);
+  assert.deepEqual(calls, [['make', 0], ['ls', undefined]]);
 });
 
 // ADR 0024: natsumi is never asked for an event ID, and there is no tool to end an event with.

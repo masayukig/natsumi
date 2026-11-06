@@ -126,11 +126,12 @@ func TestRunCutsOutputAtTheLimit(t *testing.T) {
 	l := limits(t)
 	l.MaxOutput = 100
 	result := (&Server{Limits: l}).Run(`i=0; while [ $i -lt 2000 ]; do echo 0123456789; echo abcdefghij >&2; i=$((i+1)); done`, "")
-	if len(result.Stdout) != 100 || !result.StdoutTruncated {
-		t.Fatalf("stdout %d bytes, truncated %v", len(result.Stdout), result.StdoutTruncated)
+	// The head and the tail together, within the limit (ADR 0094).
+	if len(result.Stdout)+len(result.StdoutTail) != 100 || !result.StdoutTruncated {
+		t.Fatalf("stdout %d+%d bytes, truncated %v", len(result.Stdout), len(result.StdoutTail), result.StdoutTruncated)
 	}
-	if len(result.Stderr) != 100 || !result.StderrTruncated {
-		t.Fatalf("stderr %d bytes, truncated %v", len(result.Stderr), result.StderrTruncated)
+	if len(result.Stderr)+len(result.StderrTail) != 100 || !result.StderrTruncated {
+		t.Fatalf("stderr %d+%d bytes, truncated %v", len(result.Stderr), len(result.StderrTail), result.StderrTruncated)
 	}
 	if result.ExitCode == nil || *result.ExitCode != 0 {
 		t.Fatalf("the command still runs to its end: %+v", result.ExitCode)

@@ -27,6 +27,7 @@ const SCHEDULE_DEFAULTS = {
   goalFileMaxChars: 6000,
   todayPlanMaxChars: 3000,
   shellWaitSeconds: 75,
+  backgroundJobs: 5,
   workspaceSizeWarnBytes: 1073741824,
   awakeHours: { start: '08:00', end: '23:00' },
   pingIntervalMinutes: 30,
@@ -224,6 +225,14 @@ test('the shell wait and the size warning have defaults and bounds', () => {
   // Shorter than the runner's own response limit, and the answer never comes back.
   for (const seconds of [0, 9, 1.5, '75', true]) rejects({ ...base(), loop: { shellWaitSeconds: seconds } }, 'loop.shellWaitSeconds');
   for (const bytes of [0, 1023, 1.5, '1024']) rejects({ ...base(), loop: { workspaceSizeWarnBytes: bytes } }, 'loop.workspaceSizeWarnBytes');
+});
+
+// ADR 0094: how many commands left running are waited for at once. Read from the config, never from the settings page.
+test('the number of background commands waited for has a default of 5, may be 0, and must be a whole number', () => {
+  assert.equal(parseConfig(base()).loop.backgroundJobs, 5);
+  assert.equal(parseConfig({ ...base(), loop: { backgroundJobs: 20 } }).loop.backgroundJobs, 20);
+  assert.equal(parseConfig({ ...base(), loop: { backgroundJobs: 0 } }).loop.backgroundJobs, 0);
+  for (const count of [-1, 1.5, '5', true]) rejects({ ...base(), loop: { backgroundJobs: count } }, 'loop.backgroundJobs');
 });
 
 test('the memory repository defaults to the data directory, and a file limit too small is refused', () => {

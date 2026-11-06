@@ -44,6 +44,7 @@ import { RawWebhook, WEBHOOKS_REGISTRATION, WEBHOOKS_SOURCE, Webhooks, type Webh
 import { InboxEndpoint, inboxSenders } from './a2a-server.ts';
 import { AssertionVerifier, audienceOf } from './gated-assertion.ts';
 import { INBOX_REGISTRATION, INBOX_SOURCE, Inbox } from './inbox.ts';
+import { JOBS_REGISTRATION, JOBS_SOURCE, ShellJobs } from './shell-jobs.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -258,17 +259,31 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
     // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. What the
-    // webhooks send is written there too (ADR 0091), and what the agents ask her (ADR 0089).
-    let sources: Sources | undefined = archive || config.a2a || config.webhooks || config.inbox ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // webhooks send is written there too (ADR 0091), and what the agents ask her (ADR 0089). With a workspace, her
+    // commands left running are put there as they end (ADR 0094).
+    const workspace = config.loop.workspaceSocket !== undefined;
+    let sources: Sources | undefined = archive || config.a2a || config.webhooks || config.inbox || workspace ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
     if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
     if (config.webhooks) sources?.register(WEBHOOKS_REGISTRATION);
     if (config.inbox) sources?.register(INBOX_REGISTRATION);
+    if (workspace) sources?.register(JOBS_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
+    }
+    // Her commands left running (ADR 0094). Those a previous process waited for are not waited for any more: each says
+    // the restart cut its wait off, which the sources then show as an ordinary update. Without the sources none is
+    // followed, since nothing could tell her of its end.
+    const jobsSources = sources;
+    const jobs = workspace && jobsSources ? new ShellJobs({ directory: join(dataDirectory, SOURCES_DIRECTORY, JOBS_SOURCE),
+      timeZone: config.loop.timeZone, now, log, place: { recordAttention: attention => jobsSources.recordAttention(attention),
+        notify: () => jobsSources.notify(), takeIn: path => jobsSources.takeIn(path) } }) : undefined;
+    if (jobs) {
+      const cut = await jobs.giveUpOnRunning();
+      if (cut > 0) log(`jobs: ${cut} background command(s) could no longer be waited for after the restart`);
     }
     // The webhooks (ADR 0091), each read as its format under sources/webhooks/<name>/ with its README.md from the config.
     const webhooksDirectory = join(dataDirectory, SOURCES_DIRECTORY, WEBHOOKS_SOURCE);
@@ -334,6 +349,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}), postbox: config.postbox,
       ...(config.a2a && agentPlace ? { agentReplies: agentPlace } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads, ...(inbox ? { inbox } : {}),
+      ...(jobs ? { jobs } : {}),
     });
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
     if (theDove) {

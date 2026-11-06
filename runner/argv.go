@@ -21,8 +21,9 @@ func (s *Server) RunArgv(argv []string, stdin string, timeout time.Duration, tim
 		timeout = limits.Response
 	}
 	result := Result{ResponseLimitMs: timeout.Milliseconds()}
-	stdout := &capped{max: limits.MaxOutput}
-	stderr := &capped{max: limits.MaxOutput}
+	// A tool's output is its result, kept from the head as it always was (ADR 0075).
+	stdout := &capped{max: limits.MaxOutput, headOnly: true}
+	stderr := &capped{max: limits.MaxOutput, headOnly: true}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = limits.Dir
@@ -54,8 +55,9 @@ func (s *Server) RunArgv(argv []string, stdin string, timeout time.Duration, tim
 	_ = syscall.Kill(-group, syscall.SIGKILL)
 	<-exited
 
-	result.Stdout, result.StdoutTruncated = stdout.take()
-	result.Stderr, result.StderrTruncated = stderr.take()
+	out, errOut := stdout.take(), stderr.take()
+	result.Stdout, result.StdoutOmitted, result.StdoutTruncated = out.text, out.omitted, out.omitted > 0
+	result.Stderr, result.StderrOmitted, result.StderrTruncated = errOut.text, errOut.omitted, errOut.omitted > 0
 	if !result.TimedOut {
 		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			result.Signal = status.Signal().String()
