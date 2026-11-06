@@ -51,7 +51,7 @@ export interface Summary {
   skipped: Skipped[];
 }
 
-const CUT_OFF = new Set(['model-call-limit', 'timeout']);
+const CUT_OFF = new Set(['model-call-limit', 'timeout', 'context-limit']);
 
 /** Passes per scene, variant and check, with the Wilson interval, and the side measures (ADR 0051). */
 export function summarize(records: RunRecord[], skipped: Skipped[] = []): Summary {

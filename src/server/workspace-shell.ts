@@ -144,6 +144,9 @@ export class WorkspaceShell {
 
   constructor(options: WorkspaceShellOptions) { this.options = options; }
 
+  /** How many of her commands left running are followed now: what `wait_for_events` may wait for (ADR 0094). */
+  get followed(): number { return this.following; }
+
   /**
    * One command at a time: Pi runs the tools of one model call concurrently. Waited for until the runner's response
    * limit, and never followed past it: the curator's (ADR 0094).
@@ -478,7 +481,8 @@ function backgroundLines(processGroup: number | undefined, background: Backgroun
   const stop = typeof processGroup === 'number' ? `kill -- -${processGroup} でグループごと止められます` : 'kill で止められます';
   if (background.kind === 'followed') {
     return [`コマンドは止めずに裏で動かしています${group}。終わったら sources_updated で知らせ、終わり方と出力を ${background.path}/ に置きます。`,
-      'ps や sleep で様子を見に行かなくてかまいません。ほかにすることがあれば続けてください。急がないなら、ターンを終えてもかまいません（終わったら知らせが届きます）。',
+      'ps や sleep で様子を見に行かなくてかまいません。ほかにすることがあれば続けてください。'
+        + '結果を見てこのターンのうちに続けたいなら、wait_for_events で待てます。急がないなら、ターンを終えてもかまいません（終わったら知らせが届きます）。',
       `要らなくなったら ${stop}。`];
   }
   const why = background.kind === 'full' ? `終わりを待っているコマンドがすでに上限の ${background.limit} 個あるので、`

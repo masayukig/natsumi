@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ImageContent } from '@earendil-works/pi-ai';
-import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { routeReady } from '../pi/auth.ts';
 import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
@@ -20,9 +20,9 @@ import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownIm
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { CODEMODE_TOOL_NAME, withCodemode } from './codemode.ts';
-import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
+import { createLoopTools, WAIT_FOR_EVENTS_TOOL_NAME, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { gitIdentity } from './git.ts';
-import { compactionInstructions, composeSystemPrompt, DEFAULT_SELF, NAP_INSTRUCTIONS, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
+import { compactionInstructions, composeSystemPrompt, CONTEXT_NUDGE, DEFAULT_SELF, NAP_INSTRUCTIONS, REFLECTION_REQUEST, REVIEW_INSTRUCTIONS,
   type Self } from './prompts.ts';
 import { readFoldChoice, writeFoldStatus, type Fold } from './fold-setting.ts';
 import { turnFoldExtension } from './turn-fold.ts';
@@ -54,6 +54,12 @@ export const THINKING_LINE_MAX_CHARS = 120;
 export const THINKING_MIN_INTERVAL_MS = 250;
 /** The longest the memo after a turn may take (ADR 0047). It is one short line. */
 export const REFLECTION_TIMEOUT_MS = 120_000;
+/**
+ * A turn whose context has grown past this many times the route's compaction threshold is stopped as a time limit
+ * stops it (ADR 0094). Past the threshold itself she is only asked to end it; this leaves room for the few calls that
+ * takes, and stops a turn that does not listen. Not a setting: the routes' context lengths differ, the ratio does not.
+ */
+export const CONTEXT_STOP_RATIO = 1.5;
 
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
 
@@ -306,8 +312,14 @@ export interface LoopSettings {
 
 /** The side of the sources the loop reads a `sources_updated` event from (ADR 0050). */
 export interface SourceEvents {
-  /** Makes the event's line from what is there now. False when there is nothing to show: then no turn is run. */
-  take(eventId: string): Promise<boolean>;
+  /**
+   * Makes the event's line from what is there now. False when there is nothing to show: then no turn is run. With
+   * `attentionsOnly` it is the line of one steered into a running turn (ADR 0094): the attentions `steerable` counts and
+   * their directories, nothing else. A line made already is kept: true, and nothing is made again.
+   */
+  take(eventId: string, options?: { attentionsOnly?: boolean }): Promise<boolean>;
+  /** Whether an attention waits that can be steered into a running turn: one with no images to show beside it. */
+  steerable(): boolean;
   eventLine(eventId: string, receivedAt: string): Record<string, unknown>;
   images(eventId: string): Promise<ImageContent[]>;
 }
@@ -349,6 +361,14 @@ interface Turn {
   doveRefusals: number;
   /** Tool calls its Codemode scripts made (ADR 0066). */
   nestedCalls: number;
+  /** When its time is up: `wait_for_events` waits no longer (ADR 0094). */
+  endsAt: number;
+  /**
+   * The context as measured at its last model-call boundary, in tokens, and whether that was past the route's compaction
+   * threshold; `nudge` while the next tool result is still to carry the request to end at a good place; `contextLimited`
+   * once it was stopped past `CONTEXT_STOP_RATIO` times the threshold (ADR 0094). Measured in an events turn only.
+   */
+  measuredTokens?: number; overContext?: boolean; nudge?: boolean; contextLimited?: boolean;
   /** The review's rotation, whether it wrote its handoff, and what it said about the night (ADR 0020). */
   rotationId?: string; handoffWritten?: true; changeNote?: string;
   /** A review turn that is a sleeping pill's nap (ADR 0077): the same tools, told apart only in their words. */
@@ -387,6 +407,11 @@ export class ThinkingLoop {
    * lines carry no event ID (ADR 0024), so two messages with the same text in the same millisecond share a key.
    */
   private readonly steered = new Map<string, string[]>();
+  /** The `wait_for_events` in progress, woken when something is steered in or a stop begins (ADR 0094). */
+  private readonly eventWaiters = new Set<(why: 'news' | 'stop') => void>();
+  /** Attentions are being made into a line to steer in; `steerAgain` when more were raised meanwhile (ADR 0094). */
+  private steeringSources = false;
+  private steerAgain = false;
   private readonly idleWaiters: (() => void)[] = [];
   private readonly rotationWaiters = new Map<string, ((outcome: RotationOutcome) => void)[]>();
   private modelRuntime: ModelRuntime | undefined;
@@ -592,6 +617,7 @@ export class ThinkingLoop {
       const prompt = formatEvents([this.eventLine(eventId)]);
       this.steered.set(prompt, [...this.steered.get(prompt) ?? [], eventId]);
       void session.steer(prompt);
+      this.wakeWaiters('news');
       state = 'processing';
     } else {
       // During the nightly switch or a compaction the message waits, and is handled by the session that follows.
@@ -865,9 +891,13 @@ export class ThinkingLoop {
    * Asks for a `sources_updated` event (ADR 0050). One waits at most: while one is queued, asking again adds nothing,
    * and what came meanwhile goes into that one, whose line is made only as its turn begins. Returns whether one was
    * queued now.
+   *
+   * While an events turn runs, an attention for her is steered into it as an owner's message is, at the next model-call
+   * boundary (ADR 0094); the one queued here then shows what else changed after the turn, or nothing.
    */
   raiseSourcesUpdated(): boolean {
     if (this.closing || this.unavailableCode || !this.options.sources) return false;
+    this.steerAttentions();
     if (this.queue.some(eventId => this.store.eventKind(eventId) === 'sources-updated')) return false;
     this.queue.push(this.store.insertEvent('sources-updated'));
     this.pump();
@@ -906,6 +936,8 @@ export class ThinkingLoop {
    */
   async drain(limitMs: number, waiting?: () => void): Promise<DrainOutcome> {
     this.draining = true;
+    // A wait in the turn is not made to hold the stop up: nothing more would be steered in now (ADR 0083).
+    this.wakeWaiters('stop');
     const running = this.running;
     if (!running || this.closing) return { result: 'idle', waitedMs: 0 };
     if (this.nightWork) return { result: 'night', waitedMs: 0 };
@@ -1003,7 +1035,8 @@ export class ThinkingLoop {
       thinkingLevel: this.thinkingLevel(),
       tools,
       keepRecentTokens: this.options.loop.compactionKeepRecent,
-      extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting }), ...extensions],
+      extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting }),
+        contextNudgeExtension(toolName => this.takeNudge(toolName)), ...extensions],
       ...(this.options.skills ? { skills: piSkills(skillPlaces(dataDirectory, this.memoryRepository.directory), line => this.log(line)) } : {}),
     };
   }
@@ -1037,6 +1070,7 @@ export class ThinkingLoop {
     this.unwatch = session.subscribe(event => {
       this.watchSteering(event);
       this.watchThinking(event);
+      this.measureContext(event);
     });
     // Every steered message waiting at a boundary goes in together.
     session.setSteeringMode('all');
@@ -1196,8 +1230,9 @@ export class ThinkingLoop {
     const limits = this.options.settings?.turnLimits() ?? this.options.loop;
     const maxCalls = kind === 'review' ? limits.reviewModelCalls : limits.eventModelCalls;
     const timeoutMs = (kind === 'review' ? limits.reviewTimeoutMinutes : limits.eventTimeoutMinutes) * 60_000;
-    const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt: this.now(), doveRefusals: 0,
-      nestedCalls: 0, ...(nap ? { nap: true as const } : {}) };
+    const startedAt = this.now();
+    const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId, startedAt, doveRefusals: 0,
+      nestedCalls: 0, endsAt: startedAt + timeoutMs, ...(nap ? { nap: true as const } : {}) };
     this.turn = turn;
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);
     const before = session.messages.length;
@@ -1215,6 +1250,7 @@ export class ThinkingLoop {
     this.endThinking();
     // A turn cut short is not told apart by its rows once a handoff was written, so the log says which limit did it.
     if (turn.limited) this.log(`thinking loop: the ${kind} turn was stopped at the model-call limit (${turn.calls} calls)`);
+    else if (turn.contextLimited) this.log(`thinking loop: the ${kind} turn was stopped at the context limit (${turn.measuredTokens} tokens)`);
     else if (turn.timedOut) this.log(`thinking loop: the ${kind} turn was stopped by the time limit (${timeoutMs / 1000} seconds)`);
 
     // Steering Pi did not deliver goes back to the front of the queue.
@@ -1234,7 +1270,7 @@ export class ThinkingLoop {
     const endedAt = this.now();
     const replies = assistantMessages(session.messages.slice(before));
     const last = replies.at(-1);
-    const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
+    const failure = turn.limited ? 'model-call-limit' : turn.contextLimited ? 'context-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
       : !last || (last.stopReason !== 'stop' && last.stopReason !== 'toolUse') ? 'model-error' : undefined;
     const handledIds = [...this.handling.keys()];
     let unanswered = 0;
@@ -1274,7 +1310,7 @@ export class ThinkingLoop {
   private async reflect(turn: EndedTurn): Promise<(TokenCounts & { ms: number }) | undefined> {
     const session = this.session;
     if (!session || this.closing || turn.kind !== 'events') return undefined;
-    if (turn.failure && turn.failure !== 'model-call-limit' && turn.failure !== 'timeout') return undefined;
+    if (turn.failure && !CUT_SHORT.has(turn.failure)) return undefined;
     const startedAt = this.now();
     const before = session.messages.length;
     this.reflecting = true;
@@ -1762,6 +1798,12 @@ export class ThinkingLoop {
       turn.limited = true;
       return true;
     }
+    // Past the ratio the turn stops here, as at the limit of calls: what was done stays, what was not answered fails.
+    if (message.stopReason === 'toolUse' && turn.kind === 'events'
+      && (turn.measuredTokens ?? 0) > this.route!.compactionThreshold * CONTEXT_STOP_RATIO) {
+      turn.contextLimited = true;
+      return true;
+    }
     return false;
   }
 
@@ -1841,6 +1883,7 @@ export class ThinkingLoop {
         : this.agents.ask(agent, message, goOn, files),
       replyToAgent: (to, text, state) => this.options.inbox?.reply(to, text, state)
         ?? { ok: false, text: '返していません。ほかのエージェントからの依頼を受ける設定（受け口）がありません。' },
+      waitForEvents: (maxSeconds, signal) => this.waitForEvents(maxSeconds, signal),
       ...(this.shell ? { runShell: (command: string, waitSeconds?: number) => this.runShell(command, waitSeconds),
         capture: (command: string) => this.shell!.capture(command), skills: this.options.skills === true } : {}),
     };
@@ -1868,8 +1911,8 @@ export class ThinkingLoop {
   }
 
   /** Has the sources make a `sources_updated` event's line. One that fails shows nothing, and the event ends. */
-  private async takeSources(eventId: string): Promise<boolean> {
-    try { return await this.options.sources?.take(eventId) ?? false; } catch {
+  private async takeSources(eventId: string, attentionsOnly = false): Promise<boolean> {
+    try { return await this.options.sources?.take(eventId, attentionsOnly ? { attentionsOnly } : undefined) ?? false; } catch {
       this.log('thinking loop: the sources could not make their event');
       return false;
     }
@@ -2001,6 +2044,131 @@ export class ThinkingLoop {
     return { ok: true, text: `${turn.nap ? 'この昼寝' : '今夜'}の記憶のコミットメッセージにします。書き直すなら、もう一度呼んでください。` };
   }
 
+  /**
+   * Whether something can be steered into the turn under way now (ADR 0094): an events turn Pi is running, with no stop
+   * waiting for it. The nightly review and a nap take nothing in; between turns, and in the memo after one, no turn is.
+   */
+  private canSteer(): boolean {
+    return this.turn?.kind === 'events' && this.session?.isStreaming === true && !this.draining && !this.closing;
+  }
+
+  /**
+   * Steers the attentions waiting into the running turn, as one `sources_updated` event with them and their directories
+   * (ADR 0094). One raised while a line is being made is taken by the next round. If the turn ended meanwhile, the event
+   * is queued with its line, as an owner message is that arrives between turns.
+   */
+  private steerAttentions(): void {
+    const sources = this.options.sources;
+    if (!sources || !this.canSteer() || !sources.steerable()) return;
+    if (this.steeringSources) { this.steerAgain = true; return; }
+    this.steeringSources = true;
+    void (async () => {
+      try {
+        do {
+          this.steerAgain = false;
+          if (!this.canSteer() || !sources.steerable()) break;
+          const eventId = this.store.insertEvent('sources-updated');
+          if (!await this.takeSources(eventId, true)) {
+            this.store.setEventState(eventId, 'no-reply', 'nothing-to-show');
+            continue;
+          }
+          if (!this.canSteer()) {
+            this.queue.push(eventId);
+            this.pump();
+            break;
+          }
+          this.beginHandling(eventId, undefined, false);
+          this.workingPlace?.eventIds.push(eventId);
+          const prompt = formatEvents([this.eventLine(eventId)]);
+          this.steered.set(prompt, [...this.steered.get(prompt) ?? [], eventId]);
+          void this.session!.steer(prompt);
+          this.wakeWaiters('news');
+        } while (this.steerAgain);
+      } catch {
+        this.log('thinking loop: an attention could not be steered into the turn');
+      } finally { this.steeringSources = false; }
+    })();
+  }
+
+  private wakeWaiters(why: 'news' | 'stop'): void {
+    for (const wake of [...this.eventWaiters]) wake(why);
+  }
+
+  /**
+   * `wait_for_events` (ADR 0094): waits, within the time left of the turn, for something that can be steered into it,
+   * and comes back at once when there is nothing it could wait for: no turn that takes anything in, no time left, a
+   * context grown past its threshold, something already steered in and not yet shown, or nothing outside to wait for.
+   */
+  private async waitForEvents(maxSeconds: number, signal: AbortSignal | undefined): Promise<ToolOutcome> {
+    const turn = this.turn;
+    if (turn?.kind !== 'events') {
+      return { ok: true, text: `待たずに戻りました。${turn?.nap ? '昼寝' : '夜の振り返り'}の間は知らせが差し込まれないので、待つものがありません。` };
+    }
+    if (turn.overContext) return { ok: true, text: `待たずに戻りました。${CONTEXT_NUDGE}` };
+    if (this.draining) return { ok: true, text: '待たずに戻りました。サーバーが止まろうとしています。区切りのいいところでターンを終えてください。' };
+    if ([...this.handling.values()].some(handling => !handling.shown)) {
+      return { ok: true, text: '知らせが届きました。このあと渡されます。' };
+    }
+    const leftMs = turn.endsAt - this.now();
+    if (leftMs < 1000) {
+      return { ok: true, text: '待っていません。このターンの時間が残っていません。ここまでのことをまとめて、ターンを終えてください。'
+        + '待っていたものは、ターンが終わった後に知らせが届きます。' };
+    }
+    if ((this.shell?.followed ?? 0) + this.agents.waiting() === 0) {
+      return { ok: true, text: '待つ相手がいないので待ちませんでした。終わりを待っている裏のコマンドも、返事を待っている依頼もありません。' };
+    }
+    const askedMs = Number.isFinite(maxSeconds) ? Math.max(0, maxSeconds) * 1000 : 0;
+    const waitMs = Math.min(askedMs, leftMs);
+    const cut = waitMs < askedMs ? `ターンの残り時間に合わせて、待つのを ${secondsOf(waitMs)}に縮めました。` : '';
+    const why = await new Promise<'news' | 'stop' | 'time' | 'aborted'>(resolve => {
+      const done = (reason: 'news' | 'stop' | 'time' | 'aborted') => {
+        clearTimeout(timer);
+        this.eventWaiters.delete(done);
+        signal?.removeEventListener('abort', aborted);
+        resolve(reason);
+      };
+      const aborted = () => done('aborted');
+      const timer = setTimeout(() => done('time'), waitMs);
+      this.eventWaiters.add(done);
+      signal?.addEventListener('abort', aborted, { once: true });
+      if (signal?.aborted) done('aborted');
+    });
+    switch (why) {
+      case 'news': return { ok: true, text: `${cut}知らせが届きました。このあと渡されます。` };
+      case 'time': return { ok: true, text: `${cut}${secondsOf(waitMs)}待ちましたが、知らせは届きませんでした。`
+        + 'まだ待つなら、もう一度呼べます。急がないなら、ターンを終えてもかまいません（届いたものは、ターンが終わった後に知らせが来ます）。' };
+      case 'stop': return { ok: true, text: '待つのをやめました。サーバーが止まろうとしています。区切りのいいところでターンを終えてください。' };
+      case 'aborted': return { ok: false, text: '待つのをやめました。このターンは止められました。' };
+    }
+  }
+
+  /**
+   * The context at every model-call boundary of an events turn (ADR 0094): what the call just made was given and wrote,
+   * as its usage reports it, so with folding on it is the folded context's. Past the route's compaction threshold the
+   * next tool result asks her to end at a good place; `shouldStop` stops the turn further past it.
+   */
+  private measureContext(event: AgentSessionEvent) {
+    if (event.type !== 'message_end' || event.message.role !== 'assistant') return;
+    const turn = this.turn;
+    if (turn?.kind !== 'events' || this.reflecting) return;
+    const { stopReason, usage } = event.message as { stopReason?: string; usage?: Partial<Record<'input' | 'cacheRead' | 'cacheWrite' | 'output', number>> };
+    if (stopReason === 'error' || stopReason === 'aborted' || !usage) return;
+    turn.measuredTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0);
+    turn.overContext = turn.measuredTokens > this.route!.compactionThreshold;
+    turn.nudge = turn.overContext;
+  }
+
+  /**
+   * Whether this tool result carries the request to end at a good place: the first of the model's own after a boundary
+   * past the threshold. `wait_for_events` says it in its own words, and leaves it to the next result.
+   */
+  private takeNudge(toolName: string): boolean {
+    const turn = this.turn;
+    if (!turn?.nudge || toolName === WAIT_FOR_EVENTS_TOOL_NAME) return false;
+    turn.nudge = false;
+    return true;
+  }
+
   /** A steered event is shown to natsumi when Pi puts its prompt into the context, at a model-call boundary. */
   private watchSteering(event: AgentSessionEvent) {
     if (event.type !== 'message_start' || event.message.role !== 'user') return;
@@ -2113,6 +2281,22 @@ function failureReason(error: unknown): string {
   return `${kind}: ${characters.length <= 200 ? message : `${characters.slice(0, 199).join('')}…`}`;
 }
 
+/** The failures of a turn cut short at a limit, after which the memo is still asked for (ADR 0047, ADR 0094). */
+const CUT_SHORT: ReadonlySet<string> = new Set(['model-call-limit', 'timeout', 'context-limit']);
+
+/**
+ * Adds the request to end the turn at a good place to the first result of the model's own tool calls once the context
+ * is past the threshold (ADR 0094). `take` says whether this result carries it; a script's calls never do.
+ */
+function contextNudgeExtension(take: (toolName: string) => boolean): ExtensionFactory {
+  return pi => {
+    pi.on('tool_result', event => {
+      if (event.parentToolCallId !== undefined || !take(event.toolName)) return undefined;
+      return { content: [...event.content, { type: 'text', text: CONTEXT_NUDGE }] };
+    });
+  };
+}
+
 /** A turn once it has ended: its events, how it ended, and what it cost (ADR 0047). */
 type EndedTurn = Turn & { failure?: string; eventIds: string[]; endedAt: number; usage: TokenCounts; contextTokens: number | null;
   confusion: Confusion; handledIds: string[] };
@@ -2172,4 +2356,10 @@ function shown(row: MessageRow, images?: ShownImage[], attachments?: ShownAttach
   if (row.kind === 'reply') return row.event_id === null ? base : { ...base, replyTo: row.event_id };
   const about = row.about_event_ids ? JSON.parse(row.about_event_ids) as string[] : [];
   return about.length > 0 ? { ...base, about } : base;
+}
+
+/** A wait as a result says it: whole seconds, or tenths below ten. */
+function secondsOf(ms: number): string {
+  const value = ms >= 10_000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10;
+  return `${value} 秒`;
 }

@@ -23,7 +23,8 @@ type OpenOptions = Partial<Omit<LoopOptions, 'loop' | 'curator'>> & { loop?: Par
 const ON: CodemodeConfig = { ...DEFAULT_CODEMODE, enabled: true };
 /** Every tool natsumi has with a workspace, in the order they are declared with Codemode off. */
 const LOOP_TOOLS = ['run_shell', 'reply_to_mac', 'notify_owner', 'set_mac_avatar_expression', 'write_handoff_note', 'write_change_note',
-  'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent', 'read', 'search_memory', 'reply_to_agent'];
+  'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent', 'read', 'search_memory', 'reply_to_agent',
+  'wait_for_events'];
 const WORKSPACE_TOOLS = ['run_shell', 'read', 'search_memory'];
 
 async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
@@ -123,7 +124,8 @@ test('Codemode is off by default: no codemode tool, and every tool the model see
     assert.deepEqual(session.getActiveToolNames(), LOOP_TOOLS);
     assert.ok(!session.getAllTools().some(tool => tool.name === 'codemode'));
     assert.ok(session.getAllTools().every(tool => tool.exposure === 'direct'));
-    assert.equal(session.resourceLoader.getExtensions().extensions.length, 1);
+    // The turn's fold and the request to end a turn grown too long (ADR 0094); nothing of Codemode's.
+    assert.equal(session.resourceLoader.getExtensions().extensions.length, 2);
   } finally { await f.cleanup(); }
 });
 

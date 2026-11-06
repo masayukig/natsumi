@@ -5,7 +5,7 @@ import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
 import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
   NOTIFY_OWNER_DESCRIPTION, REPLY_TO_AGENT_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
-  SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
+  SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WAIT_FOR_EVENTS_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
   WRITE_HANDOFF_NOTE_DESCRIPTION } from './prompts.ts';
 
 /** The avatar expressions the Mac can show. The model picks from these only. */
@@ -47,6 +47,12 @@ export interface LoopToolHost {
    * Always present, whether or not anyone may send her anything, as `askAgent` is.
    */
   replyToAgent(to: string, text: string | undefined, state: 'completed' | 'input-required'): Outcome;
+  /**
+   * Waits within the turn, up to `maxSeconds`, for something that can be steered into it (ADR 0094). Always present,
+   * with or without a workspace: a reply to `askAgent` is waited for as well. `signal` is the tool call's, which a
+   * turn stopped by its time aborts.
+   */
+  waitForEvents(maxSeconds: number, signal?: AbortSignal): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
   /** A command in the workspace, waited for `waitSeconds` when she chose a wait (ADR 0094). */
   runShell?(command: string, waitSeconds?: number): Outcome;
@@ -70,6 +76,8 @@ export const RUN_SHELL_TOOL_NAME = 'run_shell';
 export const READ_TOOL_NAME = 'read';
 /** Searching memory for a word, added with a runner (ADR 0055). */
 export const SEARCH_MEMORY_TOOL_NAME = 'search_memory';
+/** Waiting for news within a turn (ADR 0094): the model's own, never a Codemode script's. */
+export const WAIT_FOR_EVENTS_TOOL_NAME = 'wait_for_events';
 
 /**
  * The expressions as a parameter. The avatar and every line share this one list, so an expression added to the Mac is
@@ -165,6 +173,13 @@ export function createLoopTools(host: LoopToolHost) {
       parameters: Type.Object({ to: Type.String(), text: Type.Optional(Type.String()),
         state: Type.Union([Type.Literal('completed'), Type.Literal('input-required')]) }),
       execute: async (_id, params) => result(host.replyToAgent(params.to, params.text, params.state as 'completed' | 'input-required')),
+    }),
+    // After reply_to_agent, likewise (ADR 0094).
+    defineTool({
+      name: WAIT_FOR_EVENTS_TOOL_NAME, label: 'Wait for news',
+      description: WAIT_FOR_EVENTS_DESCRIPTION,
+      parameters: Type.Object({ max_seconds: Type.Number() }),
+      execute: async (_id, params, signal) => result(host.waitForEvents(params.max_seconds, signal)),
     }),
   ];
 }

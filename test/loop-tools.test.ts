@@ -20,6 +20,7 @@ function host(overrides: Partial<LoopToolHost> = {}): LoopToolHost {
     cancelSelfCheck: () => ok('cancelled'),
     askAgent: () => ok('asked'),
     replyToAgent: () => ok('replied to the agent'),
+    waitForEvents: () => ok('waited'),
     ...overrides,
   };
 }
@@ -47,8 +48,8 @@ test('read is registered with a runner, after every other tool but those added l
   const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
   const withShell = names(host({ runShell: () => ok('ran'), capture }));
   assert.equal(READ_TOOL_NAME, 'read');
-  assert.equal(withShell.at(-3), READ_TOOL_NAME);
-  assert.deepEqual(withShell.slice(0, -3), names(host({ runShell: () => ok('ran') })).slice(0, -1));
+  assert.equal(withShell.at(-4), READ_TOOL_NAME);
+  assert.deepEqual(withShell.slice(0, -4), names(host({ runShell: () => ok('ran') })).slice(0, -2));
   assert.equal(names(host()).includes(READ_TOOL_NAME), false);
   for (const builtIn of ['bash', 'edit', 'write', 'grep', 'find', 'ls']) assert.equal(withShell.includes(builtIn), false, builtIn);
 });
@@ -58,7 +59,7 @@ test('search_memory is registered with a runner, right after read, and never wit
   const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
   const withShell = names(host({ runShell: () => ok('ran'), capture }));
   assert.equal(SEARCH_MEMORY_TOOL_NAME, 'search_memory');
-  assert.equal(withShell.at(-2), SEARCH_MEMORY_TOOL_NAME);
+  assert.equal(withShell.at(-3), SEARCH_MEMORY_TOOL_NAME);
   assert.equal(names(host()).includes(SEARCH_MEMORY_TOOL_NAME), false);
 });
 
@@ -85,8 +86,8 @@ test('the run_shell description says where writing lands and how a long command 
   for (const phrase of ['wait_seconds', '0 なら', '裏', 'sources_updated', '/sources/jobs', '先頭と末尾', 'リダイレクト', 'ps や sleep']) {
     assert.ok(RUN_SHELL_DESCRIPTION.includes(phrase), phrase);
   }
-  // The tool to wait with comes in a later change; the description does not promise it yet.
-  assert.equal(RUN_SHELL_DESCRIPTION.includes('wait_for_events'), false);
+  // The way to wait for its end within the turn (ADR 0094).
+  assert.ok(RUN_SHELL_DESCRIPTION.includes('wait_for_events'));
   // The old promise that the rest of the output is thrown away no longer holds for her commands.
   assert.equal(RUN_SHELL_DESCRIPTION.includes('読み捨て'), false);
   // Which commands the image holds is not promised: that list is what ADR 0019 did away with.
@@ -200,9 +201,9 @@ test('the reply_to_mac and notify_owner descriptions are fixed strings that tell
 // Last when it was added; reply_to_agent came after it later (ADR 0089), and moved nothing before it.
 test('ask_agent is always registered after every tool before it, with a fixed description, a required continue and files that may be left out', () => {
   const tools = createLoopTools(host());
-  assert.equal(tools.at(-2)!.name, 'ask_agent');
-  assert.deepEqual(names(host({ runShell: () => ok('ran') })).at(-2), 'ask_agent');
-  const ask = tools.at(-2)!;
+  assert.equal(tools.at(-3)!.name, 'ask_agent');
+  assert.deepEqual(names(host({ runShell: () => ok('ran') })).at(-3), 'ask_agent');
+  const ask = tools.at(-3)!;
   assert.equal(ask.description, ASK_AGENT_DESCRIPTION);
   const schema = JSON.parse(JSON.stringify(ask.parameters)) as { properties: Record<string, { type: string }>; required: string[] };
   assert.deepEqual(Object.fromEntries(Object.entries(schema.properties).map(([name, value]) => [name, value.type])),
@@ -239,11 +240,11 @@ test('the self-check descriptions tell of cron, at and in_minutes, and promise n
 });
 
 // ADR 0089: reply_to_agent is always there, whether or not anyone may send her anything, with one fixed description and
-// last of all, so that adding it moved no definition before it.
-test('reply_to_agent is always registered, last of all, with a fixed description that names no sender', async () => {
+// last of all when it was added, so that adding it moved no definition before it; wait_for_events came after it (ADR 0094).
+test('reply_to_agent is always registered, right before wait_for_events, with a fixed description that names no sender', async () => {
   const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
-  assert.equal(names(host()).at(-1), 'reply_to_agent');
-  assert.equal(names(host({ runShell: () => ok('ran'), capture })).at(-1), 'reply_to_agent');
+  assert.equal(names(host()).at(-2), 'reply_to_agent');
+  assert.equal(names(host({ runShell: () => ok('ran'), capture })).at(-2), 'reply_to_agent');
   const calls: unknown[][] = [];
   const tool = createLoopTools(host({ replyToAgent: (...args) => { calls.push(args); return ok('閉じました'); } }))
     .find(item => item.name === 'reply_to_agent')!;

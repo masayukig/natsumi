@@ -128,8 +128,13 @@ test('a command going to the background says where its end will be put, how to s
   const runner = await fakeRunner(() => ({ ...running, waitedMs: 0, stdout: '途中まで\n' }));
   const { jobs, opened, nextEnd } = fakeJobs();
   try {
-    const outcome = await new WorkspaceShell({ socketPath: runner.path, jobs }).runFollowed('python3 /work/count.py', 0);
+    const shell = new WorkspaceShell({ socketPath: runner.path, jobs });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(shell.followed, 0);
+    const outcome = await shell.runFollowed('python3 /work/count.py', 0);
     assert.equal(outcome.ok, true);
+    // What wait_for_events may wait for.
+    assert.equal(shell.followed, 1);
     assert.deepEqual(opened, [{ command: 'python3 /work/count.py', processGroup: 4242 }]);
     assert.match(outcome.text, /途中まで/);
     assert.match(outcome.text, /\/sources\/jobs\/20261106T000000Z-0001/);
@@ -139,7 +144,8 @@ test('a command going to the background says where its end will be put, how to s
     assert.match(outcome.text, /ps や sleep/);
     assert.match(outcome.text, /ターンを終え/);
     assert.match(outcome.text, /ほかにすること/);
-    assert.doesNotMatch(outcome.text, /wait_for_events/, 'the tool to wait with comes in the next change');
+    // Three ways on, the choice hers (ADR 0094).
+    assert.match(outcome.text, /wait_for_events/);
     assert.doesNotMatch(outcome.text, /読み捨て/);
     // Not counted among the ones she is told to look after with ps.
     assert.doesNotMatch(outcome.text, /まだ動いているコマンドが/);
@@ -149,6 +155,7 @@ test('a command going to the background says where its end will be put, how to s
     assert.equal(end.kind, 'exited');
     assert.equal(end.kind === 'exited' && end.exitCode, 3);
     assert.deepEqual(end.kind === 'exited' && end.output, { stdout: '途中まで\n最後\n', stderr: 'warn\n' });
+    assert.equal(shell.followed, 0);
   } finally { await runner.close(); }
 });
 
