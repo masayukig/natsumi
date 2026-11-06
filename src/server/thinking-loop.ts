@@ -31,7 +31,7 @@ import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNo
 import { CURATOR_STAGES, CurationRecord, curatorDeadline, recoverCuratorRun, runCuratorNight, type CuratorNightResult,
   type CuratorStageResult } from './memory-curator.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
-import { WorkspaceShell } from './workspace-shell.ts';
+import { WorkspaceShell, type BackgroundJobs } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
@@ -267,6 +267,11 @@ export interface LoopOptions {
    */
   agentReplies?: ReplyPlace;
   /**
+   * Where her commands left running are put, under /sources/jobs, and told of when they end (ADR 0094). Without it none
+   * is followed, and one left running is told of by nothing.
+   */
+  jobs?: BackgroundJobs;
+  /**
    * What natsumi reads besides her memory (ADR 0050): the line of a `sources_updated` event, made as its turn begins,
    * and the images beside it. The loop knows neither how many sources there are nor what they read.
    */
@@ -482,6 +487,8 @@ export class ThinkingLoop {
         timeoutMs: loop.shellWaitSeconds * 1000,
         timeZone: loop.timeZone,
         memoryChanges: () => this.memoryRepository.changeSummary(),
+        ...(options.jobs ? { jobs: options.jobs } : {}), backgroundJobs: loop.backgroundJobs,
+        log: line => this.log(line),
       })
       : undefined;
     this.declaredNames = new Set(this.shell ? (options.tools ?? []).map(tool => tool.name) : []);
@@ -1834,7 +1841,7 @@ export class ThinkingLoop {
         : this.agents.ask(agent, message, goOn, files),
       replyToAgent: (to, text, state) => this.options.inbox?.reply(to, text, state)
         ?? { ok: false, text: '返していません。ほかのエージェントからの依頼を受ける設定（受け口）がありません。' },
-      ...(this.shell ? { runShell: (command: string) => this.runShell(command),
+      ...(this.shell ? { runShell: (command: string, waitSeconds?: number) => this.runShell(command, waitSeconds),
         capture: (command: string) => this.shell!.capture(command), skills: this.options.skills === true } : {}),
     };
   }
@@ -1852,11 +1859,12 @@ export class ThinkingLoop {
    * A command in the workspace. `view <path>` alone is the server's own: it answers with the image itself, which the
    * runner could not put into a tool result (ADR 0039).
    */
-  private runShell(command: string): Promise<ToolOutcome> {
+  private runShell(command: string, waitSeconds: number | undefined): Promise<ToolOutcome> {
     const path = parseView(command);
     if (path !== undefined) return viewImage(path, { sources: join(this.options.dataDirectory, SOURCES_DIRECTORY),
       work: join(this.options.dataDirectory, WORK_DIRECTORY) });
-    return this.shell!.run(command);
+    // Hers is waited for as she chose and followed into the background; the curator's goes through `run` (ADR 0094).
+    return this.shell!.runFollowed(command, waitSeconds);
   }
 
   /** Has the sources make a `sources_updated` event's line. One that fails shows nothing, and the event ends. */

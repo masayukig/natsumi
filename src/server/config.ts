@@ -7,7 +7,7 @@ import { isLoopbackHost } from '../pi/loopback.ts';
 // Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
 import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { DEFAULT_GOAL_FILE_MAX_CHARS, DEFAULT_TODAY_PLAN_MAX_CHARS } from './goals.ts';
-import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
+import { DEFAULT_BACKGROUND_JOBS, DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
 import { POSTBOX_DEFAULTS } from './postbox.ts';
@@ -133,6 +133,11 @@ export interface LoopConfig {
   workspaceSocket?: string;
   /** Seconds the server waits for the runner's answer. Longer than the runner's own response limit (ADR 0019). */
   shellWaitSeconds: number;
+  /**
+   * How many of natsumi's commands left running are waited for at once, to tell her when each ends (ADR 0094). One past
+   * it is left running and nobody is told of its end. Read from the config alone, not from the settings page.
+   */
+  backgroundJobs: number;
   /** Past this many bytes across the three persistent places, the next turn is told, with the breakdown (ADR 0019). */
   workspaceSizeWarnBytes: number;
   /** The git repository holding memory (ADR 0018). `memory/` in the data directory when omitted. */
@@ -210,7 +215,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
   memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS, alwaysMemoryMaxChars: DEFAULT_ALWAYS_MAX_CHARS,
   goalFileMaxChars: DEFAULT_GOAL_FILE_MAX_CHARS, todayPlanMaxChars: DEFAULT_TODAY_PLAN_MAX_CHARS,
-  shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS,
+  shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS, backgroundJobs: DEFAULT_BACKGROUND_JOBS,
   workspaceSizeWarnBytes: DEFAULT_SIZE_WARN_BYTES,
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
@@ -1647,7 +1652,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     if (old in loop) throw new ConfigError(`${path}.${old}`, `renamed to ${now} (ADR 0019)`);
   }
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
-    'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'goalFileMaxChars', 'todayPlanMaxChars', 'awakeHours',
+    'shellWaitSeconds', 'backgroundJobs', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'goalFileMaxChars', 'todayPlanMaxChars', 'awakeHours',
     'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
     'eventModelCalls', 'eventTimeoutMinutes', 'shutdownDrainSeconds', 'turnFold', 'codemode']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
@@ -1667,6 +1672,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(wait, MIN_SHELL_WAIT_SECONDS)) {
     throw new ConfigError(`${path}.shellWaitSeconds`, `must be an integer of at least ${MIN_SHELL_WAIT_SECONDS}`);
   }
+  const backgroundJobs = loop.backgroundJobs ?? LOOP_DEFAULTS.backgroundJobs;
+  if (!positiveInteger(backgroundJobs, 0)) throw new ConfigError(`${path}.backgroundJobs`, 'must be an integer of at least 0');
   const warnBytes = loop.workspaceSizeWarnBytes ?? LOOP_DEFAULTS.workspaceSizeWarnBytes;
   if (!positiveInteger(warnBytes, MIN_SIZE_WARN_BYTES)) {
     throw new ConfigError(`${path}.workspaceSizeWarnBytes`, `must be an integer of at least ${MIN_SIZE_WARN_BYTES}`);
@@ -1702,7 +1709,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!isFold(turnFold)) throw new ConfigError(`${path}.turnFold`, 'must be "on" or "off"');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
-    ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
+    ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, backgroundJobs: backgroundJobs as number, workspaceSizeWarnBytes: warnBytes as number,
     ...(repository ? { memoryRepository: repository } : {}), memoryFileMaxChars: fileMax as number,
     alwaysMemoryMaxChars: alwaysMax as number, goalFileMaxChars: goalMax, todayPlanMaxChars: todayMax,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),

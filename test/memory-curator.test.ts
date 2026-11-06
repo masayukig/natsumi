@@ -334,6 +334,9 @@ test('the curator has run_shell, read, search_memory, its own change note and wh
   });
   assert.deepEqual(tools.map(tool => tool.name), ['run_shell', 'read', 'search_memory', 'write_change_note', 'map_old_path']);
   assert.equal(tools[0]!.description, CURATOR_RUN_SHELL_DESCRIPTION);
+  // The curator takes no events, so nothing could tell it a command ended: it gets no wait to choose (ADR 0094).
+  assert.deepEqual(Object.keys((tools[0]!.parameters as { properties: object }).properties), ['command']);
+  assert.doesNotMatch(CURATOR_RUN_SHELL_DESCRIPTION, /wait_seconds|sources_updated/);
   assert.equal(tools[2]!.description, SEARCH_MEMORY_DESCRIPTION);
   assert.equal(tools[3]!.description, CURATOR_WRITE_CHANGE_NOTE_DESCRIPTION);
   assert.equal(tools[4]!.description, CURATOR_MAP_OLD_PATH_DESCRIPTION);
