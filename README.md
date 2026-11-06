@@ -66,6 +66,9 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      夜の振り返りのターンの上限 `reviewModelCalls`（モデル呼び出しの回数。既定 40 回）と `reviewTimeoutMinutes`
      （時間。既定 30 分）。昼のふつうのターンの上限 `eventModelCalls`（既定 8 回）と `eventTimeoutMinutes`（既定 10 分）。
      回数を上げるときは、1 回の呼び出しにかかる時間を掛けても時間の上限に収まるかを確かめてください。
+     `wait_for_events` で待つ時間も時間の上限に数え、待って戻るたびにモデルの呼び出しが 1 回増えます。
+     昼のターンの文脈が `compactionThreshold` を越えると区切りを促し、1.5 倍を越えるとターンを止めます（`context-limit`。
+     [ADR 0094](docs/adr/0094-background-commands-and-waiting-for-news-within-a-turn.md)）。
      上限で打ち切られたターンはログに残ります。
      止めるときに、話している最中のターンが終わるのを待つ秒数 `shutdownDrainSeconds`（既定 600 秒、`0` で待たない）。
      下の停止の説明を見てください。
@@ -570,7 +573,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   「推定」と印を付けて出します。境目がずれていることがあります。
 - 「失敗と待ち」（`/dashboard/waits`）は、次の節を並べ、10 秒ごとに更新します。どれも最大 20 件です。
   - 失敗した出来事（`loop_events` の failed）と理由。どのターンで扱ったかが記録にあれば、その詳細へ移れます。
-  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・夜の振り返りの `no-handoff`、記憶の整理係の `rejected`（検査に当たった）・`memory-not-clean`・`route-unavailable` など）。
+  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・`context-limit`・夜の振り返りの `no-handoff`、記憶の整理係の `rejected`（検査に当たった）・`memory-not-clean`・`route-unavailable` など）。
   - 承認待ち。何の承認か（投稿先・下書き・判定・引っかかった問題点）と期限です。承認はこれまでどおりアプリで行います。
     ここから「承認の履歴」へ移れます。
   - 予約した確認（self-check）の予定と理由、次の夜の切り替えの予定時刻（`loop.nightlyRotationAt`）。
@@ -1349,6 +1352,8 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     終了コードで終わったものは attention（`shell_finished`）ですぐ、シグナルで終わったものと 24 時間待っても終わらないものは、ふつうの更新として知らせます。
     同時に待つのは `loop.backgroundJobs`（既定 5）個までで、超えた分と夜の整理係のコマンドは、今までどおり出力を読み捨て、終わっても知らせません。
     サーバーが再起動すると、待っていたものには「待てなくなった」と書きます。
+    終わりの知らせ（`shell_finished`）を含め、attention の付いた更新は、走っているターンにも本人のメッセージと同じく差し込まれます。
+    natsumi はツール `wait_for_events` で、ターンの残り時間まで知らせを待てます（印の無い更新は、今までどおりターンの後です）。
     残ったプロセスを止めるのは natsumi です（`ps` と `kill -- -<プロセスグループ>`）。サーバーは止めません。
   - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで。長いときは先頭と末尾を半分ずつ残し、間を捨てます
     （モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字までで、これも先頭と末尾で切ります。config で宣言したツールの出力は先頭から取ります）
