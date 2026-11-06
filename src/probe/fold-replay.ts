@@ -61,7 +61,7 @@ const outcome = (text: string): ToolOutcome => ({ ok: true, text });
 const TOOLS = createLoopTools({
   reply: () => outcome(''), notify: () => outcome(''), setExpression: () => outcome(''), writeHandoff: () => outcome(''),
   writeChangeNote: () => outcome(''), scheduleSelfCheck: () => outcome(''), listSelfChecks: () => outcome(''),
-  cancelSelfCheck: () => outcome(''), askAgent: () => outcome(''), replyToAgent: () => outcome(''), runShell: () => outcome(''),
+  cancelSelfCheck: () => outcome(''), askAgent: () => outcome(''), replyToAgent: () => outcome(''), waitForEvents: () => outcome(''), runShell: () => outcome(''),
   capture: async () => ({ ok: true, exitCode: 0, stdout: '', stdoutTruncated: false }),
 }).map(tool => ({ name: tool.name, description: tool.description, parameters: JSON.parse(JSON.stringify(tool.parameters)) }));
 

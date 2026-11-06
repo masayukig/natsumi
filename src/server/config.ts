@@ -579,7 +579,7 @@ export const TOOLS_DIRECTORY = '/tools';
  */
 export const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(['run_shell', 'read', 'search_memory', 'reply_to_mac',
   'notify_owner', 'set_mac_avatar_expression', 'write_handoff_note', 'write_change_note', 'schedule_self_check',
-  'list_self_checks', 'cancel_self_check', 'ask_agent', 'reply_to_agent', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
+  'list_self_checks', 'cancel_self_check', 'ask_agent', 'reply_to_agent', 'wait_for_events', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
 /** What model providers take as a function name. */
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;

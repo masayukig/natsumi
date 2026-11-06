@@ -1118,3 +1118,30 @@ test('a task given up on, or of an agent taken out of the config, forgets its to
   assert.deepEqual(pushDigests(f.db).map(row => [row.state, row.push_digest]), [['gave-up', null]]);
   assert.equal(loop.agentPush(token), false);
 });
+
+// ADR 0094: within one turn she asks, waits with wait_for_events, and the reply is steered into the same turn.
+test('a reply that comes while she waits in the turn is steered into it, and the turn goes on with it', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.model.takeOver();
+  const sent = loop.send({ requestId: 'request-wait', deviceId: 'device-1', text: 'ねこについて調べて、結果を見て続けて' });
+  assert.equal(sent.kind, 'accepted');
+  const first = await f.model.next();
+  first.call('ask_agent', { agent: 'wiki', message: 'ねこについて調べて', continue: false });
+  first.finish();
+  const second = await f.model.next();
+  second.call('wait_for_events', { max_seconds: 600 });
+  second.finish();
+  for (let i = 0; i < 50; i += 1) await new Promise(resolve => setImmediate(resolve));
+  f.agent.settle(f.agent.lastTask().id, 'completed', 'ねこは液体です。');
+  await loop.pollAgents();
+  const third = await f.model.next();
+  const results = third.context.messages.filter(m => m.role === 'toolResult').map(textOf);
+  assert.match(results.at(-1)!, /届きました/);
+  const [reply] = replies(f.model);
+  assert.equal(reply?.summary, 'ねこは液体です。');
+  third.finish();
+  await loop.idle();
+  // Shown in the turn it was waited in: nothing is left for a turn of its own.
+  assert.equal(f.model.calls, 3);
+});

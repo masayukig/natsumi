@@ -207,7 +207,8 @@ test('the page on background commands names the kind, the files and every way a 
     'kill -- -', 'シグナル', '24 時間', '再起動', '上限', '先頭と末尾']) {
     assert.ok(page.includes(phrase), phrase);
   }
-  assert.ok(!page.includes('wait_for_events'), 'the tool to wait with comes in a later change');
+  // Three ways on after a command goes to the background, one of them waiting in the turn (ADR 0094).
+  assert.ok(page.includes('wait_for_events'));
   const index = await read('manual/INDEX.md');
   assert.match(index, /`kind` が `shell_finished`.*\/manual\/jobs\.md/);
 });

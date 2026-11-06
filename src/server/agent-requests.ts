@@ -239,6 +239,14 @@ export class AgentRequests {
    * made any more; one still queued at the upgrade is handed over as it was. The answer is emptied from its row as it
    * goes: from here on it is in the Pi session, and the same record is not kept twice (ADR 0008).
    */
+  /**
+   * How many requests to outside agents still wait for their reply, the postbox's letters among them: what
+   * `wait_for_events` may wait for (ADR 0094).
+   */
+  waiting(): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM agent_tasks WHERE state = 'waiting'`).get() as { n: number }).n;
+  }
+
   takeEventLine(eventId: string, receivedAt: string): Record<string, unknown> {
     const row = this.db.prepare('SELECT agent, status, text, files FROM agent_replies WHERE event_id = ?').get(eventId) as
       { agent: string; status: TaskEnd; text: string; files: string } | undefined;

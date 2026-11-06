@@ -50,6 +50,7 @@ function toolHost(workspace: boolean): LoopToolHost {
     cancelSelfCheck: () => outcome('cancelled'),
     askAgent: () => outcome('asked'),
     replyToAgent: () => outcome('replied to the agent'),
+    waitForEvents: () => outcome('waited'),
     ...(workspace ? { runShell: () => outcome('ran'),
       capture: async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false }) } : {}),
   };

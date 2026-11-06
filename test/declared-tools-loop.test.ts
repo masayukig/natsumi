@@ -23,7 +23,8 @@ type OpenOptions = Partial<Omit<LoopOptions, 'loop' | 'curator'>> & { loop?: Par
 const ON: CodemodeConfig = { ...DEFAULT_CODEMODE, enabled: true };
 /** Every tool natsumi has with a workspace, in the order they are declared with Codemode off. */
 const LOOP_TOOLS = ['run_shell', 'reply_to_mac', 'notify_owner', 'set_mac_avatar_expression', 'write_handoff_note', 'write_change_note',
-  'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent', 'read', 'search_memory', 'reply_to_agent'];
+  'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent', 'read', 'search_memory', 'reply_to_agent',
+  'wait_for_events'];
 
 async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
   const deadline = Date.now() + timeout;
