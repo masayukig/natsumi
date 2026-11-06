@@ -13,101 +13,105 @@
 ## 表情の出どころと生成設定
 
 sdctl と Stable Diffusion WebUI で生成しました。
-モデルは `anima_2_9_Anima-2.9B-preview-v1`、LoRA は `kutara_anima.v6`（強度1、トリガー語 `kutara aki`）。
-モデル hash は `0b3020d1b9`、LoRA hash は `9d800d85550e` です。
+モデルは `anima_2_9_Anima-2.9B-preview-v1`、LoRA は `kutara_anima.v12`（強度1、トリガー語 `kutara aki`）。
+モデル hash は `0b3020d1b9`、LoRA hash は `81068aaf6f61` です。
 
-- `sdctl-params.yaml` の設定で生成しました。Negative の末尾には `twins, duplicate` を加えています。
+- `sdctl-params.yaml` の設定で生成しました。Negative の末尾には `twins, duplicate, hood up` を加えています（`hood up` は表情の生成だけ）。
 - **表情の生成時だけ width/height を1024に上書き**しました。自分を描く通常の既定値は896×1152のままです。
 - ER SDE、beta、Steps 32、CFG 4、ADetailer `face_yolov8n.pt`（denoising 0.4、inpaint only masked）。
 - モジュールは `qwen_image_vae.safetensors` と `qwen_3_06b_base.safetensors`。
 - PNG の記録では Shift 3.5、beta の alpha/beta ともに0.6。これらは WebUI 側の設定に依存します。
-- 各表情を2枚ずつ、合計18枚生成し、外見・表情・仕草のある手の形で選びました。
+- 各表情を2枚ずつ生成し、手が切り出しの枠に入らなかった happy・worried・angry は仕草を変えて生成し直しました。
 
-伊織・ミャオの README と PNG の `parameters`、[CLAUDE.md](../CLAUDE.md)・[アバターの作り方](../../../docs/avatar.md) を参考にしています。
+伊織・ミャオの README と PNG の `parameters`、なつみの表情アイコン、[CLAUDE.md](../CLAUDE.md)・[アバターの作り方](../../../docs/avatar.md) を参考にしています。
+
+### 構図と服
+
+本人の指定で、なつみのアイコンのように顔を大きくし、頭の上部を切って、下に上着が見える構図にしました。
+服は白いタンクトップから、薄いグレーのパーカー（フードは下ろす）に替えています。
+なつみの表情のように、表情ごとに手の仕草を付け、仕草が正方形の枠に入るよう手を顔の近くに置いています。
 
 ### プロンプト
 
-本人の LoRA・品質・外見・衣装の行を保持し、顔が主役になるよう単一のポートレートと顔・肩だけの構図を明記しました。
-余計な吹き出し・絵文字・隅の小顔を避けるため `icon` は使っていません。共通の形は次のとおりです。
+本人の LoRA・品質・外見の行を保持し、胸から上のポートレートでパーカーが見えることを明記しました。共通の形は次のとおりです。
 
 ```text
-<lora:kutara_anima.v6:1>,
+<lora:kutara_anima.v12:1>,
 masterpiece, newest,
 solo, single portrait,
-A single close-up portrait. The face fills most of the square frame, with only the head and shoulders visible.
+A single portrait from the chest up. The face is large and centered, and the light gray hoodie is clearly visible on the shoulders and chest.
 kutara aki, femboy, bob cut, freckles,
-white tanktop, blue shorts,
+light gray hoodie, hood down,
 <表情と仕草の行>
-face close-up, headshot, portrait, simple white background,
+upper body, portrait, simple white background,
 ```
 
+neutral だけは服を比べる段階で生成したため、最後の行に `facing viewer` が入り、Negative に `hood up` がありません。
 表情の生成では `femboy` を使いました。PNG の `parameters` にもそのまま残っています。
 自分を描くときの既定値である `appearance.yaml` の `body` では、本人の決定でこの語を `1girl` に替えています（`kutara aki, 1girl, black hair, bob cut, ...`）。
-
-表情と仕草の行は各 PNG の `parameters` で確認できます。
-happy は `happy, smile, playing with own hair, looking at viewer,`、thinking は `thinking face, hand on own chin, looking up,`。
-**仕草はこの2枚だけ**です。ほかの7枚は手を出さず、顔と肩の構図です。
 
 生成コマンドの形です。batch size 2 は採用候補を比較するための指定です。
 
 ```sh
 sdctl txt2img '<上記プロンプト>' --params sdctl-params.yaml \
+  -n '<既定のNegative>, hood up' \
   --width 1024 --height 1024 --seed <seed> --batch-size 2 -o <表情>.png
 ```
 
-## 選定・縮小
+## 選定・切り出し・描き直し
 
-| 表情 | seed | 仕草 | 選んだ理由 |
+| 表情 | 元seed | 表情と仕草の行 | 選んだ理由 |
 | --- | ---: | --- | --- |
-| neutral | 10030700 | なし | 閉じた口と穏やかな視線。白いタンクトップと肩が自然で、灰色の瞳・ボブ・そばかすが明瞭。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| happy | 10030710 | playing with own hair | 髪先に添える指の形が読み取れ、柔らかい微笑みと仕草が両立する。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| laughing | 10030720 | なし | 閉じた目と大きく開いた口が明確な笑いを表す。枠線の無い正面に近い顔。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| surprised | 10030730 | なし | 見開いた目と開いた口で驚きが伝わり、顔の大きさが neutral に近い。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| thinking | 10030740 | hand on own chin | 顎に添えた手と上向きの視線。指の曲がりが読み取れ、顔を隠しすぎない。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| sad | 10030750 | なし | 下がった眉と視線・口角が悲しさを表す。白いタンクトップで余計な袖がない。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| sleepy | 10030661 | なし | 半分閉じた目と傾いた頭で眠さを表し、sad の寄せた眉と区別できる。 |
-| angry | 10030760 | なし | 寄せた眉と尖った口元が怒りを明確に伝える。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
-| worried | 10030770 | なし | 上がった眉の内側、開いた目、下がった口角で不安が伝わり、sad と区別できる。 sleepyの顔幅と目の高さに合わせて切り抜き、i2iで細部を再生成。 |
+| neutral | 10031120（2枚目） | `neutral expression, closed mouth, looking at viewer,` | 正面の穏やかな顔で、フードの縁とひもの金具が見え、パーカーだとわかる |
+| happy | 10031205（1枚目） | `happy, smile, one eye closed, peace sign next to own eye, v over eye, hand close to face, looking at viewer,` | ウインクとピースがはっきりし、ピースの指が枠に入る。頬に手を添える案・ひもをつまむ案より、うれしさが伝わる |
+| laughing | 10031210（1枚目） | `laughing, closed eyes, open mouth, sleeves past wrists, sleeve covering mouth, hand near face,` | 閉じた目と大きく開いた口に、口元の手が添う |
+| surprised | 10031220（1枚目） | `surprised, wide-eyed, open mouth, both hands raised beside face, open palms,` | 顔の横に上げた両手と見開いた目で驚きが明確 |
+| thinking | 10031230（2枚目） | `thinking, index finger on own cheek, looking up, head tilt, closed mouth,` | 頬に当てた人差し指と首のかしげ方で考えている様子が伝わる |
+| worried | 10031241（1枚目） | `worried, raised inner eyebrows, frown, both hands near own mouth, fingertips touching lips, looking at viewer,` | 口元に寄せた両手と上がった眉の内側で不安が伝わる。胸の前で指を組む案は手が枠の外に出た |
+| sad | 10031250（2枚目） | `sad, looking down, teary eyes, sleeves past wrists, wiping tears with sleeve,` | うつむいて目元をぬぐう手と涙が、悲しさを表す |
+| sleepy | 10031260（1枚目） | `sleepy, yawning, one eye closed, sleeves past wrists, rubbing eye with sleeve,` | あくびと目をこする手で眠さが伝わり、sad と区別できる |
+| angry | 10031272（1枚目） | `angry, puffed cheeks, pout, furrowed brow, anger vein, both clenched fists raised beside own face, looking at viewer,` | ふくらませた頬と頬の横のこぶしで、むくれた怒りが伝わる。腕組みの案は腕が枠の外に出た |
 
-### sleepy に揃える切り抜きと i2i
+`sleeves past wrists`・`with sleeve` を指定した表情も、描かれた手は素手です。
 
-本人の指定により、sleepy を基準に顔の幅と目の高さを揃えました。
-sleepy は生成元の1024×1024を保持し、ほかの8枚は下の正方形を切り抜き、LANCZOSで1024×1024に拡大して img2img で再生成しました。
-上下位置を揃えるため、一部の切り抜きは上端が元画像の外に出ます。その部分は白で埋めています（負の「上」の絶対値が白い余白の高さ）。
-座標はi2i前の1024×1024画像上のものです。i2i前の元画像と入力画像は素材に含めていません。
+### 切り出しと i2i
+
+元の1024×1024画像から下の正方形を切り出しました。
+目の高さが枠の上から約45%、両目の間隔が枠の約35%になるよう、neutral に合わせて表情ごとに位置と一辺を決めています。
+happy と angry は本人の確認で寄せ具合を決めました。happy は右端のピースが入るよう、顔を少し左に置いています。
+切り出しを LANCZOS で1024×1024に拡大し、img2img で細部を再生成しました。
 
 | 表情 | 左 | 上 | 一辺 | 元seed | i2i seed | denoising |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| neutral | 120 | -25 | 800 | 10030601 | 10030700 | 0.25 |
-| happy | 65 | 5 | 790 | 10030611 | 10030710 | 0.25 |
-| laughing | 10 | -105 | 1000 | 10030621 | 10030720 | 0.25 |
-| surprised | 120 | -15 | 810 | 10030630 | 10030730 | 0.25 |
-| thinking | 115 | -85 | 850 | 10030640 | 10030740 | 0.25 |
-| sad | 200 | 123 | 655 | 10030651 | 10030750 | 0.25 |
-| sleepy | 0 | 0 | 1024 | 10030661 | — | — |
-| angry | 100 | 25 | 850 | 10030671 | 10030760 | 0.25 |
-| worried | 100 | 25 | 830 | 10030681 | 10030770 | 0.25 |
+| neutral | 172 | 160 | 680 | 10031120 | 10031300 | 0.25 |
+| happy | 244 | 80 | 780 | 10031205 | 10031310 | 0.25 |
+| laughing | 130 | 67 | 795 | 10031210 | 10031320 | 0.25 |
+| surprised | 175 | 116 | 709 | 10031220 | 10031330 | 0.25 |
+| thinking | 68 | 89 | 838 | 10031230 | 10031340 | 0.25 |
+| worried | 165 | 169 | 738 | 10031241 | 10031350 | 0.25 |
+| sad | 213 | 189 | 680 | 10031250 | 10031360 | 0.25 |
+| sleepy | 167 | 105 | 767 | 10031260 | 10031370 | 0.25 |
+| angry | 72 | 104 | 880 | 10031272 | 10031380 | 0.25 |
 
-i2i は1024×1024、denoising 0.25、batch size 1。他の生成設定（32 steps、CFG4、ER SDE/beta、モデル・モジュール・ADetailer）は `sdctl-params.yaml` のままです。
-白一色の衣装にするため、8枚のi2iでは `white tanktop` を `plain white tanktop` に替え、Negative の末尾に `trim, piping, layered clothes` を追加しました。
-通常の画像生成用 `sdctl-params.yaml` のNegativeは、`twins, duplicate` を足した値のままです。
-顔中心の切り抜きで衣服はほとんど写りませんが、neutral・sadを含め表示画像に紺色の線はありません。写っているほかの衣服も確認しています。
+i2i は1024×1024、denoising 0.25、batch size 1。プロンプトと Negative は元画像のものをそのまま使い、他の生成設定は `sdctl-params.yaml` のままです。
+直下の PNG は i2i の結果で、`parameters` は i2i のものです。元seed の画像と i2i の入力画像は素材に含めていません。
+i2i で surprised の瞳はわずかに緑がかった灰色になりましたが、本人の確認でそのまま採用しました。
 
 ```sh
-sdctl img2img '<plain white tanktop に替えたプロンプト>' <切り抜きを1024に拡大した入力.png> \
-  --params sdctl-params.yaml --width 1024 --height 1024 --denoising 0.25 \
-  --negative '<既定のNegative>, trim, piping, layered clothes' \
-  --seed <i2i seed> --batch-size 1 -o <表情>.png
+sdctl img2img '<元画像のプロンプト>' <切り出しを1024に拡大した入力.png> \
+  --params sdctl-params.yaml -n '<元画像のNegative>' \
+  --width 1024 --height 1024 --denoising 0.25 --seed <i2i seed> --batch-size 1 -o <表情>.png
 ```
 
 9枚の最終1024×1024画像から、512×512のWebP（quality 90、method 6）と256×256のRGB PNGへLANCZOSで直接縮小しました。
-9枚を並べ、顔幅・目の高さ・表情・手を目視確認しています。表示用画像には生成メタデータを引き継いでいません。
+9枚を並べ、顔の大きさ・目の高さ・表情・手を目視確認しています。表示用画像には生成メタデータを引き継いでいません。
 
 ## 外見
 
 描いた絵では黒いボブ、揃った前髪、灰色の瞳、頬と鼻のそばかすを確認しました。
 `keep` の候補は `black hair`・`bob cut`・`gray eyes`・`freckles` の4語です。**本人の確認待ち**です。
-描く前の確認で特徴の語を照合できるよう、どの語も `body` の体の行に含めています。衣装は白いタンクトップと青い短パンです。
+描く前の確認で特徴の語を照合できるよう、どの語も `body` の体の行に含めています。
+既定の衣装は表情に合わせて薄いグレーのパーカー（`light gray hoodie, hood down,`）です。描画例のうち夏の休憩は、白いタンクトップと青い短パンのままです。
 `body` の人物の語は `1girl` です（表情の生成で使った `femboy` から替えています）。
 
 ## 性格・話し方
@@ -118,6 +122,7 @@ sdctl img2img '<plain white tanktop に替えたプロンプト>' <切り抜き�
 ## アニメーション
 
 Codex の hatch-pet と OpenAI の built-in 画像生成で制作しました。
+spritesheet は表情をパーカーに替える前に作ったもので、白いタンクトップと青い短パンのままです。
 先に生成した896×1152の neutral を参照に、白いタンクトップ・白縁の青い短パン・白いスニーカーの全身像を作り、共通の参照にしました。
 各動作は共通の全身像と配置ガイドを添付して個別に生成しました。
 
@@ -139,10 +144,10 @@ Codex の hatch-pet と OpenAI の built-in 画像生成で制作しました。
 最終の9枚が1024×1024、iconsが512×512 WebP、Slackが256×256 RGB PNGであることを検査しました。
 Slack画像が生成元全体の LANCZOS 縮小と一致すること、PNG元画像に生成情報があり表示用には無いことも確認しています。
 アバター全体を `natsumi avatar check aki` で検査し、errors・fills・server defaults がともに none であることを確認しました。
-アバターの配布版は `40aedb253698c13fdc716acc36c281da` です。
+アバターの配布版は `62adb6650400b24d2a093ff37f4e7e66` です。
 
 ## ライセンス
 
 このディレクトリの画像と定義は [Creative Commons Attribution 4.0 International（CC BY 4.0）](https://creativecommons.org/licenses/by/4.0/) で提供します。
 コードの MIT ライセンスとは別です。帰属表示は「アキのアバター — yuanying / natsumi」とし、このディレクトリとライセンスへのリンクを添えてください。
-表情の出どころは Anima と LoRA `kutara_anima.v6`、spritesheet の出どころは hatch-pet / OpenAI の画像生成です。
+表情の出どころは Anima と LoRA `kutara_anima.v12`、spritesheet の出どころは hatch-pet / OpenAI の画像生成です。

@@ -9,7 +9,7 @@
         "compatible": { "baseUrl": "https://llm.example.net/v1", "apiKeyFile": "/run/secrets/natsumi_pi_api_key", "contextWindow": 131072 }
       },
       "plus": {
-        "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+        "model": { "provider": "openai", "id": "gpt-6.1-sol" },
         "compactionThreshold": 150000
       }
     },
@@ -43,9 +43,12 @@
     "reviewTimeoutMinutes": 30,
     "eventModelCalls": 8,
     "eventTimeoutMinutes": 10,
+    "shutdownDrainSeconds": 600,
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
     "memoryFileMaxChars": 32000,
     "alwaysMemoryMaxChars": 2000,
+    "goalFileMaxChars": 6000,
+    "todayPlanMaxChars": 3000,
     "turnFold": "off",
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 40 }
   },

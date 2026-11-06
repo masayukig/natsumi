@@ -321,3 +321,25 @@ test('data is read only from a JSON DataPart of an artifact marked with the repl
   artifact!.parts[1]!.mediaType = 'text/csv';
   assert.deepEqual(await client.getTask(agent.url, sent.taskId), { state: 'completed', text: '要約です。' }, 'not JSON');
 });
+
+// ADR 0089: an agent with a token file of its own gets that token, the others the shared one, each at its own origin only.
+test('an agent with a token file of its own is sent that token, and the others the shared one', async t => {
+  const { agent, client: _, tokenFile } = await setup(t);
+  const directory = await mkdtemp(join(tmpdir(), 'natsumi-a2a-own-'));
+  const ownFile = join(directory, 'own-token');
+  await writeFile(ownFile, 'own-token\n');
+  const own = await FakeAgent.start({ token: 'own-token' });
+  t.after(async () => { await own.close(); await rm(directory, { recursive: true, force: true }); });
+  const client = new SdkA2AClient({ tokenFile, tokenFiles: new Map([[own.url, ownFile]]) });
+  await client.send(agent.url, { text: 'いつもの' });
+  await client.send(own.url, { text: '自分の' });
+  assert.equal(agent.received.at(-1)!.authorization, 'Bearer first-token');
+  assert.equal(own.received.at(-1)!.authorization, 'Bearer own-token');
+  assert.deepEqual(await client.getTask(own.url, own.lastTask().id), { state: 'waiting', text: '' });
+
+  const onlyOwn = new SdkA2AClient({ tokenFiles: new Map([[own.url, ownFile]]) });
+  await onlyOwn.send(own.url, { text: '自分のだけ' });
+  assert.equal(own.received.at(-1)!.authorization, 'Bearer own-token');
+  await assert.rejects(onlyOwn.send(agent.url, { text: 'x' }), (error: A2ACallError) => error.kind === 'no-token',
+    'an agent with no token of its own and no shared one is sent nothing');
+});

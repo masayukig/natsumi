@@ -2,8 +2,9 @@ import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { InboxEndpoint } from './a2a-server.ts';
 import { avatarManifest, type Avatar } from './avatar.ts';
-import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
+import { A2A_PUSH_PATH, ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
 import type { BrowserSessions } from './browser/session-cookie.ts';
 import { WebApp } from './browser/web-app.ts';
@@ -11,6 +12,7 @@ import { Dashboard } from './dashboard.ts';
 import type { GitHubLogin, Outcome } from './github-login.ts';
 import type { SessionStore, VerifiedSession } from './sessions.ts';
 import type { Received } from './uploads.ts';
+import { MAX_WEBHOOK_BODY_BYTES, SIGNATURE_HEADER, type Webhooks } from './webhooks.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;
 /** `/v1/images/<imageId>`: the ID is the server's own, of letters, digits and hyphens. */
@@ -22,6 +24,13 @@ const UPLOAD_PATH = /^\/v1\/uploads\/(upload-[0-9a-f-]{36})$/;
 const SLACK_ICON_PATH = /^\/avatar\/([a-z]+)\.png$/;
 /** One file of the avatar's bundle under its version (ADR 0057): `/v1/avatar/<version>/<path>`. */
 const AVATAR_FILE_PATH = /^\/v1\/avatar\/([0-9a-f]{32})\/(.+)$/;
+/** One webhook of the config (ADR 0091): `POST /v1/webhooks/<name>`. */
+const WEBHOOK_PATH = /^\/v1\/webhooks\/([^/]*)$/;
+/**
+ * The most of a push's body taken in (ADR 0092). It is never read, only drained: what an agent pushes is a whole task,
+ * artifacts and all, at its largest, and the push that ends a task is far smaller.
+ */
+export const MAX_A2A_PUSH_BODY_BYTES = 1024 * 1024;
 
 export interface ListenerOptions {
   listen: ListenConfig;
@@ -47,6 +56,15 @@ export interface ListenerOptions {
     receive(body: AsyncIterable<Buffer>, input: { name: string; githubUserId: number }): Promise<Received>;
     read(uploadId: string): Promise<{ name: string; bytes: number; mimeType?: string; file: string } | undefined>;
   };
+  /** The webhooks (ADR 0091), when the config has any: who may call which, and the format each body goes to. */
+  webhooks?: Pick<Webhooks, 'gate' | 'receive'>;
+  /** The way in over A2A under /a2a/ (ADR 0089), when the config has senders; without it, /a2a/ is not found. */
+  a2a?: Pick<InboxEndpoint, 'handle'>;
+  /**
+   * The pushes of the agents natsumi asked (ADR 0092), when `a2a.pushUrl` is set; without it, `/v1/a2a-push` is not
+   * found. `push` says whether a token is one of a waiting task, and with `ring` asks for that task's GetTask.
+   */
+  a2aPush?: { push(token: string, ring: boolean): boolean };
 }
 
 export interface Listener {
@@ -167,6 +185,11 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     stream.pipe(response);
     return;
   }
+  const webhook = method === 'POST' && options.webhooks ? WEBHOOK_PATH.exec(url.pathname)?.[1] : undefined;
+  if (webhook !== undefined) return receiveWebhook(request, response, webhook, options.webhooks!, options.log);
+  if (method === 'POST' && url.pathname === A2A_PUSH_PATH && options.a2aPush) return receivePush(request, response, options.a2aPush);
+  // The senders' own token or gated's assertion, never the browser's cookie (ADR 0089).
+  if (options.a2a && InboxEndpoint.owns(url.pathname)) return options.a2a.handle(request, response, url);
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
   if (Dashboard.owns(url.pathname)) return options.dashboard.handle(request, response, url);
   if (WebApp.owns(url.pathname)) return options.webApp.handle(request, response, url);
@@ -221,6 +244,55 @@ async function receiveUpload(request: IncomingMessage, response: ServerResponse,
   json(response, 201, { ...received.upload });
 }
 
+/**
+ * A body of a webhook (ADR 0091). Its own bearer token or GitHub's signature of the body, never the browser's cookie;
+ * an unknown name is refused as a wrong token is, before its body is read. A webhook checked by its signature can only
+ * be checked once the body is read, so a body past the limit is refused before it. The body must be JSON (415), in the
+ * webhook format's shape (400), and is answered with a 2xx only once it is written: a 5xx has the sender send it again.
+ */
+async function receiveWebhook(request: IncomingMessage, response: ServerResponse, name: string,
+  webhooks: NonNullable<ListenerOptions['webhooks']>, log: (line: string) => void) {
+  const refuse = (status: number, error: string) => { response.setHeader('connection', 'close'); json(response, status, { error }); };
+  const signed = webhooks.gate.scheme(name) === 'signature';
+  if (!signed && !webhooks.gate.allowed(name, { token: bearerToken(request) })) return refuse(401, 'unauthorized');
+  if (Number(request.headers['content-length'] ?? 0) > MAX_WEBHOOK_BODY_BYTES) return refuse(413, 'too-large');
+  const body = await readBody(request, MAX_WEBHOOK_BODY_BYTES);
+  if (body === undefined) return refuse(413, 'too-large');
+  const signature = request.headers[SIGNATURE_HEADER];
+  if (signed && !webhooks.gate.allowed(name, { body, ...(typeof signature === 'string' ? { signature } : {}) })) return refuse(401, 'unauthorized');
+  let value: unknown;
+  try { value = JSON.parse(body.toString('utf8')); } catch { return json(response, 415, { error: 'not-json' }); }
+  const received = webhooks.receive(name, value, request.headers);
+  if (!received) return json(response, 400, { error: 'invalid-request' });
+  try {
+    json(response, 200, await received);
+  } catch {
+    log(`webhooks: a body of ${name} could not be written; it is refused for the sender to send again`);
+    json(response, 503, { error: 'not-recorded' });
+  }
+}
+
+/**
+ * A push of an agent natsumi asked (ADR 0092): a doorbell for the task its bearer token names, and nothing more. The
+ * token is the only way in, never the browser's cookie; an unknown one, none, and one not a bearer are the same 401.
+ * A known one is answered at once, before the body and before the GetTask it rings for; the body is drained unread up
+ * to its limit. One that says it is larger is refused without ringing.
+ */
+function receivePush(request: IncomingMessage, response: ServerResponse, push: NonNullable<ListenerOptions['a2aPush']>) {
+  const token = bearerToken(request);
+  const large = Number(request.headers['content-length'] ?? 0) > MAX_A2A_PUSH_BODY_BYTES;
+  response.setHeader('connection', 'close');
+  if (!token || !push.push(token, !large)) return json(response, 401, { error: 'unauthorized' });
+  if (large) return json(response, 413, { error: 'too-large' });
+  let size = 0;
+  request.on('data', (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > MAX_A2A_PUSH_BODY_BYTES) request.destroy();
+  });
+  request.on('error', () => {});
+  response.writeHead(204).end();
+}
+
 function answer(response: ServerResponse, outcome: Outcome) {
   if ('location' in outcome) response.writeHead(302, { location: outcome.location }).end();
   else json(response, outcome.status, outcome.body);
@@ -231,12 +303,19 @@ function json(response: ServerResponse, status: number, body: Record<string, unk
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
+  const body = await readBody(request, MAX_BODY_BYTES);
+  if (body === undefined) return undefined;
+  try { return JSON.parse(body.toString('utf8')); } catch { return undefined; }
+}
+
+/** The body, or undefined as soon as it is past the limit. */
+async function readBody(request: IncomingMessage, limit: number): Promise<Buffer | undefined> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) return undefined;
+    if (size > limit) return undefined;
     chunks.push(chunk);
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return undefined; }
+  return Buffer.concat(chunks);
 }

@@ -204,14 +204,15 @@ export async function runCondition(condition: Condition, options: RunOptions): P
       stage.dovePlace = replyPlaceOf(replies, join(data, SOURCES_DIRECTORY));
     }
     const sources: SourceEvents = {
-      take: async eventId => {
-        if (!sceneLineWaiting) return replies ? replies.take(eventId) : false;
+      take: async (eventId, options) => {
+        if (!sceneLineWaiting) return replies ? replies.take(eventId, options) : false;
         sceneLineWaiting = false;
         sceneEvents.add(eventId);
         return true;
       },
       eventLine: (eventId, receivedAt) => sceneEvents.has(eventId) || !replies ? lineOf(receivedAt) : replies.eventLine(eventId, receivedAt),
       images: async (eventId): Promise<ImageContent[]> => sceneEvents.has(eventId) || !replies ? [] : replies.images(eventId),
+      steerable: () => replies?.steerable() ?? false,
     };
 
     const logs: string[] = [];

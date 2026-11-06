@@ -35,9 +35,12 @@ export class A2ACallError extends Error {
 /** A task as the server tracks it: still going, done with an answer, failed, or waiting for natsumi's answer. */
 export type AgentTaskState = 'waiting' | 'completed' | 'failed' | 'input-required';
 
-/** What a send started: a task to fetch later, or a message that is already the whole answer. */
+/**
+ * What a send started: a task to fetch later, or a message that is already the whole answer. `pushed` says the agent
+ * was asked to push for the task (ADR 0092).
+ */
 export type SendResult =
-  | { kind: 'task'; taskId: string; contextId: string; state: AgentTaskState; text: string }
+  | { kind: 'task'; taskId: string; contextId: string; state: AgentTaskState; text: string; pushed?: boolean }
   | { kind: 'message'; contextId: string; text: string };
 
 /**
@@ -82,7 +85,11 @@ export interface CardSummary {
  * A message to send: its text, where it goes on from, the message's metadata, such as the postbox's (ADR 0076), and
  * the files natsumi sends with it (ADR 0080).
  */
-export interface SendInput { text: string; contextId?: string; taskId?: string; metadata?: Record<string, unknown>; files?: SentFile[] }
+export interface SendInput {
+  text: string; contextId?: string; taskId?: string; metadata?: Record<string, unknown>; files?: SentFile[];
+  /** Where and with what bearer token the agent is asked to push (ADR 0092), when its card says it pushes. */
+  push?: { url: string; token: string };
+}
 
 /** A file sent with a message, as its bytes: an agent cannot reach natsumi to fetch one (ADR 0080). */
 export interface SentFile { name: string; mediaType: string; data: Buffer }
@@ -97,8 +104,13 @@ export interface A2AClient {
 }
 
 export interface SdkA2AClientOptions {
-  /** Read afresh on every call: a projected token is replaced while the server runs (ADR 0033). */
-  tokenFile: string;
+  /**
+   * Read afresh on every call: a projected token is replaced while the server runs (ADR 0033). Sent to every agent
+   * without a token file of its own; without it, such an agent is sent nothing.
+   */
+  tokenFile?: string;
+  /** An agent's own token file, by its configured URL (ADR 0089), read afresh on every call as the shared one is. */
+  tokenFiles?: ReadonlyMap<string, string>;
   timeoutMs?: number;
   /** Replaces the global fetch. Tests use it to hold a call open. */
   fetch?: typeof fetch;
@@ -110,16 +122,20 @@ export interface SdkA2AClientOptions {
  * said it may.
  */
 export class SdkA2AClient implements A2AClient {
-  private readonly tokenFile: string;
+  private readonly tokenFile: string | undefined;
+  private readonly tokenFiles: ReadonlyMap<string, string>;
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
   /** Whether each agent's card names the reply extension, by URL, from the card last read. */
   private readonly offersReply = new Map<string, boolean>();
   /** Whether each agent's card takes more than text (`defaultInputModes`), by URL, from the card last read (ADR 0080). */
   private readonly takesFiles = new Map<string, boolean>();
+  /** Whether each agent's card says it pushes (`capabilities.pushNotifications`), by URL, from the card last read (ADR 0092). */
+  private readonly pushes = new Map<string, boolean>();
 
   constructor(options: SdkA2AClientOptions) {
     this.tokenFile = options.tokenFile;
+    this.tokenFiles = options.tokenFiles ?? new Map();
     this.timeoutMs = options.timeoutMs ?? DEFAULT_A2A_CALL_TIMEOUT_MS;
     this.fetch = options.fetch ?? globalThis.fetch;
   }
@@ -142,13 +158,20 @@ export class SdkA2AClient implements A2AClient {
           filename: file.name, mediaType: file.mediaType }))],
       metadata: input.metadata, extensions: [], referenceTaskIds: [],
     };
+    // The card was read just above when it is to be had; one that could not be read asks for no push (ADR 0092).
+    const push = input.push && this.pushes.get(url) ? input.push : undefined;
     const result = await this.call(url, (client, signal) => client.sendMessage({
       tenant: '', message, metadata: undefined,
       configuration: { acceptedOutputModes: reply ? ['text/plain', 'application/json'] : ['text/plain'],
+        // The legacy `token` stays empty: the token goes as a bearer, and only so (ADR 0092).
+        taskPushNotificationConfig: push ? { tenant: '', id: '', taskId: '', url: push.url, token: '',
+          authentication: { scheme: 'Bearer', credentials: push.token } } : undefined,
         // No history back: it is the message just sent, files and all, and nothing here reads it.
-        taskPushNotificationConfig: undefined, returnImmediately: true, historyLength: 0 },
+        returnImmediately: true, historyLength: 0 },
     }, { signal, ...(reply ? { serviceParameters: ServiceParameters.create(withA2AExtensions(REPLY_EXTENSION_URI)) } : {}) }));
-    if ('status' in result) return { kind: 'task', taskId: result.id, contextId: result.contextId, ...view(result) };
+    if ('status' in result) {
+      return { kind: 'task', taskId: result.id, contextId: result.contextId, ...view(result), ...(push ? { pushed: true } : {}) };
+    }
     return { kind: 'message', contextId: result.contextId, text: partsText(result.parts) };
   }
 
@@ -165,6 +188,7 @@ export class SdkA2AClient implements A2AClient {
     });
     this.offersReply.set(url, extensionsOf(body).includes(REPLY_EXTENSION_URI));
     this.takesFiles.set(url, inputModesOf(body).some(mode => mode !== 'text/plain'));
+    this.pushes.set(url, pushesOf(body));
     return summarizeCard(body);
   }
 
@@ -181,7 +205,7 @@ export class SdkA2AClient implements A2AClient {
     // The token goes only where the owner said it may: the origin of the configured URL, which serves the card too.
     if (target.origin !== new URL(url).origin) throw new AgentFileError('elsewhere', 'the file is not at the agent\'s origin');
     let token: string;
-    try { token = await this.token(); } catch (error) { throw new AgentFileError('no-token', (error as Error).message); }
+    try { token = await this.token(url); } catch (error) { throw new AgentFileError('no-token', (error as Error).message); }
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     const limit = new Promise<never>((_, reject) => {
@@ -220,7 +244,7 @@ export class SdkA2AClient implements A2AClient {
   }
 
   private async call<T>(url: string, run: (client: Client, signal: AbortSignal) => Promise<T>): Promise<T> {
-    const token = await this.token();
+    const token = await this.token(url);
     const authorized: typeof fetch = (input, init) => {
       const headers = new Headers(init?.headers);
       headers.set('authorization', `Bearer ${token}`);
@@ -248,9 +272,12 @@ export class SdkA2AClient implements A2AClient {
     } finally { clearTimeout(timer); }
   }
 
-  private async token(): Promise<string> {
+  /** The token of the agent at `url`: its own when it has one, the shared one otherwise (ADR 0089). */
+  private async token(url: string): Promise<string> {
+    const file = this.tokenFiles.get(url) ?? this.tokenFile;
+    if (file === undefined) throw new A2ACallError('no-token', 'the agent has no token file of its own, and there is no shared one');
     let text: string;
-    try { text = await readFile(this.tokenFile, 'utf8'); } catch { throw new A2ACallError('no-token', 'the token file cannot be read'); }
+    try { text = await readFile(file, 'utf8'); } catch { throw new A2ACallError('no-token', 'the token file cannot be read'); }
     const token = text.trim();
     if (token === '') throw new A2ACallError('no-token', 'the token file is empty');
     return token;
@@ -303,6 +330,13 @@ function partsText(parts: Part[]): string {
 function inputModesOf(body: unknown): string[] {
   const card = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
   return Array.isArray(card.defaultInputModes) ? card.defaultInputModes.filter(mode => typeof mode === 'string') : [];
+}
+
+/** Whether a card says the agent pushes: `capabilities.pushNotifications` is true, and nothing else is. */
+function pushesOf(body: unknown): boolean {
+  const card = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
+  const capabilities = typeof card.capabilities === 'object' && card.capabilities !== null ? card.capabilities as Record<string, unknown> : {};
+  return capabilities.pushNotifications === true;
 }
 
 /** The URIs of the extensions a card names, read as leniently as the rest of it. */

@@ -19,6 +19,7 @@ import { CURATOR_ARCHIVE_INSTRUCTIONS, CURATOR_INDEX_INSTRUCTIONS, CURATOR_KNOWL
   curatorSystemPrompt } from './prompts.ts';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
+import { GOALS_DIRECTORY, inGoals } from './goals.ts';
 import { inPostbox, POSTBOX_DIRECTORY } from './postbox.ts';
 import { SKILLS_DIRECTORY } from './skills.ts';
 import { markPlace, placeSince, type PlaceMark } from './session-place.ts';
@@ -45,11 +46,12 @@ const BRIEF_HEADING_CHARS = 80;
 /**
  * Whether the curator may rewrite a file's content: a topic file, never natsumi's own, the index, the diary, the
  * archive, which is only added to (ADR 0068), her skills, whose shape is Pi's to read (ADR 0073), or the postbox's
- * letters, which say whom to ask and when rather than what she knows (ADR 0076).
+ * letters, which say whom to ask and when rather than what she knows (ADR 0076), or her goals and today's plan, whose
+ * file names are the goals' IDs and parts of which she writes only once the owner has agreed (ADR 0090).
  */
 export function isRewritable(path: string): boolean {
   return path.endsWith('.md') && !NATSUMI_ONLY_FILES.includes(path) && path !== INDEX_FILE && !inDiary(path) && !inArchive(path)
-    && !inSkills(path) && !inPostbox(path);
+    && !inSkills(path) && !inPostbox(path) && !inGoals(path);
 }
 
 function inDiary(path: string): boolean {
@@ -258,6 +260,8 @@ function memoryMap(input: StageInput, archiving = false): string[] {
   const archive = input.files.filter(file => inArchive(file.path));
   const skills = input.files.filter(file => inSkills(file.path));
   const letters = input.files.filter(file => inPostbox(file.path));
+  const goals = input.files.filter(file => inGoals(file.path));
+  let goalsShown = false;
   let diaryShown = false;
   let archiveShown = false;
   let skillsShown = false;
@@ -273,6 +277,12 @@ function memoryMap(input: StageInput, archiving = false): string[] {
       if (lettersShown) continue;
       lettersShown = true;
       lines.push(`- ${POSTBOX_DIRECTORY}/: ${letters.length} ファイル（郵便ポストの定期便、変えない）`);
+      continue;
+    }
+    if (inGoals(file.path)) {
+      if (goalsShown) continue;
+      goalsShown = true;
+      lines.push(`- ${GOALS_DIRECTORY}/: ${goals.length} ファイル（目標と今日の計画、変えない）`);
       continue;
     }
     if (inArchive(file.path)) {

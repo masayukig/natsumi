@@ -115,7 +115,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026）。reply は、natsumi が画像を添えたときだけ images（画像の一覧。下記「会話の画像」）を持つ。画像の無い行には欄が無い（空の配列も送らない） |
 | `avatar.expression` | expression（neutral / happy / laughing / surprised / thinking / worried / sad / sleepy） |
 | `conversation.thinking` | line（natsumi がいま書いている思考の 1 行。120 文字まで。空文字は思考が終わったこと）。その場限りで、採番せず、再送もせず、記録もしない。下記「考えている 1 行」 |
-| `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / model-error / stopped） |
+| `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / context-limit / model-error / stopped） |
 | `approval.pending` | 新しい承認待ち（承認の全体）。全端末に届く。下記「承認と外部実行」 |
 | `approval.resolved` | approvalId、revision、state（approved / edited / rejected / expired）、resolvedAt。送ったときは delivery（sent / failed）、sent なら sentText、failed なら reason（mechanical-check / slack-error / target-gone）。全端末に届く |
 | `notification.batch` | 未実装で、送られない。知らせは `conversation.message`（kind: notice）で届く。下記「通知と定期処理」 |
@@ -161,6 +161,8 @@ natsumi は一本の思考ループで、本人のメッセージを 1 件ずつ
 `session.snapshot` の `messages` は SQLite の記録から作る。natsumi の思考、内心、ツールの呼び出しは含まれない。
 `messages` の各要素は `conversation.message` の payload と同じ形で、natsumi のセリフの expression と返事の images もそのまま載る。
 サーバーを再起動しても同じ履歴が返る。再起動の前に処理中だったメッセージは二度処理せず、返事がなければ failed になる。
+サーバーは止まる前に、処理中のターンが終わるのを上限まで待つ（ADR 0083）。その間も接続は開いていて、返事はふつうに届く。
+その間に送ったメッセージも受け付けられる（state は queued）。処理中のターンには加わらず、返事は次の起動の後に届く。
 
 natsumi は毎晩決まった時刻に一日を振り返り、思考の記録を新しくする（ADR 0009）。Mac から見える変化は次のとおりである。
 

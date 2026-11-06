@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdir, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
@@ -160,7 +161,7 @@ test('the state section shows the server, the route, the fold, the context, the 
   assert.match(res.text, /id="status"/);
   assert.match(res.text, /動いている/, 'the heartbeat in status.json is fresh');
   assert.match(res.text, /default/, 'the route in use');
-  assert.match(res.text, /gpt-5\.5/);
+  assert.match(res.text, /gpt-5\.6-sol/);
   assert.match(res.text, /畳み込み[\s\S]*off/);
   assert.match(res.text, /60,?000/, 'the compaction threshold');
   assert.match(res.text, /実行中のターン[\s\S]*なし/);
@@ -922,6 +923,39 @@ test('the postbox page needs the cookie and shows each letter, its last run and 
   const row = (name: string) => rows.find(text => text.includes(`<code>${name}</code>`)) ?? '';
   assert.match(row('morning-news'), /<a href="\/dashboard\/files\/sources\/agents\/news\/20251231T220000Z-ab12">最後の返事<\/a>/);
   for (const name of ['inbox', 'weekly', 'noisy']) assert.doesNotMatch(row(name), /\/dashboard\/files\/sources/, name);
+}));
+
+// Goals (ADR 0090): what changed in the parts that need the owner's consent, read from memory's git history.
+test('the goals page needs the cookie and lists the consent parts that changed, from git, and nothing of the free parts', () => withFixture(async f => {
+  assertLoginAgain(await f.fetch('/dashboard/goals'), f);
+  const cookie = await browserLogin(f);
+  const memory = join(f.data, 'memory');
+  const git = (...args: string[]) => execFileSync('git', ['-C', memory, '-c', 'user.name=なつみ', '-c', 'user.email=natsumi@natsumi.invalid', ...args]);
+  await mkdir(join(memory, 'goals'), { recursive: true });
+  git('init', '-q', '-b', 'main');
+  const goal = (routine: string, state: string) => `# クラスタを健康に保つ\n\n## なぜ\nマスターの仕事が止まらないように。\n\n## 日課\n${routine}\n\n## 今の様子\n${state}\n\n## 短い目標\n- まだ無し\n`;
+  await writeFile(join(memory, 'goals', 'cluster-health.md'), goal('- アラートを見る', '- 2026-10-30: 静か'));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'made');
+  await writeFile(join(memory, 'goals', 'cluster-health.md'), goal('- アラートを見る', `- 2026-10-31: ${HOSTILE}`));
+  await writeFile(join(memory, 'goals', 'today.md'), '# 2026-10-31\n\n- [ ] 日課\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'state');
+  await writeFile(join(memory, 'goals', 'cluster-health.md'), goal('- アラートを見る\n- ノードを数える', `- 2026-10-31: ${HOSTILE}`));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'routine');
+  const res = await f.fetch('/dashboard/goals', withCookie(cookie));
+  assert.equal(res.status, 200, res.text);
+  assert.match(res.text, /<nav[^>]*>[\s\S]*目標の変更/);
+  const section = res.text.slice(res.text.indexOf('<section id="goals">'), res.text.indexOf('</section>', res.text.indexOf('<section id="goals">')));
+  assert.equal(section.split('<article').length - 1, 2, section);
+  assert.match(section, /「日課」を変えた/);
+  assert.match(section, /\+ - ノードを数える/);
+  assert.match(section, /目標のファイルを作った/);
+  assert.match(section, /なつみ/);
+  // The state is hers to write freely, and today.md is no goal: neither is listed.
+  assert.ok(!section.includes('2026-10-31: '), section);
+  assert.ok(!section.includes('today.md'), section);
 }));
 
 // The sleeping pill (ADR 0077): a page that asks first, and a POST guarded as a booking's cancel is.

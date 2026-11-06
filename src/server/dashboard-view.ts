@@ -28,6 +28,8 @@ export const APPROVALS_PATH = '/dashboard/approvals';
 export const SLEEP_PATH = '/dashboard/sleep';
 /** The postbox's letters (ADR 0076), shown and never changed. */
 export const POSTBOX_PATH = '/dashboard/postbox';
+/** What changed in the parts of the goals that need the owner's consent (ADR 0090), from memory's git history. */
+export const GOALS_PATH = '/dashboard/goals';
 /** The fragments the script refreshes: without a live session they answer 401, as the script cannot follow a login. */
 export const REFRESHED_PATHS: ReadonlySet<string> = new Set([STATUS_PATH, WAITS_LIVE_PATH]);
 
@@ -44,6 +46,7 @@ const SECTIONS: { label: string; href?: string }[] = [
   { label: '予約', href: CHECKS_PATH },
   { label: '睡眠薬', href: SLEEP_PATH },
   { label: '定期便', href: POSTBOX_PATH },
+  { label: '目標の変更', href: GOALS_PATH },
   { label: '一行メモ', href: MEMOS_PATH },
   { label: 'ポッポさん', href: DOVE_PATH },
   { label: '承認の履歴', href: APPROVALS_PATH },

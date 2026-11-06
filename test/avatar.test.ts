@@ -293,12 +293,13 @@ test('a personality.md that is there but empty, or leads outside, stops the star
 test('every built-in avatar passes the start\'s checks under the ID its directory is named by', async () => {
   const names = (await readdir(BUILT_IN_DIRECTORY, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(await builtInAvatars(), names);
-  assert.deepEqual(names, ['aki', 'iori', 'myao', 'nanashi', 'natsumi']);
+  assert.deepEqual(names, ['aki', 'iori', 'myao', 'nanashi', 'natsumi', 'penelope']);
   for (const id of names) {
     const inspected = await inspectAvatar(join(BUILT_IN_DIRECTORY, id));
     assert.deepEqual(inspected.errors, [], id);
     assert.equal(inspected.avatar?.id, id);
-    assert.deepEqual(inspected.filled, [], id);
+    // Penelope has no desktop app, so she has no sheet of her own: the faceless one stands in, and nothing else.
+    assert.deepEqual(inspected.filled, id === 'penelope' ? ['spritesheet'] : [], id);
     const chosen = await loadAvatar({ id });
     assert.equal(chosen.version, inspected.avatar!.version, id);
   }
@@ -413,7 +414,7 @@ test('an ID chooses a built-in avatar, the same as leaving the avatar out for na
 test('an ID that is no built-in avatar stops the start', async () => {
   for (const id of ['hana', 'fallback']) {
     await assert.rejects(loadAvatar({ id }), (error: unknown) => error instanceof ConfigError && error.path === 'avatar.id'
-      && error.message === `avatar.id: ${id} is not a built-in avatar (aki, iori, myao, nanashi, natsumi)`, id);
+      && error.message === `avatar.id: ${id} is not a built-in avatar (aki, iori, myao, nanashi, natsumi, penelope)`, id);
   }
 });
 
@@ -469,7 +470,7 @@ test('an angry that is out of shape stops the start like any other feeling', () 
 }));
 
 test('all built-in avatars carry every feeling of the spec, angry included', async () => {
-  for (const id of ['aki', 'iori', 'myao', 'nanashi', 'natsumi']) {
+  for (const id of ['aki', 'iori', 'myao', 'nanashi', 'natsumi', 'penelope']) {
     const dir = join(BUILT_IN_DIRECTORY, id);
     const manifest = JSON.parse(await readFile(join(dir, 'avatar.json'), 'utf8'));
     for (const expression of AVATAR_EXPRESSIONS) {
@@ -508,14 +509,32 @@ test('aki has her own name, complete assets and Anima drawing settings', async (
   assert.deepEqual(avatar.defaults, []);
   assert.equal(avatar.personality, await readFile(join(BUILT_IN_DIRECTORY, 'aki', 'personality.md'), 'utf8'));
   assert.match(avatar.personality!, /^# 性格・話し方\n[\s\S]*一人称は「ぼく」。二人称は「きみ」/);
-  assert.equal(avatar.appearance?.lora, 'kutara_anima.v6');
+  assert.equal(avatar.appearance?.lora, 'kutara_anima.v12');
   assert.match(avatar.appearance!.body, /kutara aki, 1girl, black hair, bob cut,/);
   assert.ok(!avatar.appearance!.body.includes('femboy'));
   assert.deepEqual(avatar.appearance?.keep, ['black hair', 'bob cut', 'gray eyes', 'freckles']);
   for (const word of avatar.appearance!.keep) {
     assert.ok(avatar.appearance!.body.includes(word), `body must contain keep word: ${word}`);
   }
-  assert.equal(avatar.appearance?.outfitName, '白いタンクトップと青い短パン');
+  assert.equal(avatar.appearance?.outfitName, 'グレーのパーカー');
+  assert.match(avatar.sdctlParams, /anima_2_9_Anima-2.9B-preview-v1/);
+  assert.match(avatar.sdctlParams, /twins, duplicate/);
+});
+
+test('penelope has her own name, faces, plain-spoken personality and Anima drawing settings, and no sheet', async () => {
+  const avatar = await loadAvatar({ id: 'penelope' });
+  assert.equal(avatar.name, 'ペネロペ');
+  assert.deepEqual(avatar.filled, ['spritesheet']);
+  assert.deepEqual(avatar.defaults, ['pet.json']);
+  assert.equal(avatar.personality, await readFile(join(BUILT_IN_DIRECTORY, 'penelope', 'personality.md'), 'utf8'));
+  assert.match(avatar.personality!, /^# 性格・話し方\n[\s\S]*一人称は「わたし」/);
+  assert.equal(avatar.appearance?.lora, 'penelope_natsumi_anima.v2');
+  assert.match(avatar.appearance!.body, /penelope, 1girl, android,/);
+  assert.deepEqual(avatar.appearance?.keep, ['penelope', 'android']);
+  for (const word of avatar.appearance!.keep) {
+    assert.ok(avatar.appearance!.body.includes(word), `body must contain keep word: ${word}`);
+  }
+  assert.equal(avatar.appearance?.outfitName, '白い機械の体とフリル');
   assert.match(avatar.sdctlParams, /anima_2_9_Anima-2.9B-preview-v1/);
   assert.match(avatar.sdctlParams, /twins, duplicate/);
 });

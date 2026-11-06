@@ -15,10 +15,11 @@ type ToolResult = Extract<AgentMessage, { role: 'toolResult' }>;
 
 /**
  * The calls a fold keeps, with their results: what reached the owner or someone outside — replies, notices, and
- * requests to other agents, the dove's Slack posts among them — and what she read with `read`, which is kept so that
- * a manual or a memory once read need not be read again. Everything else she did on the way is working.
+ * requests to other agents, the dove's Slack posts among them, and her replies to what agents asked her (ADR 0089) —
+ * and what she read with `read`, which is kept so that a manual or a memory once read need not be read again.
+ * Everything else she did on the way is working.
  */
-export const KEPT_TOOLS = new Set(['reply_to_mac', 'notify_owner', 'ask_agent', 'read']);
+export const KEPT_TOOLS = new Set(['reply_to_mac', 'notify_owner', 'ask_agent', 'reply_to_agent', 'read']);
 /** What a kept reply or notice's result becomes: the line itself is in the call. */
 export const SENT = '送りました。';
 /** Stands before the memo, which is folded into a line of her own. */

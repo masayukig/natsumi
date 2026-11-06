@@ -1,7 +1,7 @@
 # 0033. 本番を Kubernetes に置く
 
 - Date: 2026-09-24
-- Status: Accepted（ssh の口で記憶の `.git` を書けるようにし、本人が自分でコミットしてよいこと、そのときに鍵の漏洩が SQLite と秘密に届かないための条件は [ADR 0067](0067-the-owner-commits-memory-over-ssh.md) で置き換え・条件づけ。2026-10-04: 作業環境の git が記憶のリポジトリを読めるようにすることを「追記」の節に加えた）
+- Status: Accepted（ssh の口で記憶の `.git` を書けるようにし、本人が自分でコミットしてよいこと、そのときに鍵の漏洩が SQLite と秘密に届かないための条件は [ADR 0067](0067-the-owner-commits-memory-over-ssh.md) で置き換え・条件づけ。2026-10-04: 作業環境の git が記憶のリポジトリを読めるようにすることを「追記」の節に加えた。外のエージェントを呼ぶ projected token の audience `a2a` は、gated 経由で呼ぶ係について [ADR 0084](0084-calling-agents-behind-gated-with-its-audience.md) で置き換え（gated の audience `https://auth.fraction.jp`）。Ingress の後ろの待ち受けに、bearer token で守る Alertmanager の受け口を [ADR 0086](0086-alertmanager-notifications-as-sources.md) で追加。Ingress の後ろの待ち受けに、gated の assertion か bearer token で守る A2A の受け口を [ADR 0089](0089-hearing-from-agents-over-a2a.md) で追加。Alertmanager の受け口は、bearer token か HMAC で守る webhook の受け口に [ADR 0091](0091-one-way-in-for-webhooks-with-formats-in-the-code.md) で置き換え。`/` の Ingress の後ろの待ち受けに、依頼ごとの bearer token で守る A2A の push の受け口を [ADR 0092](0092-a-push-from-an-agent-as-a-doorbell.md) で追加）
 
 ## Context
 

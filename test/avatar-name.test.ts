@@ -21,7 +21,7 @@ const parts = { workspace: true, personality: '', always: '', handoff: '' };
 
 const base = () => ({
   pi: { agentDirectory: '/srv/pi/agent', sessionDirectory: '/srv/pi/sessions', authPath: '/srv/pi/agent/auth.json',
-    model: { provider: 'openai-codex', id: 'gpt-5.5' }, voiceEnabled: false },
+    model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, voiceEnabled: false },
   publicOrigin: 'https://natsumi.example.test', listen: { host: '127.0.0.1', port: 0, tls: false },
   github: { clientId: 'Iv1.fixtureclient', clientSecretEnv: 'NATSUMI_GITHUB_CLIENT_SECRET',
     callbackUrl: 'https://natsumi.example.test/auth/github/callback', allowedUserId: 1 },

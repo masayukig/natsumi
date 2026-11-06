@@ -371,8 +371,8 @@ test('what a curator left when the process died is thrown away at the next start
 test('the night runs on the route and with the limits the settings give, and each stage\'s turn names that route', async () => {
   const f = await setup();
   try {
-    const FIRST = { provider: 'openai-codex', model: 'gpt-5.5' };
-    const SECOND = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
+    const FIRST = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
+    const SECOND = { provider: 'openai-codex', model: 'gpt-6-sol' };
     const routes = { defaultRoute: 'main', list: [{ name: 'main', target: FIRST, compactionThreshold: 60_000, compatible: false },
       { name: 'spare', target: SECOND, compactionThreshold: 60_000, compatible: false }] };
     const night = { route: 'spare' as string | null, modelCalls: 1, timeoutMinutes: 30 };

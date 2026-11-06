@@ -86,7 +86,7 @@ test('the config keeps the same rules: what the settings refuse, the config refu
     github: { clientId: 'Iv1.fixtureclient', clientSecretEnv: 'NATSUMI_GITHUB_CLIENT_SECRET',
       callbackUrl: 'https://natsumi.example.test/auth/github/callback', allowedUserId: 4242001 },
     pi: { agentDirectory: '/srv/natsumi-pi/agent', sessionDirectory: '/srv/natsumi-pi/sessions', authPath: '/srv/natsumi-pi/agent/auth.json',
-      model: { provider: 'openai-codex', id: 'gpt-5.5' }, voiceEnabled: false },
+      model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, voiceEnabled: false },
     loop, curator,
   });
   const refused = (loop: Record<string, unknown>, path: string, curator: Record<string, unknown> = {}) =>

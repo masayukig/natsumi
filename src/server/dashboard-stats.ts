@@ -56,7 +56,7 @@ export interface StatsView {
   whole: StatsStep;
 }
 
-const CUT_SHORT = "('model-call-limit', 'timeout')";
+const CUT_SHORT = "('model-call-limit', 'timeout', 'context-limit')";
 /** The measures a percentile is taken of; the column names are fixed here and never come from a request. */
 const SPREADS = { firstOut: 'first_out_ms', turnLength: 'turn_ms' } as const;
 

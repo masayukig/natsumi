@@ -40,6 +40,13 @@ import { relayToOwner, SlackMentionTyping, SlackWorkspace } from './slack.ts';
 import { connectSignal, OwnerTyping, relayToSignal, SentLines, SignalApprovals, SignalOwner, type SignalApi } from './signal.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
+import { AlertmanagerWebhook } from './alertmanager.ts';
+import { GithubWebhook } from './github-webhook.ts';
+import { RawWebhook, WEBHOOKS_REGISTRATION, WEBHOOKS_SOURCE, Webhooks, type WebhookCredential } from './webhooks.ts';
+import { InboxEndpoint, inboxSenders } from './a2a-server.ts';
+import { AssertionVerifier, audienceOf } from './gated-assertion.ts';
+import { INBOX_REGISTRATION, INBOX_SOURCE, Inbox } from './inbox.ts';
+import { JOBS_REGISTRATION, JOBS_SOURCE, ShellJobs } from './shell-jobs.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -51,6 +58,8 @@ import { Uploads } from './uploads.ts';
 const SESSION_SWEEP_MS = 30_000;
 /** How often approvals past their time are closed. A minute late is nothing against a week (ADR 0040). */
 const APPROVAL_SWEEP_MS = 60_000;
+/** How often the open tasks of the way in over A2A are looked at for their reminders and deadlines (ADR 0089). */
+const INBOX_TICK_MS = 60_000;
 /** How often the files of the chat left unsent are looked for. An hour late is nothing against the day they wait (ADR 0071). */
 const UPLOAD_SWEEP_MS = 60 * 60_000;
 /** Where a file of the chat is written while it comes, in the server's own state (ADR 0071). */
@@ -140,6 +149,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
     appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
   }))) : [];
+  // Each webhook has its own token or secret (ADR 0091); a new one is read at the next start.
+  const webhookCredentials = config.webhooks ? await Promise.all(config.webhooks.map(async (webhook, index): Promise<WebhookCredential> =>
+    'tokenFile' in webhook ? { token: await readSecret({ file: webhook.tokenFile }, `webhooks[${index}].token`, options.env) }
+      : { secret: await readSecret({ file: webhook.secretFile }, `webhooks[${index}].secret`, options.env) })) : undefined;
+  // Each sender of the way in over A2A checked by a token has its own (ADR 0089), read at start as the webhooks' are.
+  const inboxTokens = config.inbox ? new Map(await Promise.all(config.inbox.senders.flatMap((sender, index) => 'tokenFile' in sender
+    ? [(async () => [sender.name, await readSecret({ file: sender.tokenFile }, `inbox.senders[${index}].token`, options.env)] as const)()] : []))) : undefined;
   const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
   for (const method of JUDGE_METHODS) {
     const reference = config.slack?.judge?.[method]?.apiKey;
@@ -175,11 +191,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const timers: NodeJS.Timeout[] = [];
   // Everything opened above, closed in the reverse order.
   const closeAll = async () => {
-    timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
     await Promise.all([...slackWorkspaces.values()].map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
     await signalOwner?.stop(); // Likewise for what the owner says on Signal (ADR F04).
-    ownerStops.forEach(stop => stop());
+    // The turn in progress may end on its own (ADR 0083). Everything it reaches stays open meanwhile: the clients, so
+    // its reply arrives; the dove and the pushes; and the heartbeat, so the server still counts as running.
+    if (loop) await drainLoop(loop, config.loop.shutdownDrainSeconds, log);
+    timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
+    ownerStops.forEach(stop => stop()); // After the drain, so the reply of the turn in progress still reaches Slack and Signal.
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     webNotifier?.close();
@@ -227,8 +246,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       if (window !== undefined) checkRouteWindow(config.pi, route, window);
     }
 
-    // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033).
-    const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
+    // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033). An agent
+    // with a token file of its own is sent that one, the others the shared one (ADR 0089).
+    const a2aClient = config.a2a ? new SdkA2AClient({ ...(config.a2a.tokenFile ? { tokenFile: config.a2a.tokenFile } : {}),
+      tokenFiles: new Map(Object.values(config.a2a.agents).flatMap(agent => agent.tokenFile ? [[agent.url, agent.tokenFile] as const] : [])) })
+      : undefined;
     // What she reads of Slack, written under sources/slack (ADR 0039, ADR 0050).
     const slackConfig = config.slack;
     for (const key of slackConfig?.ignored ?? []) log(`config: ${key} is no longer read (ADR 0050); it can be deleted`);
@@ -244,16 +266,50 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await archive?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
-    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts.
-    let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. What the
+    // webhooks send is written there too (ADR 0091), and what the agents ask her (ADR 0089). With a workspace, her
+    // commands left running are put there as they end (ADR 0094).
+    const workspace = config.loop.workspaceSocket !== undefined;
+    let sources: Sources | undefined = archive || config.a2a || config.webhooks || config.inbox || workspace ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
     if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
+    if (config.webhooks) sources?.register(WEBHOOKS_REGISTRATION);
+    if (config.inbox) sources?.register(INBOX_REGISTRATION);
+    if (workspace) sources?.register(JOBS_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
     }
+    // Her commands left running (ADR 0094). Those a previous process waited for are not waited for any more: each says
+    // the restart cut its wait off, which the sources then show as an ordinary update. Without the sources none is
+    // followed, since nothing could tell her of its end.
+    const jobsSources = sources;
+    const jobs = workspace && jobsSources ? new ShellJobs({ directory: join(dataDirectory, SOURCES_DIRECTORY, JOBS_SOURCE),
+      timeZone: config.loop.timeZone, now, log, place: { recordAttention: attention => jobsSources.recordAttention(attention),
+        notify: () => jobsSources.notify(), takeIn: path => jobsSources.takeIn(path) } }) : undefined;
+    if (jobs) {
+      const cut = await jobs.giveUpOnRunning();
+      if (cut > 0) log(`jobs: ${cut} background command(s) could no longer be waited for after the restart`);
+    }
+    // The webhooks (ADR 0091), each read as its format under sources/webhooks/<name>/ with its README.md from the config.
+    const webhooksDirectory = join(dataDirectory, SOURCES_DIRECTORY, WEBHOOKS_SOURCE);
+    const webhookDb = db;
+    const webhooks = config.webhooks && webhookCredentials ? new Webhooks({ directory: webhooksDirectory, log,
+      webhooks: config.webhooks.map((webhook, index) => {
+        const shared = { db: webhookDb, name: webhook.name, directory: webhooksDirectory, timeZone: config.loop.timeZone, now, log, ...(sources ? { sources } : {}) };
+        return { config: webhook, credential: webhookCredentials[index]!,
+          format: webhook.format === 'raw' ? new RawWebhook({ ...shared, headers: webhook.headers, attention: webhook.attention })
+            : webhook.format === 'github' ? new GithubWebhook({ ...shared, authors: webhook.authors, reviewers: webhook.reviewers, attention: webhook.attention })
+            : new AlertmanagerWebhook({ ...shared, attentionSeverities: webhook.attentionSeverities }) };
+      }) }) : undefined;
+    await webhooks?.prepare();
+    // What the agents ask her over A2A (ADR 0089): the tasks are kept in the database, so the open ones stay across a start.
+    const inbox = config.inbox ? new Inbox({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, INBOX_SOURCE), timeZone: config.loop.timeZone,
+      awakeHours: () => settings.awakeHours(), now, log, ...(sources ? { sources } : {}),
+      limits: { reminderIntervalHours: config.inbox.reminderIntervalHours, deadlineHours: config.inbox.deadlineHours,
+        maxOpenTasks: config.inbox.maxOpenTasksPerSender } }) : undefined;
     const connector = options.slack?.connector ?? connectSlack;
     const slackConnections = archive ? slackTokens.map(({ name, botToken, appToken }) => ({ name, ...connector({ botToken, appToken }) })) : [];
 
@@ -301,7 +357,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled, ...(config.tools ? { tools: config.tools } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}), postbox: config.postbox,
       ...(config.a2a && agentPlace ? { agentReplies: agentPlace } : {}),
-      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
+      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads, ...(inbox ? { inbox } : {}),
+      ...(jobs ? { jobs } : {}),
       ...(slackConfig?.owner ? { ownerOnSlack: true } : {}),
       ...(config.signal ? { ownerOnSignal: true } : {}),
       tellCutShort: true,
@@ -394,6 +451,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         } });
       signalOwner.start();
       approvals?.sync();
+    }
+
+    // The open tasks of the way in are reminded and given up on their own clock, whether or not the loop runs: a sender
+    // is told its task failed at its deadline either way (ADR 0089). The first look catches up on a stop.
+    if (inbox) {
+      const look = () => { void inbox.tick().catch(() => { log('inbox: a look at the open tasks failed'); }); };
+      look();
+      timers.push(setInterval(look, INBOX_TICK_MS));
     }
 
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
@@ -491,11 +556,25 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
       pillStopStartingAfterMinutes: config.curator.pillStopStartingAfterMinutes, isConnected: deviceId => connections.isConnected(deviceId), now });
+    // The way in over A2A (ADR 0089): each sender by its token, or by gated's assertion of its subject, checked against
+    // the keys gated publishes and the host of the public URL.
+    const inboxConfig = config.inbox;
+    const inboxEndpoint = inbox && inboxConfig ? new InboxEndpoint({ publicUrl: inboxConfig.publicUrl, card: inboxConfig.card, inbox, log,
+      senders: inboxSenders({ tokens: inboxTokens ?? new Map(),
+        subjects: new Map(inboxConfig.senders.flatMap(sender => 'gatedSubject' in sender ? [[sender.gatedSubject, sender.name] as const] : [])),
+        ...(inboxConfig.gated ? { verifier: new AssertionVerifier({ issuer: inboxConfig.gated.issuer, jwksUrl: inboxConfig.gated.jwksUrl,
+          audience: audienceOf(inboxConfig.publicUrl), log,
+          allowedSubjects: inboxConfig.senders.flatMap(sender => 'gatedSubject' in sender ? [sender.gatedSubject] : []) }) } : {}) }) })
+      : undefined;
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
           pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
         uploads,
+        ...(webhooks ? { webhooks } : {}),
+        ...(inboxEndpoint ? { a2a: inboxEndpoint } : {}),
+        // The agents' pushes (ADR 0092), only when natsumi asks them to push.
+        ...(config.a2a?.pushUrl ? { a2aPush: { push: (token: string, ring: boolean) => thinkingLoop.agentPush(token, ring) } } : {}),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 
@@ -577,6 +656,16 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     try { await closeAll(); } finally { shutdown(db, lock); }
     throw error;
   }
+}
+
+async function drainLoop(loop: ThinkingLoop, seconds: number, log: (line: string) => void) {
+  // Said as the wait begins, so a stop that seems to hang tells why.
+  const { result, waitedMs } = await loop.drain(seconds * 1000,
+    () => { log(`stopping: waiting up to ${seconds} seconds for the turn in progress to end`); });
+  const waited = Math.round(waitedMs / 1000);
+  if (result === 'ended') log(`stopping: the turn in progress ended after ${waited} seconds`);
+  else if (result === 'limit') log(`stopping: the turn in progress is cut after ${waited} seconds, at the limit`);
+  else if (result === 'night') log('stopping: the night\'s work is cut; the next start carries it on');
 }
 
 function shutdown(db: DatabaseSync | undefined, lock: ProcessLock) {

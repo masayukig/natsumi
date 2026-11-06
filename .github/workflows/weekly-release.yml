@@ -1,6 +1,10 @@
 # Once a week, releases the dependency updates Renovate merged on its own: when every commit since the last vX.Y.Z tag,
-# merges aside, is Renovate's and something that goes into the images changed, the next patch version is released.
-# Anything a person wrote waits for a release by hand, whose tag says what changed (scripts/weekly-release.ts).
+# merges aside, is a bot's (Renovate's or the vulnerability responder's) and something that goes into the images
+# changed, the next patch version is released. Anything a person wrote waits for a release by hand, whose tag says what
+# changed (scripts/weekly-release.ts).
+# The same release is made at once when a pull request of the vulnerability responder's (a branch vuln-responder/...)
+# is merged into main, so that a fixed vulnerability does not wait for Monday; when a person's commit holds it back,
+# the job's summary lists the commits and the commands to release by hand (ADR 0082).
 # The images are pushed first and the tag after, so that a tag never names images that are not there; the tag is pushed
 # with GITHUB_TOKEN and so starts no other workflow, which is why the images are built here and not by the tag.
 name: Weekly release
@@ -10,17 +14,31 @@ on:
     # Monday 09:00 in Japan.
     - cron: "0 0 * * 1"
   workflow_dispatch:
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 permissions:
   contents: read
 
+# One release at a time, weekly or not. Every other pull request that is closed runs alone and does nothing: in the
+# group it would cancel a release waiting for its turn. A fix waiting is cancelled only by a later one, whose merge
+# commit carries the earlier fix too.
 concurrency:
-  group: weekly-release
+  group: >-
+    ${{ (github.event_name != 'pull_request'
+    || (github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'vuln-responder/')))
+    && 'weekly-release' || format('weekly-release-skipped-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   decide:
-    if: github.ref == 'refs/heads/main'
+    # On a pull request, only a merged one of the vulnerability responder's, from a branch of this repository.
+    if: >-
+      (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
+      || (github.event.pull_request.merged
+      && startsWith(github.event.pull_request.head.ref, 'vuln-responder/')
+      && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -34,9 +52,21 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.2"
+      # The images and the tag are made from github.sha, as on main; for a merged pull request that is the commit the
+      # merge left on main, and nothing is released if it is not.
+      - if: github.event_name == 'pull_request'
+        env:
+          MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          if [ "$MERGE_COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::the merge commit $MERGE_COMMIT is not the commit checked out, $GITHUB_SHA"
+            exit 1
+          fi
       - id: decide
-        run: node scripts/weekly-release.ts
+        env:
+          TRIGGER: ${{ github.event_name == 'pull_request' && 'vuln-fix' || '' }}
+        run: node scripts/weekly-release.ts $TRIGGER
 
   images:
     needs: decide

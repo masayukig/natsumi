@@ -92,6 +92,9 @@ test('the schema keeps the conversation shown to the owner and only references t
       // The dove's words on what became of a request, which its results.jsonl under /sources is written again from on
       // every result (ADR 0074). They are the server's, as Slack's record is Slack's; natsumi reads them from the file.
       if (table === 'dove_results' && column === 'text') continue;
+      // The messages of a task an agent sent her and her replies to it (ADR 0089): the task the sender fetches over A2A,
+      // its question, answer and history, as Slack's record is Slack's. She reads them from the files under /sources.
+      if (table === 'inbox_messages' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
@@ -695,4 +698,62 @@ test('schema 33 gives each switch its kind, the night\'s for every row from befo
   assert.throws(() => insert.run('bad-state', 'event-bad', 'resleep', 'dozing'), /CHECK/);
   // The CHECK of before still holds: a finished switch names the session it went to.
   assert.throws(() => insert.run('bad-switch', 'event-bad', 'nap', 'switched'), /CHECK/);
+}));
+
+/**
+ * Schema 36 keeps the state of the webhooks by their names (ADR 0091): Alertmanager's alerts and the day files' lines of
+ * every format, in place of the tables keyed by the senders of Alertmanager's own way in, whose rows are not carried over.
+ */
+test('schema 36 keeps the webhooks\' alerts and lines by the webhook\'s name, and drops those of before', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 35));
+  db.prepare(`INSERT INTO alertmanager_alerts (sender, fingerprint, status, starts_at, line, updated_at)
+    VALUES ('fraction', 'a1', 'firing', 'x', '{}', 'x')`).run();
+  db.prepare(`INSERT INTO alertmanager_lines (sender, file_date, line, created_at) VALUES ('fraction', '2026-10-30', '{}', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 36)).applied, [36]);
+  assert.equal(tables(db).includes('alertmanager_alerts'), false);
+  assert.equal(tables(db).includes('alertmanager_lines'), false);
+  const alert = db.prepare(`INSERT INTO webhook_alerts (webhook, fingerprint, status, starts_at, line, updated_at) VALUES (?, ?, ?, 'x', '{}', 'x')`);
+  alert.run('fraction', 'a1', 'firing');
+  alert.run('other', 'a1', 'resolved');
+  assert.throws(() => alert.run('fraction', 'a1', 'resolved'), /UNIQUE|PRIMARY/);
+  assert.throws(() => alert.run('fraction', 'b2', 'pending'), /CHECK/);
+  const line = db.prepare(`INSERT INTO webhook_lines (webhook, file_date, line, created_at) VALUES (?, ?, ?, 'x')`);
+  line.run('github', '2026-11-04', '{"a":1}');
+  line.run('github', '2026-11-04', '{"a":2}');
+  assert.deepEqual(plainRows(db.prepare(`SELECT webhook, line FROM webhook_lines ORDER BY line_id`).all()),
+    [{ webhook: 'github', line: '{"a":1}' }, { webhook: 'github', line: '{"a":2}' }]);
+}));
+
+test('schema 37 keeps the digest of a waiting task\'s push token beside it, one task a digest, and leaves the tasks before it without one', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 35));
+  const now = '2026-11-04T00:00:00.000Z';
+  const insert = (taskId: string, digest?: string) => db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at,
+    updated_at${digest ? ', push_digest' : ''}) VALUES ('wiki', ?, 'context', 'waiting', ?, ?, ?${digest ? ', ?' : ''})`)
+    .run(taskId, now, now, now, ...digest ? [digest] : []);
+  insert('before');
+  migrate(db, MIGRATIONS);
+  assert.deepEqual({ ...db.prepare('SELECT push_digest FROM agent_tasks WHERE task_id = ?').get('before') }, { push_digest: null });
+  insert('one', 'a'.repeat(64));
+  insert('two');
+  insert('three');
+  assert.throws(() => insert('four', 'a'.repeat(64)), /UNIQUE/);
+}));
+
+/**
+ * Schema 38 keeps the pull requests a webhook of the format github remembers (ADR 0093), by the webhook's name, the
+ * repository and the number, and the deliveries it read, by the webhook's name and the delivery's ID.
+ */
+test('schema 38 keeps the remembered pull requests and the deliveries read, each by the webhook\'s name', () => withDb(db => {
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 37)).applied.at(-1), 37);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 38)).applied, [38]);
+  const pull = db.prepare(`INSERT INTO webhook_pull_requests (webhook, repository_id, number, repository, title, url, author, head_ref, base_ref,
+    remembered_at, updated_at) VALUES (?, ?, ?, 'o/r', 't', 'u', 'a', 'h', 'main', 'x', 'x')`);
+  pull.run('github', 1, 42);
+  pull.run('github', 2, 42);
+  pull.run('other', 1, 42);
+  assert.throws(() => pull.run('github', 1, 42), /UNIQUE|PRIMARY/);
+  const delivery = db.prepare(`INSERT INTO webhook_deliveries (webhook, delivery, received_at) VALUES (?, ?, 'x')`);
+  delivery.run('github', 'd-1');
+  delivery.run('other', 'd-1');
+  assert.throws(() => delivery.run('github', 'd-1'), /UNIQUE|PRIMARY/);
 }));

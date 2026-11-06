@@ -6,7 +6,7 @@ import { openPiSession, type PiTarget } from '../pi/session.ts';
 
 // Pi subscription provider and its default model in Pi 0.87.1, not a separate agent backend. The server never
 // reads it: its provider and model come from the config. Only the probe and the test fixtures pin a target here.
-export const SUBSCRIPTION_TARGET: PiTarget = { provider: 'openai-codex', model: 'gpt-5.5' };
+export const SUBSCRIPTION_TARGET: PiTarget = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
 
 // A fixture proposal only: it has no Google client, credentials, or write callback.
 export const proposalTool = defineTool({

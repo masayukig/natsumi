@@ -1,7 +1,7 @@
 # 0024. モデルにイベントの ID を扱わせず、ターンは止まれば閉じる
 
 - Date: 2026-09-21
-- Status: Accepted
+- Status: Accepted（差し込まれた本人のメッセージと同じく、差し込まれた印の付いた `sources_updated` も、境目で文脈に入った時点で「見た」とすることを [ADR 0094](0094-background-commands-and-waiting-for-news-within-a-turn.md) で追加）
 
 ## Context
 

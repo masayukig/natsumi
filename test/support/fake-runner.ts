@@ -13,6 +13,8 @@ import { join } from 'node:path';
 export interface FakeRunner {
   path: string;
   commands: string[];
+  /** Each command's request as it came, with its wait and whether it asked to be followed (ADR 0094). */
+  requests: Record<string, unknown>[];
   /** The declared tools' requests (ADR 0075), as they came: the program and its arguments, the input and the timeout. */
   tools: { argv: string[]; stdin: string; timeoutSeconds: number | undefined }[];
   timeZones: (string | undefined)[];
@@ -28,6 +30,7 @@ export async function startFakeRunner(options: { dir: string; responseLimitMs?: 
   const root = await mkdtemp(join(tmpdir(), 'natsumi-runner-'));
   const path = join(root, 'runner.sock');
   const commands: string[] = [];
+  const requests: Record<string, unknown>[] = [];
   const tools: FakeRunner['tools'] = [];
   const timeZones: (string | undefined)[] = [];
   const sockets = new Set<Socket>();
@@ -45,6 +48,7 @@ export async function startFakeRunner(options: { dir: string; responseLimitMs?: 
       if (request.argv && options.commandOnly) { socket.end(`${JSON.stringify({ error: 'command is empty' })}\n`); return; }
       if (request.argv) { runTool(socket, request as { argv: string[] }); return; }
       commands.push(request.command!);
+      requests.push(request);
       timeZones.push(request.timeZone);
       execFile('bash', ['-c', request.command!], {
         cwd: options.dir, timeout: responseLimitMs, encoding: 'utf8', maxBuffer: 1 << 20,
@@ -93,7 +97,7 @@ export async function startFakeRunner(options: { dir: string; responseLimitMs?: 
   };
   await new Promise<void>(resolve => server.listen(path, resolve));
   return {
-    path, commands, tools, timeZones,
+    path, commands, requests, tools, timeZones,
     async close() {
       for (const socket of sockets) socket.destroy();
       await new Promise(resolve => server.close(resolve));

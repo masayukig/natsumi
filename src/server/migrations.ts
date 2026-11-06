@@ -1035,4 +1035,148 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX session_rotations_by_creation ON session_rotations (created_at);
     `,
   },
+  {
+    version: 34,
+    name: 'alertmanager-alerts',
+    sql: `
+      -- The last state of each alert a sender of Alertmanager told of, by its fingerprint (ADR 0086): a line is written
+      -- only when it changes. line is the alert as it came last, which firing.jsonl is written from while it fires;
+      -- starts_at (UTC) orders that file. A resolved alert stays, so its firing again is a change.
+      CREATE TABLE alertmanager_alerts (
+        sender TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('firing', 'resolved')),
+        starts_at TEXT NOT NULL,
+        line TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (sender, fingerprint)
+      ) STRICT;
+      -- The lines of the day files, one a change of state, in the order they were recorded. Each file is written whole
+      -- from them, so one that could not be written is written in full by the next look.
+      CREATE TABLE alertmanager_lines (
+        line_id INTEGER PRIMARY KEY,
+        sender TEXT NOT NULL,
+        file_date TEXT NOT NULL,
+        line TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX alertmanager_lines_by_file ON alertmanager_lines (sender, file_date, line_id);
+    `,
+  },
+  {
+    version: 35,
+    name: 'inbox-tasks',
+    sql: `
+      -- What the agents ask natsumi over A2A (ADR 0089), one row a task. sender is the name the check of the call gave,
+      -- never one the message claims. dir is the task's directory under sources/inbox/<sender>/, and NULL for one
+      -- rejected past the sender's open tasks, which is kept here for the dashboard and nowhere else. reason is what a
+      -- failed or rejected task tells its sender. received_at is when the sender's last message came, which the
+      -- deadline is counted from; waiting_since is when it last began to wait for her, which the reminders are; the
+      -- times are UTC.
+      CREATE TABLE inbox_tasks (
+        task_id TEXT PRIMARY KEY,
+        sender TEXT NOT NULL,
+        context_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('working', 'input-required', 'completed', 'failed', 'rejected')),
+        dir TEXT,
+        previous_dir TEXT,
+        reason TEXT,
+        reminders INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        waiting_since TEXT NOT NULL,
+        reminded_at TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX inbox_tasks_by_sender ON inbox_tasks (sender, state);
+      CREATE INDEX inbox_tasks_by_context ON inbox_tasks (sender, context_id, created_at);
+      -- The messages of a task in the order they came and went, numbered as their files are. author is the sender's
+      -- or hers ('me'); state is what her reply made of the task.
+      CREATE TABLE inbox_messages (
+        task_id TEXT NOT NULL REFERENCES inbox_tasks (task_id),
+        seq INTEGER NOT NULL,
+        author TEXT NOT NULL CHECK (author IN ('sender', 'me')),
+        message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        state TEXT CHECK (state IS NULL OR state IN ('completed', 'input-required')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, seq)
+      ) STRICT;
+    `,
+  },
+  {
+    version: 36,
+    name: 'webhooks',
+    sql: `
+      -- The webhooks (ADR 0091) keep their state by the webhook's name, in place of the senders of Alertmanager's own way
+      -- in (ADR 0086), which is gone. No environment used it, so its rows are not carried over.
+      DROP TABLE alertmanager_lines;
+      DROP TABLE alertmanager_alerts;
+      -- The last state of each alert a webhook of the format alertmanager told of, by its fingerprint: a line is written
+      -- only when it changes. line is the alert as it came last, which firing.jsonl is written from while it fires;
+      -- starts_at (UTC) orders that file. A resolved alert stays, so its firing again is a change.
+      CREATE TABLE webhook_alerts (
+        webhook TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('firing', 'resolved')),
+        starts_at TEXT NOT NULL,
+        line TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (webhook, fingerprint)
+      ) STRICT;
+      -- The lines of every webhook's day files, of any format, in the order they were recorded. Each file is written
+      -- whole from them, so one that could not be written is written in full by the next look.
+      CREATE TABLE webhook_lines (
+        line_id INTEGER PRIMARY KEY,
+        webhook TEXT NOT NULL,
+        file_date TEXT NOT NULL,
+        line TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX webhook_lines_by_file ON webhook_lines (webhook, file_date, line_id);
+    `,
+  },
+  {
+    version: 37,
+    name: 'agent-task-push-digests',
+    sql: `
+      -- The SHA-256 (hex) of the bearer token a waiting task's agent was asked to push with (ADR 0092), never the token.
+      -- A push is matched to its task by it; it is emptied as the task stops waiting, so a later push is not known.
+      -- NULL for a task asked without a push, and for every task before this.
+      ALTER TABLE agent_tasks ADD COLUMN push_digest TEXT;
+      CREATE UNIQUE INDEX agent_tasks_by_push_digest ON agent_tasks (push_digest) WHERE push_digest IS NOT NULL;
+    `,
+  },
+  {
+    version: 38,
+    name: 'webhook-pull-requests',
+    sql: `
+      -- The pull requests a webhook of the format github remembers (ADR 0093): from a review asked of one of its reviewers
+      -- on a pull request by one of its authors, until the pull request is closed. Keyed by the repository's ID, which a
+      -- check suite names its pull requests by. The title, the URL, the author and the branches are those of the last
+      -- pull_request event, which the line of a check suite, naming none of them, is written with.
+      CREATE TABLE webhook_pull_requests (
+        webhook TEXT NOT NULL,
+        repository_id INTEGER NOT NULL,
+        number INTEGER NOT NULL,
+        repository TEXT NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        author TEXT NOT NULL,
+        head_ref TEXT NOT NULL,
+        base_ref TEXT NOT NULL,
+        remembered_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (webhook, repository_id, number)
+      ) STRICT;
+      -- The deliveries (X-GitHub-Delivery) a webhook of the format github wrote a line of. One sent again, as GitHub's
+      -- Redeliver does with the same ID, is not read again. Only those that wrote a line: no other changed anything.
+      CREATE TABLE webhook_deliveries (
+        webhook TEXT NOT NULL,
+        delivery TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        PRIMARY KEY (webhook, delivery)
+      ) STRICT;
+    `,
+  },
 ];

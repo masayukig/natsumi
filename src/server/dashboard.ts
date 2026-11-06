@@ -10,13 +10,13 @@ import {
 } from './dashboard-files.ts';
 import { directoryPage, filePage, filesIndexPage, refusedFilePage } from './dashboard-files-view.ts';
 import {
-  approvalsPage, checkPage, checksPage, devicesPage, dovePage, memosPage, pageNumber, postboxPage, renderWaits, waitsPage,
+  approvalsPage, checkPage, checksPage, devicesPage, dovePage, goalsPage, memosPage, pageNumber, postboxPage, renderWaits, waitsPage,
 } from './dashboard-lists.ts';
 import {
   APPROVAL_STATES, findSelfCheck, listApprovals, listDovePosts, listSelfChecks, readDevices, readWaits, type ApprovalState,
 } from './dashboard-records.ts';
 import {
-  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, POSTBOX_PATH, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH, SLEEP_PATH,
+  APPROVALS_PATH, CHECKS_PATH, DEVICES_PATH, DOVE_PATH, GOALS_PATH, LOGOUT_PATH, MEMOS_PATH, messagePage, POSTBOX_PATH, REFRESHED_PATHS, refusedPage, renderStatus, SIGNED_OUT_PATH, SLEEP_PATH,
   signedInPage, signedOutPage, STATIC_FILES, STATS_PATH, STATUS_PATH, statusPage, TURNS_PATH, WAITS_LIVE_PATH, WAITS_PATH, type DashboardStatus,
 } from './dashboard-view.ts';
 import { statsPage, statsTokens } from './dashboard-charts.ts';
@@ -32,6 +32,7 @@ import { codeManualDirectory } from './manual.ts';
 import { AVATAR_MANUAL_DIRECTORY } from './avatar-manual.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { SessionStore } from './sessions.ts';
+import { readGoalChanges } from './goals.ts';
 import { PostboxLedger } from './postbox.ts';
 import { checkHealth, readStatus } from './status.ts';
 import type { PillJudgement } from './sleeping-pill.ts';
@@ -196,6 +197,10 @@ export class Dashboard {
     if (path === POSTBOX_PATH) {
       const letters = new PostboxLedger(this.options.db, this.options.now).list();
       return send(response, 200, postboxPage(letters, this.options.timeZone, this.options.avatarId), renewed);
+    }
+    if (path === GOALS_PATH) {
+      const changes = await readGoalChanges(this.options.memoryDirectory);
+      return send(response, 200, goalsPage(changes, this.options.timeZone, this.options.avatarId), renewed);
     }
     if (path === MEMOS_PATH) return this.memos(response, url, renewed);
     if (path === DOVE_PATH) return this.dove(response, url, renewed);

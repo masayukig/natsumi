@@ -1,7 +1,7 @@
 # 0075. インスタンスに特有のツールを config で宣言する
 
 - Date: 2026-10-08
-- Status: Accepted（2026-10-08: 実行先から HTTP 型を外し、コマンド型だけにした。秘密の要る API を道具にするときの方向は「後で決めること」に残した）
+- Status: Accepted（2026-10-08: 実行先から HTTP 型を外し、コマンド型だけにした。秘密の要る API を道具にするときの方向は「後で決めること」に残した。「後で決めること」の秘密の要る API の認証は、出口の proxy の中継が付ける形に [ADR 0085](0085-relays-that-add-the-keys-for-the-workspace.md) で具体化）
 
 ## Context
 

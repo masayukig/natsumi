@@ -9,7 +9,7 @@ const pi = () => ({
   agentDirectory: '/srv/natsumi-pi/agent',
   sessionDirectory: '/srv/natsumi-pi/sessions',
   authPath: '/srv/natsumi-pi/agent/auth.json',
-  model: { provider: 'openai-codex', id: 'gpt-5.5' },
+  model: { provider: 'openai-codex', id: 'gpt-5.6-sol' },
   voiceEnabled: false,
 });
 
@@ -24,7 +24,10 @@ const github = () => ({
 const SCHEDULE_DEFAULTS = {
   memoryFileMaxChars: 32000,
   alwaysMemoryMaxChars: 2000,
+  goalFileMaxChars: 6000,
+  todayPlanMaxChars: 3000,
   shellWaitSeconds: 75,
+  backgroundJobs: 5,
   workspaceSizeWarnBytes: 1073741824,
   awakeHours: { start: '08:00', end: '23:00' },
   pingIntervalMinutes: 30,
@@ -33,6 +36,7 @@ const SCHEDULE_DEFAULTS = {
   reviewTimeoutMinutes: 30,
   eventModelCalls: 8,
   eventTimeoutMinutes: 10,
+  shutdownDrainSeconds: 600,
   turnFold: 'off',
   codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 40 },
 };
@@ -189,6 +193,14 @@ test('the loop section sets an ordinary turn\'s limits, each with a default', ()
   for (const minutes of [0, -1, 2.5, '10', false]) rejects({ ...base(), loop: { eventTimeoutMinutes: minutes } }, 'loop.eventTimeoutMinutes');
 });
 
+test('the loop section sets how long a stop waits for the turn in progress, ten minutes unless set, none at 0 (ADR 0083)', () => {
+  // As long as an ordinary turn may take by default, so that a stop lets one end on its own.
+  assert.equal(parseConfig(base()).loop.shutdownDrainSeconds, 600);
+  assert.equal(parseConfig({ ...base(), loop: { shutdownDrainSeconds: 120 } }).loop.shutdownDrainSeconds, 120);
+  assert.equal(parseConfig({ ...base(), loop: { shutdownDrainSeconds: 0 } }).loop.shutdownDrainSeconds, 0);
+  for (const seconds of [-1, 1.5, '600', false]) rejects({ ...base(), loop: { shutdownDrainSeconds: seconds } }, 'loop.shutdownDrainSeconds');
+});
+
 test('the workspace shell is off unless the loop names the runner socket by absolute path', () => {
   assert.equal('workspaceSocket' in parseConfig(base()).loop, false);
   assert.equal(parseConfig({ ...base(), loop: { workspaceSocket: '/run/natsumi-workspace/runner.sock' } }).loop.workspaceSocket,
@@ -215,6 +227,14 @@ test('the shell wait and the size warning have defaults and bounds', () => {
   for (const bytes of [0, 1023, 1.5, '1024']) rejects({ ...base(), loop: { workspaceSizeWarnBytes: bytes } }, 'loop.workspaceSizeWarnBytes');
 });
 
+// ADR 0094: how many commands left running are waited for at once. Read from the config, never from the settings page.
+test('the number of background commands waited for has a default of 5, may be 0, and must be a whole number', () => {
+  assert.equal(parseConfig(base()).loop.backgroundJobs, 5);
+  assert.equal(parseConfig({ ...base(), loop: { backgroundJobs: 20 } }).loop.backgroundJobs, 20);
+  assert.equal(parseConfig({ ...base(), loop: { backgroundJobs: 0 } }).loop.backgroundJobs, 0);
+  for (const count of [-1, 1.5, '5', true]) rejects({ ...base(), loop: { backgroundJobs: count } }, 'loop.backgroundJobs');
+});
+
 test('the memory repository defaults to the data directory, and a file limit too small is refused', () => {
   // Left out, the loop puts the repository in the data directory: the config cannot name that path.
   assert.equal('memoryRepository' in parseConfig(base()).loop, false);
@@ -230,6 +250,22 @@ test('the always-memory has its own smaller limit, with a default and a floor', 
   assert.equal(parseConfig(base()).loop.alwaysMemoryMaxChars, 2000);
   assert.equal(parseConfig({ ...base(), loop: { alwaysMemoryMaxChars: 800 } }).loop.alwaysMemoryMaxChars, 800);
   for (const chars of [0, 199, 1.5, '2000', true]) rejects({ ...base(), loop: { alwaysMemoryMaxChars: chars } }, 'loop.alwaysMemoryMaxChars');
+});
+
+// The goals' files have limits of their own, below one memory file's (ADR 0090).
+test('a lasting goal\'s file and today\'s plan have their own smaller limits, with defaults, a floor and memory\'s file limit above them', () => {
+  assert.equal(parseConfig(base()).loop.goalFileMaxChars, 6000);
+  assert.equal(parseConfig(base()).loop.todayPlanMaxChars, 3000);
+  const set = parseConfig({ ...base(), loop: { goalFileMaxChars: 4000, todayPlanMaxChars: 1500 } }).loop;
+  assert.deepEqual([set.goalFileMaxChars, set.todayPlanMaxChars], [4000, 1500]);
+  for (const key of ['goalFileMaxChars', 'todayPlanMaxChars']) {
+    for (const chars of [0, 199, 1.5, '3000', true]) rejects({ ...base(), loop: { [key]: chars } }, `loop.${key}`);
+    // Past one memory file's limit it could never be reached, so it is refused rather than read as that limit.
+    rejects({ ...base(), loop: { memoryFileMaxChars: 5000, [key]: 5001 } }, `loop.${key}`, /memoryFileMaxChars/);
+  }
+  // Left out under a small file limit, each default gives way to it.
+  const small = parseConfig({ ...base(), loop: { memoryFileMaxChars: 2500 } }).loop;
+  assert.deepEqual([small.goalFileMaxChars, small.todayPlanMaxChars], [2500, 2500]);
 });
 
 test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {
@@ -520,7 +556,6 @@ test('each agent is a short lower-case name with an https URL of its own', () =>
   }
   assert.equal(parseConfig(agents({ wiki: { url: 'http://127.0.0.1:8080/' } })).a2a?.agents.wiki?.url, 'http://127.0.0.1:8080/');
   rejects(agents({ wiki: {} }), 'a2a.agents.wiki.url', /required/);
-  rejects(agents({ wiki: { url: 'https://agents.example.test/', tokenFile: '/run/other' } }), 'a2a.agents.wiki.tokenFile', /unknown/);
   rejects(agents([]), 'a2a.agents', /object/);
   rejects({ ...base(), a2a: { tokenFile: '/run/token' } }, 'a2a.agents', /required/);
 });
@@ -533,6 +568,27 @@ test('the polling interval and the wait limit are whole numbers with a floor', (
     rejects({ ...base(), a2a: { ...a2a(), giveUpAfterHours } }, 'a2a.giveUpAfterHours');
   }
   rejects({ ...base(), a2a: { ...a2a(), retries: 3 } }, 'a2a.retries', /unknown/);
+});
+
+test('a2a.pushUrl is the origin the agents reach natsumi at, and turns on asking them to push (ADR 0092)', () => {
+  const push = (value: Record<string, unknown>) => ({ ...base(), a2a: { ...a2a(), ...value } });
+  assert.deepEqual(parseConfig(push({ pushUrl: 'https://natsumi.example.test' })).a2a, {
+    tokenFile: '/var/run/secrets/natsumi/a2a-token', pollIntervalSeconds: 15, giveUpAfterHours: 24,
+    agents: { wiki: { url: 'https://agents.example.test/wiki-keeper/' } },
+    pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds: 300,
+  });
+  assert.equal(parseConfig(push({ pushUrl: 'https://natsumi.example.test/' })).a2a?.pushUrl, 'https://natsumi.example.test');
+  assert.equal(parseConfig(push({ pushUrl: 'http://127.0.0.1:8443' })).a2a?.pushUrl, 'http://127.0.0.1:8443');
+  assert.equal(parseConfig(push({ pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds: 900 })).a2a?.pushPollIntervalSeconds, 900);
+  for (const pushUrl of ['http://natsumi.example.test', 'https://user:pass@natsumi.example.test', 'https://natsumi.example.test/?a=1',
+    'https://natsumi.example.test/#x', 'https://natsumi.example.test/natsumi/', 'https://natsumi.example.test/v1/a2a-push', 'natsumi', 42]) {
+    rejects(push({ pushUrl }), 'a2a.pushUrl');
+  }
+  // Longer than the rounds, or a task with a push would be fetched as often as one without.
+  for (const pushPollIntervalSeconds of [14, 0, 30.5, '300']) {
+    rejects(push({ pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds }), 'a2a.pushPollIntervalSeconds');
+  }
+  rejects(push({ pushPollIntervalSeconds: 300 }), 'a2a.pushPollIntervalSeconds', /pushUrl/);
 });
 
 const slack = () => ({
@@ -803,7 +859,7 @@ test('the list of reactions is gone: a config that still has one is refused, and
 test('the memory curator runs every night by default, on natsumi\'s route, with limits of its own (ADR 0055)', () => {
   assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 2,
     rewriteAllMaxChars: 100000, conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
-  const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
+  const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
   const { model: _, ...withoutModel } = pi();
   const withRoutes = { ...base(), pi: { ...withoutModel, routes, defaultRoute: 'local' } };
   assert.deepEqual(parseConfig({ ...withRoutes, curator: { route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 } }).curator,
@@ -919,7 +975,7 @@ test('a declared tool needs the workspace runner, a list and known keys', () => 
 });
 
 test('a declared tool may not take a name already given, nor one a model would not accept', () => {
-  for (const name of ['run_shell', 'read', 'search_memory', 'reply_to_mac', 'notify_owner', 'ask_agent', 'codemode', 'bash', 'write', 'edit']) {
+  for (const name of ['run_shell', 'read', 'search_memory', 'reply_to_mac', 'notify_owner', 'ask_agent', 'reply_to_agent', 'codemode', 'bash', 'write', 'edit']) {
     rejects(withTools({ ...weather(), name }), 'tools[0].name', /already/);
   }
   rejects(withTools(weather(), weather()), 'tools[1].name', /already/);
@@ -967,4 +1023,154 @@ test('a parameter named like a file or a secret is a name, not a secret referenc
   const parameters = { type: 'object', properties: { outputFile: { type: 'string' }, tokenEnv: { type: 'string' }, password: { type: 'string' } } };
   assert.deepEqual(parseConfig(withTools({ ...weather(), parameters })).tools![0]!.parameters, parameters);
   rejects(withTools({ ...weather(), command: ['/tools/x', 'sk-abcdef'] }), 'tools[0].command[1]', /secrets/);
+});
+
+test('webhooks are named, each with its format, one way to check a call and a description (ADR 0091)', () => {
+  assert.equal(parseConfig(base()).webhooks, undefined, 'without it, there is no way in');
+  const alerts = { name: 'fraction', format: 'alertmanager', tokenFile: '/run/secrets/webhook-fraction', description: 'クラスタ fraction のアラート' };
+  const github = { name: 'github-push', format: 'raw', secretFile: '/run/secrets/webhook-github', description: 'GitHub の push',
+    headers: ['X-GitHub-Event', 'X-GitHub-Delivery'], attention: true };
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [alerts, github] }).webhooks, [
+    { ...alerts, attentionSeverities: ['critical'] },
+    github,
+  ]);
+  const plain = { name: 'plain', format: 'raw', tokenFile: '/run/t', description: '何か' };
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [plain] }).webhooks, [{ ...plain, headers: [], attention: false }],
+    'a raw webhook names no header and marks nothing unless told');
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...alerts, attentionSeverities: ['critical', 'page'] }] }).webhooks?.[0],
+    { ...alerts, attentionSeverities: ['critical', 'page'] });
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...alerts, attentionSeverities: [] }] }).webhooks?.[0], { ...alerts, attentionSeverities: [] });
+
+  const one = (webhook: Record<string, unknown>) => ({ ...base(), webhooks: [webhook] });
+  rejects({ ...base(), webhooks: [] }, 'webhooks');
+  rejects({ ...base(), webhooks: {} }, 'webhooks');
+  rejects(one({ ...plain, extra: true }), 'webhooks[0].extra', /unknown setting/);
+  for (const name of ['Fraction', 'a_b', '-a', '', 'a/b', 'x'.repeat(33), 3]) rejects(one({ ...plain, name }), 'webhooks[0].name');
+  rejects(one({ ...plain, name: undefined }), 'webhooks[0].name', /required/);
+  rejects({ ...base(), webhooks: [plain, { ...alerts, name: 'plain' }] }, 'webhooks[1].name', /twice/);
+  for (const format of [undefined, 'GitHub', 'github-pr', 'Raw', 1]) rejects(one({ ...plain, format }), 'webhooks[0].format');
+  for (const description of [undefined, '', '  ', 3]) rejects(one({ ...plain, description }), 'webhooks[0].description');
+
+  // One way to check a call, never both and never none.
+  rejects(one({ ...plain, secretFile: '/run/s' }), 'webhooks[0]', /only one of tokenFile and secretFile/);
+  const { tokenFile: _tokenFile, ...unchecked } = plain;
+  rejects(one(unchecked), 'webhooks[0]', /tokenFile or secretFile/);
+  rejects(one({ ...plain, tokenFile: 'relative/token' }), 'webhooks[0].tokenFile');
+  rejects(one({ ...unchecked, secretFile: 'relative' }), 'webhooks[0].secretFile');
+  rejects(one({ ...unchecked, secret: 'written-in-place' }), 'webhooks[0].secret', /secrets must not be written/);
+
+  // The fields of the other format cannot be written.
+  rejects(one({ ...plain, attentionSeverities: ['critical'] }), 'webhooks[0].attentionSeverities', /unknown setting/);
+  rejects(one({ ...alerts, headers: ['X-A'] }), 'webhooks[0].headers', /unknown setting/);
+  rejects(one({ ...alerts, attention: true }), 'webhooks[0].attention', /unknown setting/);
+  for (const severities of ['critical', [''], [3], ['critical', 'critical']]) {
+    rejects(one({ ...alerts, attentionSeverities: severities }), 'webhooks[0].attentionSeverities');
+  }
+  for (const attention of ['yes', 1, null]) rejects(one({ ...plain, attention }), 'webhooks[0].attention');
+  for (const headers of ['X-A', [''], ['X A'], ['X:A'], [3], ['X-A', 'x-a']]) rejects(one({ ...plain, headers }), 'webhooks[0].headers');
+  for (const header of ['Authorization', 'cookie', 'X-Hub-Signature-256', 'X-Hub-Signature', 'Proxy-Authorization']) {
+    rejects(one({ ...plain, headers: [header] }), 'webhooks[0].headers', /secret/);
+  }
+});
+
+test('a github webhook names the authors and the reviewers, one or more each, and marks nothing unless told (ADR 0093)', () => {
+  const github = { name: 'github', format: 'github', secretFile: '/run/secrets/webhook-github', description: 'Renovate の PR のレビュー依頼',
+    authors: ['renovate[bot]'], reviewers: ['penelope-the-operator'] };
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [github] }).webhooks, [{ ...github, attention: false }]);
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...github, attention: true, authors: ['renovate[bot]', 'dependabot[bot]'] }] }).webhooks?.[0],
+    { ...github, attention: true, authors: ['renovate[bot]', 'dependabot[bot]'] });
+  const { secretFile: _secretFile, ...unchecked } = github;
+  assert.deepEqual(parseConfig({ ...base(), webhooks: [{ ...unchecked, tokenFile: '/run/t' }] }).webhooks?.[0],
+    { ...unchecked, tokenFile: '/run/t', attention: false }, 'how a call is checked is the webhook’s, whatever its format');
+
+  const one = (webhook: Record<string, unknown>) => ({ ...base(), webhooks: [webhook] });
+  const { authors: _authors, reviewers: _reviewers, ...bare } = github;
+  rejects(one({ ...bare, reviewers: github.reviewers }), 'webhooks[0].authors', /required/);
+  rejects(one({ ...bare, authors: github.authors }), 'webhooks[0].reviewers', /required/);
+  for (const logins of [[], 'renovate[bot]', [''], [' a'], ['a b'], [3], ['renovate[bot]', 'Renovate[bot]']]) {
+    rejects(one({ ...github, authors: logins }), 'webhooks[0].authors');
+    rejects(one({ ...github, reviewers: logins }), 'webhooks[0].reviewers');
+  }
+  for (const attention of ['yes', 1, null]) rejects(one({ ...github, attention }), 'webhooks[0].attention');
+  // The settings of the other formats cannot be written, nor its own on another.
+  rejects(one({ ...github, headers: ['X-GitHub-Event'] }), 'webhooks[0].headers', /unknown setting/);
+  rejects(one({ ...github, attentionSeverities: ['critical'] }), 'webhooks[0].attentionSeverities', /unknown setting/);
+  rejects(one({ ...bare, format: 'raw', authors: ['a'] }), 'webhooks[0].authors', /unknown setting/);
+  rejects(one({ ...bare, format: 'alertmanager', reviewers: ['a'] }), 'webhooks[0].reviewers', /unknown setting/);
+});
+
+test('the old alertmanager section stops the start and says to write it as a webhook (ADR 0091)', () => {
+  const old = { senders: [{ name: 'fraction', tokenFile: '/run/secrets/alertmanager-fraction' }] };
+  rejects({ ...base(), alertmanager: old }, 'alertmanager', /webhooks.*format "alertmanager"/);
+});
+
+test('an agent may have a token file of its own, and a2a.tokenFile is needed only by the agents without one (ADR 0089)', () => {
+  const agents = { wiki: { url: 'https://agents.example.test/wiki-keeper/' },
+    penelope: { url: 'https://penelope.example.test/a2a/', tokenFile: '/run/secrets/penelope-token' } };
+  assert.deepEqual(parseConfig({ ...base(), a2a: { ...a2a(), agents } }).a2a?.agents, agents);
+  const own = { penelope: agents.penelope };
+  const { tokenFile: _, ...noToken } = a2a();
+  assert.deepEqual(parseConfig({ ...base(), a2a: { ...noToken, agents: own } }).a2a, {
+    pollIntervalSeconds: 15, giveUpAfterHours: 24, agents: own,
+  }, 'every agent has its own, so the shared one may be left out');
+  rejects({ ...base(), a2a: { ...noToken, agents } }, 'a2a.tokenFile', /required/);
+  rejects({ ...base(), a2a: { ...a2a(), agents: { penelope: { ...agents.penelope, tokenFile: 'relative' } } } }, 'a2a.agents.penelope.tokenFile');
+  rejects({ ...base(), a2a: { ...a2a(), agents: { penelope: { ...agents.penelope, token: 'written-in-place' } } } }, 'a2a.agents.penelope.token',
+    /secrets must not be written/);
+});
+
+const inbox = () => ({
+  publicUrl: 'https://natsumi.example.test/a2a/',
+  card: { name: 'なつみ', description: 'マスターの秘書。返事は遅くなることがあります。' },
+  gated: { issuer: 'https://auth.example.test', jwksUrl: 'https://auth.example.test/.well-known/jwks.json' },
+  senders: [{ name: 'claude', gatedSubject: 'system:serviceaccount:agents:claude' }, { name: 'penelope', tokenFile: '/run/secrets/inbox-penelope' }],
+});
+
+test('the way in over A2A is off without its section, and reminds every 3 hours, fails at 24 and takes 3 open tasks by default (ADR 0089)', () => {
+  assert.equal(parseConfig(base()).inbox, undefined, 'without it, /a2a/ is not found');
+  assert.deepEqual(parseConfig({ ...base(), inbox: inbox() }).inbox, { ...inbox(), reminderIntervalHours: 3, deadlineHours: 24, maxOpenTasksPerSender: 3 });
+  const tuned = parseConfig({ ...base(), inbox: { ...inbox(), reminderIntervalHours: 6, deadlineHours: 48, maxOpenTasksPerSender: 5 } }).inbox;
+  assert.deepEqual([tuned?.reminderIntervalHours, tuned?.deadlineHours, tuned?.maxOpenTasksPerSender], [6, 48, 5]);
+  const { gated: _, ...tokensOnly } = inbox();
+  assert.deepEqual(parseConfig({ ...base(), inbox: { ...tokensOnly, senders: [inbox().senders[1]] } }).inbox?.gated, undefined,
+    'gated is needed only by a sender checked by its subject');
+  assert.equal(parseConfig({ ...base(), inbox: { ...inbox(), publicUrl: 'https://natsumi.example.test/a2a' } }).inbox?.publicUrl,
+    'https://natsumi.example.test/a2a/', 'the trailing slash is put on');
+  assert.equal(parseConfig({ ...base(), inbox: { ...inbox(), publicUrl: 'http://127.0.0.1:8443/a2a/' } }).inbox?.publicUrl, 'http://127.0.0.1:8443/a2a/');
+});
+
+test('each sender of the way in is a name with either gated’s subject or a token file, never both, and named once', () => {
+  const withSenders = (senders: unknown) => ({ ...base(), inbox: { ...inbox(), senders } });
+  const one = (sender: Record<string, unknown>) => withSenders([sender]);
+  rejects({ ...base(), inbox: { ...inbox(), senders: undefined } }, 'inbox.senders', /required/);
+  rejects(withSenders([]), 'inbox.senders');
+  for (const name of ['Claude', 'a_b', '-a', '', 'a/b', 'x'.repeat(33), 'me']) rejects(one({ name, tokenFile: '/run/t' }), 'inbox.senders[0].name');
+  rejects(one({ name: 'claude' }), 'inbox.senders[0]', /gatedSubject or tokenFile/);
+  rejects(one({ name: 'claude', tokenFile: '/run/t', gatedSubject: 'system:serviceaccount:a:b' }), 'inbox.senders[0]', /only one/);
+  rejects(one({ name: 'claude', tokenFile: 'relative' }), 'inbox.senders[0].tokenFile');
+  rejects(one({ name: 'claude', gatedSubject: '' }), 'inbox.senders[0].gatedSubject');
+  rejects(one({ name: 'claude', token: 'written-in-place' }), 'inbox.senders[0].token', /secrets must not be written/);
+  rejects(withSenders([{ name: 'claude', tokenFile: '/run/a' }, { name: 'claude', tokenFile: '/run/b' }]), 'inbox.senders[1].name', /twice/);
+  rejects(withSenders([{ name: 'claude', gatedSubject: 'system:serviceaccount:a:b' }, { name: 'pi', gatedSubject: 'system:serviceaccount:a:b' }]),
+    'inbox.senders[1].gatedSubject', /twice/);
+  const { gated: _, ...noGated } = inbox();
+  rejects({ ...base(), inbox: noGated }, 'inbox.gated', /required/);
+});
+
+test('the way in is at the public URL’s /a2a/, named by its card, and checks gated’s assertion against what the config says', () => {
+  const at = (publicUrl: string) => ({ ...base(), inbox: { ...inbox(), publicUrl } });
+  for (const url of ['http://natsumi.example.test/a2a/', 'https://natsumi.example.test/', 'https://natsumi.example.test/agent/',
+    'https://user:pass@natsumi.example.test/a2a/', 'https://natsumi.example.test/a2a/?a=1', 'natsumi.example.test/a2a/']) {
+    rejects(at(url), 'inbox.publicUrl');
+  }
+  rejects({ ...base(), inbox: { ...inbox(), card: { name: 'なつみ' } } }, 'inbox.card.description', /required/);
+  rejects({ ...base(), inbox: { ...inbox(), card: { name: '', description: 'x' } } }, 'inbox.card.name');
+  rejects({ ...base(), inbox: { ...inbox(), card: { ...inbox().card, skills: [] } } }, 'inbox.card.skills', /unknown/);
+  rejects({ ...base(), inbox: { ...inbox(), gated: { issuer: 'https://auth.example.test' } } }, 'inbox.gated.jwksUrl', /required/);
+  rejects({ ...base(), inbox: { ...inbox(), gated: { ...inbox().gated, issuer: 'auth' } } }, 'inbox.gated.issuer');
+  rejects({ ...base(), inbox: { ...inbox(), gated: { ...inbox().gated, jwksUrl: 'http://auth.example.test/jwks' } } }, 'inbox.gated.jwksUrl');
+  for (const [key, value] of [['reminderIntervalHours', 0], ['deadlineHours', 1.5], ['maxOpenTasksPerSender', 0], ['deadlineHours', '24']] as const) {
+    rejects({ ...base(), inbox: { ...inbox(), [key]: value } }, `inbox.${key}`);
+  }
+  rejects({ ...base(), inbox: { ...inbox(), extra: true } }, 'inbox.extra', /unknown/);
 });

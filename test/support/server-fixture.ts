@@ -108,6 +108,8 @@ export interface FixtureOptions {
   uploads?: Record<string, unknown>;
   /** Writes an avatar under the fixture's root and gives the `avatar` section naming it (ADR 0057). */
   avatar?: (root: string) => Promise<Record<string, unknown>>;
+  /** Writes the webhooks' token and secret files under the fixture's root and gives the `webhooks` section naming them (ADR 0091). */
+  webhooks?: (root: string) => Promise<unknown[]>;
   /** Fills the data directory before the first start, as one a previous version left behind. */
   prepare?: (data: string) => Promise<void>;
   /** Where the browser's bundle is read from (ADR 0058), under the fixture's root. None by default, so none is found. */
@@ -139,9 +141,10 @@ export async function startFixture(options: FixtureOptions = {}) {
       config.pi = { ...directories, ...options.pi } as typeof config.pi;
     }
     const avatar = options.avatar ? await options.avatar(root) : undefined;
+    const webhooks = options.webhooks ? await options.webhooks(root) : undefined;
     await writeFile(configFile, JSON.stringify({ ...config, ...(slack ? { slack: slack.section } : {}),
       ...(options.loop ? { loop: options.loop } : {}), ...(options.curator ? { curator: options.curator } : {}), ...(avatar ? { avatar } : {}),
-      ...(options.uploads ? { uploads: options.uploads } : {}) }));
+      ...(options.uploads ? { uploads: options.uploads } : {}), ...(webhooks ? { webhooks } : {}) }));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),
@@ -191,7 +194,7 @@ export function serverConfig(root: string, { allowedUserId = OWNER.id, listen, a
   return {
     pi: {
       agentDirectory: join(root, 'pi', 'agent'), sessionDirectory: join(root, 'pi', 'sessions'),
-      authPath: join(root, 'pi', 'agent', 'auth.json'), model: { provider: 'openai-codex', id: 'gpt-5.5' }, voiceEnabled: false,
+      authPath: join(root, 'pi', 'agent', 'auth.json'), model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, voiceEnabled: false,
     },
     publicOrigin: PUBLIC_ORIGIN,
     listen: listen ?? { host: '127.0.0.1', port: 0, tls: false },

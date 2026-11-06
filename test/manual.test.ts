@@ -198,3 +198,17 @@ test('the tool, the page on asking agents and the list say the dove is asked in 
   assert.doesNotMatch(page, /agent_reply の出来事/);
   assert.doesNotMatch(await read('manual/slack.md'), /agent_reply の出来事/);
 });
+
+// ADR 0094: the page of the source `jobs` says what its kind means, how a directory is laid out, and how each end is told.
+test('the page on background commands names the kind, the files and every way a wait can end', async () => {
+  const { JOB_FILES, JOBS_PATH, SHELL_FINISHED } = await import('../src/server/shell-jobs.ts');
+  const page = await read('manual/jobs.md');
+  for (const phrase of [SHELL_FINISHED, JOBS_PATH, JOB_FILES.readme, JOB_FILES.stdout, JOB_FILES.stderr, 'wait_seconds', 'exit_code',
+    'kill -- -', 'シグナル', '24 時間', '再起動', '上限', '先頭と末尾']) {
+    assert.ok(page.includes(phrase), phrase);
+  }
+  // Three ways on after a command goes to the background, one of them waiting in the turn (ADR 0094).
+  assert.ok(page.includes('wait_for_events'));
+  const index = await read('manual/INDEX.md');
+  assert.match(index, /`kind` が `shell_finished`.*\/manual\/jobs\.md/);
+});

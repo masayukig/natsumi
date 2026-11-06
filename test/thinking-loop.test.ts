@@ -1081,7 +1081,7 @@ test('the dashboard reads the running turn, the queue, the route, the fold and t
   try {
     // A source with nothing to show, so that an event can wait behind the turn.
     const sources = { take: async () => false, eventLine: (_: string, receivedAt: string) => ({ type: 'sources_updated', received_at: receivedAt }),
-      images: async () => [] };
+      images: async () => [], steerable: () => false };
     const { loop, events } = await f.open({ now: () => Date.parse('2026-01-01T00:00:00Z'), sources });
     const idle = loop.dashboardState();
     assert.equal(idle.unavailable, null);

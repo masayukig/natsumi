@@ -1,7 +1,7 @@
 # 0068. 整理係は人間の記憶のように、工程を分けて古い記憶を要約し、出来事を知識にする
 
 - Date: 2026-10-04
-- Status: Accepted（睡眠薬で係を動かすときの締め切りを、飲ませた時刻から `curator.pillStopStartingAfterMinutes`（既定 90 分）とすることは [ADR 0077](0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) で追加（夜の締め切りの数え方は夜にだけ使う））
+- Status: Accepted（睡眠薬で係を動かすときの締め切りを、飲ませた時刻から `curator.pillStopStartingAfterMinutes`（既定 90 分）とすることは [ADR 0077](0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) で追加（夜の締め切りの数え方は夜にだけ使う）。整理係の対象から `goals/` を外すことは [ADR 0090](0090-goals-and-a-plan-for-the-day.md) で追加）
 
 ## Context
 

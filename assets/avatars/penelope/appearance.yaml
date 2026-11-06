@@ -1,0 +1,21 @@
+lora: penelope_natsumi_anima.v2
+body: |
+  <lora:penelope_natsumi_anima.v2:1>,
+  masterpiece, newest,
+  penelope, 1girl, android,
+outfit: "white mechanical body, white frills,"
+outfitName: 白い機械の体とフリル
+keep:
+  - penelope
+  - android
+examples:
+  - title: サーバーラックの前で
+    outfit: "white mechanical body, white frills,"
+    scene: |
+      solo, upper body, looking at viewer, expressionless,
+      indoors, server room, server rack, blue led lights
+  - title: 私服で
+    outfit: "white hoodie, black skirt,"
+    scene: |
+      solo, upper body, looking at viewer,
+      indoors, desk, monitor

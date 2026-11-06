@@ -11,9 +11,8 @@ export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 /**
- * The longest reply one model call may ask for. Pi caps a compaction summary at the smaller of this and its own summary
- * budget (80% of a 16384-token reserve), and thinking spends the same tokens. At 4096 a summary stopped at the cap and
- * no compaction ever succeeded.
+ * The longest reply one model call may ask for. Pi gives a compaction summary the model's whole output limit, which is
+ * this, and thinking spends the same tokens. At 4096 a summary stopped at the cap and no compaction ever succeeded.
  */
 export const COMPATIBLE_MAX_TOKENS = 16_384;
 

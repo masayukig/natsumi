@@ -266,11 +266,16 @@ export class Sources {
   /**
    * Makes the line of a `sources_updated` event as its turn begins: commits what is there, and shows the directories
    * whose time has come (with those close to theirs, in the awake hours) and those an attention is in, advancing their
-   * refs. Returns false when there is nothing to show, and then nothing is recorded.
+   * refs. Returns false when there is nothing to show, and then nothing is recorded. With `attentionsOnly` it is the
+   * line of an event steered into a running turn: only the attentions `steerable` counts, and their directories.
    */
-  take(eventId: string): Promise<boolean> {
+  take(eventId: string, options: { attentionsOnly?: boolean } = {}): Promise<boolean> {
     return this.serialize(async () => {
       if (!this.prepared) return false;
+      // Made already: a steered event Pi did not deliver comes back to the queue, and keeps the line it was made with.
+      if (this.options.db.prepare('SELECT 1 FROM source_events WHERE event_id = ?').get(eventId)) return true;
+      const steering = options.attentionsOnly === true;
+      if (steering && this.steerableRows().length === 0) return false;
       await this.scan();
       // Before the commit, so a directory that appears now gets its ref where it is not yet.
       await this.takeInNew(false);
@@ -278,9 +283,10 @@ export class Sources {
       if (!head) return false;
       const now = this.options.now();
       const awake = isAwake(now, current(this.options.awakeHours), this.options.timeZone);
-      const attentions = this.waiting();
+      // A running turn is given the attentions it can take as text, and their directories; nothing else (ADR 0094).
+      const attentions = steering ? this.steerableRows() : this.waiting();
       const chosen = new Set(attentions.map(row => row.dir));
-      if (awake && this.due(now).length > 0) {
+      if (!steering && awake && this.due(now).length > 0) {
         const soon = now + this.options.activity.minMinutes * MINUTE;
         for (const dir of this.pending) if (this.checked.has(dir) && this.dueAt(dir) <= soon) chosen.add(dir);
       }
@@ -326,6 +332,12 @@ export class Sources {
       return true;
     });
   }
+
+  /**
+   * Whether an attention waits that a running turn can be given (ADR 0094): one with no images, since steering carries
+   * text only. One with images waits for a turn of its own, where they go beside its line.
+   */
+  steerable(): boolean { return this.steerableRows().length > 0; }
 
   /** The line of an event `take` made. */
   eventLine(eventId: string, receivedAt: string): Record<string, unknown> {
@@ -490,6 +502,10 @@ export class Sources {
 
   private waiting(): AttentionRow[] {
     return this.options.db.prepare('SELECT * FROM source_attention WHERE event_id IS NULL ORDER BY attention_id').all() as unknown as AttentionRow[];
+  }
+
+  private steerableRows(): AttentionRow[] {
+    return this.waiting().filter(row => parseList(row.images).length === 0);
   }
 
   /** The directory a path (relative to `sources/`) is measured in, or undefined above the registered depth. */

@@ -54,6 +54,8 @@ test('a model file out of shape names the setting and never echoes a value', asy
       [{ pi: { model: { provider: 'natsumi-compatible', id: 'x' } } }, /pi\.compatible/],
       [{ pi: { model: { provider: 'natsumi-compatible', id: 'x' }, compatible: { baseUrl: 'http://llm.example.net/v1', apiKeyFile: '/k' } } }, /baseUrl/],
       [{ pi: { model: { provider: 'openai-codex', id: 'x' }, authPath: '/a', extra: 'hidden-value' } }, /pi/],
+      // A relay is the deployment's; an evaluation reaches the subscription by its own login (ADR 0087).
+      [{ pi: { model: { provider: 'openai', id: 'x' }, authPath: '/a', relay: { url: 'http://127.0.0.1:18080' } } }, /pi\.relay/],
     ];
     for (const [content, message] of cases) {
       await writeFile(join(root, 'bad.json'), JSON.stringify(content));

@@ -39,7 +39,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
 2. 下記の手順で GitHub OAuth App と TLS 証明書を用意します。
 3. [config.example.json](config.example.json) を `config.local.json` などにコピーし、実環境に合わせます。
    - `pi`: Pi 状態領域のパス。data directory ともホームの `.pi` / `.codex` とも別の場所にします。
-     `model` でモデルを選びます。専用領域で login した Pi のサブスクリプション（例: `openai-codex`）か、
+     `model` でモデルを選びます。専用領域で login した Pi のサブスクリプション（例: `openai`。legacy の `openai-codex` も使えます）か、
      `"provider": "natsumi-compatible"` と `compatible`（自分で動かす OpenAI 互換エンドポイントの `baseUrl` と、
      API key の参照 `apiKeyEnv` か `apiKeyFile`）の組です。両者の間で自動の切り替えはしません。
      `compatible.contextWindow` は、Pi に伝えるそのモデルの context の大きさ（tokens、既定 128000）です。
@@ -66,18 +66,29 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      夜の振り返りのターンの上限 `reviewModelCalls`（モデル呼び出しの回数。既定 40 回）と `reviewTimeoutMinutes`
      （時間。既定 30 分）。昼のふつうのターンの上限 `eventModelCalls`（既定 8 回）と `eventTimeoutMinutes`（既定 10 分）。
      回数を上げるときは、1 回の呼び出しにかかる時間を掛けても時間の上限に収まるかを確かめてください。
+     `wait_for_events` で待つ時間も時間の上限に数え、待って戻るたびにモデルの呼び出しが 1 回増えます。
+     昼のターンの文脈が `compactionThreshold` を越えると区切りを促し、1.5 倍を越えるとターンを止めます（`context-limit`。
+     [ADR 0094](docs/adr/0094-background-commands-and-waiting-for-news-within-a-turn.md)）。
      上限で打ち切られたターンはログに残ります。
+     止めるときに、話している最中のターンが終わるのを待つ秒数 `shutdownDrainSeconds`（既定 600 秒、`0` で待たない）。
+     下の停止の説明を見てください。
      記憶のリポジトリの場所 `memoryRepository`（絶対パス。既定は data directory の `memory/`）と、
      記憶 1 ファイルの上限 `memoryFileMaxChars`（既定 32000 文字）、常時記憶の上限 `alwaysMemoryMaxChars`
-     （既定 2000 文字。毎回のプロンプトに入るので、1 ファイルの上限より小さくします）。
+     （既定 2000 文字。毎回のプロンプトに入るので、1 ファイルの上限より小さくします）、
+     長く続く目標のファイル 1 つの上限 `goalFileMaxChars`（既定 6000 文字）と今日の計画 `goals/today.md` の上限 `todayPlanMaxChars`
+     （既定 3000 文字。ping に載るので小さくします）。どちらも 200 以上で、`memoryFileMaxChars` を超える値は起動を拒みます。
+     省いたときに `memoryFileMaxChars` のほうが小さければ、そちらに揃えます（下記「目標と今日の計画」）。
      作業環境の runner のソケット `workspaceSocket`（絶対パス。これがあるときだけ `run_shell` が使えます）、
      runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
+     裏に回ったコマンドの終わりを同時に待つ数 `backgroundJobs`（既定 5。`0` で待たない。下の「作業環境」と [ADR 0094](docs/adr/0094-background-commands-and-waiting-for-news-within-a-turn.md)）、
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
      Pi の Codemode `codemode`（既定 off。下記「Codemode で作業環境の出力を絞る」）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
    - `postbox`（省略可）: 記憶に置いた定期便をサーバーが cron で送る郵便ポストの設定です。下記「定期便を送る（郵便ポスト）」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
+   - `webhooks`（省略可）: 外の仕組み（クラスタの Alertmanager、GitHub など）から webhook を受け取るための設定です。下記「webhook を受け取る」を見てください。
+   - `inbox`（省略可）: ほかのエージェント（ほかのなつみ、Claude・Pi など）から A2A で依頼を受けるための設定です。下記「ほかのエージェントから依頼を受ける（A2A の受け口）」を見てください。
    - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
      係のターンの上限 `modelCalls`（既定 100 回）と `timeoutMinutes`（既定 60 分）。経路と上限は、動いている最中に `/settings` で上書きできます（下の「ブラウザで話す・設定を変える」）。一晩は工程に分かれ、上限は工程ごとにまるごと使えます
@@ -89,7 +100,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      最初の工程に渡すその日の会話の本文の長さの上限 `conversationMaxChars`（既定 30000 文字。超えたら古い方から省きます。0 なら渡さず、日記だけで書き起こします）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
      係の Pi の Codemode `codemode`（既定 off。`loop.codemode` とは別に入り切りします。下記「Codemode で作業環境の出力を絞る」）。
    - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
-     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`aki`（アキ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
+     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`aki`（アキ）、`penelope`（ペネロペ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
      `appearance`（省略可、絶対パス）に `appearance.yaml` を書くと、そのアバターの姿（自分を描くときのプロンプト）を丸ごと置き換えます。
      `sdctlParams`（省略可、絶対パス）に `sdctl-params.yaml` を書くと、そのアバターの画像生成の設定（sdctl の params）を丸ごと置き換えます。
@@ -109,6 +120,16 @@ node dist/src/server/main.js serve --config config.local.json --data-dir <data d
 `.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
+止めるときは、話している最中のターンが自然に終わるのを `loop.shutdownDrainSeconds`（既定 600 秒）まで待ちます
+（[ADR 0083](docs/adr/0083-waiting-for-the-turn-in-progress-at-a-stop.md)）。返事とメモ、記憶の commit まで済んでから止まります。
+待っている間は新しいターンを始めません。本人のメッセージは受け付けて待ち行列に残し、次の起動で処理します。
+クライアントへの接続と通知は待ちの後まで開いたままなので、ターンの返事はその場で届きます。
+上限を過ぎたターンは打ち切られ、そのイベントは failed になります。夜の切り替え・睡眠薬・夜の整理係は待たずに打ち切り、次の起動で続きから進みます。
+待ちの間にもう一度 SIGTERM / SIGINT を受けると、すぐに終了します。
+
+プロセスを止める側の猶予は、`shutdownDrainSeconds` に後始末の分（目安 60 秒）を足した値以上にしてください。
+Kubernetes なら `terminationGracePeriodSeconds` で、既定の 600 秒なら 660 秒以上です。
+猶予が短いと待ちの途中で強制終了され、走っていたイベントは failed になります。
 
 会話は、一本の Pi session が思考ループとして本人のメッセージを 1 件ずつ処理し、ツールで返事や表情を出す形です
 （[ADR 0008](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)）。本人のメッセージと natsumi の返事・知らせは
@@ -144,7 +165,8 @@ natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](doc
 上限や時間切れで終わったときも同じように検査してコミットします。検査は `.md` 以外・symlink・空・
 `loop.memoryFileMaxChars`（既定 32000 文字）超過・テンプレートの制御文字列・制御文字・日本語以外の文字と、
 日中のターンでの `always.md`・`personality.md` の変更と、natsumi のターンでの `INDEX.md` と `archive/` の変更です。`always.md` にはこれに加えて
-`loop.alwaysMemoryMaxChars`（既定 2000 文字）の上限が掛かります。戻した理由は次のターンで natsumi に伝わります。
+`loop.alwaysMemoryMaxChars`（既定 2000 文字）の上限が掛かります。`goals/` の長く続く目標のファイルには `loop.goalFileMaxChars`（既定 6000 文字）、
+`goals/today.md` には `loop.todayPlanMaxChars`（既定 3000 文字）の上限が掛かり、`goals/` の下のディレクトリの中のファイルも戻します。戻した理由は次のターンで natsumi に伝わります。
 
 上限を掛けるのは書くときだけです（[ADR 0020](docs/adr/0020-limits-at-write-time-and-a-nightly-menu.md)）。
 プロンプトを組む側は長さを見ないので、オーナーが自分で git に直接コミットした長い `always.md` は、そのまま
@@ -219,7 +241,8 @@ author と committer はサーバーが固定し、リポジトリに置かれ�
 イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
 natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-self-checks-and-pings.md)）。
-`loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが「何かしたいことは？」の合図を送ります。
+`loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが合図（ping）を送ります。
+ping は、記憶の `goals/` の今日の計画を進める合図です（[ADR 0090](docs/adr/0090-goals-and-a-plan-for-the-day.md)、下記「目標と今日の計画」）。
 また natsumi は「30 分後」「15:00」のような一回きりの予約と、「毎日 16:00」（cron 式 `0 16 * * *`）のような繰り返しの予約で、
 後で自分から確かめられます（[ADR 0063](docs/adr/0063-repeating-self-checks-without-limits.md)）。予約は `.natsumi/state.sqlite` に残ります。
 一回きりの予約でサーバーの停止や夜で時刻を過ぎたものは、起動後（夜なら朝）にまとめて 1 回で届きます。
@@ -265,7 +288,7 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
       "compatible": { "baseUrl": "https://llm.example.net/v1", "apiKeyEnv": "NATSUMI_PI_API_KEY", "contextWindow": 131072 }
     },
     "plus": {
-      "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+      "model": { "provider": "openai", "id": "gpt-6.1-sol" },
       "compactionThreshold": 150000
     }
   },
@@ -278,7 +301,9 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
   互換の経路を 2 つ以上並べるときは、provider を `natsumi-compatible-<何か>` のように経路ごとに変えます。
   1 つ目は `natsumi-compatible` のままにしておくと、これまでの session の記録と同じモデルとして続きます。
 - `compactionThreshold` は省けます。書かなければ `loop.compactionThreshold` を使います。上限と窓の組み合わせは経路ごとに検査します。
-  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓（`gpt-5.5` は 272000）で検査します。
+  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓で検査します。
+  同じモデルでも provider で窓が違います（`gpt-6.1-sol` は `openai` で 272000、`openai-codex` で 500000）。
+  `openai` の `gpt-6.1-sol` では、閾値は 218752 以下にします。
 - `pi.model`（と `pi.compatible`）だけの設定は、`default` という名前の経路 1 つとして読みます。
 - ポッポさんの判定が使い回すのは、既定の経路の互換のモデルだけです。切り替えても判定は変わりません。
 
@@ -304,14 +329,35 @@ Kubernetes では `kubectl exec natsumi-0 -c server -- node /app/dist/src/server
   画面での選び方は下の「Mac アプリ」の「使い方」と「iPhone アプリ」にあります。
 - ブラウザの設定の画面（`/settings`）からも選べ、「config に戻す」で選んだ記録（`.natsumi/model-route.json`）を消して既定の経路に戻せます（下の「ブラウザで話す・設定を変える」）。
 
-サブスクリプションの経路（例: ChatGPT Plus の `openai-codex`）は、`pi.authPath` の OAuth のログインを使います。
+サブスクリプションの経路（例: ChatGPT Plus の `openai`）は、`pi.authPath` の OAuth のログインを使います。
 サーバーはこのファイルを作りません。本人が Pi の CLI で、その Pi 領域にログインします。`authPath` は
 `<agentDirectory>/auth.json` にしておきます（Pi の CLI はそこに書きます）。
 
 ```sh
 PI_CODING_AGENT_DIR=<pi.agentDirectory> node node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
-# Pi の画面で /login を打ち、provider を選んでログインします。
+# Pi の画面で /login を打ち、provider を選んでログインします（`openai` は「Sign in with ChatGPT」）。
 ```
+
+ログインは provider ごとです。legacy の `openai-codex` から `openai` に移すときは、もう一度「Sign in with ChatGPT」でログインし、
+経路の provider を `openai` に変え、閾値を上の窓に収めて起動し直します。`openai-codex` のログインは残るので、provider を戻せば元に戻ります。
+移った最初のターンだけ、前の思考は平文で渡り、prefix cache も一から温まります
+（[ADR 0087](docs/adr/0087-the-subscription-on-the-standard-responses-api-and-through-a-relay.md)）。
+
+`openai` の経路は、ログインを持たずに、サブスクリプションの token を付ける中継越しにも使えます（ADR 0087）。
+経路に `relay` を足します。
+
+```json
+"plus": {
+  "model": { "provider": "openai", "id": "gpt-6.1-sol" },
+  "relay": { "url": "http://127.0.0.1:18080" }
+}
+```
+
+- `relay.url` は loopback の `http` の origin だけです（パスは書きません）。TLS と外への認証は中継の側で行います。
+- natsumi は Pi の宛先（`https://api.openai.com/v1`）を変えず、要求を同じパスのまま中継へ送り直します。
+  鍵は秘密でないダミー（`sk-` で始まらない）で、中継が捨てます。この経路のために `pi.authPath` は読みません。
+- 中継越しの経路は、いつも使える状態として一覧に出ます。中継が止まっていれば、そのターンのモデルの呼び出しが失敗します。
+- `openai` の経路を 2 つ以上並べるときは、全部を直接にするか、全部を同じ中継にします。
 
 image の中では `/app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js` です。
 Pi の CLI が起動時に探す `rg` と `fd`（`fdfind` の名前）は image に入れてあるので、`--offline` で起動しても
@@ -506,7 +552,7 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、予約、睡眠薬、定期便、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、予約、睡眠薬、定期便、目標の変更、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
@@ -527,7 +573,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   「推定」と印を付けて出します。境目がずれていることがあります。
 - 「失敗と待ち」（`/dashboard/waits`）は、次の節を並べ、10 秒ごとに更新します。どれも最大 20 件です。
   - 失敗した出来事（`loop_events` の failed）と理由。どのターンで扱ったかが記録にあれば、その詳細へ移れます。
-  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・夜の振り返りの `no-handoff`、記憶の整理係の `rejected`（検査に当たった）・`memory-not-clean`・`route-unavailable` など）。
+  - 打ち切られたターン（outcome が `ok` でないもの。`model-call-limit`・`timeout`・`context-limit`・夜の振り返りの `no-handoff`、記憶の整理係の `rejected`（検査に当たった）・`memory-not-clean`・`route-unavailable` など）。
   - 承認待ち。何の承認か（投稿先・下書き・判定・引っかかった問題点）と期限です。承認はこれまでどおりアプリで行います。
     ここから「承認の履歴」へ移れます。
   - 予約した確認（self-check）の予定と理由、次の夜の切り替えの予定時刻（`loop.nightlyRotationAt`）。
@@ -540,6 +586,10 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   名前、相手、cron、最後に送った時刻、その結果（返事を待っている・受け取り・中身なし・失敗・待つのをやめた・聞き返し・飛ばした）と飛ばした理由、
   続けて失敗した回数、前回の受け取り、次に送る時刻です。検査に通らない定期便は、送らない理由を出します。表示だけで、止める操作はありません。
   最後に `/sources` に置いた返事があれば、その「最後の返事」のディレクトリへ「ファイル」でリンクします。
+- 「目標の変更」（`/dashboard/goals`）は、記憶の `goals/` のうち本人の同意が要るところの変更を、新しい順に出します（[ADR 0090](docs/adr/0090-goals-and-a-plan-for-the-day.md)）。
+  長く続く目標のファイルを作った・消したものと、`## なぜ`・`## 日課` の節を変えたものです。コミットの時刻、書き手（なつみか、ssh でコミットした本人の名前）、ファイル、
+  その節の行の差分を並べます。`goals/` に触れた直近の 100 コミットから、多くて 30 件です。記憶の git の履歴から開くたびに作り、SQLite には持ちません。
+  「今の様子」「短い目標」と `today.md` の変更は出しません。表示だけで、サーバーは変更を止めません。
 - 「一行メモ」（`/dashboard/memos`）は、ターンの終わりに書いた一行メモを新しい順に 20 件ずつ、全文で出します。
   一覧は SQLite から作り、メモは session のファイルのうち、そのターンの位置の終わりの付近（最大 1MB）だけを読みます。
   位置を持つ前の「推定」のターンは、ファイルを先頭から探すことになるので一覧では読みません。そのターンの詳細で見られます。
@@ -705,7 +755,13 @@ natsumi は、Wiki の管理人のような外の特化エージェントに `as
 [ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。相手とは A2A 1.0（JSON-RPC）で話し、公式の SDK
 `@a2a-js/sdk` を使います。設定に `a2a` がなければ、`ask_agent` は頼まずに断ります（ツール自体は常にあります）。
 
-1. 呼び出しの token を用意します。相手が確かめる ServiceAccount の token（audience `a2a`）です。
+1. 呼び出しの token を用意します。natsumi の ServiceAccount の token で、audience は相手をどう呼ぶかで決まります
+   （[ADR 0084](docs/adr/0084-calling-agents-behind-gated-with-its-audience.md)）。
+   - gated 経由で呼ぶ（`https://<係>.fraction.jp` など）: gated の audience `https://auth.fraction.jp`。gated が確かめて token を落とし、相手には署名付きの assertion が届きます。
+   - 相手の Service を直接呼ぶ: audience `a2a`。相手が自分で確かめます。
+
+   `a2a.tokenFile` は、自分の token を持たない相手すべてに送ります。相手ごとに違う token が要るとき（bearer token で守ったほかのなつみなど）は、
+   その相手に `tokenFile` を書きます（[ADR 0089](docs/adr/0089-hearing-from-agents-over-a2a.md)）。
    Kubernetes では Pod に差し込まれる projected token のパスを、Docker では手で置いたファイルを使います。
    Docker では `secrets/a2a-token` などに置き、コンテナのユーザーだけが読めるようにします。`secrets/` は Git の追跡対象外です。
 2. 設定に `a2a` を足します。値は架空の例です。
@@ -722,9 +778,12 @@ natsumi は、Wiki の管理人のような外の特化エージェントに `as
    | 項目 | 必須 | 既定 | 中身 |
    | --- | --- | --- | --- |
    | `a2a.agents.<名前>.url` | 必須 | | 相手の A2A の受け口。https に限ります（loopback だけ http）。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi は名前だけを扱います |
-   | `a2a.tokenFile` | 必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます |
+   | `a2a.agents.<名前>.tokenFile` | | | その相手にだけ送る token のファイル（絶対パス）。書かなければ `a2a.tokenFile` を送ります。どちらの token も、その相手の URL と同じ origin にだけ送ります |
+   | `a2a.tokenFile` | 自分の token を持たない相手がいれば必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます。すべての相手が `tokenFile` を持てば省けます |
    | `a2a.pollIntervalSeconds` | | 15 | 返事を待っている依頼を取りに行く間隔（秒、5 以上） |
    | `a2a.giveUpAfterHours` | | 24 | 返事を待ち続ける上限（時間）。最後に送ってからこの時間が過ぎると、待つのをやめて natsumi に知らせます |
+   | `a2a.pushUrl` | | | 相手から見た natsumi の公開の origin（`https://natsumi.example.net` など。パスは書きません）。書くと、push を名乗る相手に push を頼み、受け口 `POST /v1/a2a-push` を開きます（下の「返事の push」） |
+   | `a2a.pushPollIntervalSeconds` | | 300 | push を頼んだ依頼を、それでも取りに行く間隔（秒、`a2a.pollIntervalSeconds` 以上）。`a2a.pushUrl` があるときだけ書けます |
 
 3. Compose では override の [compose.a2a.example.yaml](compose.a2a.example.yaml) を足して、token を `/run/secrets/natsumi_a2a_token` にマウントします。
    既定ではホストの `secrets/a2a-token` を読みます（`NATSUMI_A2A_TOKEN_FILE` で変更できます）。
@@ -771,10 +830,39 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
 - 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
   待っている依頼は、新しい版で取りに行き、`sources/agents/` に返事のためのディレクトリを作って置きます（頼んだことの記録はありません）。
 - 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
+- 返事の push（[ADR 0092](docs/adr/0092-a-push-from-an-agent-as-a-doorbell.md)）: `a2a.pushUrl` を書き、相手の Agent Card が
+  `capabilities.pushNotifications: true` を名乗るときだけ、依頼（聞き返しへの答えと定期便も）に push の設定を付けます。
+  送り先は `<a2a.pushUrl>/v1/a2a-push`、認証は依頼ごとに作るランダムな token の `Authorization: Bearer` です（legacy の `token` は使いません）。
+  Card が読めない・名乗らない相手には付けずに頼みます。
+  - push は呼び鈴です。届いた token の SHA-256 で待っている依頼を引き、すぐ 204 を返してから、その依頼の GetTask を 1 回走らせます。本文は読まずに読み捨てます（1 MiB まで。それより大きいと名乗るものは 413）。
+    知らない token・`Authorization` が無い・Bearer でない呼び出しは、どれも同じ 401 です。ブラウザの cookie では通しません。
+  - 同じ依頼の GetTask は同時に 1 つまでです。走っている間に届いた push は、何件でも走り終えた後の 1 回にまとめます。
+    相手が送り終える前（SendMessage の答えが返る前）に届いた push も受け、依頼を記録した直後に 1 回取りに行きます。
+  - token そのものは残さず、digest を `.natsumi/state.sqlite`（migration 37）の待っている依頼の記録に持ちます。依頼が待つのをやめたら消すので、以後の push は 401 になります。
+    聞き返しへ答えるときは新しい token で付け直します。token はログにも `/sources` にも natsumi にも出しません。
+  - push を頼んだ依頼も、`a2a.pushPollIntervalSeconds` ごとに取りに行きます（push が落ちたときの保険）。サーバーの起動のあとは、すべての依頼を 1 度取りに行きます。
+  - 受け口は `/` の待ち受けに置きます。Kubernetes では gated で守らない `/` の Ingress を通し、相手から natsumi の公開の host へ出る道（相手の側の出口の許可と、相手の push の送り先の許可）を環境の設定で開けます。
+    どれかが欠けても、今までどおり取りに行く形で返事は届きます。
 - 頼める相手の一覧は、サーバーが起動のたびに各相手の Agent Card（token は付けずに取ります）から data directory の
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
   取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
 - token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
+### 目標と今日の計画（goals）
+
+記憶の直下の `goals/` に、長く続く目標を 1 つ 1 ファイルで、今日の計画を `goals/today.md` に置きます
+（[ADR 0090](docs/adr/0090-goals-and-a-plan-for-the-day.md)）。書くのは natsumi で、書き方は `manual/goals.md` にあります。
+ping は、この計画を進める合図です（system prompt の ping の説明は固定の文で、設定や記憶から組み立てません）。
+
+- 長く続く目標のファイルは、`goals/` の直下の `.md` のうち `today.md` 以外のすべてです。ファイル名が目標の ID で、
+  節は `## なぜ`・`## 日課`・`## 今の様子`・`## 短い目標` です。`today.md` の 1 行目は `# YYYY-MM-DD`（`loop.timeZone` の日付）です。
+- サーバーは、HEAD にコミットされた `goals/today.md` の中身を、ping の出来事の `today_plan` に載せます。載せるのは、session の最初の ping
+  （起動の後、夜の切り替えと昼寝の後を含む）と、compaction の後の最初の ping だけです。載せたかどうかはサーバーのメモリだけで覚えるので、
+  再起動の後は同じ session でももう一度載せます。`today.md` がコミットされていない（空、symlink を含む）ときは何も載せず、載せたことにもしません。
+- ターンの終わりの検査で、長さの上限（`loop.goalFileMaxChars`・`loop.todayPlanMaxChars`）と `goals/` の下のディレクトリを戻します。
+- 本人の同意が要るところ（目標のファイルの作成・削除、`## なぜ`・`## 日課` の節）の変更も、サーバーは止めません。ダッシュボードの「目標の変更」で見られます。
+- 夜の記憶の整理係は `goals/` を変えることも動かすこともしません。
+- 何も SQLite に持ちません。
 
 ### 定期便を送る（郵便ポスト）
 
@@ -949,9 +1037,166 @@ natsumi の番号で登録した signal-cli を `daemon --http` で動かして�
 サーバーが決まった文の知らせを 1 件送ります（[ADR F05](docs/adr/F05-fork-telling-the-owner-when-a-turn-is-cut-short.md)）。
 `notify_owner` の知らせと同じく、Slack のチャンネル・Signal・Mac・Web・iPhone に届きます。夜の振り返りと記憶の整理では送りません。前の 1 件から 30 分は送りません。設定はありません。
 
+### webhook を受け取る
+
+外の仕組みが POST する JSON を、`/sources` の下のファイルにして、`sources_updated` で natsumi に知らせます
+（[ADR 0091](docs/adr/0091-one-way-in-for-webhooks-with-formats-in-the-code.md)）。設定に `webhooks` がなければ、受け口はありません（404）。
+
+webhook ごとに、名前と、届いたものの読み方（型）と、呼び出しの確かめ方を決めます。型は natsumi のコードが持つ次の 3 つです。
+
+- `raw`: 届いた 1 回を、そのまま日付のファイルの 1 行にします。JSON を POST できる送り手なら、何でも受けられます（GitHub など）。
+- `alertmanager`: Alertmanager の webhook として読み、アラートの状態が変わったときだけ行を書きます。
+- `github`: GitHub App の webhook として読み、決めた作者の PR で、決めたレビュアーにレビューが頼まれたものの出来事だけを行にします
+  （[ADR 0093](docs/adr/0093-a-github-format-for-pull-requests-asked-to-review.md)）。
+
+1. webhook ごとに token か秘密を作ります（例: `openssl rand -base64 32`）。natsumi と送り手の両方に置きます。webhook ごとに別にします。
+2. 設定に `webhooks` を足します。値は架空の例です。
+
+   ```json
+   "webhooks": [
+     {
+       "name": "fraction",
+       "format": "alertmanager",
+       "tokenFile": "/run/secrets/natsumi_webhook_fraction_token",
+       "description": "クラスタ fraction の Alertmanager のアラート。",
+       "attentionSeverities": ["critical"]
+     },
+     {
+       "name": "github-issues",
+       "format": "raw",
+       "secretFile": "/run/secrets/natsumi_webhook_github_secret",
+       "description": "yuanying/natsumi の issue とコメント。X-GitHub-Event がイベントの種類です。",
+       "headers": ["X-GitHub-Event", "X-GitHub-Delivery"],
+       "attention": false
+     },
+     {
+       "name": "github-reviews",
+       "format": "github",
+       "secretFile": "/run/secrets/natsumi_webhook_github_reviews_secret",
+       "description": "Renovate の PR で、レビューを頼まれたもの。依頼・push・CI の結果・閉じたことが届きます。",
+       "authors": ["renovate[bot]"],
+       "reviewers": ["example-reviewer"],
+       "attention": false
+     }
+   ]
+   ```
+
+   | 項目 | 必須 | 既定 | 中身 |
+   | --- | --- | --- | --- |
+   | `name` | 必須 | | 英小文字・数字・ハイフンで 32 文字まで、重ねられません。受け口のパスとディレクトリに使います |
+   | `format` | 必須 | | `raw`・`alertmanager`・`github` のどれか |
+   | `tokenFile` | どちらか 1 つ | | `Authorization: Bearer <token>` の token のファイルの絶対パス。Alertmanager はこちらです |
+   | `secretFile` | どちらか 1 つ | | GitHub 形の HMAC の秘密のファイルの絶対パス。届いた本文の HMAC-SHA256 を `X-Hub-Signature-256: sha256=<16 進>` と照らします。GitHub はこちらです |
+   | `description` | 必須 | | 何が送られてくるか、どう読むか。webhook のディレクトリの `README.md` に書き、natsumi はそれを読みます |
+   | `headers` | | `[]` | `raw` だけ。行に残すヘッダーの名前の並び。`Authorization`・`Cookie`・`X-Hub-Signature(-256)` は書けません |
+   | `attention` | | `false` | `raw` と `github`。`true` なら、行を書くたびに `attention`（`kind` が `webhook`）として、待たずに、夜でも知らせます（`raw` は届くたび） |
+   | `attentionSeverities` | | `["critical"]` | `alertmanager` だけ。鳴り始めたときに `attention`（`kind` が `alert`）にするラベル `severity` の値の並び。`[]` なら印を付けません |
+   | `authors` | `github` は必須 | | `github` だけ。扱う PR の作者の GitHub のログインの並び（1 つ以上、例: `["renovate[bot]"]`）。大文字と小文字は区別しません |
+   | `reviewers` | `github` は必須 | | `github` だけ。レビューを頼まれる人の GitHub のログインの並び（1 つ以上）。人への依頼だけを照らし、チームへの依頼は照らしません |
+
+   `tokenFile` と `secretFile` は、両方を書くことも、どちらも書かないこともできません（起動を止めます）。ファイルは起動時に読み、読めなければ設定の名前だけを示して起動を止めます。
+   型の違う欄（`raw` の `attentionSeverities` など）も起動を止めます。`github` で `authors` か `reviewers` が無い・空なら起動を止めます（すべての PR を通す設定は作れません）。
+
+3. 送り手に natsumi への宛先を足します。URL は `<publicOrigin>/v1/webhooks/<name>` です。
+   - Alertmanager: receiver の `webhook_configs` の `url` に書き、`http_config.authorization.credentials_file` に同じ token を置きます。
+     送るアラートの選び方（`Watchdog` を除くなど）は route で決めます。natsumi は届いたものを絞りません。`max_alerts` は設けません（切られたアラートは届きません）。
+     Slack などへの通知は別の receiver のまま残せます。
+   - GitHub: webhook の Payload URL に書き、Content type を `application/json`、Secret に同じ秘密を置きます。
+     急ぐイベントと急がないイベントは、`attention` の違う webhook に分けて送ります。
+   - GitHub App（型 `github`）: App の Webhook URL に書き、Webhook secret に同じ秘密を置きます。権限は Pull requests と Checks の read、購読するイベントは Pull request と Check suite に絞ります。
+     App の webhook は 1 つの URL にすべてのリポジトリのイベントを送るので、`github` の webhook は App に 1 つです。
+
+- 受け口は `POST /v1/webhooks/<name>` で、ブラウザと同じ待ち受けにあります。ブラウザのログインの cookie では通しません。
+  - 名前を知らない webhook、token や署名の違う呼び出し、token や署名の無い呼び出しは、どれも同じ 401 です。token と署名は、時間に依らない比べ方で照らします。
+  - 本文は 1 MiB まで（超えれば 413）。`tokenFile` の webhook は token を確かめてから、`secretFile` の webhook は本文を読み終えてから署名を確かめるので、上限を超えた本文は確かめる前に 413 です。
+  - JSON として読めない本文は 415、`alertmanager` の webhook で Alertmanager の webhook の形でなければ 400 です。`raw` はどんな JSON でも受けます。
+  - `github` の webhook は、`X-GitHub-Event` の無い呼び出しと、読むイベント（`pull_request` の `review_requested`・`review_request_removed`・`synchronize`・`closed`、`check_suite` の `completed`）なのに形の合わない本文か `X-GitHub-Delivery` の無いものを 400 にします。
+    ほかのイベントと action（`ping` を含む）は、読まずに 200（`{"recorded": 0}`）です。
+  - token と秘密は TLS の中に置くため、公開の入口（Ingress、HTTPS）を通す道を勧めます。クラスタの中の Service を直接叩いても、同じ token と秘密で受けます。
+  - 書き終えてから 200（`{"recorded": <書いた行の数>}`）を返し、書けなければ 503 を返して送り手の送り直しに任せます。書けなかった行は、次に届いたときか、次の起動で書きます。
+- 書くのは data directory の `sources/webhooks/<name>/` です。日付と時刻（`at`）は `loop.timeZone` の秒までです。古いファイルは消しません。config から外した webhook のディレクトリも消しません。
+  - `README.md`: 型と、型ごとの設定と、`description`。起動のたびに書き直し、差分の履歴からは外します。
+  - `raw` の `<日付>.jsonl`: 届いた 1 回が 1 行で、`at`、`headers`（`headers` で名指したヘッダーのうち届いたもの。名指していなければ欄なし）、`body`（届いた JSON）です。送り直しの重複は除きません。
+  - `alertmanager` の `<日付>.jsonl`: アラートの状態が変わったときだけ、1 行 1 アラートで足します（初めての `firing`、`resolved` からの `firing`、`firing` からの `resolved`、知らないアラートの `resolved`）。
+    `repeat_interval` の送り直しと、2xx 以外の応答の後の送り直しでは足しません。
+  - `alertmanager` の `firing.jsonl`: いま `firing` のアラートを、始まった順に 1 行ずつ。届くたびに書き直し、差分の履歴からは外します。
+  - `github` の `<日付>.jsonl`: `authors` の作者の PR に `reviewers` の誰かへの `review_requested` が届くと、その PR を覚えて行にします。
+    覚えた PR の `synchronize`、`check_suite` の `completed`（PR ごとに 1 行）、`reviewers` の誰かの `review_request_removed`、`closed` を行にします。忘れるのは `closed` のときだけです。
+    行は決まった欄（`at`・`event`・`action`・`delivery`・`repository`・`number`・`title`・`url`・`author`・`head_sha`・`head_ref`・`base_ref` と、`reviewer`・`conclusion`・`merged`）だけで、PR の本文は残しません。
+    同じ `X-GitHub-Delivery` の 2 回目以後（GitHub の Redeliver）は行にせず、覚える・忘れるにも使わず 200 を返します。
+  - 行の欄と読み方は、なつみ向けのマニュアル（`manual/webhooks.md`）にあります。
+- 日付のファイルの行と、アラートごとの最後の状態は `.natsumi/state.sqlite`（migration 36 の `webhook_lines`・`webhook_alerts`）に webhook の名前で持ち、ファイルはそこから書き直します。
+  `github` の覚えた PR と、行を書いた配送の ID は、migration 38 の `webhook_pull_requests`・`webhook_deliveries` に webhook の名前で持ちます。閉じられないまま残った PR と古い配送の ID は消しません。
+- 印の無い行は、ふつうの変化として下の「読みものの更新」の待ちの後に知らせます。
+- token や秘密を入れ替えるときは、natsumi と送り手の両方を直して、natsumi を再起動します。ログには webhook の名前と失敗の種類だけを出し、届いた中身と token・秘密は出しません。
+- 以前の `alertmanager` の設定と受け口 `POST /v1/alertmanager/<name>` はありません。設定に `alertmanager` が残っていれば、起動を止めて、型 `alertmanager` の webhook として `webhooks` に書き直すよう示します。
+  以前の置き場所 `sources/alertmanager/` が data directory に残っていても、読まず、消しません。
+
+### ほかのエージェントから依頼を受ける（A2A の受け口）
+
+ほかのエージェント（ほかのなつみ、本人の Claude・Pi など）が、A2A で natsumi に頼めるようにします
+（[ADR 0089](docs/adr/0089-hearing-from-agents-over-a2a.md)）。届いた依頼は `/sources/inbox` の下のファイルにして `sources_updated` で知らせ、
+natsumi はツール `reply_to_agent` で返します。返事は送り手が GetTask で取りに来ます。設定に `inbox` がなければ、`/a2a/` の下は Agent Card も含めて 404 です
+（`reply_to_agent` は常にあり、返さずに断ります）。
+
+1. 送り手ごとに、確かめ方を 1 つ決めます。
+   - gated の後ろで受けるなら `gatedSubject`: gated の assertion の `sub`（`system:serviceaccount:<名前空間>:<名前>` など）。
+     送り手は gated の audience の ServiceAccount の token で呼び、gated が token を落として assertion に置き換えます（[ADR 0084](docs/adr/0084-calling-agents-behind-gated-with-its-audience.md)）。
+   - gated の無い環境なら `tokenFile`: 送り手ごとの token（例: `openssl rand -base64 32`）。natsumi と送り手の両方に置きます。
+2. 設定に `inbox` を足します。値は架空の例です。
+
+   ```json
+   "inbox": {
+     "publicUrl": "https://natsumi.example.net/a2a/",
+     "card": { "name": "なつみ", "description": "マスターの秘書です。返事は遅くなることがあります。" },
+     "gated": { "issuer": "https://auth.example.net", "jwksUrl": "https://auth.example.net/.well-known/jwks.json" },
+     "senders": [
+       { "name": "claude", "gatedSubject": "system:serviceaccount:agents:claude" },
+       { "name": "penelope", "tokenFile": "/run/secrets/natsumi_inbox_penelope_token" }
+     ]
+   }
+   ```
+
+   | 項目 | 必須 | 既定 | 中身 |
+   | --- | --- | --- | --- |
+   | `inbox.publicUrl` | 必須 | | 送り手から見た受け口の URL。パスは `/a2a/` に限ります（末尾の `/` は足します）。https に限ります（loopback だけ http）。Agent Card の URL に書き、ホスト名は gated の assertion の宛先と照らします |
+   | `inbox.card.name`・`inbox.card.description` | 必須 | | Agent Card の名前と説明 |
+   | `inbox.senders` | 必須 | | 送り手の並び（1 つ以上）。`name` は英小文字・数字・ハイフンで 32 文字まで（`me` は使えません）、重ねられません。`/sources/inbox/<name>/` と、返事の宛先に使います。`gatedSubject` か `tokenFile` のどちらか 1 つを持ちます。`gatedSubject` も重ねられません。`tokenFile` は起動時に読み、読めなければ起動を止めます |
+   | `inbox.gated.issuer`・`inbox.gated.jwksUrl` | `gatedSubject` の送り手がいれば必須 | | gated の assertion の発行元（`iss` と同じ書き方）と、鍵の置き場所（https。loopback だけ http）。assertion からは取りません |
+   | `inbox.reminderIntervalHours` | | 3 | 開いている依頼を催促する間隔（時間） |
+   | `inbox.deadlineHours` | | 24 | 依頼の期限（時間）。送り手のメッセージが最後に届いた時刻から数え、過ぎたら `failed` にします |
+   | `inbox.maxOpenTasksPerSender` | | 3 | 送り手ごとに開いておける依頼（`working` と `input-required`）の数。超えた依頼はすぐ `rejected` にします |
+
+3. 公開の入口を用意します。受け口はブラウザと同じ待ち受けの `/a2a/` の下にあります。
+   gated で守るなら、同じホストに `/a2a` の道だけの Ingress を別に立て、それを NetworkRole で守ります。gated は長い前方一致を優先するので、`/` の Ingress より先に当たります。
+   Agent Card（`GET /a2a/.well-known/agent-card.json`）は token なしで取られるので、その道の GET を `system:unauthenticated` に開けます。
+   `/` の Ingress は今までどおり認証を掛けません。gated の鍵（`inbox.gated.jwksUrl`）を取りに行く出口も許します。
+
+- 受け口は A2A 1.0 の JSON-RPC で、`ask_agent` と同じ SDK（`@a2a-js/sdk`）を使います。持つのは Agent Card、`SendMessage`、`GetTask` だけです。
+  `CancelTask`・ストリーミング・push 通知は持たず、Agent Card にも出しません。
+- 認証は、gated の assertion（`Gated-Assertion` ヘッダ。署名・発行元・宛先のホスト・時刻を確かめ、`sub` を送り手と照らします）か、`Authorization: Bearer <token>` です。
+  token は SHA-256 にしてから時間に依らない比べ方で照らします。知らない送り手、合わない token、確かめられない assertion は、どれも同じ 401 です。ブラウザのログインの cookie では通しません。
+  送り手の名前は確かめた結果だけで決め、メッセージの名乗りは使いません。
+- 受けるのは文章（TextPart）だけです。ファイルやデータを含むメッセージは断ります。本文は 1 MiB まで、呼び出しの body は 2 MiB まで（超えれば 413）です。
+- 新しい依頼は `sources/inbox/<name>/<UTC の日時>-<短い印>/` に、`README.md`・`01-<name>.md`・`status.md` を書いてから Task（`working`）を返します。書けなければ失敗を返します。
+  `attention`（`kind` が `agent_request`、届いたメッセージのファイル、`from`・`task`・`text`）として、待たずに、夜でも知らせます。
+- 同じ context で新しく頼むと新しいディレクトリになり、`README.md` に前の依頼のディレクトリを書きます。context は natsumi が採番し、知らない context は断ります。
+- natsumi の `reply_to_agent(to, text?, state)` は、`completed` なら Task を閉じ（本文は省けます。返す本文は artifact `response` の文章になります）、
+  `input-required` なら聞き返します（本文は必須で、Task の `status.message` になります）。返事も `NN-me.md` として同じディレクトリに書きます。
+  `to` は送り手の名前で、その送り手に開いた Task が 2 つ以上あるときは `<name>/<ディレクトリ>` まで書きます。名前だけで複数なら、返さずに断ります。
+- 聞き返しへの答えは、送り手が同じ Task（`taskId`）に送ります。Task は `working` に戻り、`attention`（`agent_answer`）で知らせます。
+  聞き返しの間でない開いた Task に続けて送ったものと、閉じた Task に送ったものは断ります。
+- 開いている依頼（`working`）は、`reminderIntervalHours` ごとに `status.md` を書き換えて催促します。印は付けず、ふつうの変化として知らせます。
+  本人の起きている時間（`loop.awakeHours`）の外は催促せず、朝の 1 回にまとめます。聞き返しの間は催促しません。
+  期限を過ぎた依頼は、夜でも `failed` にし、理由を送り手に返します。
+- 送り手ごとの上限を超えた依頼は、`/sources` に置かず、natsumi を起こさずに `rejected` で返します。ダッシュボードの「失敗と待ち」の「外のエージェントからの依頼」には残します。
+- Task とメッセージは `.natsumi/state.sqlite`（migration 35）に持つので、再起動しても開いた Task は残ります。最初の版では、Task もディレクトリも消しません。
+- なつみは送り手を名前付きの第三者として扱います（マニュアル `manual/inbox.md`）。外に作用する行為は、今までどおりサーバーの承認記録で止まります。
+- token を入れ替えるときは、natsumi と送り手の両方を直して、natsumi を再起動します。ログには送り手の名前と失敗の種類だけを出し、依頼の中身と token は出しません。
+
 ### 読みものの更新（sources_updated）
 
-`/sources` の下の読みもの（Slack と、外のエージェントの返事）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
+`/sources` の下の読みもの（Slack と、外のエージェントの返事と、webhook で届いたものと、ほかのエージェントから届いた依頼）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
 （[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)、[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。
 
 - サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。
@@ -1096,7 +1341,12 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - natsumi に Docker のソケットは渡しません。
   - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
 - 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
-  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、PDF を読む `poppler-utils`（`pdftotext`・`pdftoppm`）と、その日本語などの文字の対応表 `poppler-data`、画像を作る `sdctl`、それに runner です。
+  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、PDF を読む `poppler-utils`（`pdftotext`・`pdftoppm`）と、その日本語などの文字の対応表 `poppler-data`、画像を作る `sdctl`、中継（[ADR 0085](docs/adr/0085-relays-that-add-the-keys-for-the-workspace.md)）を使う `kubectl`・`ssh`・`curl`、
+  Ruby 4.0（公式の build。`ruby`・`bundle`）と C の拡張を build する `gcc`・`make`、secret を暗号化する `sops`・`age`、Go のツールチェーン（`go`・`gofmt`）（[ADR 0088](docs/adr/0088-ruby-sops-and-go-in-the-workspace.md)）、それに runner です。
+  中継を選ばないインスタンスでは外向きが全部閉じているので、`kubectl`・`ssh`・`curl` はどこにもつながらず、gem や Go のモジュールも取れません。
+  - `bundle install` は gem を `HOME` の下（Ruby の `Gem.user_dir`）に入れます。PATH の `bundle` は、そこに `GEM_HOME` を向けるラッパーです。
+  - sops は age の鍵を `~/.config/sops/age/keys.txt` から読みます。Go の `GOPATH`・`GOCACHE` も `HOME` の下で、`GOTOOLCHAIN` は `local` が既定です。
+  - gem の mirror（`bundle config set --global mirror.https://rubygems.org …`）と `GOPROXY`（`go env -w`）は、中継を選んだインスタンスの配置に合わせて設定します。
   **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
 - 書ける場所は 4 つです。ルートは読み取り専用のままです。
 
@@ -1154,11 +1404,18 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     `python3 /tmp/x.py` は止まりません。
 - 上限
   - CPU 2、メモリ 1 GB（swap なし）、プロセス数 256
-  - **1 つのコマンドに時間の上限はありません。** 応答の上限（60 秒）までに終わらなければ、
-    そこまでの出力と「まだ動いている」印が返り、プロセスはそのまま動き続けます。
-    返した後も runner が出力を読み捨て続けるので、コマンドが詰まることはありません。
-    残ったプロセスを止めるのは natsumi です（`ps` と `kill`）。サーバーは止めません。
-  - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで（モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字まで）
+  - **1 つのコマンドに時間の上限はありません。** natsumi が `run_shell` の `wait_seconds` で選んだ秒数
+    （省くと応答の上限の 60 秒）までに終わらなければ、そこまでの出力と「まだ動いている」印が返り、プロセスはそのまま裏で動き続けます。
+    サーバーは runner との接続をつないだまま終わりを待ち、終わったら終わり方と出力を `/sources/jobs/<時刻>-<印>/` に置いて
+    `sources_updated` で知らせます（[ADR 0094](docs/adr/0094-background-commands-and-waiting-for-news-within-a-turn.md)）。
+    終了コードで終わったものは attention（`shell_finished`）ですぐ、シグナルで終わったものと 24 時間待っても終わらないものは、ふつうの更新として知らせます。
+    同時に待つのは `loop.backgroundJobs`（既定 5）個までで、超えた分と夜の整理係のコマンドは、今までどおり出力を読み捨て、終わっても知らせません。
+    サーバーが再起動すると、待っていたものには「待てなくなった」と書きます。
+    終わりの知らせ（`shell_finished`）を含め、attention の付いた更新は、走っているターンにも本人のメッセージと同じく差し込まれます。
+    natsumi はツール `wait_for_events` で、ターンの残り時間まで知らせを待てます（印の無い更新は、今までどおりターンの後です）。
+    残ったプロセスを止めるのは natsumi です（`ps` と `kill -- -<プロセスグループ>`）。サーバーは止めません。
+  - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで。長いときは先頭と末尾を半分ずつ残し、間を捨てます
+    （モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字までで、これも先頭と末尾で切ります。config で宣言したツールの出力は先頭から取ります）
   - 1 つのコマンドの長さは 8000 文字まで。超えるとサーバーが送る前に拒否します。
   - config で宣言したツールは別の形の要求で動き、こちらは時間切れで止めます（`timeoutSeconds`、60 秒まで）。要求の 1 行は 64 KiB までで、
     引数がそれを超えるとサーバーが送る前に拒否します。
@@ -1233,6 +1490,8 @@ amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-ku
 [ADR 0079](docs/adr/0079-dependency-updates-with-renovate.md)）。公開から 7 日経った版だけを提案します。
 Dockerfile の Node と setup-node の Node は 1 つの PR で同じ版に上がり、Pi の 2 つのパッケージも 1 つの PR で上がります。
 typebox は Pi が固定する版に手で合わせます。保留中の更新は Dependency Dashboard の issue に載ります。
+Renovate はすべての更新に GitHub の auto-merge を予約し、`main` のルールセットがコードオーナー（[.github/CODEOWNERS](.github/CODEOWNERS)）の
+承認と CI の成功を求めます。両方が揃った時点で GitHub がマージします。
 
 ## Mac アプリ
 

@@ -23,6 +23,8 @@ function waits(overrides: Partial<Waits> = {}): Waits {
     nextRotationAt: '2026-01-01T19:00:00.000Z',
     agentTasks: [{ agent: 'wiki', taskId: 'task-1', state: 'input-required', sentAt: AT, createdAt: AT, updatedAt: AT },
       { agent: 'artist', taskId: 'task-2', state: 'gave-up', sentAt: AT, createdAt: AT, updatedAt: AT }],
+    inboxTasks: [{ sender: 'claude', taskId: 'inbox-1', state: 'working', receivedAt: AT, updatedAt: '2026-01-01T03:00:00.000Z', reminders: 1 },
+      { sender: HOSTILE, taskId: 'inbox-2', state: 'rejected', receivedAt: AT, updatedAt: AT, reminders: 0 }],
     rotations: [{ rotationId: 'rotation-1', kind: 'night', state: 'failed', reason: 'handoff-not-committed', fromSessionFile: 'a.jsonl',
       toSessionFile: null, createdAt: AT, updatedAt: AT },
     { rotationId: 'rotation-2', kind: 'resleep', state: 'curated', reason: null, fromSessionFile: 'a.jsonl', toSessionFile: null, createdAt: AT,
@@ -33,7 +35,8 @@ function waits(overrides: Partial<Waits> = {}): Waits {
 
 test('the failures and waits page has every section, links a failure to its turn and escapes every value', () => {
   const text = waitsPage(waits(), ZONE).text;
-  for (const heading of ['失敗した出来事', '打ち切られたターン', '承認待ち', '予約した確認', '外のエージェントへの依頼', '夜の切り替え']) {
+  for (const heading of ['失敗した出来事', '打ち切られたターン', '承認待ち', '予約した確認', '外のエージェントへの依頼', '外のエージェントからの依頼',
+    '夜の切り替え']) {
     assert.match(text, new RegExp(`<h3>${heading}`), heading);
   }
   assert.match(text, /href="\/dashboard\/turns\/turn-1"/);
@@ -46,6 +49,9 @@ test('the failures and waits page has every section, links a failure to its turn
   assert.match(text, /次の夜の切り替え[\s\S]*2026-01-02 04:00:00/);
   assert.match(text, /input-required/);
   assert.match(text, /gave-up/);
+  // What the agents asked of her (ADR 0089): who, how it stands, when it came and last moved, and how often she was reminded.
+  assert.match(text, /<td>claude<\/td><td><span class="note">working<\/span><\/td><td>2026-01-01 09:00:00<\/td><td>2026-01-01 12:00:00<\/td><td>1<\/td>/);
+  assert.match(text, /<span class="bad">rejected<\/span>/);
   assert.match(text, /handoff-not-committed/);
   // Each switch says what began it: the night, or a sleeping pill's kind (ADR 0077).
   assert.match(text, /<th>種類<\/th>/);
@@ -66,10 +72,12 @@ test('the failures and waits refresh themselves, as one section the script puts 
 });
 
 test('empty lists say so, and the nightly switch says when it is off', () => {
-  const text = renderWaits(waits({ failedEvents: [], cutTurns: [], approvals: [], checks: [], agentTasks: [], rotations: [], nextRotationAt: null }), ZONE).text;
+  const text = renderWaits(waits({ failedEvents: [], cutTurns: [], approvals: [], checks: [], agentTasks: [], inboxTasks: [], rotations: [], nextRotationAt: null }),
+    ZONE).text;
   assert.match(text, /失敗した出来事はありません/);
   assert.match(text, /承認待ちはありません/);
   assert.match(text, /予約した確認はありません/);
+  assert.match(text, /外のエージェントからの依頼はありません/);
   assert.match(text, /次の夜の切り替え[\s\S]*しない設定/);
 });
 
