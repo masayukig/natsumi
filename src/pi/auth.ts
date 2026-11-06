@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
+import { openAIResponsesApi } from '@earendil-works/pi-ai/compat';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { COMPATIBLE_MAX_TOKENS, type CompatibleEndpoint, DEFAULT_CONTEXT_WINDOW } from './compatible.ts';
 import { isLoopbackHost } from './loopback.ts';
@@ -28,7 +29,7 @@ export interface RouteEndpoint { provider: string; endpoint: CompatibleEndpoint;
  * `!command`. The OAuth login at `authPath` is read only when that file already exists: the server never creates it.
  * A route whose key or login is missing is simply not ready (`routeReady`); nothing stands in for it.
  */
-export async function routesRuntime(root: string, options: { authPath?: string; compatible: RouteEndpoint[] }): Promise<ModelRuntime> {
+export async function routesRuntime(root: string, options: { authPath?: string; compatible: RouteEndpoint[]; relay?: string }): Promise<ModelRuntime> {
   for (const { endpoint } of options.compatible) checkEndpoint(endpoint);
   let loginFile = false;
   if (options.authPath) { try { await access(options.authPath); loginFile = true; } catch { /* no login yet */ } }
@@ -38,17 +39,56 @@ export async function routesRuntime(root: string, options: { authPath?: string; 
     runtime.registerProvider(provider, compatibleProvider(endpoint));
     if (apiKey) await runtime.setRuntimeApiKey(provider, apiKey);
   }
+  if (options.relay) await relayProvider(runtime, options.relay);
   return runtime;
+}
+
+/** The provider a relay serves, and the base Pi keeps for it so that it treats the key as a ChatGPT sign-in (ADR 0087). */
+const RELAY_PROVIDER = 'openai';
+const OPENAI_BASE = 'https://api.openai.com/v1';
+
+/**
+ * What Pi sends as the key through a relay. It is no secret: the relay drops it and the token is added beyond it. It
+ * must not begin with `sk-`, or Pi would take it for an API key and send what a ChatGPT sign-in refuses.
+ */
+export const RELAY_API_KEY = 'natsumi-relay';
+
+/**
+ * Pi's own Responses API for the openai provider, with every request sent to the relay instead (ADR 0087). The base
+ * stays the official one, which is what makes Pi treat the key as a ChatGPT sign-in; only the fetch it is handed
+ * changes where the request goes. The key is a runtime key, so a login at `authPath` is never used for it.
+ */
+async function relayProvider(runtime: ModelRuntime, relay: string) {
+  const api = openAIResponsesApi();
+  const fetch = relayFetch(relay);
+  runtime.registerProvider(RELAY_PROVIDER, { api: 'openai-responses',
+    streamSimple: (model, context, options) => api.streamSimple(model, context, { ...options, fetch }) });
+  await runtime.setRuntimeApiKey(RELAY_PROVIDER, RELAY_API_KEY);
+}
+
+/**
+ * A fetch that sends a request for the OpenAI API to the same path on the relay, and refuses any other: through a
+ * relay nothing reaches the network but the relay itself.
+ */
+export function relayFetch(relay: string): typeof globalThis.fetch {
+  const origin = new URL(relay).origin;
+  return (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== new URL(OPENAI_BASE).origin) return Promise.reject(new Error('The relay carries only the OpenAI API'));
+    const target = new URL(`${url.pathname}${url.search}`, origin);
+    return globalThis.fetch(input instanceof Request ? new Request(target, input) : target, init);
+  };
 }
 
 /**
  * Whether a route can be used now: Pi knows its model, and it has its own way in — the resolved key of a compatible
- * endpoint, or the OAuth login of a subscription. An API key from the environment never counts for a subscription.
- * The login file is read again on every call, so a login made after startup is seen.
+ * endpoint, the placeholder key of a relay, or the OAuth login of a subscription. An API key from the environment
+ * never counts for a subscription. The login file is read again on every call, so a login made after startup is seen.
  */
 export async function routeReady(runtime: ModelRuntime, target: PiTarget, compatible: boolean): Promise<boolean> {
   if (!runtime.getModel(target.provider, target.model)) return false;
-  if (compatible) return runtime.getProviderAuthStatus(target.provider).source === 'runtime';
+  const runtimeKey = runtime.getProviderAuthStatus(target.provider).source === 'runtime';
+  if (compatible || runtimeKey) return runtimeKey;
   return (await runtime.listCredentials()).some(c => c.providerId === target.provider && c.type === 'oauth');
 }
 

@@ -1,0 +1,12 @@
+#!/bin/sh
+# The ssh in natsumi's PATH (ADR 0085). ssh looks itself up in /etc/passwd as it starts, and stops without a line ("No
+# user exists for uid"). The image has one for UID 1000 only, and a deployment may run the workspace as another (1001
+# on Kubernetes, ADR 0033), on a root it cannot write. Then ssh alone is lent a line through nss_wrapper, with HOME as
+# its home; the preload is set on its command line, so it reaches ssh and what ssh runs, and nothing else.
+if getent passwd "$(id -u)" >/dev/null; then
+  exec /usr/bin/ssh "$@"
+fi
+passwd=$(mktemp) || exit 255
+trap 'rm -f "$passwd"' EXIT
+printf 'natsumi:x:%s:%s:natsumi:%s:/bin/bash\n' "$(id -u)" "$(id -g)" "${HOME:-/}" >"$passwd"
+LD_PRELOAD=libnss_wrapper.so NSS_WRAPPER_PASSWD="$passwd" NSS_WRAPPER_GROUP=/etc/group /usr/bin/ssh "$@"

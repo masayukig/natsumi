@@ -196,9 +196,9 @@ export async function runStatsCommand(cli: StatsCommand, dataDirectory: string, 
     const mean = (group: Row[], pick: (row: Row) => number) =>
       group.length === 0 ? '-' : (group.reduce((sum, row) => sum + pick(row), 0) / group.length).toFixed(2);
     for (const [label, pick] of RATES) write(`${label.padEnd(rateWidth)}  ${mean(off, pick).padStart(8)}  ${mean(on, pick).padStart(8)}`);
-    // Stopped at the call limit or the time limit.
+    // Stopped at the call limit, the time limit or the context limit (ADR 0094).
     const cut = (group: Row[]) => group.length === 0 ? '-'
-      : ((group.filter(row => row.outcome === 'model-call-limit' || row.outcome === 'timeout').length / group.length) * 100).toFixed(0);
+      : ((group.filter(row => row.outcome === 'model-call-limit' || row.outcome === 'timeout' || row.outcome === 'context-limit').length / group.length) * 100).toFixed(0);
     write(`${'cut short (%)'.padEnd(rateWidth)}  ${cut(off).padStart(8)}  ${cut(on).padStart(8)}`);
     if (reviews + curators > 0) write('');
     if (reviews > 0) write(`nightly reviews: ${reviews} (not counted above)`);

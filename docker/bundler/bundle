@@ -1,0 +1,6 @@
+#!/bin/sh
+# The bundle and bundler in natsumi's PATH (ADR 0088). With no setting, bundler installs into Gem's own directory,
+# which is on the read-only root, and the runner gives a command no GEM_HOME or BUNDLE_* (ADR 0019). So GEM_HOME is
+# Gem.user_dir, under HOME, which is on Gem's default path: what bundle installs, a plain ruby finds too. A GEM_HOME
+# already set, or a path in the project's bundler config, comes first.
+GEM_HOME="${GEM_HOME:-$(/usr/local/bin/ruby -e 'print Gem.user_dir')}" exec "/usr/libexec/bundler/${0##*/}" "$@"

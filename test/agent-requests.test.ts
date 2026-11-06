@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +27,8 @@ const HOUR = 3_600_000;
  * /sources/agents as files and reaches her as an attention of a `sources_updated` event (ADR 0069). The agent here is
  * a fake one speaking the real protocol; the model is scripted.
  */
-async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[]; inputModes?: string[] } = {}) {
+async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | false; place?: boolean; extensions?: string[]; inputModes?: string[];
+  pushNotifications?: boolean } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-agents-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -37,7 +39,8 @@ async function setup(t: test.TestContext, options: { a2a?: Partial<A2AConfig> | 
   const tokenFile = join(root, 'a2a-token');
   await writeFile(tokenFile, 'fake-agent-token\n');
   const agent = await FakeAgent.start({ ...(options.extensions ? { extensions: options.extensions } : {}),
-    ...(options.inputModes ? { inputModes: options.inputModes } : {}) });
+    ...(options.inputModes ? { inputModes: options.inputModes } : {}),
+    ...(options.pushNotifications !== undefined ? { pushNotifications: options.pushNotifications } : {}) });
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
@@ -907,4 +910,238 @@ test('files are refused for an agent whose card takes text only, and its request
   assert.equal(f.agent.received.length, 1);
   assert.equal(f.agent.received[0]!.files, undefined);
   assert.equal((await readdir(join(f.replies, 'wiki'))).length, 1, 'only the request that went has a directory');
+});
+
+// ADR 0089: reply_to_agent is always there; without the way in it answers, as ask_agent does without agents, that it did nothing.
+test('reply_to_agent without the way in is refused, and says nothing was sent', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script({ calls: [{ name: 'reply_to_agent', arguments: { to: 'claude', text: 'はい', state: 'completed' } }] });
+  await turn(f, loop);
+  const [result] = toolResults(f.model);
+  assert.equal(result!.isError, true);
+  assert.match(result!.text, /返していません/);
+  assert.match(result!.text, /受け口/);
+});
+
+// ADR 0092: an agent that says it pushes is asked to, and its push is a doorbell for one GetTask of the task it names.
+const PUSH = { pushUrl: 'https://natsumi.example.test', pushPollIntervalSeconds: 300 };
+const digestOf = (token: string) => createHash('sha256').update(token).digest('hex');
+/** The bearer token a message asked the agent to push with, as it went over the wire. */
+const pushTokenOf = (received: { push?: Record<string, unknown> }): string => {
+  const authentication = received.push?.authentication as { scheme?: string; credentials?: string } | undefined;
+  assert.equal(authentication?.scheme, 'Bearer');
+  assert.ok(authentication.credentials);
+  return authentication.credentials;
+};
+const pushDigests = (db: Awaited<ReturnType<typeof setup>>['db']) =>
+  (db.prepare('SELECT task_id, state, push_digest FROM agent_tasks ORDER BY created_at').all() as { task_id: string; state: string; push_digest: string | null }[]);
+async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+test('with a2a.pushUrl, an agent whose card says it pushes is asked to, with a fresh Bearer token kept only as its digest', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  const [first] = f.agent.received;
+  // The SDK sends the authentication over JSON-RPC as it was given; the URL is the same for every request.
+  assert.equal(first!.push?.url, 'https://natsumi.example.test/v1/a2a-push');
+  assert.equal(first!.push?.token ?? '', '', 'no legacy token');
+  const token = pushTokenOf(first!);
+  assert.ok(Buffer.from(token, 'base64url').length >= 32, 'a token too long to guess');
+  const [row] = pushDigests(f.db);
+  assert.equal(row!.push_digest, digestOf(token));
+  assert.equal(JSON.stringify(f.db.prepare('SELECT * FROM agent_tasks').all()).includes(token), false, 'the token itself is not kept');
+  assert.equal(f.logs.some(line => line.includes(token)), false);
+  assert.equal(JSON.stringify(f.model.contexts).includes(token), false, 'she never sees it');
+
+  f.script(ask('wiki', 'もうひとつ', false));
+  await turn(f, loop);
+  assert.notEqual(pushTokenOf(f.agent.received[1]!), token, 'a token for each request');
+});
+
+test('no push is asked for without a2a.pushUrl, from an agent whose card does not say it pushes, or whose card cannot be read', async t => {
+  const cases: [Parameters<typeof setup>[1], string, boolean][] = [[{ pushNotifications: true }, 'no pushUrl', false],
+    [{ a2a: PUSH, pushNotifications: false }, 'the card says no', false], [{ a2a: PUSH, pushNotifications: true }, 'no card', true]];
+  for (const [options, label, cardFails] of cases) {
+    const f = await setup(t, options);
+    if (cardFails) f.agent.cardFailWith = 503;
+    const { loop } = await f.open();
+    f.script(ask('wiki', 'しらべて', false));
+    await turn(f, loop);
+    assert.equal(f.agent.received.length, 1, `${label}: the request still goes`);
+    assert.equal(f.agent.received[0]!.push, undefined, label);
+    assert.deepEqual(pushDigests(f.db).map(row => row.push_digest), [null], label);
+  }
+});
+
+test('a push rings for one GetTask of its task, and a settled task forgets its token, so a later push is not known', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  const token = pushTokenOf(f.agent.received[0]!);
+  assert.equal(loop.agentPush('not-a-token-of-hers'), false);
+  assert.equal(f.agent.polls.length, 0);
+
+  f.agent.settle(f.agent.lastTask().id, 'completed', 'できました。');
+  f.script();
+  assert.equal(loop.agentPush(token), true);
+  await until(() => pushDigests(f.db)[0]?.state === 'completed');
+  await loop.idle();
+  assert.equal(f.agent.polls.length, 1);
+  assert.deepEqual(replies(f.model).map(r => r.summary), ['できました。']);
+  assert.deepEqual(pushDigests(f.db).map(row => [row.state, row.push_digest]), [['completed', null]]);
+  assert.equal(loop.agentPush(token), false, 'a task that stopped waiting knows no push');
+  await loop.idle();
+  assert.equal(f.agent.polls.length, 1);
+});
+
+test('pushes that come while a GetTask runs are one more GetTask after it, never two at once', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  const token = pushTokenOf(f.agent.received[0]!);
+  let release!: () => void;
+  f.agent.holdGetTask = new Promise(resolve => { release = resolve; });
+  assert.equal(loop.agentPush(token), true);
+  await until(() => f.agent.polls.length === 1);
+  // The task settles while the first GetTask is out: what it brings back is from before.
+  for (let i = 0; i < 5; i += 1) assert.equal(loop.agentPush(token), true);
+  const polling = loop.pollAgents();
+  f.agent.settle(f.agent.lastTask().id, 'completed', 'できました。');
+  f.agent.holdGetTask = undefined;
+  release();
+  f.script();
+  await polling;
+  await until(() => pushDigests(f.db)[0]?.state === 'completed');
+  await loop.idle();
+  assert.equal(f.agent.polls.length, 2, 'the one that ran, then one for every push that came meanwhile');
+  assert.deepEqual(replies(f.model).map(r => r.summary), ['できました。']);
+});
+
+test('a push that comes before the agent has answered the send is known, and fetches the task once it is recorded', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  const early: boolean[] = [];
+  f.agent.onSend = async received => {
+    // An agent that is done at once pushes before its answer to the send has come back.
+    early.push(loop.agentPush(pushTokenOf(received)));
+  };
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  assert.deepEqual(early, [true]);
+  await until(() => f.agent.polls.length === 1);
+  await loop.idle();
+  assert.equal(f.agent.polls.length, 1);
+
+  // A request that could not be sent forgets its token.
+  let lost = '';
+  f.agent.onSend = async received => {
+    lost = pushTokenOf(received);
+    assert.equal(loop.agentPush(lost), true, 'known while it is being sent');
+    throw new Error('the agent fell over');
+  };
+  f.script(ask('wiki', 'つぎ', false));
+  await turn(f, loop);
+  assert.equal(toolResults(f.model).at(-1)!.isError, true);
+  assert.ok(lost);
+  assert.equal(loop.agentPush(lost), false);
+});
+
+test('a task with a push is fetched by the rounds only every pushPollIntervalSeconds, one without on every round', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  for (let i = 0; i < 3; i += 1) {
+    f.clock.now += 15_000;
+    await loop.pollAgents();
+  }
+  assert.equal(f.agent.polls.length, 0, 'the push is waited for');
+  f.clock.now += 300_000;
+  await loop.pollAgents();
+  assert.equal(f.agent.polls.length, 1, 'and the round is the safety net');
+  f.clock.now += 15_000;
+  await loop.pollAgents();
+  assert.equal(f.agent.polls.length, 1);
+  await loop.close();
+
+  // After a restart, every task is fetched at once: a push sent while the server was down is lost.
+  const again = await f.open();
+  await again.loop.pollAgents();
+  assert.equal(f.agent.polls.length, 2);
+});
+
+test('an answer to a question asks for a push again with a new token; the token of the question is not known any more', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  f.script(ask('wiki', '記事を直して', false));
+  await turn(f, loop);
+  const first = pushTokenOf(f.agent.received[0]!);
+  f.agent.settle(f.agent.lastTask().id, 'input-required', 'どの記事ですか？');
+  f.script();
+  f.clock.now += 300_000;
+  await loop.pollAgents();
+  await loop.idle();
+  assert.deepEqual(pushDigests(f.db).map(row => [row.state, row.push_digest]), [['input-required', null]]);
+  assert.equal(loop.agentPush(first), false, 'a question is not waited for');
+
+  f.script(ask('wiki', 'index の方です', true));
+  await turn(f, loop);
+  const second = pushTokenOf(f.agent.received[1]!);
+  assert.notEqual(second, first);
+  assert.deepEqual(pushDigests(f.db).map(row => [row.state, row.push_digest]), [['waiting', digestOf(second)]]);
+  assert.equal(loop.agentPush(first), false);
+  assert.equal(loop.agentPush(second), true);
+});
+
+test('a task given up on, or of an agent taken out of the config, forgets its token', async t => {
+  const f = await setup(t, { a2a: PUSH, pushNotifications: true });
+  const { loop } = await f.open();
+  f.script(ask('wiki', 'しらべて', false));
+  await turn(f, loop);
+  const token = pushTokenOf(f.agent.received[0]!);
+  f.clock.now += 25 * HOUR;
+  f.script();
+  await loop.pollAgents();
+  await loop.idle();
+  assert.deepEqual(pushDigests(f.db).map(row => [row.state, row.push_digest]), [['gave-up', null]]);
+  assert.equal(loop.agentPush(token), false);
+});
+
+// ADR 0094: within one turn she asks, waits with wait_for_events, and the reply is steered into the same turn.
+test('a reply that comes while she waits in the turn is steered into it, and the turn goes on with it', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.model.takeOver();
+  const sent = loop.send({ requestId: 'request-wait', deviceId: 'device-1', text: 'ねこについて調べて、結果を見て続けて' });
+  assert.equal(sent.kind, 'accepted');
+  const first = await f.model.next();
+  first.call('ask_agent', { agent: 'wiki', message: 'ねこについて調べて', continue: false });
+  first.finish();
+  const second = await f.model.next();
+  second.call('wait_for_events', { max_seconds: 600 });
+  second.finish();
+  for (let i = 0; i < 50; i += 1) await new Promise(resolve => setImmediate(resolve));
+  f.agent.settle(f.agent.lastTask().id, 'completed', 'ねこは液体です。');
+  await loop.pollAgents();
+  const third = await f.model.next();
+  const results = third.context.messages.filter(m => m.role === 'toolResult').map(textOf);
+  assert.match(results.at(-1)!, /届きました/);
+  const [reply] = replies(f.model);
+  assert.equal(reply?.summary, 'ねこは液体です。');
+  third.finish();
+  await loop.idle();
+  // Shown in the turn it was waited in: nothing is left for a turn of its own.
+  assert.equal(f.model.calls, 3);
 });

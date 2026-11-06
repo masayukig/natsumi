@@ -54,7 +54,7 @@ async function setup() {
   const compatible = (baseUrl: string, apiKey: { env: string } | { file: string } = { env: 'FIXTURE_PI_API_KEY' },
     { name = 'local', provider = COMPATIBLE_PROVIDER, model = 'fixture-model', contextWindow = 128_000 } = {}) =>
     ({ name, model: { provider, id: model }, compatible: { baseUrl, apiKey, contextWindow } });
-  const subscription = { name: 'plus', model: { provider: 'openai-codex', id: 'gpt-5.5' } };
+  const subscription = { name: 'plus', model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } };
   return { root, paths, config, compatible, subscription, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 
@@ -97,7 +97,7 @@ test('a route without its key or login is not ready, and no other route\'s crede
   const endpoint = await startEndpoint();
   const f = await setup();
   try {
-    const plus = { provider: 'openai-codex', model: 'gpt-5.5' };
+    const plus = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
     const notReady = async (routes: Omit<ModelRoute, 'compactionThreshold'>[], target: typeof plus, compatible: boolean,
       env: Record<string, string | undefined> = {}) => {
       const runtime = await createModelRuntime(f.config(routes), env);
@@ -122,7 +122,7 @@ test('a route without its key or login is not ready, and no other route\'s crede
 test('a login made after the runtime was built counts once the login file exists at startup', async () => {
   const f = await setup();
   try {
-    const plus = { provider: 'openai-codex', model: 'gpt-5.5' };
+    const plus = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
     const authPath = join(f.paths.agentDir, 'auth.json');
     await writeFile(authPath, '{}', { mode: 0o600 });
     const runtime = await createModelRuntime(f.config([f.subscription]), {});
@@ -170,9 +170,9 @@ test('a compaction summary from a compatible endpoint may use all of Pi\'s summa
     } finally { session.dispose(); }
     const summary = endpoint.bodies.find(body => JSON.stringify(body.messages?.[0]).includes('summar'));
     assert.ok(summary, 'a summary was asked for');
-    // Pi gives a summary 80% of its 16384-token reserve. Thinking spends the same budget, and on a slow local model a
+    // Pi gives a summary the model's whole output limit. Thinking spends the same budget, and on a slow local model a
     // summary cut at 4096 tokens stopped at the cap every time, so no compaction ever succeeded.
-    assert.equal(summary.max_tokens, Math.floor(0.8 * 16_384));
+    assert.equal(summary.max_tokens, 16_384);
   } finally { await f.cleanup(); await endpoint.close(); }
 });
 
@@ -191,7 +191,7 @@ test('Pi measures a compatible model against the configured context window', asy
 test('the window of a subscription model is the one in Pi\'s own model definitions', async () => {
   const f = await setup();
   try {
-    assert.equal(await catalogContextWindow(f.paths.agentDir, { provider: 'openai-codex', model: 'gpt-5.5' }), 272_000);
+    assert.equal(await catalogContextWindow(f.paths.agentDir, { provider: 'openai-codex', model: 'gpt-5.6-sol' }), 272_000);
     assert.equal(await catalogContextWindow(f.paths.agentDir, { provider: 'openai-codex', model: 'fixture-unknown-model' }), undefined);
   } finally { await f.cleanup(); }
 });

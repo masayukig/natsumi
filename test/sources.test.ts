@@ -683,3 +683,74 @@ test('only a directory of a source can be taken in', async t => {
   await f.sources.tick();
   assert.equal(f.raised(), 1);
 });
+
+// MARK: - Attentions steered into a running turn (ADR 0094)
+
+test('only an attention with no images can be steered into a running turn', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dm/a.jsonl', '');
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.sources.prepare();
+  assert.equal(f.sources.steerable(), false);
+  await mkdir(join(f.directory, 'chat/work/dev/files'), { recursive: true });
+  await writeFile(join(f.directory, 'chat/work/dev/files/a.png'), DECODABLE_PNG);
+  f.sources.attention({ source: 'chat', kind: 'mention', file: '/sources/chat/work/dev/a.jsonl', images: ['/sources/chat/work/dev/files/a.png'] });
+  // Steering carries text only, so one with images waits for a turn of its own.
+  assert.equal(f.sources.steerable(), false);
+  f.sources.attention({ source: 'chat', kind: 'dm', file: '/sources/chat/work/dm/a.jsonl', path: '.[0]' });
+  assert.equal(f.sources.steerable(), true);
+});
+
+test('a line for a running turn shows the attentions with no images and their directories, and leaves the rest waiting', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dm/a.jsonl', '');
+  await f.write('chat/work/dev/a.jsonl', '');
+  await f.write('chat/work/ops/a.jsonl', '');
+  await f.sources.prepare();
+  f.advance(90 * MINUTE);
+  await f.append('chat/work/dm/a.jsonl', '{"text":"@natsumi 見て"}\n');
+  await f.append('chat/work/ops/a.jsonl', '{"text":"雑談"}\n');
+  await f.append('chat/work/dev/a.jsonl', '{"text":"画像つき"}\n');
+  await mkdir(join(f.directory, 'chat/work/dev/files'), { recursive: true });
+  await writeFile(join(f.directory, 'chat/work/dev/files/a.png'), DECODABLE_PNG);
+  await f.sources.tick();
+  // ops is due as well: a running turn is not given it.
+  f.advance(90 * MINUTE);
+  f.sources.attention({ source: 'chat', kind: 'mention', file: '/sources/chat/work/dev/a.jsonl', images: ['/sources/chat/work/dev/files/a.png'] });
+  f.sources.attention({ source: 'chat', kind: 'dm', file: '/sources/chat/work/dm/a.jsonl', path: '.[0]' });
+
+  const store = new ConversationStore(f.db, () => MORNING);
+  const steered = store.insertEvent('sources-updated');
+  assert.equal(await f.sources.take(steered, { attentionsOnly: true }), true);
+  const line = f.sources.eventLine(steered, 'received');
+  const changed = line.changed as { dir: string; files: string[]; attention?: unknown[] }[];
+  assert.deepEqual(changed.map(entry => entry.dir), ['/sources/chat/work/dm']);
+  assert.deepEqual(changed[0]!.files, ['/sources/chat/work/dm/a.jsonl']);
+  assert.deepEqual(changed[0]!.attention, [{ source: 'chat', kind: 'dm', file: '/sources/chat/work/dm/a.jsonl', path: '.[0]' }]);
+  assert.deepEqual(await f.sources.images(steered), []);
+  assert.equal(f.sources.steerable(), false);
+
+  // Nothing more for a running turn; the next turn of its own takes the rest, the attention with images among them.
+  const again = store.insertEvent('sources-updated');
+  assert.equal(await f.sources.take(again, { attentionsOnly: true }), false);
+  const { line: after, eventId } = await f.take();
+  const rest = after!.changed as { dir: string; attention?: unknown[] }[];
+  assert.deepEqual(rest.map(entry => entry.dir), ['/sources/chat/work/dev', '/sources/chat/work/ops']);
+  assert.equal(rest[0]!.attention?.length, 1);
+  assert.equal((await f.sources.images(eventId)).length, 1);
+});
+
+test('an event whose line was made already keeps it: taken again, it is ready and shows the same', async t => {
+  const f = await setup(t);
+  await f.write('chat/work/dm/a.jsonl', '');
+  await f.sources.prepare();
+  await f.append('chat/work/dm/a.jsonl', '{"text":"@natsumi"}\n');
+  f.sources.attention({ source: 'chat', kind: 'dm', file: '/sources/chat/work/dm/a.jsonl', path: '.[0]' });
+  const store = new ConversationStore(f.db, () => MORNING);
+  const eventId = store.insertEvent('sources-updated');
+  assert.equal(await f.sources.take(eventId, { attentionsOnly: true }), true);
+  const first = f.sources.eventLine(eventId, 'received');
+  // A steered event Pi did not deliver goes back to the queue, and its turn takes it again.
+  assert.equal(await f.sources.take(eventId), true);
+  assert.deepEqual(f.sources.eventLine(eventId, 'received'), first);
+});

@@ -1,6 +1,7 @@
 import { copyFile, lstat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, join, posix } from 'node:path';
 import { runGit, type GitIdentity } from './git.ts';
+import { DEFAULT_GOAL_FILE_MAX_CHARS, DEFAULT_TODAY_PLAN_MAX_CHARS, GOALS_DIRECTORY, goalsProblem, inGoals, TODAY_FILE } from './goals.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import { findControlStrings, findForeignScript, hasControlCharacters } from './output-checks.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
@@ -103,6 +104,10 @@ export interface MemoryRepositoryOptions {
   fileMaxChars?: number;
   /** `loop.alwaysMemoryMaxChars`, for `always.md` alone. */
   alwaysMaxChars?: number;
+  /** `loop.goalFileMaxChars`, for each lasting goal's file in `goals/` (ADR 0090). */
+  goalFileMaxChars?: number;
+  /** `loop.todayPlanMaxChars`, for `goals/today.md` alone (ADR 0090). */
+  todayPlanMaxChars?: number;
   /** Who commits: the avatar (ADR 0057). The server's fixed identity when left out. */
   identity?: GitIdentity;
   /**
@@ -180,6 +185,11 @@ export class MemoryRepository {
   private get fileMaxChars(): number { return this.options.fileMaxChars ?? DEFAULT_FILE_MAX_CHARS; }
 
   private get alwaysMaxChars(): number { return this.options.alwaysMaxChars ?? DEFAULT_ALWAYS_MAX_CHARS; }
+
+  private get goalLimits() {
+    return { goalFileMaxChars: this.options.goalFileMaxChars ?? DEFAULT_GOAL_FILE_MAX_CHARS,
+      todayPlanMaxChars: this.options.todayPlanMaxChars ?? DEFAULT_TODAY_PLAN_MAX_CHARS };
+  }
 
   /**
    * Makes the repository if it is not one yet, on `main`, taking whatever Markdown is already there into the first
@@ -456,6 +466,21 @@ export class MemoryRepository {
     return files;
   }
 
+  /**
+   * Today's plan as the last commit holds it (ADR 0090), never as the working tree has it: what passed a turn's check
+   * or what the owner committed. Undefined when there is none, when it is no regular file, or when it is blank.
+   */
+  async committedTodayPlan(): Promise<string | undefined> {
+    const listed = await this.git(['ls-tree', '-z', 'HEAD', '--', TODAY_FILE], { allowFailure: true });
+    const entry = listed.code === 0 ? listed.stdout.split('\0').find(Boolean) : undefined;
+    if (!entry) return undefined;
+    const [mode, type, object] = entry.slice(0, entry.indexOf('\t')).split(' ');
+    if (type !== 'blob' || mode === '120000') return undefined;
+    const blob = await this.git(['cat-file', 'blob', object!], { allowFailure: true });
+    if (blob.code !== 0 || /[\0\uFFFD]/.test(blob.stdout) || blob.stdout.trim() === '') return undefined;
+    return blob.stdout;
+  }
+
   /** The commit the working tree was last brought level with: what a switch records as the handoff it started from. */
   async head(): Promise<string> {
     return (await this.git(['rev-parse', 'HEAD'])).stdout.trim();
@@ -547,6 +572,7 @@ export class MemoryRepository {
   private inspectRemoval(path: string, writer: Writer): string | undefined {
     if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
     if (writer === 'curator' && inPostbox(path)) return postboxRefusal(path);
+    if (writer === 'curator' && inGoals(path)) return goalsRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は消すことも動かすこともできません`;
     if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
@@ -557,6 +583,7 @@ export class MemoryRepository {
   private async inspect(path: string, writer: Writer): Promise<string | undefined> {
     if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
     if (writer === 'curator' && inPostbox(path)) return postboxRefusal(path);
+    if (writer === 'curator' && inGoals(path)) return goalsRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer !== 'curator' && path === INDEX_FILE) {
       return `${path} は記憶の整理係だけが書くファイルなので、あなたは書き換えられません（夜に整理係が書き直します）`;
@@ -602,6 +629,8 @@ export class MemoryRepository {
       return `毎回のプロンプトに入る常時記憶の上限（${this.alwaysMaxChars} 文字）を超えています`;
     }
     if ([...text].length > this.fileMaxChars) return `1 ファイルの上限（${this.fileMaxChars} 文字）を超えています`;
+    const goals = goalsProblem(path, [...text].length, this.goalLimits);
+    if (goals) return goals;
     const control = findControlStrings(text);
     if (control.length > 0) return `テンプレートの制御文字列（${control.join(' ')}）が含まれています`;
     if (hasControlCharacters(text)) return '制御文字が含まれています';
@@ -698,6 +727,12 @@ const skillsRefusal = (path: string) => `${path} は ${SKILLS_DIRECTORY}/ の中
 
 /** Why the curator's change to a letter is refused (ADR 0076). */
 const postboxRefusal = (path: string) => `${path} は ${POSTBOX_DIRECTORY}/ の中の定期便なので、整理係は変えることも動かすこともできません`;
+
+/**
+ * Why the curator's change to goals/ is refused (ADR 0090): a goal's file name is its ID, and parts of it are written
+ * only once the owner has agreed.
+ */
+const goalsRefusal = (path: string) => `${path} は ${GOALS_DIRECTORY}/ の中の目標と今日の計画なので、整理係は変えることも動かすこともできません`;
 
 /** Whether a path is in the diary, or is the diary itself. */
 function inDiary(path: string): boolean {

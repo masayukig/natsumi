@@ -15,7 +15,7 @@ function status(overrides: Partial<DashboardStatus['loop']> = {}, server: Dashbo
     loop: {
       unavailable: null,
       routes: { defaultRoute: 'subscription', current: 'subscription', chosen: 'own',
-        routes: [{ name: 'subscription', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
+        routes: [{ name: 'subscription', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
           { name: 'own', provider: 'openai-compatible', model: 'fixture-model', ready: false }] },
       fold: 'on',
       context: { tokens: 41_250, measuredAt: '2026-01-01T02:59:00.000Z', compactionThreshold: 60_000 },

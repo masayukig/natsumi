@@ -1,7 +1,7 @@
 # 0025. 外のエージェントと A2A で話す
 
 - Date: 2026-09-22
-- Status: Accepted（返事の受け取り方・頼むツールの名前と引数・前のやり取りに続ける指定は [ADR 0035](0035-asking-outside-agents-and-hearing-back.md) で決定、移行後の projected token は [ADR 0033](0033-running-on-kubernetes.md) で具体化、画像生成を外の特化エージェントの例とする点は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で置き換え（作業環境の sdctl で生成する）、未決だった画像を Mac に出すかは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定（なつみが返事に添えた画像を Mac と iPhone に出す）、成果物の URI をサーバーが取り込む形は [ADR 0048](0048-bringing-in-images-an-agent-hands-back.md) で具体化（相手と同じ origin の画像を /work/agents に置く）、成果物と返事をサーバーが /sources/agents に取り込む形に [ADR 0069](0069-agent-replies-as-files-in-sources.md) で具体化）
+- Status: Accepted（返事の受け取り方・頼むツールの名前と引数・前のやり取りに続ける指定は [ADR 0035](0035-asking-outside-agents-and-hearing-back.md) で決定、移行後の projected token は [ADR 0033](0033-running-on-kubernetes.md) で具体化、画像生成を外の特化エージェントの例とする点は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で置き換え（作業環境の sdctl で生成する）、未決だった画像を Mac に出すかは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定（なつみが返事に添えた画像を Mac と iPhone に出す）、成果物の URI をサーバーが取り込む形は [ADR 0048](0048-bringing-in-images-an-agent-hands-back.md) で具体化（相手と同じ origin の画像を /work/agents に置く）、成果物と返事をサーバーが /sources/agents に取り込む形に [ADR 0069](0069-agent-replies-as-files-in-sources.md) で具体化、token の audience を `a2a` に限ることは、gated 経由で呼ぶときについて [ADR 0084](0084-calling-agents-behind-gated-with-its-audience.md) で置き換え（gated の audience `https://auth.fraction.jp` の token を使う。Service を直接呼ぶときは `a2a` のまま）。「なつみの受け口」の届いたメッセージを出来事 `agent_message` にする形と、受け口を TokenReview で確かめる形は [ADR 0089](0089-hearing-from-agents-over-a2a.md) で置き換え（`/sources/inbox` に置いて `sources_updated` で知らせ、送り手ごとに gated の assertion か bearer token で確かめる）、未決だった受け口の上限と公開先も同 ADR で決定）
 
 ## Context
 

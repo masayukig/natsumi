@@ -1,12 +1,16 @@
 # Builds the server and workspace images for a version tag and pushes them to ghcr (ADR 0033).
 # The image tag is the version tag itself (v0.x.y); the environment pins the version it runs.
 # Only tag pushes, and the weekly release (weekly-release.yml), which calls this before it pushes its tag: a tag pushed
-# with GITHUB_TOKEN starts no workflow. A pull request, a fork's included, never reaches the package write permission.
+# with GITHUB_TOKEN starts no workflow. The weekly release also runs when the vulnerability responder's pull request is
+# merged (ADR 0082); no other pull request, and none from a fork, reaches the package write permission.
+# A push to main also pushes both images under the moving tag main, which nothing runs: it is there to be scanned for
+# vulnerabilities fixed on main but not yet released, and the versions it leaves untagged are deleted (ADR 0081).
 name: Images
 
 on:
   push:
     tags: ["v*"]
+    branches: [main]
   workflow_call:
     inputs:
       version:
@@ -27,7 +31,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.1"
+          node-version: "24.22.2"
           cache: npm
       # As in ci.yml: bubblewrap, and the user namespace it needs, for the turn evaluation's workspace (ADR 0051), and rg
       # for search_memory's tests (ADR 0055).
@@ -47,6 +51,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Two pushes to main close together would otherwise race, and main could be left on the older commit.
+    concurrency:
+      group: image-${{ matrix.name }}-${{ github.ref }}
+      cancel-in-progress: false
     strategy:
       matrix:
         include:
@@ -66,6 +74,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=raw,value=main,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           flavor: latest=false
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -93,4 +102,30 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          # Among them org.opencontainers.image.source and org.opencontainers.image.revision, by which the image is
+          # traced back to this repository and the commit it was built from.
           labels: ${{ steps.meta.outputs.labels }}
+
+  # Each push to main leaves the image main pointed at before untagged. Only untagged versions are deleted, never a
+  # tagged one; an image's platform manifests and attestations are kept or deleted with it. After the deletion, every
+  # image left is checked for missing platform manifests, which is only warned of in the log.
+  cleanup:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    # The action is not safe to run twice at once against the same package.
+    concurrency:
+      group: ghcr-cleanup-${{ matrix.package }}
+      cancel-in-progress: false
+    strategy:
+      matrix:
+        package: [natsumi, natsumi-workspace]
+    steps:
+      # Pinned to a commit: a third party's action that can delete package versions.
+      - uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          package: ${{ matrix.package }}
+          delete-untagged: true
+          validate: true

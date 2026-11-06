@@ -10,7 +10,7 @@ import { login, startFixture, type Fixture, type FixtureOptions } from './suppor
 // The runtime settings over the WebSocket (ADR 0058): in the snapshot, by command, and as an event to every device.
 
 const ROUTES = {
-  routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, spare: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } } },
+  routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } }, spare: { model: { provider: 'openai-codex', id: 'gpt-6-sol' } } },
   defaultRoute: 'main',
 };
 
@@ -60,8 +60,8 @@ test('the snapshot and settings.list carry every setting with the config’s val
   const snapshot = await c.sync();
   const settings = snapshot.payload.settings;
   assert.deepEqual(settings.modelRoute, { value: 'main', config: 'main', overridden: false, inUse: 'main', routes: [
-    { name: 'main', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
-    { name: 'spare', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true }] });
+    { name: 'main', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
+    { name: 'spare', provider: 'openai-codex', model: 'gpt-6-sol', ready: true }] });
   assert.deepEqual(settings.turnFold, { value: 'off', config: 'off', overridden: false, inUse: 'off' });
   assert.deepEqual(settings.eventModelCalls, { value: 6, config: 6, overridden: false });
   assert.deepEqual(settings.reviewModelCalls, { value: 40, config: 40, overridden: false });

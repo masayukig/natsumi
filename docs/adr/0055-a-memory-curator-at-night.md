@@ -1,7 +1,7 @@
 # 0055. 記憶の組み直しは、人格を持たない整理係が夜に行う
 
 - Date: 2026-09-27
-- Status: Accepted（整理係のツールに、設定で on にしたとき `codemode` が加わることは [ADR 0066](0066-codemode-to-keep-raw-output-out-of-the-context.md) で追加。古くなったものを消さずに要約して `archive/` へ移すこと、古いパスをサーバーが置き換えること、トピックの合計が設定の大きさ以下なら全部を書き直してよいこと、一晩 1 コミット・全部か無しか・1 session 1 ターンを工程ごとに分けること、日中のトピックに書くものは [ADR 0068](0068-a-curator-that-remembers-like-a-person.md) で置き換え。会話の本文を係に渡すこと、リンクと「関連」の節、話題ごとの節、見取り図の節ごとの行数と日付は同 ADR で追加。記憶の下の `skills/` を整理係の対象から外すことは [ADR 0073](0073-skills-from-the-owner-and-her-own.md) で追加。記憶の下の `postbox/` を整理係の対象から外すことは [ADR 0076](0076-a-postbox-for-requests-sent-on-a-schedule.md) で追加。睡眠薬で夜の欠けを取り戻すとき（ガッツリ寝る・残りを済ませる・寝直し）にも係を動かし、寝直しでは session を切り替えずに動かすことは [ADR 0077](0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) で追加）
+- Status: Accepted（整理係のツールに、設定で on にしたとき `codemode` が加わることは [ADR 0066](0066-codemode-to-keep-raw-output-out-of-the-context.md) で追加。古くなったものを消さずに要約して `archive/` へ移すこと、古いパスをサーバーが置き換えること、トピックの合計が設定の大きさ以下なら全部を書き直してよいこと、一晩 1 コミット・全部か無しか・1 session 1 ターンを工程ごとに分けること、日中のトピックに書くものは [ADR 0068](0068-a-curator-that-remembers-like-a-person.md) で置き換え。会話の本文を係に渡すこと、リンクと「関連」の節、話題ごとの節、見取り図の節ごとの行数と日付は同 ADR で追加。記憶の下の `skills/` を整理係の対象から外すことは [ADR 0073](0073-skills-from-the-owner-and-her-own.md) で追加。記憶の下の `postbox/` を整理係の対象から外すことは [ADR 0076](0076-a-postbox-for-requests-sent-on-a-schedule.md) で追加。睡眠薬で夜の欠けを取り戻すとき（ガッツリ寝る・残りを済ませる・寝直し）にも係を動かし、寝直しでは session を切り替えずに動かすことは [ADR 0077](0077-a-sleeping-pill-to-make-up-for-a-missed-night.md) で追加。整理係の対象から `goals/` を外すことは [ADR 0090](0090-goals-and-a-plan-for-the-day.md) で追加）
 
 ## Context
 

@@ -491,3 +491,25 @@ test('a turn read back keeps its kind, the curator\'s included (ADR 0055)', asyn
     assert.equal(findTurn(f.db, review)!.kind, 'review');
   } finally { await f.cleanup(); }
 });
+
+test('the requests of the agents are listed with the ones still open first, then by the latest change, the rejected among them', async () => {
+  const f = await setup();
+  try {
+    const task = (sender: string, taskId: string, state: string, at: number, reminders = 0) => f.run(`INSERT INTO inbox_tasks
+      (task_id, sender, context_id, state, dir, previous_dir, reason, reminders, created_at, received_at, waiting_since, reminded_at, updated_at)
+      VALUES (?, ?, 'context', ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?)`, taskId, sender, state, reminders, iso(at - MINUTE), iso(at - MINUTE),
+    iso(at - MINUTE), iso(at));
+    task('claude', 'done', 'completed', 0);
+    task('claude', 'working', 'working', -DAY, 2);
+    task('pi', 'asking', 'input-required', -2 * DAY);
+    task('pi', 'rejected', 'rejected', -MINUTE);
+    task('pi', 'failed', 'failed', -2 * MINUTE);
+    const { inboxTasks } = readWaits(f.db, options);
+    assert.deepEqual(inboxTasks.map(item => [item.sender, item.taskId, item.state]), [
+      ['claude', 'working', 'working'], ['pi', 'asking', 'input-required'],
+      ['claude', 'done', 'completed'], ['pi', 'rejected', 'rejected'], ['pi', 'failed', 'failed'],
+    ]);
+    assert.deepEqual(inboxTasks[0], { sender: 'claude', taskId: 'working', state: 'working', receivedAt: iso(-DAY - MINUTE), updatedAt: iso(-DAY),
+      reminders: 2 });
+  } finally { await f.cleanup(); }
+});

@@ -1,0 +1,68 @@
+# 今日の計画のある ping（ADR 0090）。session の最初の ping なので today_plan に計画が載る。まだ済んでいない日課を進め、
+# 計画の行に済んだ印を付け、つながる目標の「今の様子」を書き換える。人物とメモはすべて架空。
+#
+# 変種 stale は、today.md の日付が前の日のまま。goals から今日の計画を立て直してから進める。
+description: 計画のある ping で、日課を進めて計画と目標の今の様子を書き換える
+runs: 5
+time: "2026-10-31T10:30:00+09:00"
+limits: { modelCalls: 8, minutes: 10 }
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+  /memory/goals/home-notes.md: |
+    # マスターの暮らしのメモを使いやすく保つ
+
+    ## なぜ
+    マスターが買い物や用事を思い出しやすいように。
+
+    ## 日課
+    - 買い物のメモ（/memory/暮らし/買い物.md）の重複をまとめる
+
+    ## 今の様子
+    - 2026-10-30: 買い物のメモに重複がある。
+
+    ## 短い目標
+    - [ ] 冬の衣替えの持ち物リストを作る（期限 2026-11-10）
+  /memory/暮らし/買い物.md: |
+    # 買い物
+
+    - 牛乳
+    - 卵
+    - 牛乳
+    - 洗剤
+    - 卵
+  /memory/goals/today.md: |
+    # 2026-10-31
+
+    - [ ] home-notes: 買い物のメモの重複をまとめる（日課）
+event:
+  ping: {}
+variants:
+  today: {}
+  stale:
+    files:
+      /memory/goals/today.md: |
+        # 2026-10-30
+
+        - [x] home-notes: 買い物のメモの重複をまとめる（日課）
+    checks:
+      - { id: plan-rebuilt, rubric: "today.md を 2026-10-31 の計画として書き直し、その計画に日課（買い物のメモの重複をまとめる）を入れている。" }
+dryRun:
+  - calls:
+      - tool: run_shell
+        args:
+          command: |
+            printf '# 買い物\n\n- 牛乳\n- 卵\n- 洗剤\n' > /memory/暮らし/買い物.md
+            sed -i 's/^- \[ \] home-notes/- [x] home-notes/' /memory/goals/today.md
+            sed -i 's/^- 2026-10-30: .*/- 2026-10-31: 買い物のメモの重複をまとめた。/' /memory/goals/home-notes.md
+  - text: 日課を済ませた。
+checks:
+  - { id: plan-shown, function: planShown }
+  - { id: did-routine, shell: "買い物" }
+  - { id: touched-plan, shell: "goals/today\\.md" }
+  - { id: touched-goal, shell: "goals/home-notes\\.md" }
+  - id: done-and-recorded
+    rubric: 買い物のメモの重複（牛乳と卵）をまとめ、today.md の日課の行を済んだ印（[x]）にし、goals/home-notes.md の「今の様子」を 2026-10-31 の様子に書き換えている。
+  - { id: no-notice, notCalled: notify_owner }
+  - { id: finished, finished: true }

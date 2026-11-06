@@ -3,7 +3,7 @@
     "agentDirectory": "/var/lib/natsumi-pi/agent",
     "sessionDirectory": "/var/lib/natsumi-pi/sessions",
     "authPath": "/var/lib/natsumi-pi/agent/auth.json",
-    "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+    "model": { "provider": "openai-codex", "id": "gpt-5.6-sol" },
     "voiceEnabled": false
   },
   "publicOrigin": "https://natsumi.example.net",

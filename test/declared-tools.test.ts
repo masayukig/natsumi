@@ -22,7 +22,7 @@ const outcome = (text: string): ToolOutcome => ({ ok: true, text });
 const host = (): LoopToolHost => ({
   reply: () => outcome(''), notify: () => outcome(''), setExpression: () => outcome(''), writeHandoff: () => outcome(''),
   writeChangeNote: () => outcome(''), scheduleSelfCheck: () => outcome(''), listSelfChecks: () => outcome(''),
-  cancelSelfCheck: () => outcome(''), askAgent: () => outcome(''), runShell: () => outcome(''),
+  cancelSelfCheck: () => outcome(''), askAgent: () => outcome(''), replyToAgent: () => outcome(''), waitForEvents: () => outcome(''), runShell: () => outcome(''),
   capture: async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false }),
 });
 

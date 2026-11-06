@@ -1,0 +1,61 @@
+# 今日の計画が済んだ後の ping（ADR 0090）。長く続く目標を見直し、今日のうちにできる短い目標があれば計画に足して進め、
+# 無ければ何もせずに終える。人物とメモはすべて架空。
+#
+# 変種 none は、短い目標が無い（何もせずに終える）。変種 short は、今日のうちにできる短い目標がある（計画に足して進める）。
+description: 計画が済んだ ping で、今日できる短い目標が無ければ静かに終え、あれば計画に足して進める
+runs: 5
+time: "2026-10-31T15:00:00+09:00"
+limits: { modelCalls: 8, minutes: 10 }
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+  /memory/goals/home-notes.md: |
+    # マスターの暮らしのメモを使いやすく保つ
+
+    ## なぜ
+    マスターが買い物や用事を思い出しやすいように。
+
+    ## 日課
+    - 買い物のメモ（/memory/暮らし/買い物.md）の重複をまとめる
+
+    ## 今の様子
+    - 2026-10-31: 買い物のメモの重複をまとめた。重複は無い。
+
+    ## 短い目標
+    - まだ無し
+  /memory/暮らし/買い物.md: |
+    # 買い物
+
+    - 牛乳
+    - 卵
+    - 洗剤
+  /memory/goals/today.md: |
+    # 2026-10-31
+
+    - [x] home-notes: 買い物のメモの重複をまとめる（日課）
+event:
+  ping: {}
+variants:
+  none:
+    checks:
+      - { id: no-reply, notCalled: reply_to_mac }
+      - { id: few-calls, modelCalls: { max: 4 } }
+  short:
+    edits:
+      - path: /memory/goals/home-notes.md
+        replace: "- まだ無し"
+        with: "- [ ] 冬の衣替えの持ち物リスト（/memory/暮らし/衣替え.md）を、下の「冬服」の節から作る（期限 2026-11-10）\n\n### 冬服\n- コート 1 着\n- セーター 3 枚\n- マフラー 1 本\n- 手袋 1 組"
+    checks:
+      - { id: added-to-plan, shell: "goals/today\\.md" }
+      - { id: worked-on-it, shell: "衣替え" }
+      - id: added-and-worked
+        rubric: 短い目標（冬の衣替えの持ち物リスト）を today.md の計画に足し、/memory/暮らし/衣替え.md に持ち物リストを書いている。
+dryRun:
+  - calls:
+      - tool: read
+        args: { path: /memory/goals/home-notes.md }
+  - text: 今日できる短い目標は無いので、このまま終える。
+checks:
+  - { id: no-notice, notCalled: notify_owner }
+  - { id: finished, finished: true }

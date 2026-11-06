@@ -28,7 +28,7 @@ async function setup() {
 const STATUS: RouteStatus = {
   defaultRoute: 'local', current: 'local', chosen: 'local',
   routes: [{ name: 'local', provider: 'natsumi-compatible', model: 'fixture-local', ready: true },
-    { name: 'plus', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
+    { name: 'plus', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
     { name: 'spare', provider: 'openai-codex', model: 'gpt-5.4', ready: false }],
 };
 
@@ -68,7 +68,7 @@ test('model list and status show the routes the server published, which one is i
     assert.equal(await f.run(['model', 'list']), 0);
     assert.deepEqual(f.out, [
       '* local  natsumi-compatible/fixture-local  ready  (default, in use)',
-      '  plus   openai-codex/gpt-5.5              ready  (chosen)',
+      '  plus   openai-codex/gpt-5.6-sol          ready  (chosen)',
       '  spare  openai-codex/gpt-5.4              not ready',
     ]);
     assert.equal(await f.run(['model', 'status']), 0);

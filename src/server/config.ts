@@ -6,7 +6,8 @@ import { isLoopbackHost } from '../pi/loopback.ts';
 // The only thing this file takes from the server modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
 // Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
 import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
-import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
+import { DEFAULT_GOAL_FILE_MAX_CHARS, DEFAULT_TODAY_PLAN_MAX_CHARS } from './goals.ts';
+import { DEFAULT_BACKGROUND_JOBS, DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
 import { POSTBOX_DEFAULTS } from './postbox.ts';
@@ -50,6 +51,11 @@ export interface ModelRoute {
   model: { provider: string; id: string };
   /** Present only for a `natsumi-compatible` provider. Without it the OAuth login at `authPath` is the only way in. */
   compatible?: CompatibleConfig;
+  /**
+   * Present only for the `openai` provider: the loopback relay that adds the subscription's token outside the server
+   * (ADR 0087). With it the login at `authPath` is never read for this route.
+   */
+  relay?: RelayConfig;
   /** Past this many context tokens the session is compacted between turns: the route's own, or `loop.compactionThreshold`. */
   compactionThreshold: number;
 }
@@ -70,6 +76,12 @@ export interface CompatibleConfig {
 }
 
 export { COMPATIBLE_PROVIDER };
+
+/** The provider a relay may be set for: Pi's standard Responses API, signed in with ChatGPT (ADR 0087). */
+export const RELAY_PROVIDER = 'openai';
+
+/** A relay on this host, as an origin such as `http://127.0.0.1:16007`. Pi's requests keep their path below it. */
+export interface RelayConfig { url: string }
 
 export interface TlsConfig { certFile: string; keyFile: string }
 
@@ -121,6 +133,11 @@ export interface LoopConfig {
   workspaceSocket?: string;
   /** Seconds the server waits for the runner's answer. Longer than the runner's own response limit (ADR 0019). */
   shellWaitSeconds: number;
+  /**
+   * How many of natsumi's commands left running are waited for at once, to tell her when each ends (ADR 0094). One past
+   * it is left running and nobody is told of its end. Read from the config alone, not from the settings page.
+   */
+  backgroundJobs: number;
   /** Past this many bytes across the three persistent places, the next turn is told, with the breakdown (ADR 0019). */
   workspaceSizeWarnBytes: number;
   /** The git repository holding memory (ADR 0018). `memory/` in the data directory when omitted. */
@@ -129,6 +146,10 @@ export interface LoopConfig {
   memoryFileMaxChars: number;
   /** The longest the always-memory may be. It rides in every prompt, so its limit is far below one file's (ADR 0020). */
   alwaysMemoryMaxChars: number;
+  /** The longest one lasting goal's file in memory's `goals/` may be (ADR 0090). No more than `memoryFileMaxChars`. */
+  goalFileMaxChars: number;
+  /** The longest `goals/today.md` may be. It rides on a few pings, so it is held smaller still (ADR 0090). */
+  todayPlanMaxChars: number;
   /** Local hours natsumi is up. Pings and self-checks come only inside them (ADR 0014). */
   awakeHours: AwakeHours;
   /** Quiet minutes before a ping, or false for no pings. */
@@ -143,6 +164,11 @@ export interface LoopConfig {
   eventModelCalls: number;
   /** Minutes an ordinary turn may take. */
   eventTimeoutMinutes: number;
+  /**
+   * Seconds a stop waits for the event turn in progress to end on its own before cutting it (ADR 0083). 0 waits for
+   * nothing. The deployment's grace period for the process has to be longer.
+   */
+  shutdownDrainSeconds: number;
   /**
    * Whether ended turns are folded before each model call, until the command line chooses otherwise (ADR 0047). The
    * memo is asked for after every turn either way, so that on and off differ only in the folding.
@@ -182,16 +208,20 @@ export const DEFAULT_REVIEW_TIMEOUT_MINUTES = 30;
 /** An ordinary turn's limits (the evaluation stopped at 8 calls). */
 export const DEFAULT_EVENT_MODEL_CALLS = 8;
 export const DEFAULT_EVENT_TIMEOUT_MINUTES = 10;
+/** As long as an ordinary turn may take by default, so that a stop lets one end (ADR 0083). */
+export const DEFAULT_SHUTDOWN_DRAIN_SECONDS = DEFAULT_EVENT_TIMEOUT_MINUTES * 60;
 
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
   memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS, alwaysMemoryMaxChars: DEFAULT_ALWAYS_MAX_CHARS,
-  shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS,
+  goalFileMaxChars: DEFAULT_GOAL_FILE_MAX_CHARS, todayPlanMaxChars: DEFAULT_TODAY_PLAN_MAX_CHARS,
+  shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS, backgroundJobs: DEFAULT_BACKGROUND_JOBS,
   workspaceSizeWarnBytes: DEFAULT_SIZE_WARN_BYTES,
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
   reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
   eventModelCalls: DEFAULT_EVENT_MODEL_CALLS, eventTimeoutMinutes: DEFAULT_EVENT_TIMEOUT_MINUTES,
+  shutdownDrainSeconds: DEFAULT_SHUTDOWN_DRAIN_SECONDS,
   turnFold: 'off',
   codemode: DEFAULT_CODEMODE,
 };
@@ -200,6 +230,8 @@ export const LOOP_DEFAULTS: LoopConfig = {
 const MIN_MEMORY_FILE_MAX_CHARS = 1000;
 /** Under this the always-memory could not hold a line about the owner, and every night's rewrite would go back. */
 const MIN_ALWAYS_MEMORY_MAX_CHARS = 200;
+/** The floor of a limit on a file of `goals/` (ADR 0090). */
+const MIN_GOAL_MAX_CHARS = 200;
 /** Under the runner's own response limit (60 seconds, ADR 0019) the answer would never reach the server. */
 const MIN_SHELL_WAIT_SECONDS = 10;
 /** A warning under a kibibyte would fire on an empty workspace. */
@@ -219,17 +251,35 @@ export interface ApnsConfig {
 
 /** The outside agents natsumi may ask over A2A (ADR 0025, ADR 0035, ADR 0036). Without it `ask_agent` refuses. */
 export interface A2AConfig {
-  /** The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh for every call. */
-  tokenFile: string;
+  /**
+   * The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh
+   * for every call. It goes to every agent without a token file of its own, and may be left out when none is without.
+   */
+  tokenFile?: string;
   /** How often a task still waiting for an answer is fetched again. */
   pollIntervalSeconds: number;
   /** How long a task may go unanswered before natsumi is told the server gave up on it. */
   giveUpAfterHours: number;
-  /** Name → where the agent answers. natsumi only ever sees the names. */
-  agents: Record<string, { url: string }>;
+  /**
+   * Name → where the agent answers, and the token file it alone is sent, such as another natsumi's that a bearer token
+   * guards (ADR 0089). natsumi only ever sees the names.
+   */
+  agents: Record<string, { url: string; tokenFile?: string }>;
+  /**
+   * The origin the agents reach natsumi at, such as `https://natsumi.example.net` (ADR 0092). Writing it turns on asking
+   * an agent whose card says it pushes to push to `<pushUrl>/v1/a2a-push`, and opens that way in. Not `publicOrigin`:
+   * the agents' way to her need not be the browsers'.
+   */
+  pushUrl?: string;
+  /** How often a task asked to push is fetched all the same, for a push that never came. There only with `pushUrl`. */
+  pushPollIntervalSeconds?: number;
 }
 
 export const DEFAULT_A2A_POLL_INTERVAL_SECONDS = 15;
+/** Long, for it only bounds how late a reply is when its push is lost (ADR 0092). */
+export const DEFAULT_A2A_PUSH_POLL_INTERVAL_SECONDS = 300;
+/** Where an agent pushes to (ADR 0092), under `a2a.pushUrl`. The same for every request: the token tells the task. */
+export const A2A_PUSH_PATH = '/v1/a2a-push';
 export const DEFAULT_A2A_GIVE_UP_AFTER_HOURS = 24;
 /** Under this the server would ask the agents more often than any answer could change. */
 const MIN_A2A_POLL_INTERVAL_SECONDS = 5;
@@ -434,6 +484,55 @@ export interface PostboxConfig { enabled: boolean; minIntervalMinutes: number }
 /** A floor past a day would refuse a daily letter, the one most letters are. */
 const MAX_POSTBOX_MIN_INTERVAL_MINUTES = 24 * 60;
 
+/**
+ * A webhook (ADR 0091): its name, the last part of `POST /v1/webhooks/<name>` and its directory under
+ * `sources/webhooks/`; its format, with that format's own settings; how a call is checked, by a bearer token or by
+ * GitHub's HMAC of the body with a secret, either read from its file at start; and the description written into its
+ * README.md, which is how she is to read what it sends. Without any there is no such way in.
+ */
+export type WebhookConfig = { name: string; description: string } & ({ tokenFile: string } | { secretFile: string }) & WebhookFormatConfig;
+/**
+ * `raw` keeps the headers it names on each line and marks every line for her only when told; `alertmanager` marks an
+ * alert that begins to fire with one of the severities; `github` (ADR 0093) lets through only what befalls a pull
+ * request by one of the authors whose review was asked of one of the reviewers, and marks every line only when told.
+ */
+export type WebhookFormatConfig = { format: 'raw'; headers: string[]; attention: boolean } | { format: 'alertmanager'; attentionSeverities: string[] }
+  | { format: 'github'; authors: string[]; reviewers: string[]; attention: boolean };
+/** The severities an alert of a webhook of the format `alertmanager` is marked for, unless the config says otherwise. */
+export const ALERTMANAGER_DEFAULTS = { attentionSeverities: ['critical'] };
+export const WEBHOOK_FORMATS: readonly WebhookFormatConfig['format'][] = ['raw', 'alertmanager', 'github'];
+/** A GitHub login as a webhook of the format `github` names it: a user's, or an app's with its `[bot]`. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/;
+/** An HTTP header's name. */
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/** The headers that carry a secret or a login, which a line never keeps. */
+const SECRET_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-hub-signature', 'x-hub-signature-256']);
+/** A sender's name, its directory and the last part of its path: as an agent's. */
+const SENDER_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * The way in over A2A (ADR 0089): its public URL under `/a2a/`, which the Agent Card names and gated's assertions are
+ * addressed to by its host; the card's name and description; who may send, each by gated's subject or a token file of
+ * its own; where gated's keys are, when anyone is checked by subject; and how the open tasks are reminded, given up and
+ * bounded. Without it `/a2a/` is not found.
+ */
+export interface InboxConfig {
+  publicUrl: string;
+  card: { name: string; description: string };
+  senders: InboxSenderConfig[];
+  /** The issuer of gated's assertions, written as its `iss` is, and where its keys are. Never taken from an assertion. */
+  gated?: { issuer: string; jwksUrl: string };
+  reminderIntervalHours: number;
+  deadlineHours: number;
+  maxOpenTasksPerSender: number;
+}
+export type InboxSenderConfig = { name: string; gatedSubject: string } | { name: string; tokenFile: string };
+export const INBOX_CONFIG_DEFAULTS = { reminderIntervalHours: 3, deadlineHours: 24, maxOpenTasksPerSender: 3 };
+/** The path the way in is served under, on the same listener as the browser's. */
+export const INBOX_URL_PATH = '/a2a/';
+/** The writer of her own messages in a task's directory (`NN-me.md`), which no sender may be named. */
+export const INBOX_OWN_WRITER = 'me';
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -451,6 +550,8 @@ export interface ServerConfig {
   curator: CuratorConfig;
   skills: SkillsConfig;
   postbox: PostboxConfig;
+  webhooks?: WebhookConfig[];
+  inbox?: InboxConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
   /** The tools this instance has of its own (ADR 0075). Absent when none is declared, so the tools stay as they were. */
@@ -491,7 +592,7 @@ export const TOOLS_DIRECTORY = '/tools';
  */
 export const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(['run_shell', 'read', 'search_memory', 'reply_to_mac',
   'notify_owner', 'set_mac_avatar_expression', 'write_handoff_note', 'write_change_note', 'schedule_self_check',
-  'list_self_checks', 'cancel_self_check', 'ask_agent', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
+  'list_self_checks', 'cancel_self_check', 'ask_agent', 'reply_to_agent', 'wait_for_events', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
 /** What model providers take as a function name. */
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
@@ -531,6 +632,8 @@ const SECTIONS = {
   curator: parseCurator,
   skills: parseSkills,
   postbox: parsePostbox,
+  webhooks: parseWebhooks,
+  inbox: parseInbox,
   avatar: parseAvatar,
   tools: (value: unknown, path: string) => parseTools(value, path),
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
@@ -542,6 +645,8 @@ const RENAMED_LOOP_KEYS: Record<string, string> = {
 
 const MOVED: Record<string, string> = {
   dataDirectory: 'the data directory is chosen with --data-dir or the launch directory, not in the config',
+  alertmanager: 'is replaced by webhooks (ADR 0091): write each sender as a webhook of format "alertmanager" in webhooks, '
+    + 'with its name, tokenFile, a description, and attentionSeverities if they were set; it is then sent to /v1/webhooks/<name>',
 };
 
 export async function loadConfig(file: string): Promise<ServerConfig> {
@@ -578,6 +683,8 @@ export function parseConfig(raw: unknown): ServerConfig {
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
     skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
     postbox: SECTIONS.postbox(root.postbox ?? {}, 'postbox'),
+    ...(root.webhooks === undefined ? {} : { webhooks: SECTIONS.webhooks(root.webhooks, 'webhooks') }),
+    ...(root.inbox === undefined ? {} : { inbox: SECTIONS.inbox(root.inbox, 'inbox') }),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
   const tools = root.tools === undefined ? [] : SECTIONS.tools(root.tools, 'tools');
@@ -621,8 +728,8 @@ type ParsedPi = Omit<PiConfig, 'routes'> & { routes: ParsedRoute[] };
 
 function parsePi(value: unknown, path: string): ParsedPi {
   const pi = object(value, path);
-  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'routes', 'defaultRoute', 'thinking',
-    'voiceEnabled']);
+  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'relay', 'routes', 'defaultRoute',
+    'thinking', 'voiceEnabled']);
   const voice = required(pi, 'voiceEnabled', path);
   if (voice !== false) throw new ConfigError(`${path}.voiceEnabled`, 'voice is not supported; set false');
   const thinking = pi.thinking === undefined ? 'on' : pi.thinking;
@@ -630,8 +737,8 @@ function parsePi(value: unknown, path: string): ParsedPi {
   let routes: ParsedRoute[];
   let defaultRoute: string;
   if (pi.routes !== undefined) {
-    if (pi.model !== undefined || pi.compatible !== undefined) {
-      throw new ConfigError(`${path}.routes`, `cannot be combined with ${path}.model or ${path}.compatible`);
+    if (pi.model !== undefined || pi.compatible !== undefined || pi.relay !== undefined) {
+      throw new ConfigError(`${path}.routes`, `cannot be combined with ${path}.model, ${path}.compatible or ${path}.relay`);
     }
     const routesPath = `${path}.routes`;
     const table = object(pi.routes, routesPath);
@@ -639,7 +746,7 @@ function parsePi(value: unknown, path: string): ParsedPi {
       const routePath = `${routesPath}.${name}`;
       if (!ROUTE_NAME.test(name)) throw new ConfigError(routePath, 'a route name is lowercase letters, digits and hyphens, up to 32');
       const fields = object(route, routePath);
-      onlyKeys(fields, routePath, ['model', 'compatible', 'compactionThreshold']);
+      onlyKeys(fields, routePath, ['model', 'compatible', 'relay', 'compactionThreshold']);
       const threshold = fields.compactionThreshold === undefined ? undefined
         : compactionThreshold(fields.compactionThreshold, `${routePath}.compactionThreshold`);
       return { name, ...parseRoute(fields, routePath), ...(threshold === undefined ? {} : { compactionThreshold: threshold }),
@@ -663,6 +770,13 @@ function parsePi(value: unknown, path: string): ParsedPi {
     }
     providers.add(route.model.provider);
   }
+  // Pi has one provider for them, so every openai route reaches it the same way: all by the login, or all by one relay.
+  const relayed = routes.filter(route => route.model.provider === RELAY_PROVIDER);
+  for (const route of relayed.slice(1)) {
+    if (route.relay?.url !== relayed[0]!.relay?.url) {
+      throw new ConfigError(`${route.path}.relay`, `must be the same as on another route of the ${RELAY_PROVIDER} provider`);
+    }
+  }
   return {
     agentDirectory: absolutePath(required(pi, 'agentDirectory', path), `${path}.agentDirectory`),
     sessionDirectory: absolutePath(required(pi, 'sessionDirectory', path), `${path}.sessionDirectory`),
@@ -680,7 +794,7 @@ const isCompatibleProvider = (provider: string) => provider === COMPATIBLE_PROVI
  * `model` and `compatible` of one route, at `path` (which is `pi` itself for a config with only `pi.model`). The turn
  * evaluation reads its model files with it too, so they are written as the config is (ADR 0051).
  */
-export function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible'> {
+export function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible' | 'relay'> {
   const modelPath = `${path}.model`;
   const model = object(required(fields, 'model', path), modelPath);
   onlyKeys(model, modelPath, ['provider', 'id']);
@@ -695,10 +809,31 @@ export function parseRoute(fields: Record<string, unknown>, path: string): Pick<
   } else if (isCompatibleProvider(provider)) {
     throw new ConfigError(`${path}.compatible`, `is required for the ${provider} provider`);
   }
+  let relay: RelayConfig | undefined;
+  if (fields.relay !== undefined) {
+    if (provider !== RELAY_PROVIDER) throw new ConfigError(`${modelPath}.provider`, `must be ${RELAY_PROVIDER} when ${path}.relay is set`);
+    relay = parseRelay(fields.relay, `${path}.relay`);
+  }
   return {
     model: { provider, id: nonEmptyString(required(model, 'id', modelPath), `${modelPath}.id`) },
     ...(compatible ? { compatible } : {}),
+    ...(relay ? { relay } : {}),
   };
+}
+
+/** Plain http to this host only: the relay is the egress's, and what leaves the host is its own business (ADR 0085). */
+function parseRelay(value: unknown, path: string): RelayConfig {
+  const relay = object(value, path);
+  onlyKeys(relay, path, ['url']);
+  const urlPath = `${path}.url`;
+  const url = parseUrl(required(relay, 'url', path), urlPath);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  }
+  if (url.protocol !== 'http:') throw new ConfigError(urlPath, 'must use http; the relay is on this host');
+  if (!isLoopbackHost(url.hostname)) throw new ConfigError(urlPath, 'must be a loopback host');
+  if (url.pathname !== '/') throw new ConfigError(urlPath, 'must be an origin without a path; requests keep their own');
+  return { url: url.origin };
 }
 
 function parseCompatible(value: unknown, path: string): CompatibleConfig {
@@ -889,7 +1024,7 @@ function parseApns(value: unknown, path: string): ApnsConfig {
 
 function parseA2A(value: unknown, path: string): A2AConfig {
   const a2a = object(value, path);
-  onlyKeys(a2a, path, ['tokenFile', 'pollIntervalSeconds', 'giveUpAfterHours', 'agents']);
+  onlyKeys(a2a, path, ['tokenFile', 'pollIntervalSeconds', 'giveUpAfterHours', 'agents', 'pushUrl', 'pushPollIntervalSeconds']);
   const interval = a2a.pollIntervalSeconds ?? DEFAULT_A2A_POLL_INTERVAL_SECONDS;
   if (!positiveInteger(interval, MIN_A2A_POLL_INTERVAL_SECONDS)) {
     throw new ConfigError(`${path}.pollIntervalSeconds`, `must be an integer of at least ${MIN_A2A_POLL_INTERVAL_SECONDS}`);
@@ -904,7 +1039,7 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
     if (name === DOVE_NAME) throw new ConfigError(entryPath, 'the name is the Slack dove\'s own, served by the server itself (ADR 0040)');
     const agent = object(entry, entryPath);
-    onlyKeys(agent, entryPath, ['url']);
+    onlyKeys(agent, entryPath, ['url', 'tokenFile']);
     // The token rides on every call, so it goes nowhere it could be read on the way.
     const urlPath = `${entryPath}.url`;
     const url = parseUrl(required(agent, 'url', entryPath), urlPath);
@@ -914,12 +1049,38 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
       throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
     }
-    agents[name] = { url: url.href };
+    agents[name] = { url: url.href,
+      ...(agent.tokenFile === undefined ? {} : { tokenFile: absolutePath(agent.tokenFile, `${entryPath}.tokenFile`) }) };
   }
+  // The shared token is for the agents without one of their own: needed only while there is such an agent.
+  const shared = a2a.tokenFile === undefined && Object.values(agents).every(agent => agent.tokenFile !== undefined) && Object.keys(agents).length > 0
+    ? undefined : absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`);
   return {
-    tokenFile: absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`),
-    pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
+    ...(shared === undefined ? {} : { tokenFile: shared }),
+    pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents, ...parsePush(a2a, path, interval as number),
   };
+}
+
+/** `a2a.pushUrl` and the interval that goes with it (ADR 0092), or nothing when the agents are not asked to push. */
+function parsePush(a2a: Record<string, unknown>, path: string, interval: number): Pick<A2AConfig, 'pushUrl' | 'pushPollIntervalSeconds'> {
+  const intervalPath = `${path}.pushPollIntervalSeconds`;
+  if (a2a.pushUrl === undefined) {
+    if (a2a.pushPollIntervalSeconds !== undefined) throw new ConfigError(intervalPath, 'is read only with pushUrl');
+    return {};
+  }
+  const urlPath = `${path}.pushUrl`;
+  const url = parseUrl(a2a.pushUrl, urlPath);
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+  }
+  // The way in is served at /v1/a2a-push of the listener, and a path here would send the pushes somewhere it is not.
+  if (url.pathname !== '/') throw new ConfigError(urlPath, `must be an origin only; ${A2A_PUSH_PATH} is added to it`);
+  const pushInterval = a2a.pushPollIntervalSeconds ?? DEFAULT_A2A_PUSH_POLL_INTERVAL_SECONDS;
+  if (!positiveInteger(pushInterval, interval)) {
+    throw new ConfigError(intervalPath, `must be an integer of at least pollIntervalSeconds (${interval})`);
+  }
+  return { pushUrl: url.origin, pushPollIntervalSeconds: pushInterval as number };
 }
 
 function parseSlack(value: unknown, path: string): SlackConfig {
@@ -1313,6 +1474,141 @@ function parsePostbox(value: unknown, path: string): PostboxConfig {
   return { enabled, minIntervalMinutes: floor as number };
 }
 
+function parseWebhooks(value: unknown, path: string): WebhookConfig[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ConfigError(path, 'must be a list of one webhook or more');
+  const webhooks = value.map((entry: unknown, index) => parseWebhook(entry, `${path}[${index}]`));
+  webhooks.forEach((webhook, index) => {
+    if (webhooks.findIndex(other => other.name === webhook.name) !== index) throw new ConfigError(`${path}[${index}].name`, 'is named twice');
+  });
+  return webhooks;
+}
+
+function parseWebhook(value: unknown, path: string): WebhookConfig {
+  const webhook = object(value, path);
+  const format = webhook.format;
+  if (format === undefined) throw new ConfigError(`${path}.format`, 'is required');
+  if (!WEBHOOK_FORMATS.includes(format as WebhookFormatConfig['format'])) {
+    throw new ConfigError(`${path}.format`, `must be one of ${WEBHOOK_FORMATS.join(', ')}`);
+  }
+  // The settings of the other format cannot be written.
+  const own = format === 'raw' ? ['headers', 'attention'] : format === 'github' ? ['authors', 'reviewers', 'attention'] : ['attentionSeverities'];
+  onlyKeys(webhook, path, ['name', 'format', 'tokenFile', 'secretFile', 'description', ...own]);
+  const name = required(webhook, 'name', path);
+  if (typeof name !== 'string' || !SENDER_NAME.test(name)) {
+    throw new ConfigError(`${path}.name`, 'the name must be lower-case letters, digits and hyphens, at most 32');
+  }
+  const description = nonEmptyString(required(webhook, 'description', path), `${path}.description`);
+  if (webhook.tokenFile !== undefined && webhook.secretFile !== undefined) throw new ConfigError(path, 'give only one of tokenFile and secretFile');
+  let check: { tokenFile: string } | { secretFile: string };
+  if (webhook.tokenFile !== undefined) check = { tokenFile: absolutePath(webhook.tokenFile, `${path}.tokenFile`) };
+  else if (webhook.secretFile !== undefined) check = { secretFile: absolutePath(webhook.secretFile, `${path}.secretFile`) };
+  else throw new ConfigError(path, 'needs tokenFile or secretFile: a webhook is never taken unchecked');
+  if (format === 'raw' || format === 'github') {
+    const attention = webhook.attention === undefined ? false : webhook.attention;
+    if (typeof attention !== 'boolean') throw new ConfigError(`${path}.attention`, 'must be true or false');
+    if (format === 'raw') return { name, format, ...check, description, headers: parseHeaderNames(webhook.headers ?? [], `${path}.headers`), attention };
+    // Never every pull request: without the authors and the reviewers it does not start (ADR 0093).
+    const authors = parseGithubLogins(required(webhook, 'authors', path), `${path}.authors`);
+    const reviewers = parseGithubLogins(required(webhook, 'reviewers', path), `${path}.reviewers`);
+    return { name, format, ...check, description, authors, reviewers, attention };
+  }
+  const severitiesPath = `${path}.attentionSeverities`;
+  const severities = webhook.attentionSeverities ?? ALERTMANAGER_DEFAULTS.attentionSeverities;
+  if (!Array.isArray(severities) || severities.some(item => typeof item !== 'string' || item === '')
+    || new Set(severities).size !== severities.length) {
+    throw new ConfigError(severitiesPath, 'must be a list of distinct severities, such as ["critical"]');
+  }
+  return { name, format: 'alertmanager', ...check, description, attentionSeverities: [...severities as string[]] };
+}
+
+/** The logins a `github` webhook matches, as written: one or more, none twice, GitHub's logins being of no case. */
+function parseGithubLogins(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== 'string' || !GITHUB_LOGIN.test(item))) {
+    throw new ConfigError(path, 'must be a list of one GitHub login or more, such as ["renovate[bot]"]');
+  }
+  const logins = value as string[];
+  if (new Set(logins.map(login => login.toLowerCase())).size !== logins.length) throw new ConfigError(path, 'names a login twice');
+  return [...logins];
+}
+
+/** The headers a `raw` webhook keeps on its lines, as written; none that carries a secret, and none twice. */
+function parseHeaderNames(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || !HEADER_NAME.test(item))) {
+    throw new ConfigError(path, 'must be a list of header names, such as ["X-GitHub-Event"]');
+  }
+  const names = value as string[];
+  if (new Set(names.map(name => name.toLowerCase())).size !== names.length) throw new ConfigError(path, 'names a header twice');
+  if (names.some(name => SECRET_HEADERS.has(name.toLowerCase()))) throw new ConfigError(path, 'must not name a header that carries a secret or a login');
+  return [...names];
+}
+
+function parseInbox(value: unknown, path: string): InboxConfig {
+  const inbox = object(value, path);
+  onlyKeys(inbox, path, ['publicUrl', 'card', 'senders', 'gated', 'reminderIntervalHours', 'deadlineHours', 'maxOpenTasksPerSender']);
+  const urlPath = `${path}.publicUrl`;
+  const url = parseUrl(required(inbox, 'publicUrl', path), urlPath);
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+  }
+  // Served under /a2a/ of the listener, and a proxy that moved it would leave the card naming a path that is not there.
+  if (url.pathname !== INBOX_URL_PATH && url.pathname !== INBOX_URL_PATH.slice(0, -1)) throw new ConfigError(urlPath, `must end in ${INBOX_URL_PATH}`);
+  const cardPath = `${path}.card`;
+  const card = object(required(inbox, 'card', path), cardPath);
+  onlyKeys(card, cardPath, ['name', 'description']);
+  const name = nonEmptyString(required(card, 'name', cardPath), `${cardPath}.name`);
+  const description = nonEmptyString(required(card, 'description', cardPath), `${cardPath}.description`);
+
+  const sendersPath = `${path}.senders`;
+  const listed = required(inbox, 'senders', path);
+  if (!Array.isArray(listed) || listed.length === 0) throw new ConfigError(sendersPath, 'must be a list of one sender or more');
+  const senders = listed.map((entry: unknown, index): InboxSenderConfig => {
+    const entryPath = `${sendersPath}[${index}]`;
+    const sender = object(entry, entryPath);
+    onlyKeys(sender, entryPath, ['name', 'gatedSubject', 'tokenFile']);
+    const senderName = required(sender, 'name', entryPath);
+    if (typeof senderName !== 'string' || !SENDER_NAME.test(senderName) || senderName === INBOX_OWN_WRITER) {
+      throw new ConfigError(`${entryPath}.name`, `the name must be lower-case letters, digits and hyphens, at most 32, and not ${INBOX_OWN_WRITER}`);
+    }
+    if (sender.gatedSubject !== undefined && sender.tokenFile !== undefined) throw new ConfigError(entryPath, 'give only one of gatedSubject and tokenFile');
+    if (sender.gatedSubject !== undefined) return { name: senderName, gatedSubject: nonEmptyString(sender.gatedSubject, `${entryPath}.gatedSubject`) };
+    if (sender.tokenFile !== undefined) return { name: senderName, tokenFile: absolutePath(sender.tokenFile, `${entryPath}.tokenFile`) };
+    throw new ConfigError(entryPath, 'needs gatedSubject or tokenFile');
+  });
+  senders.forEach((sender, index) => {
+    if (senders.findIndex(other => other.name === sender.name) !== index) throw new ConfigError(`${sendersPath}[${index}].name`, 'is named twice');
+    if ('gatedSubject' in sender && senders.findIndex(other => 'gatedSubject' in other && other.gatedSubject === sender.gatedSubject) !== index) {
+      throw new ConfigError(`${sendersPath}[${index}].gatedSubject`, 'is named twice');
+    }
+  });
+
+  const gatedPath = `${path}.gated`;
+  let gated: InboxConfig['gated'];
+  if (inbox.gated !== undefined) {
+    const section = object(inbox.gated, gatedPath);
+    onlyKeys(section, gatedPath, ['issuer', 'jwksUrl']);
+    // Compared with `iss` as it is written, so it is kept as written.
+    const issuer = nonEmptyString(required(section, 'issuer', gatedPath), `${gatedPath}.issuer`);
+    parseUrl(issuer, `${gatedPath}.issuer`);
+    const jwks = parseUrl(required(section, 'jwksUrl', gatedPath), `${gatedPath}.jwksUrl`);
+    if (jwks.protocol !== 'https:' && !(jwks.protocol === 'http:' && isLoopbackHost(jwks.hostname))) {
+      throw new ConfigError(`${gatedPath}.jwksUrl`, 'must use https (http is accepted only for a loopback host)');
+    }
+    gated = { issuer, jwksUrl: jwks.href };
+  } else if (senders.some(sender => 'gatedSubject' in sender)) {
+    throw new ConfigError(gatedPath, 'is required when a sender is checked by its gatedSubject');
+  }
+  const whole = (key: keyof typeof INBOX_CONFIG_DEFAULTS) => {
+    const number = inbox[key] ?? INBOX_CONFIG_DEFAULTS[key];
+    if (!positiveInteger(number, 1)) throw new ConfigError(`${path}.${key}`, 'must be a positive integer');
+    return number as number;
+  };
+  return {
+    publicUrl: url.href.endsWith('/') ? url.href : `${url.href}/`, card: { name, description }, senders, ...(gated ? { gated } : {}),
+    reminderIntervalHours: whole('reminderIntervalHours'), deadlineHours: whole('deadlineHours'), maxOpenTasksPerSender: whole('maxOpenTasksPerSender'),
+  };
+}
+
 function parseUploads(value: unknown, path: string): UploadsConfig {
   const uploads = object(value, path);
   onlyKeys(uploads, path, ['maxFileBytes', 'maxFiles']);
@@ -1450,15 +1746,26 @@ function judgeEndpoint(method: 'logprobs' | 'jev', judge: Record<string, unknown
   return { enabled, baseUrl, ...(apiKey ? { apiKey } : {}), model, timeoutSeconds: timeout as number, thresholds: { owner, return: returnAt } };
 }
 
+/**
+ * A limit on a file of `goals/` (ADR 0090): an integer of at least the floor, and no more than one memory file's limit,
+ * which every file is held to anyway. Left out, the default, or one memory file's limit when that is smaller.
+ */
+function goalLimit(value: unknown, fallback: number, fileMax: number, path: string): number {
+  if (value === undefined) return Math.min(fallback, fileMax);
+  if (!positiveInteger(value, MIN_GOAL_MAX_CHARS)) throw new ConfigError(path, `must be an integer of at least ${MIN_GOAL_MAX_CHARS}`);
+  if ((value as number) > fileMax) throw new ConfigError(path, 'must be no more than memoryFileMaxChars');
+  return value as number;
+}
+
 function parseLoop(value: unknown, path: string): LoopConfig {
   const loop = object(value, path);
   for (const [old, now] of Object.entries(RENAMED_LOOP_KEYS)) {
     if (old in loop) throw new ConfigError(`${path}.${old}`, `renamed to ${now} (ADR 0019)`);
   }
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
-    'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'awakeHours',
+    'shellWaitSeconds', 'backgroundJobs', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'goalFileMaxChars', 'todayPlanMaxChars', 'awakeHours',
     'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
-    'eventModelCalls', 'eventTimeoutMinutes', 'turnFold', 'codemode']);
+    'eventModelCalls', 'eventTimeoutMinutes', 'shutdownDrainSeconds', 'turnFold', 'codemode']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -1476,6 +1783,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(wait, MIN_SHELL_WAIT_SECONDS)) {
     throw new ConfigError(`${path}.shellWaitSeconds`, `must be an integer of at least ${MIN_SHELL_WAIT_SECONDS}`);
   }
+  const backgroundJobs = loop.backgroundJobs ?? LOOP_DEFAULTS.backgroundJobs;
+  if (!positiveInteger(backgroundJobs, 0)) throw new ConfigError(`${path}.backgroundJobs`, 'must be an integer of at least 0');
   const warnBytes = loop.workspaceSizeWarnBytes ?? LOOP_DEFAULTS.workspaceSizeWarnBytes;
   if (!positiveInteger(warnBytes, MIN_SIZE_WARN_BYTES)) {
     throw new ConfigError(`${path}.workspaceSizeWarnBytes`, `must be an integer of at least ${MIN_SIZE_WARN_BYTES}`);
@@ -1489,6 +1798,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(alwaysMax, MIN_ALWAYS_MEMORY_MAX_CHARS)) {
     throw new ConfigError(`${path}.alwaysMemoryMaxChars`, `must be an integer of at least ${MIN_ALWAYS_MEMORY_MAX_CHARS}`);
   }
+  const goalMax = goalLimit(loop.goalFileMaxChars, LOOP_DEFAULTS.goalFileMaxChars, fileMax as number, `${path}.goalFileMaxChars`);
+  const todayMax = goalLimit(loop.todayPlanMaxChars, LOOP_DEFAULTS.todayPlanMaxChars, fileMax as number, `${path}.todayPlanMaxChars`);
   const ping = loop.pingIntervalMinutes ?? LOOP_DEFAULTS.pingIntervalMinutes;
   if (!isPingInterval(ping)) {
     throw new ConfigError(`${path}.pingIntervalMinutes`, `must be an integer of at least ${MIN_PING_INTERVAL_MINUTES}, or false`);
@@ -1503,18 +1814,20 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!isTurnLimit(eventCalls)) throw new ConfigError(`${path}.eventModelCalls`, 'must be a positive integer');
   const eventMinutes = loop.eventTimeoutMinutes ?? LOOP_DEFAULTS.eventTimeoutMinutes;
   if (!isTurnLimit(eventMinutes)) throw new ConfigError(`${path}.eventTimeoutMinutes`, 'must be a positive integer');
+  const drain = loop.shutdownDrainSeconds ?? LOOP_DEFAULTS.shutdownDrainSeconds;
+  if (!positiveInteger(drain, 0)) throw new ConfigError(`${path}.shutdownDrainSeconds`, 'must be an integer of at least 0');
   const turnFold = loop.turnFold ?? LOOP_DEFAULTS.turnFold;
   if (!isFold(turnFold)) throw new ConfigError(`${path}.turnFold`, 'must be "on" or "off"');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
-    ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
+    ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, backgroundJobs: backgroundJobs as number, workspaceSizeWarnBytes: warnBytes as number,
     ...(repository ? { memoryRepository: repository } : {}), memoryFileMaxChars: fileMax as number,
-    alwaysMemoryMaxChars: alwaysMax as number,
+    alwaysMemoryMaxChars: alwaysMax as number, goalFileMaxChars: goalMax, todayPlanMaxChars: todayMax,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
     pingIntervalMinutes: ping,
     expressionResetMinutes: reset as number,
     reviewModelCalls: reviewCalls, reviewTimeoutMinutes: reviewMinutes,
-    eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, turnFold,
+    eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, shutdownDrainSeconds: drain as number, turnFold,
     codemode: parseCodemode(loop.codemode ?? {}, `${path}.codemode`, LOOP_DEFAULTS.codemode),
     ...('selfCheck' in loop ? { ignored: [`${path}.selfCheck`] } : {}),
   };

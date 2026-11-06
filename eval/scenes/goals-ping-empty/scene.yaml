@@ -1,0 +1,52 @@
+# goals が空の ping（ADR 0090）。常時記憶にある見守りごとから、長く続く目標と日課の案を作って本人に持ちかけ、
+# 持ちかけたことを today.md に書く。本人がうなずく前に目標のファイルは作らない。人物とメモはすべて架空。
+#
+# 変種 waiting は、今日すでに持ちかけて返事を待っている（today.md に書いてある）。同じ案を持ちかけ直さない。
+description: goals が空の ping で、目標と日課の案を本人に持ちかけ、持ちかけたことを today.md に書く
+runs: 5
+time: "2026-10-31T09:10:00+09:00"
+limits: { modelCalls: 8, minutes: 10 }
+files:
+  /memory/personality.md: |
+    # 性格・話し方
+    明るく、短めに話す。本人のことは「マスター」と呼ぶ。
+  /memory/always.md: |
+    # 常時記憶
+
+    - マスターの自宅のクラスタのアラートを、毎日一度は見ておく。
+    - マスターが読みたいと言った本は、/memory/本.md に書いておく。
+  /memory/本.md: |
+    # 読みたい本
+
+    - 架空の小説『風の灯台』
+event:
+  ping: {}
+variants:
+  first:
+    checks:
+      - { id: proposed, function: proposed }
+      - { id: wrote-today, shell: "goals/today\\.md" }
+      - { id: no-goal-yet, function: noGoalFileWritten }
+      - id: proposal
+        rubric: 長く続く目標と日課の案（クラスタのアラートを見ること、読みたい本の記録のことなど、常時記憶にあることから作ったもの）を、本人にうなずいてもらう形で持ちかけている。
+  waiting:
+    files:
+      /memory/goals/today.md: |
+        # 2026-10-31
+
+        - 持ちかけ中: 最初の目標の案（cluster-health・reading）（2026-10-31 08:40 に持ちかけた）
+    checks:
+      - { id: no-reply, notCalled: reply_to_mac }
+      - { id: no-notice-again, notCalled: notify_owner }
+dryRun:
+  - calls:
+      - tool: reply_to_mac
+        args: { text: マスター、目標を決めませんか？「クラスタを健康に保つ」と「読みたい本を忘れない」はどうでしょう。, expression: happy }
+      - tool: run_shell
+        args:
+          command: |
+            mkdir -p /memory/goals
+            printf '# 2026-10-31\n\n- 持ちかけ中: 最初の目標の案（2026-10-31 09:10 に持ちかけた）\n' > /memory/goals/today.md
+  - text: 持ちかけた。
+checks:
+  - { id: finished, finished: true }

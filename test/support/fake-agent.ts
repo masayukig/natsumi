@@ -18,6 +18,8 @@ export interface Received {
   metadata?: Record<string, unknown>;
   /** The parts that carried a file's bytes, as they arrived, when there were any (ADR 0080). */
   files?: { filename: string; mediaType: string; data: Buffer }[];
+  /** `configuration.taskPushNotificationConfig` as it came over the wire, when the message carried one (ADR 0092). */
+  push?: Record<string, unknown>;
 }
 
 export type FakeTaskState = 'working' | 'completed' | 'failed' | 'input-required' | 'rejected';
@@ -42,6 +44,8 @@ export interface FakeAgentOptions {
   extensions?: string[];
   /** The card's `defaultInputModes`. Text and anything else by default, as a host that takes files says (ADR 0080). */
   inputModes?: string[];
+  /** The card's `capabilities.pushNotifications` (ADR 0092). False by default, as an agent without a push sender says. */
+  pushNotifications?: boolean;
 }
 
 /**
@@ -79,6 +83,14 @@ export class FakeAgent {
   fileFailWith: number | undefined;
   /** Leaves Content-Length off the files, as a host streaming them might. */
   chunkedFiles = false;
+  /** While set, the card is answered with this HTTP status, as an agent that is down at the start would. */
+  cardFailWith: number | undefined;
+  /** Runs while a message is being taken, before the answer goes back: a push the agent sends that early (ADR 0092). */
+  onSend: ((received: Received) => Promise<void>) | undefined;
+  /** While set, every GetTask waits for it before answering, as a slow agent would. */
+  holdGetTask: Promise<void> | undefined;
+  /** The push config of the JSON-RPC call being handled, as it came over the wire. */
+  private pushConfig: Record<string, unknown> | undefined;
   private readonly files = new Map<string, { data: Buffer; mimeType: string }>();
   token: string;
   private readonly options: FakeAgentOptions;
@@ -101,6 +113,10 @@ export class FakeAgent {
         const path = new URL(request.url ?? '/', 'http://fake').pathname;
         if (request.method === 'GET' && path === '/agent/.well-known/agent-card.json') {
           this.cardRequests.push(request.headers.authorization);
+          if (this.cardFailWith) {
+            response.writeHead(this.cardFailWith).end();
+            return;
+          }
           response.writeHead(200, { 'content-type': 'application/json' });
           response.end(JSON.stringify(AgentCard.toJSON(this.card())));
           return;
@@ -124,6 +140,7 @@ export class FakeAgent {
         }
         const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
         this.authorization = request.headers.authorization;
+        this.pushConfig = pushConfigOf(body);
         this.extensionsHeader = header(request, 'a2a-extensions');
         this.calls.push({ method: typeof body.method === 'string' ? body.method : '', extensions: this.extensionsHeader });
         const context = defaultServerCallContextBuilder({ extensions: undefined, user: undefined, headers: request.headers,
@@ -219,7 +236,7 @@ export class FakeAgent {
       version: '0.0.0',
       supportedInterfaces: [{ url: this.url, protocolBinding: 'JSONRPC', protocolVersion: '1.0', tenant: '' }],
       provider: undefined,
-      capabilities: { streaming: false, pushNotifications: false, extendedAgentCard: false,
+      capabilities: { streaming: false, pushNotifications: this.options.pushNotifications ?? false, extendedAgentCard: false,
         extensions: (this.options.extensions ?? []).map(uri => ({ uri, description: '', required: false, params: undefined })) },
       securitySchemes: {},
       securityRequirements: [],
@@ -237,7 +254,9 @@ export class FakeAgent {
       getAgentCard: async () => this.card(),
       getAuthenticatedExtendedAgentCard: async () => unsupported(),
       sendMessage: async params => {
-        const answer = this.sendMessage(params.message!, params.configuration?.returnImmediately ?? false);
+        const push = this.pushConfig;
+        const answer = this.sendMessage(params.message!, params.configuration?.returnImmediately ?? false, push);
+        if (this.onSend) await this.onSend(this.received.at(-1)!);
         // As a host does: the history is the messages sent, files and all, unless the caller asks for less.
         const length = params.configuration?.historyLength;
         if ('history' in answer && length !== undefined) answer.history = length === 0 ? [] : answer.history.slice(-length);
@@ -248,7 +267,10 @@ export class FakeAgent {
         this.polls.push(params.id);
         const task = this.tasks.get(params.id);
         if (!task) throw new TaskNotFoundError(`no task ${params.id}`);
-        return structuredClone(task);
+        // As the task stood when it was asked for, however long the answer takes.
+        const seen = structuredClone(task);
+        if (this.holdGetTask) await this.holdGetTask;
+        return seen;
       },
       cancelTask: async () => unsupported(),
       createTaskPushNotificationConfig: async () => unsupported(),
@@ -260,12 +282,12 @@ export class FakeAgent {
     };
   }
 
-  private sendMessage(message: Message, returnImmediately: boolean): Message | Task {
+  private sendMessage(message: Message, returnImmediately: boolean, push?: Record<string, unknown>): Message | Task {
     const text = message.parts.map(part => part.content?.$case === 'text' ? part.content.value : '').join('');
     const files = message.parts.flatMap(part => part.content?.$case === 'raw'
       ? [{ filename: part.filename, mediaType: part.mediaType, data: Buffer.from(part.content.value) }] : []);
     this.received.push({ authorization: this.authorization, text, contextId: message.contextId, taskId: message.taskId, returnImmediately,
-      ...(message.metadata ? { metadata: message.metadata } : {}), ...(files.length > 0 ? { files } : {}) });
+      ...(message.metadata ? { metadata: message.metadata } : {}), ...(files.length > 0 ? { files } : {}), ...(push ? { push } : {}) });
     // The SDK drops what the card does not name before the host sees it.
     const activates = (this.options.extensions ?? []).includes(REPLY_EXTENSION_URI)
       && (this.extensionsHeader ?? '').split(',').map(uri => uri.trim()).includes(REPLY_EXTENSION_URI);
@@ -304,6 +326,13 @@ function dataPart(value: unknown) {
 function agentMessage(text: string, task: { id: string; contextId: string }): Message {
   return { messageId: randomUUID(), contextId: task.contextId, taskId: task.id, role: Role.ROLE_AGENT, parts: [textPart(text)],
     metadata: undefined, extensions: [], referenceTaskIds: [] };
+}
+
+/** `params.configuration.taskPushNotificationConfig` of a JSON-RPC body, untouched by the SDK's parser. */
+function pushConfigOf(body: Record<string, unknown>): Record<string, unknown> | undefined {
+  const object = (value: unknown) => typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
+  const config = object(object(object(body.params)?.configuration)?.taskPushNotificationConfig);
+  return config && Object.keys(config).length > 0 ? config : undefined;
 }
 
 function header(request: IncomingMessage, name: string): string | undefined {

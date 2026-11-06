@@ -35,6 +35,8 @@ export interface PendingApproval {
 /** A self-check still waiting (ADR 0063): a repeating one has its expression, and is due at its next run. */
 export interface BookedCheck { checkId: string; reason: string; cron: string | null; dueAt: string; createdAt: string }
 export interface AgentTask { agent: string; taskId: string; state: string; sentAt: string; createdAt: string; updatedAt: string }
+/** What an agent asked her (ADR 0089): when it came, when it last moved, and how often she was reminded of it. */
+export interface InboxTaskRow { sender: string; taskId: string; state: string; receivedAt: string; updatedAt: string; reminders: number }
 export interface Rotation {
   /** What began it (ADR 0077): the night, or a sleeping pill's kind. */
   rotationId: string; kind: string; state: string; reason: string | null; fromSessionFile: string; toSessionFile: string | null; createdAt: string; updatedAt: string;
@@ -48,6 +50,8 @@ export interface Waits {
   /** When the nightly switch runs next; null when it is off. */
   nextRotationAt: string | null;
   agentTasks: AgentTask[];
+  /** The rejected ones among them, which are kept nowhere else she or the owner can see. */
+  inboxTasks: InboxTaskRow[];
   rotations: Rotation[];
 }
 
@@ -74,13 +78,17 @@ export function readWaits(db: DatabaseSync, options: { now: number; nightlyRotat
   const agentTasks = all<Record<string, string>>(`SELECT agent, task_id, state, sent_at, created_at, updated_at FROM agent_tasks
     ORDER BY state IN ('waiting', 'input-required') DESC, updated_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
     .map(row => ({ agent: row.agent!, taskId: row.task_id!, state: row.state!, sentAt: row.sent_at!, createdAt: row.created_at!, updatedAt: row.updated_at! }));
+  const inboxTasks = all<Record<string, string | number>>(`SELECT sender, task_id, state, created_at, updated_at, reminders FROM inbox_tasks
+    ORDER BY state IN ('working', 'input-required') DESC, updated_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
+    .map(row => ({ sender: String(row.sender), taskId: String(row.task_id), state: String(row.state), receivedAt: String(row.created_at),
+      updatedAt: String(row.updated_at), reminders: Number(row.reminders) }));
   const rotations = all<Record<string, string | null>>(`SELECT rotation_id, kind, state, reason, from_session_file, to_session_file, created_at, updated_at
     FROM session_rotations ORDER BY created_at DESC, rowid DESC LIMIT ?`, WAIT_ROWS)
     .map(row => ({ rotationId: row.rotation_id!, kind: row.kind!, state: row.state!, reason: row.reason ?? null, fromSessionFile: row.from_session_file!,
       toSessionFile: row.to_session_file ?? null, createdAt: row.created_at!, updatedAt: row.updated_at! }));
   const nextRotationAt = options.nightlyRotationAt === false ? null
     : isoAt(nextOccurrence(options.now, options.nightlyRotationAt, options.timeZone));
-  return { failedEvents, cutTurns, approvals, checks, nextRotationAt, agentTasks, rotations };
+  return { failedEvents, cutTurns, approvals, checks, nextRotationAt, agentTasks, inboxTasks, rotations };
 }
 
 /** The self-checks listed a page at a time (ADR 0064); nothing bounds how many she books (ADR 0063). */

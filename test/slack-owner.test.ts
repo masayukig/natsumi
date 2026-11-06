@@ -108,6 +108,20 @@ test('typing under a mention is sent again until the turn that took it is done a
   typing.stop();
 });
 
+test('typing under a mention is taken away soon after the turn is done though the loop says nothing, and not sent again before the interval', async () => {
+  const slack = new FakeSlack();
+  let done = false;
+  const typing = new SlackMentionTyping({ loop: { subscribe: () => () => {} }, api: slack, done: () => done,
+    intervalMs: 1_000, maxMs: 5_000, checkMs: 5 });
+  typing.start('C3', '3.0', { file: 'f3', path: 'p' });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(slack.statuses.length, 1, 'checked often, sent again only at the interval');
+  done = true;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(slack.statuses.at(-1), { channel: 'C3', threadTs: '3.0', status: '' });
+  typing.stop();
+});
+
 test('a reply to a message the owner sent from elsewhere is not posted; one to a message from Slack, a notice and a reply to none are', async () => {
   const slack = new FakeSlack();
   let listener!: (event: { type: string; payload: Record<string, unknown> }) => void;

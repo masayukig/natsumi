@@ -10,7 +10,7 @@ import { login, startFixture, type Fixture } from './support/server-fixture.ts';
 // The model routes as the clients see them (ADR 0046): in the snapshot, by command, and as an event.
 
 const ROUTES = {
-  routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, spare: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } } },
+  routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } }, spare: { model: { provider: 'openai-codex', id: 'gpt-6-sol' } } },
   defaultRoute: 'main',
 };
 
@@ -54,8 +54,8 @@ test('the snapshot carries the routes; model.list reads them and model.use choos
     assert.equal(snapshot.type, 'session.snapshot');
     const routes = {
       defaultRoute: 'main', current: 'main', chosen: 'main',
-      routes: [{ name: 'main', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
-        { name: 'spare', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true }],
+      routes: [{ name: 'main', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
+        { name: 'spare', provider: 'openai-codex', model: 'gpt-6-sol', ready: true }],
     };
     assert.deepEqual(snapshot.payload.modelRoutes, routes);
     const listed = await c.request('model.list');
@@ -94,11 +94,11 @@ test('a choice made with the command line reaches the running server without a t
 });
 
 test('a subscription route whose threshold its model\'s window cannot hold stops startup', async () => {
-  await assert.rejects(startFixture({ pi: { routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.5' }, compactionThreshold: 240_000 } },
+  await assert.rejects(startFixture({ pi: { routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, compactionThreshold: 240_000 } },
     defaultRoute: 'main' } }), (error: unknown) => {
     assert.ok(error instanceof ConfigError, String(error));
     assert.equal(error.path, 'pi.routes.main.compactionThreshold');
-    assert.match(error.message, /openai-codex\/gpt-5\.5/);
+    assert.match(error.message, /openai-codex\/gpt-5\.6-sol/);
     return true;
   });
 });

@@ -15,8 +15,8 @@ import { ScriptedModel } from './support/scripted-model.ts';
 // Switching the model route by hand, between turns (ADR 0046). Both routes are subscription models the fixture's
 // synthetic login covers; the scripted stream stands in for either, and records which model each call went to.
 
-const FIRST = { provider: 'openai-codex', model: 'gpt-5.5' };
-const SECOND = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
+const FIRST = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
+const SECOND = { provider: 'openai-codex', model: 'gpt-6-sol' };
 const route = (name: string, target: typeof FIRST, compactionThreshold = 60_000): LoopRoute =>
   ({ name, target, compactionThreshold, compatible: false });
 const ROUTES = { list: [route('main', FIRST), route('spare', SECOND),
@@ -102,8 +102,8 @@ test('a switch asked for during a turn waits for it to end; the next turn is on 
     const { loop, events } = await f.open();
     assert.deepEqual(loop.snapshot().modelRoutes, {
       defaultRoute: 'main', current: 'main', chosen: 'main',
-      routes: [{ name: 'main', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
-        { name: 'spare', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
+      routes: [{ name: 'main', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
+        { name: 'spare', provider: 'openai-codex', model: 'gpt-6-sol', ready: true },
         { name: 'broken', provider: 'openai-codex', model: 'fixture-unknown-model', ready: false }],
     });
     const first = f.send(loop, 'ひとつめ');
@@ -117,11 +117,11 @@ test('a switch asked for during a turn waits for it to end; the next turn is on 
     await completed(events, first.eventId);
     f.answer();
     await loop.idle();
-    assert.deepEqual(turnModels(f.calls), ['gpt-5.5', 'gpt-5.5']);
+    assert.deepEqual(turnModels(f.calls), ['gpt-5.6-sol', 'gpt-5.6-sol']);
 
     const second = f.send(loop, 'ふたつめ');
     await completed(events, second.eventId);
-    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-5.6-sol', 'gpt-5.6-sol']);
+    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-6-sol', 'gpt-6-sol']);
     const changed = events.filter(e => e.type === 'model.routes');
     assert.equal(changed.at(-1)?.payload.current, 'spare');
     assert.equal(loop.snapshot().modelRoutes.current, 'spare');
@@ -137,13 +137,13 @@ test('a choice written by the command line is taken before the next turn, and su
     const { loop, events } = await f.open();
     await writeRouteChoice(f.data, 'spare', Date.now());
     await completed(events, f.send(loop, 'きりかえた？').eventId);
-    assert.deepEqual(turnModels(f.calls), ['gpt-5.6-sol', 'gpt-5.6-sol']);
+    assert.deepEqual(turnModels(f.calls), ['gpt-6-sol', 'gpt-6-sol']);
     await loop.close();
 
     const restarted = await f.open();
     assert.equal(restarted.loop.snapshot().modelRoutes.current, 'spare');
     await completed(restarted.events, f.send(restarted.loop, '再起動後').eventId);
-    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-5.6-sol', 'gpt-5.6-sol']);
+    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-6-sol', 'gpt-6-sol']);
     assert.equal((await readRouteStatus(f.data))?.current, 'spare');
   } finally { await f.cleanup(); }
 });
@@ -175,7 +175,7 @@ test('a chosen route that is no longer in the config gives way to the default, w
     assert.equal(await readRouteChoice(f.data), 'main');
     assert.ok(f.logs.includes('thinking loop: the chosen model route removed is not in the config; back to the default main'), f.logs.join('\n'));
     await completed(events, f.send(loop, 'だいじょうぶ？').eventId);
-    assert.deepEqual(turnModels(f.calls), ['gpt-5.5', 'gpt-5.5']);
+    assert.deepEqual(turnModels(f.calls), ['gpt-5.6-sol', 'gpt-5.6-sol']);
   } finally { await f.cleanup(); }
 });
 
@@ -223,7 +223,7 @@ test('after a switch to a route with a lower threshold, the session is compacted
     await loop.idle();
     const summary = f.calls.findIndex(c => c.summary);
     assert.ok(summary >= 0, 'compacted after the switch');
-    assert.equal(f.calls[summary]!.model, 'gpt-5.6-sol');
+    assert.equal(f.calls[summary]!.model, 'gpt-6-sol');
     await completed(events, f.send(loop, 'つぎ').eventId);
     assert.ok(f.calls.findIndex((c, i) => i > summary && !c.summary && !c.memo) > summary);
   } finally { await f.cleanup(); }

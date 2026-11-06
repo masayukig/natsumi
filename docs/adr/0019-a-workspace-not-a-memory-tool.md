@@ -1,7 +1,7 @@
 # 0019. 記憶の道具をやめ、なつみの作業環境にする
 
 - Date: 2026-09-19
-- Status: Accepted（「ネットワーク」の節の `network_mode: none` と閉じ込めの実測のネットワークの項目は [ADR 0034](0034-an-allow-list-for-the-way-out.md) で置き換え、永続する書き場所を 0700 で作る点は [ADR 0033](0033-running-on-kubernetes.md) で置き換え、作業環境に読み取り専用のマニュアル `/manual` を見せる点は [ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md) で追加、読み取り専用の `/sources` と shell の `view` のコマンドを見せる点は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で追加、記憶を言葉で探すツール `search_memory` は [ADR 0055](0055-a-memory-curator-at-night.md) で追加、system prompt の冒頭の名前をアバターの設定から取る点を [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) で追加、runner の要求に argv と stdin を足し、bash を通さずに起動して時間切れで止める形を [ADR 0075](0075-tools-declared-in-the-config.md) で追加（`run_shell` の動きは変わらない））
+- Status: Accepted（「ネットワーク」の節の `network_mode: none` と閉じ込めの実測のネットワークの項目は [ADR 0034](0034-an-allow-list-for-the-way-out.md) で置き換え、永続する書き場所を 0700 で作る点は [ADR 0033](0033-running-on-kubernetes.md) で置き換え、作業環境に読み取り専用のマニュアル `/manual` を見せる点は [ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md) で追加、読み取り専用の `/sources` と shell の `view` のコマンドを見せる点は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で追加、記憶を言葉で探すツール `search_memory` は [ADR 0055](0055-a-memory-curator-at-night.md) で追加、system prompt の冒頭の名前をアバターの設定から取る点を [ADR 0057](0057-an-avatar-directory-named-in-the-server-config.md) で追加、runner の要求に argv と stdin を足し、bash を通さずに起動して時間切れで止める形を [ADR 0075](0075-tools-declared-in-the-config.md) で追加（`run_shell` の動きは変わらない）、image に kubectl・ssh の client・curl を入れることと、`/etc/passwd` に行の無い UID でも ssh が動くように PATH の ssh をラッパーにすることは [ADR 0085](0085-relays-that-add-the-keys-for-the-workspace.md) の「実装で決めたこと」で追加、「1 コマンドの寿命と、残ったプロセス」の応答の上限まで待つ点と、上限を過ぎたコマンドの出力を読み捨てて知らせない点は、なつみの `run_shell` に待ち時間 `wait_seconds` を足し、待ちを過ぎたコマンドの終わりを `/sources/jobs/` に置いて `sources_updated` で知らせる形に [ADR 0094](0094-background-commands-and-waiting-for-news-within-a-turn.md) で変更（待つ数は `loop.backgroundJobs`（既定 5）まで、待つのは 24 時間まで。整理係の `run_shell` は変わらない）、「コマンドと出力の上限」の出力を先頭から取る点は先頭と末尾を残す形に同 ADR で変更（上限の大きさは変わらない）、「ツールの説明と prefix cache」の説明に書く項目の長い処理の段落を同 ADR で変更）
 
 ## Context
 
@@ -90,6 +90,8 @@
 - **`procps`**（`ps`・`kill`）。残ったプロセスをなつみが自分で始末するために要る（後述）。
 - `tzdata`。日付をなつみのタイムゾーンで出すために要る。
 - `/etc/passwd` に `natsumi` の行を置く。既定の UID で動かしたときに名前が付く。override で UID を変えたときは名前は付かないが、`HOME` を渡しているので動く。
+  - 例外は ssh である。ssh は起動時に自分の行を `/etc/passwd` から引き、無ければ止まる。PATH の ssh はラッパーにし、行の無い UID のときだけ、
+    `libnss-wrapper` で ssh にだけ 1 行を見せる（[ADR 0085](0085-relays-that-add-the-keys-for-the-workspace.md) の「実装で決めたこと」）。
 
 この列挙は Dockerfile の現在の中身であって、増減は実装の判断でよい。この ADR が決めるのは **「普通の Debian の環境 + Python」という水準**である。
 

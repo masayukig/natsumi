@@ -6,7 +6,8 @@ services:
     image: natsumi:local
     init: true
     restart: unless-stopped
-    stop_grace_period: 30s
+    # loop.shutdownDrainSeconds (600 by default) and a minute to close the rest (ADR 0083).
+    stop_grace_period: 660s
     read_only: true
     tmpfs:
       - /tmp

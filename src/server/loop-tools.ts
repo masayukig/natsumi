@@ -4,8 +4,8 @@ import { defineTool } from '@earendil-works/pi-coding-agent';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
 import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
-  NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
-  SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
+  NOTIFY_OWNER_DESCRIPTION, REPLY_TO_AGENT_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
+  SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WAIT_FOR_EVENTS_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
   WRITE_HANDOFF_NOTE_DESCRIPTION } from './prompts.ts';
 
 /** The avatar expressions the Mac can show. The model picks from these only. */
@@ -42,8 +42,20 @@ export interface LoopToolHost {
    * `files` are paths under /work or /sources, as the workspace names them, sent with the message (ADR 0080).
    */
   askAgent(agent: string, message: string, goOn: boolean, files?: string[]): Outcome;
+  /**
+   * A reply to what an agent asked her (ADR 0089): `to` a sender or one of its tasks' directories, closing it or asking.
+   * Always present, whether or not anyone may send her anything, as `askAgent` is.
+   */
+  replyToAgent(to: string, text: string | undefined, state: 'completed' | 'input-required'): Outcome;
+  /**
+   * Waits within the turn, up to `maxSeconds`, for something that can be steered into it (ADR 0094). Always present,
+   * with or without a workspace: a reply to `askAgent` is waited for as well. `signal` is the tool call's, which a
+   * turn stopped by its time aborts.
+   */
+  waitForEvents(maxSeconds: number, signal?: AbortSignal): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
-  runShell?(command: string): Outcome;
+  /** A command in the workspace, waited for `waitSeconds` when she chose a wait (ADR 0094). */
+  runShell?(command: string, waitSeconds?: number): Outcome;
   /** The runner's raw answer, for `read` (ADR 0047). Present exactly when `runShell` is. */
   capture?: RunnerCapture;
   /** Whether `read` reads the owner's skills in /skills too (ADR 0073). Its description stays as it is either way. */
@@ -57,13 +69,15 @@ export interface LoopToolHost {
  * end a turn with: a turn ends when natsumi stops without calling one (ADR 0024).
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'set_mac_avatar_expression',
-  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent'];
+  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent', 'reply_to_agent'];
 /** Added to the allowlist with a runner: the whole of natsumi's workspace, memory included (ADR 0019). */
 export const RUN_SHELL_TOOL_NAME = 'run_shell';
 /** Pi's own read, added with a runner and pointed at /manual and /memory in the workspace (ADR 0047). */
 export const READ_TOOL_NAME = 'read';
 /** Searching memory for a word, added with a runner (ADR 0055). */
 export const SEARCH_MEMORY_TOOL_NAME = 'search_memory';
+/** Waiting for news within a turn (ADR 0094): the model's own, never a Codemode script's. */
+export const WAIT_FOR_EVENTS_TOOL_NAME = 'wait_for_events';
 
 /**
  * The expressions as a parameter. The avatar and every line share this one list, so an expression added to the Mac is
@@ -85,8 +99,8 @@ export function createLoopTools(host: LoopToolHost) {
     ...(shell ? [defineTool({
       name: RUN_SHELL_TOOL_NAME, label: 'Work in the workspace',
       description: RUN_SHELL_DESCRIPTION,
-      parameters: Type.Object({ command: Type.String() }),
-      execute: async (_id, params) => result(shell(params.command)),
+      parameters: Type.Object({ command: Type.String(), wait_seconds: Type.Optional(Type.Number()) }),
+      execute: async (_id, params) => result(shell(params.command, params.wait_seconds)),
     })] : []),
     defineTool({
       name: 'reply_to_mac', label: 'Reply to the owner',
@@ -152,5 +166,20 @@ export function createLoopTools(host: LoopToolHost) {
     // After ask_agent for the same reason: every definition before it stays where it was on the prefix (ADR 0047).
     // search_memory after read, likewise (ADR 0055).
     ...(host.capture ? [workspaceReadTool(host.capture, { skills: host.skills === true }), searchMemoryTool(host.capture)] : []),
+    // Last of all, after read and search_memory, so that adding it moved no definition before it (ADR 0089).
+    defineTool({
+      name: 'reply_to_agent', label: 'Reply to an agent',
+      description: REPLY_TO_AGENT_DESCRIPTION,
+      parameters: Type.Object({ to: Type.String(), text: Type.Optional(Type.String()),
+        state: Type.Union([Type.Literal('completed'), Type.Literal('input-required')]) }),
+      execute: async (_id, params) => result(host.replyToAgent(params.to, params.text, params.state as 'completed' | 'input-required')),
+    }),
+    // After reply_to_agent, likewise (ADR 0094).
+    defineTool({
+      name: WAIT_FOR_EVENTS_TOOL_NAME, label: 'Wait for news',
+      description: WAIT_FOR_EVENTS_DESCRIPTION,
+      parameters: Type.Object({ max_seconds: Type.Number() }),
+      execute: async (_id, params, signal) => result(host.waitForEvents(params.max_seconds, signal)),
+    }),
   ];
 }

@@ -1,5 +1,7 @@
 # The token natsumi calls outside agents with (ADR 0025, ADR 0035). Only for a server with `a2a` in its config:
 # without the token file this override stops compose, so the default compose.yaml does not mount it.
+# It is a ServiceAccount token for natsumi, with the audience `https://auth.fraction.jp` when the agents are reached through
+# gated (gated checks it and drops it), or `a2a` when their Services are called directly (ADR 0084).
 #
 #   docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
 #   docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.a2a.example.yaml up -d

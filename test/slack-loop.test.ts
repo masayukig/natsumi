@@ -35,6 +35,7 @@ class FakeSources {
   next: Record<string, unknown> | undefined;
   readonly taken: string[] = [];
   readonly lines = new Map<string, Record<string, unknown>>();
+  steerable() { return false; }
   async take(eventId: string) {
     this.taken.push(eventId);
     if (!this.next) return false;

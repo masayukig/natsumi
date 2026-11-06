@@ -62,6 +62,6 @@ test('compatible endpoint registers one thinking-capable chat-completions model 
     const config = runtime.getRegisteredProviderConfig(COMPATIBLE_PROVIDER);
     assert.equal(config?.apiKey, `$${COMPATIBLE_KEY_ENV}`);
     assert.doesNotMatch(JSON.stringify(config), /fixture-secret-value/);
-    assert.equal(runtime.getModel('openai-codex', 'gpt-5.5') !== undefined && runtime.hasConfiguredAuth('openai-codex'), false);
+    assert.equal(runtime.getModel('openai-codex', 'gpt-5.6-sol') !== undefined && runtime.hasConfiguredAuth('openai-codex'), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
