@@ -1,0 +1,130 @@
+# 0097. ask_agent も関所を通し、サーバーは鍵の代わりにサロゲートを持つ
+
+- Date: 2026-11-09
+- Status: Accepted
+
+## Context
+
+[ADR 0095](0095-letting-her-act-and-noticing-quickly.md) で、ペネロペ（クラスタの運用を受け持つインスタンス）の出口に関所を置くことにした。
+関所は同じ Pod の別のコンテナで動く別のプログラム（リポジトリ `yuanying/natsumi-sentinel`）で、外向きの通信を透過型の proxy で受け、宛先と操作ごとに通す・本人に聞く（ask）・断るを決め、監査の記録を持つ。
+鍵は同じ Pod の別のコンテナの authd だけが持ち、道具やサーバーは秘密でない代わりの値（サロゲート）を持つ。authd は、登録した宛先にだけサロゲートを本物の鍵に差し替える。
+作業環境の出口は、すべて関所を通る。本人は、サーバーの出口のうち、外のエージェントへの依頼（`ask_agent`）も最初の版から関所に通すことを選んだ。
+ペネロペが係に何を頼んだかを、作業環境の出口と同じ監査の記録に残すためである。
+
+サーバーの A2A の呼び出しは、今は次のとおりである。
+
+- サーバーの外向きの HTTPS は、同じ Pod の透過型の proxy が SNI の名前で通す。TLS は解かない（[ADR 0034](0034-an-allow-list-for-the-way-out.md)）。
+- gated の後ろの係は、gated の audience の ServiceAccount の token で呼ぶ。token は Pod に差し込まれ、サーバーのコンテナが読む（[ADR 0084](0084-calling-agents-behind-gated-with-its-audience.md)）。
+- サーバーは token の中身を見ない。`a2a.tokenFile`（または係ごとの `a2a.agents.<名前>.tokenFile`、[ADR 0089](0089-hearing-from-agents-over-a2a.md)）を呼ぶたびに読み直し、`Authorization: Bearer` で送るだけである。
+- token は係の URL と同じ origin にだけ送り、リダイレクトはたどらない。Agent Card は token なしで取る（[ADR 0025](0025-talking-to-outside-agents-over-a2a.md)、[ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md)、[ADR 0048](0048-bringing-in-images-an-agent-hands-back.md)）。
+- A2A の呼び出しは Node の `fetch` で行う（`src/server/a2a-client.ts` の `A2AClient`）。
+- 係への送信が失敗すると、`ask_agent` は失敗の種類で文を選んで返す。関所の 403 は、今は「つながりません」の扱いになる（`src/server/agent-requests.ts`）。
+
+関所は TLS を終端して中身を読むので、サーバーは関所の CA を信用しなければならない。
+
+## Decision
+
+### 関所を選んだインスタンスでは、サーバーの A2A の呼び出しも関所を通る
+
+- 外のエージェントへの HTTPS（依頼の送信、Task の取得、Agent Card、返事のファイル）は、透過で関所に回す。回す規則は初期化のコンテナが張る（ADR 0034 の形）。
+  サーバーのコードは、どの呼び出しが関所を通るかを知らない。
+- 関所の上の扱い（操作 `a2a.send` と係の名前、既定は通して記録するだけで、係ごとに ask に変えられること、記録の中身）は、natsumi-sentinel の ADR が決める。
+- 関所を通すのは A2A の呼び出しだけである。モデルの経路、Slack（ポッポさん）、GitHub のログイン、APNs、Web Push は、今の透過型の proxy のままとする。
+- 外から届く A2A（なつみの受け口、[ADR 0089](0089-hearing-from-agents-over-a2a.md)）と、係からの push（[ADR 0092](0092-a-push-from-an-agent-as-a-doorbell.md)）は、出口ではないので変わらない。
+
+### サーバーは gated の token を持たず、サロゲートを持つ
+
+- 関所を選んだインスタンスでは、gated の audience の token をサーバーのコンテナに置かない。token は authd だけが持ち、関所を通った要求のサロゲートを本物に差し替える。
+- サーバーは、`a2a.tokenFile`（または係ごとの `tokenFile`）でサロゲートのファイルを指す。サロゲートは秘密ではない。
+- **config の形は変えない。** サーバーはサロゲートと本物の token を見分けず、今までどおり読み直して `Authorization: Bearer` で送る。
+  token を送る先を係の URL と同じ origin に限ること、リダイレクトをたどらないこと、Agent Card を token なしで取ることも変えない。
+- gated から見た呼び出し元は、今までどおりなつみの ServiceAccount である。authd が持つ token をどう作り直すかは、natsumi-sentinel の ADR が決める。
+
+### 関所の CA は、Node の標準の追加の CA で信用する
+
+- サーバーは、関所の CA の証明書を、Node が起動時に読む追加の CA（`NODE_EXTRA_CA_CERTS`）として受け取る。証明書は秘密ではなく、配置が渡す。サーバーのコードと config は変えない。
+- 追加の CA は、A2A に限らずサーバーのすべての TLS で信用される。関所の CA の鍵は関所のコンテナにだけ置き、どの通信が関所に回るかは初期化のコンテナの規則だけが決めるので、これを受け入れる。
+- A2A の呼び出しが使う `fetch` に追加の CA が効くことを、実装の作業単位で確かめる。Node の組み込みの `fetch` に効くことは確かめた（References）。
+  Pi が読み込む undici が組み込みの `fetch` の下回りを差し替えたあとにも効くかは、まだ確かめていない。
+  効かなければ、実装の作業単位で A2A の呼び出しに CA を渡す形を足す。そのときも、関所の CA を信用するのは A2A の呼び出しに必要な範囲に限り、この ADR のほかの決定は変えない。
+
+### 関所の ask と断りは、関所の文のまま `ask_agent` に返す
+
+- 関所の socket を config に書いたインスタンス（[ADR 0096](0096-sentinel-approvals-on-the-dashboard.md)）では、サーバーは依頼の送信への関所の ask と断りの答えを、ほかの失敗と見分ける。
+  見分け方は、関所の答えの形（natsumi-sentinel の ADR）に従う。socket を書かないインスタンスでは、今のまま「つながりません」として扱う。
+- ask のとき、`ask_agent` は頼まずに戻り、次のことを伝える。承認待ちの id、関所が示す操作と対象、答えは `/sources/sentinel/approvals/<id>.json` に届くこと（ADR 0096）、許されたら同じ依頼をやり直すこと。
+- 断りのとき、`ask_agent` は頼まずに戻り、関所の表で断られていること、変えるには本人が表を直すことを伝える。
+- どちらも、頼んでいないので、依頼のディレクトリは今の失敗と同じく残さない。サーバーは自分でやり直さない。
+- 文は関所が示す事実から組む。関所の 403 の本文を、そのままモデルに見せてもよい。関所の文はペネロペが書いたものではないからである。
+- Task の取得や返事のファイルの取得が関所に断られたときは、今の失敗と同じに扱う。Task の取得は、ADR 0036 の Decision「返事を待ち続ける上限」まで繰り返す。
+
+### 関所が止まったら、A2A の呼び出しは止まる
+
+- 関所が止まっているか、関所につながらないときは、A2A の呼び出しは失敗する。関所を迂回して係へ直接つなぐ道は作らない。
+- `ask_agent` は今の「つながりません」を返し、Task の取得は今のまま上限まで繰り返す。
+
+### 守る対象・許す範囲・失敗したときの倒し方
+
+- 守る対象: gated の audience の token。関所を選んだインスタンスでは、authd のコンテナの外に置かない。
+- 許す範囲: サーバーが持つのはサロゲートだけで、本物への差し替えは authd が登録した宛先にだけ行う。token を送る先を係の URL と同じ origin に限るサーバーの決まりも、そのまま重ねる。
+- 失敗したとき: 関所か authd が止まっている、関所の CA を信用できない、関所が ask か断りを返したときは、どれも頼まない側に倒す。関所を迂回して直接つながない。
+
+### 本 ADR で決定しないこと
+
+- 関所の上の A2A の扱い（操作の名前、係の名前の決め方、既定、監査に残す中身と期間）と、authd の token の作り直し（委譲先: natsumi-sentinel の ADR（リポジトリ `yuanying/natsumi-sentinel` の `docs/adr/`））。
+- A2A の宛先を関所に回す規則、サロゲートと関所の CA の証明書の置き場所、authd に token を渡す形（委譲先: 環境のリポジトリの設定）。
+- `ask_agent` が返す文の文面と、関所の答えを見分ける手順（委譲先: この ADR の実装の PR と、`ask_agent` のマニュアル）。
+- モデルの経路と Slack を関所に通すこと（委譲先: 必要になったときの ADR）。
+- ペネロペ以外のインスタンスの A2A を関所に通すこと（委譲先: ADR 0095 の「広げるときの ADR」）。
+
+### 置き換える既存の決定
+
+どれも、関所を選んだインスタンスに限る。
+
+- ADR 0084
+  - 置き換え: Decision「呼ぶ道で、token の audience を分ける」の、本番のなつみが gated の audience の token（projected token）を持つ点。関所を選んだインスタンスでは、token は authd が持ち、サーバーはサロゲートを持つ。
+  - 残す: gated 経由では gated の audience の token で呼ぶこと（authd が付ける）。Decision「なつみのコードは変えない」の、token の中身を見ず、呼ぶたびに読み直すこと。
+- ADR 0034
+  - 置き換え: Decision「サーバーの外向きは、透過型の proxy を名前で通す」と Decision「許可する宛先」の、外のエージェントへの HTTPS を SNI の名前で通す点。関所に回し、関所が TLS を終端する。
+  - 残す: サーバーのほかの外向きは、今の透過型の proxy を名前で通すこと。
+- ADR 0035
+  - 追加: Decision「頼むツールは汎用の 1 つ」の `ask_agent` に、依頼の送信が関所の ask と断りに当たったときの `ask_agent` の返し方を加える。
+  - 残す: ほかの失敗の扱い。
+
+## Consequences
+
+- ペネロペが係に頼んだことが、作業環境の出口と同じ関所の監査の記録に残る。係ごとに ask に変えれば、本人が頼みの中身を見てから通せる。
+- サーバーのコンテナに gated の token が無くなる。サーバーのコンテナから持ち出せるのはサロゲートだけで、関所の外では使えない。
+- `ask_agent` の頼みの文、添えたファイル（[ADR 0080](0080-sending-files-to-an-agent-with-the-request.md)）、push の受け口と依頼ごとの token（ADR 0092）が、関所の監査の記録に残る。
+  記録はダッシュボードで本人が読める（ADR 0096）。本人の私事が頼みの文に入れば、それも記録の期間だけ残る。
+- 関所が止まると、ペネロペは係に頼めず、返事も取れない。迂回の道を作らないので、これを受け入れる。
+- サーバーは関所の CA を、A2A に限らずすべての TLS で信用する。関所の CA の鍵が漏れ、かつ初期化のコンテナの規則が書き換わったときに限って、ほかの出口にも割り込まれうる。
+- 依頼が 1 つの段だけ長くなる（関所での TLS の終端と、authd での差し替え）。
+- 関所の socket を書かずに A2A だけを関所に通すと、ask と断りが「つながりません」と伝わる。関所を選ぶインスタンスは、両方を一緒に設定する必要がある。
+
+## Alternatives Considered
+
+- **最初の版では A2A を関所に通さず、記録だけを別に取る**: 判定器が無いうちは記録だけで足りるという案だった。本人が、最初の版から関所に通すことを選んだ。監査の記録の置き場所が 1 つにそろう。
+- **サーバーに token を残したまま、関所は TLS を終端して記録するだけにする**: サーバーのコンテナに鍵が残る。作業環境と同じく、鍵は authd だけが持つ形にそろえた。
+- **関所の CA を A2A の呼び出しだけに渡す config の欄を最初から足す**: コードと config が増える。標準の追加の CA で足りるなら要らない。効かないと分かったときに足す。
+
+## Related ADRs
+
+- Related: ADR-0095 なつみは自由に動かし、守りは「防ぐ」より「すぐ気づく」に寄せる（方針と用語）
+- Related: ADR-0096 関所が本人に聞くものの窓口をダッシュボードに置き、答えは /sources で知らせる（ask の答えの届け方）
+- Related: ADR-0084 gated の後ろの係は、gated の audience の token で呼ぶ（token の持ち主を置き換える）
+- Related: ADR-0034 出口を許可リストで絞る（サーバーの A2A の外向きを置き換える）
+- Related: ADR-0035 外のエージェントに頼むツールと、返事の受け取り方（ask と断りの返し方を足す）
+- Related: ADR-0025 外のエージェントと A2A で話す（token を送る先の決まりは変えない）
+- Related: ADR-0036 読み取り専用のマニュアルと、返事を待ち続ける上限（Task の取得の上限）
+- Related: ADR-0048 外のエージェントが返事に付けた画像を、サーバーが /work に取り込む（同じ origin だけ、リダイレクトをたどらない）
+- Related: ADR-0080 外のエージェントに頼むとき、作業環境のファイルを中身ごと渡す（記録に残るもの）
+- Related: ADR-0089 なつみも A2A の受け口を持ち、届いた依頼は /sources に置いて、返事のツールで閉じる（係ごとの `tokenFile`、受け口は変わらない）
+- Related: ADR-0092 頼んだ係からの A2A の push は呼び鈴として受け、poll は保険に残す（push は変わらない、依頼ごとの token が記録に残る）
+
+## References
+
+- natsumi-sentinel の ADR（リポジトリ `yuanying/natsumi-sentinel` の `docs/adr/`）。関所の A2A の扱い、authd、サロゲートの決定の正本、2026-11-09 確認
+- natsumi `src/server/a2a-client.ts` の `A2AClient`（`globalThis.fetch` を使う、係ごとの token のファイルを呼ぶたびに読む、ファイルの取得は `redirect: 'error'`）と `A2ACallError`、2026-11-09 確認
+- natsumi `src/server/agent-requests.ts` の依頼の送信の失敗の扱い（失敗の種類ごとの文、依頼のディレクトリを消す）、2026-11-09 確認
+- Node.js v24.12.0 の組み込みの `fetch` が `NODE_EXTRA_CA_CERTS` の CA を信用すること。手元で、自己署名の CA で署名した証明書の HTTPS に、指定しないと `UNABLE_TO_VERIFY_LEAF_SIGNATURE`、指定すると成功することを確かめた、2026-11-09 確認

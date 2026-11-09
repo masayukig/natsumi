@@ -1,7 +1,7 @@
 # 0084. gated の後ろの係は、gated の audience の token で呼ぶ
 
 - Date: 2026-10-29
-- Status: Accepted（Consequences の「gated 経由の係と Service を直接呼ぶ係を混ぜられない」は、係ごとに `tokenFile` を指せるようにすることで [ADR 0089](0089-hearing-from-agents-over-a2a.md) で置き換え）
+- Status: Accepted（Consequences の「gated 経由の係と Service を直接呼ぶ係を混ぜられない」は、係ごとに `tokenFile` を指せるようにすることで [ADR 0089](0089-hearing-from-agents-over-a2a.md) で置き換え。関所を選んだインスタンスでは、gated の audience の token をサーバーが持たず authd が持ち、サーバーは `tokenFile` でサロゲートを指すことを [ADR 0097](0097-asking-agents-through-the-sentinel-with-a-surrogate.md) で置き換え（config の形と、呼ぶたびに読み直すことは変わらない））
 
 ## Context
 
