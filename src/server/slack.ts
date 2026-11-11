@@ -430,18 +430,19 @@ export class SlackWorkspace {
 type AttentionPlace = { file: string; path: string };
 
 export class SlackMentionTyping {
-  private readonly shown = new Map<string, { channel: string; threadTs: string; place: AttentionPlace; since: string; until: number; again: number }>();
+  private readonly shown = new Map<string, { channel: string; threadTs: string; place: AttentionPlace; since: string; until: number; again: number; agents?: boolean }>();
   private readonly unsubscribe: () => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly intervalMs: number;
   private readonly maxMs: number;
   private readonly checkMs: number;
-  private readonly options: { api: SlackApi; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number;
-    log?: (line: string) => void };
+  private readonly options: { api: Pick<SlackApi, 'setStatus'>; done: (place: AttentionPlace) => boolean; waitingAgents?: (since: string) => number;
+    holdForAgents?: boolean; followedUp?: (since: string) => boolean; log?: (line: string) => void };
 
   constructor(options: {
     loop: { subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void };
-    api: SlackApi;
+    /** Fork (ADR F07): a Signal group's typing is shown through the same `setStatus`, by an adapter. */
+    api: Pick<SlackApi, 'setStatus'>;
     /**
      * Whether the turn that took the attention at `place` is over; false while it is not yet taken. The path alone is
      * not enough: it is a position inside one day's file, so an older day's attention has the same one.
@@ -449,6 +450,13 @@ export class SlackMentionTyping {
     done: (place: AttentionPlace) => boolean;
     /** How many agents asked at or after `since` (an ISO time) have not answered yet. */
     waitingAgents?: (since: string) => number;
+    /**
+     * Fork (ADR F07, Signal groups): once an agent she asked was seen waiting, it goes on past the agent's answer until
+     * her next post there (`posted`), as OwnerTyping does for the owner. Off for Slack, whose behaviour stays.
+     */
+    holdForAgents?: boolean;
+    /** With `holdForAgents`: whether a turn that began after the answer of the agents asked since `since` is over. */
+    followedUp?: (since: string) => boolean;
     intervalMs?: number; maxMs?: number; checkMs?: number;
     /** Where a status Slack refused, and each taking away, is told: whether the status stays up past it is seen on screen. */
     log?: (line: string) => void;
@@ -475,6 +483,27 @@ export class SlackMentionTyping {
     }, Math.min(this.checkMs, this.intervalMs));
   }
 
+  /** Fork (ADR F07): takes it away from one place now. */
+  end(channel: string, threadTs: string): void {
+    if (!this.shown.delete(`${channel}:${threadTs}`)) return;
+    this.send(channel, threadTs, false);
+    if (this.shown.size === 0) this.idle();
+  }
+
+  /**
+   * Fork (ADR F07): her post there was sent, which the app takes as the end of her typing. While she is still at it
+   * (the turn goes on, or an agent she asked has not answered) it is shown again at once; once an agent answered and
+   * the turn is done, this post was the one it waited for, and it ends.
+   */
+  posted(channel: string, threadTs: string): void {
+    const shown = this.shown.get(`${channel}:${threadTs}`);
+    if (!shown) return;
+    this.check();
+    if (!this.shown.has(`${channel}:${threadTs}`)) return;
+    if (shown.agents && this.safely(() => this.options.done(shown.place), false) && this.waiting(shown) === 0) this.end(channel, threadTs);
+    else this.send(channel, threadTs, true);
+  }
+
   stop(): void {
     this.unsubscribe();
     for (const { channel, threadTs } of this.shown.values()) this.send(channel, threadTs, false);
@@ -484,12 +513,21 @@ export class SlackMentionTyping {
 
   private check(): void {
     for (const [key, shown] of this.shown) {
-      if (Date.now() < shown.until && !(this.safely(() => this.options.done(shown.place), false)
-        && this.safely(() => (this.options.waitingAgents?.(shown.since) ?? 0) === 0, true))) continue;
+      const waiting = this.waiting(shown);
+      if (waiting > 0 && this.options.holdForAgents) shown.agents = true;
+      // After an agent's answer, the turn that follows it ends it too, whether she posted or not.
+      const over = this.safely(() => this.options.done(shown.place), false) && waiting === 0
+        && (!shown.agents || this.safely(() => this.options.followedUp?.(shown.since) ?? false, false));
+      if (Date.now() < shown.until && !over) continue;
       this.shown.delete(key);
       this.send(shown.channel, shown.threadTs, false);
     }
     if (this.shown.size === 0) this.idle();
+  }
+
+  /** How many agents asked since it was started have not answered; none when that cannot be read. */
+  private waiting(shown: { since: string }): number {
+    try { return this.options.waitingAgents?.(shown.since) ?? 0; } catch { return 0; }
   }
 
   private idle(): void {

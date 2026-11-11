@@ -1,4 +1,4 @@
-import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, type JudgeClient, type JudgeState,
+import { DEFAULT_JUDGE_TIMEOUT_MS, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, type JudgeClient, type JudgeIssue, type JudgeState,
   type Judgement, type Placement } from './judge.ts';
 
 /**
@@ -46,7 +46,8 @@ export class LogprobJudgeClient implements JudgeClient {
   private readonly options: LogprobJudgeOptions;
   constructor(options: LogprobJudgeOptions) { this.options = options; }
 
-  async judge(state: JudgeState, options: { placement: boolean }): Promise<Judgement> {
+  async judge(state: JudgeState, options: { placement: boolean; issues?: readonly JudgeIssue[] }): Promise<Judgement> {
+    const asked = options.issues ?? JUDGE_ISSUES;
     const stateText = `<state>\n${JSON.stringify(state, null, 2)}\n</state>\n\n`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS);
@@ -73,12 +74,12 @@ export class LogprobJudgeClient implements JudgeClient {
         })
         : undefined;
       // Every question is under way before the first answer is looked at; the first failure is the one reported.
-      const scores = JUDGE_ISSUES.map(issue => noul(issue.instructions));
+      const scores = asked.map(issue => noul(issue.instructions));
       const settled = await Promise.allSettled([...scores, ...placement ? [placement] : []]);
       const failed = settled.find(result => result.status === 'rejected');
       if (failed) throw (failed as PromiseRejectedResult).reason;
       const issues = await Promise.all(scores);
-      return { issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: issues[index]! })),
+      return { issues: asked.map((issue, index) => ({ name: issue.name, label: issue.label, score: issues[index]! })),
         ...(placement ? { placement: await placement } : {}) };
     } catch (error) {
       if (error instanceof JudgeError) throw error;

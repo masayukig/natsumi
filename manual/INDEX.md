@@ -15,6 +15,7 @@
 | 絵・画像を作る（sdctl）、自分の絵を描く（自撮り・気分の絵も） | `/manual/avatar/images.md` |
 | webhook で届いたもの（クラスタのアラート、GitHub など）を読む、いま鳴っているアラートを見る | `/manual/webhooks.md` |
 | 出来事 sources_updated の attention を読む（Slack） | `/manual/slack.md` |
+| Signal のグループの記録を読む、Signal のグループに投稿する・リアクションを付ける（ポッポさんに頼む）、attention を読む（Signal） | `/manual/signal.md` |
 | 出来事 sources_updated の attention を読む（webhook、`kind` が `webhook`・`alert`） | `/manual/webhooks.md` |
 | 出来事 sources_updated の attention を読む（届いた依頼、`kind` が `agent_request`・`agent_answer`） | `/manual/inbox.md` |
 | 裏に回ったコマンド（`run_shell` の `wait_seconds`）の終わりを知る、出力を読む | `/manual/jobs.md` |

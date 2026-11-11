@@ -62,6 +62,17 @@ export const JUDGE_ISSUES: readonly JudgeIssue[] = [
 ];
 
 /**
+ * Fork (ADR F07): the same issues for a post to a Signal group, with the preamble in its words: a group chat with no
+ * threads, where a reply quotes the message it answers. Slack's questions stay as they are.
+ */
+const SIGNAL_PREAMBLE = 'The state holds a draft reply that an AI secretary wants to post in a Signal group chat on behalf of its owner, '
+  + 'the message it replies to by quoting it (reply_to, or null for a post to the group itself), and the recent conversation up to now: '
+  + 'the latest messages in the group, which has no threads (conversation.channel). '
+  + 'The secretary knows private things about its owner that must not reach the group. Judge the draft only against what the conversation shows. ';
+export const SIGNAL_JUDGE_ISSUES: readonly JudgeIssue[] = JUDGE_ISSUES.map(issue => ({ ...issue,
+  instructions: issue.instructions.replace(PREAMBLE, SIGNAL_PREAMBLE) }));
+
+/**
  * Where a reply goes, asked only when natsumi answers a message (ADR 0062): `thread` is its thread alone, `channel` the
  * channel itself with no thread, and `broadcast` its thread shown in the channel too (Slack's `reply_broadcast`). A
  * message in the channel itself is answered there, its question too; the thread is for a talk going on in it, or for a
@@ -98,7 +109,8 @@ export interface Judgement {
 
 export interface JudgeClient {
   /** Judges one draft. Throws `JudgeError` when there is no verdict to be had. */
-  judge(state: JudgeState, options: { placement: boolean }): Promise<Judgement>;
+  /** `issues` replaces `JUDGE_ISSUES` (fork, ADR F07: a Signal group's wording). */
+  judge(state: JudgeState, options: { placement: boolean; issues?: readonly JudgeIssue[] }): Promise<Judgement>;
 }
 
 /**
@@ -164,7 +176,7 @@ export interface SideBySide {
  * (ADR 0059). Each is read by its own thresholds. A judge that fails leaves the one word of why (`JudgeError.kind`).
  */
 export async function judgeSideBySide(judges: Partial<Record<JudgeMethod, JudgeSlot>>, choice: JudgeChoice, state: JudgeState,
-  options: { placement: boolean }): Promise<SideBySide> {
+  options: { placement: boolean; issues?: readonly JudgeIssue[] }): Promise<SideBySide> {
   const asked = JUDGE_METHODS.filter(method => choice[method] && judges[method] !== undefined);
   const answers = await Promise.all(asked.map(async (method): Promise<[JudgeMethod, JudgeResult]> => {
     const { client } = judges[method]!;

@@ -1,4 +1,4 @@
-import { DEFAULT_JUDGE_TIMEOUT_MS, isPlacement, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, probability, type JudgeClient, type JudgeState,
+import { DEFAULT_JUDGE_TIMEOUT_MS, isPlacement, JUDGE_ISSUES, JUDGE_PLACEMENT, JudgeError, PLACEMENT_ORDER, probability, type JudgeClient, type JudgeIssue, type JudgeState,
   type Judgement, type Placement } from './judge.ts';
 
 /**
@@ -29,8 +29,9 @@ export class HttpJevClient implements JudgeClient {
   private readonly options: HttpJevClientOptions;
   constructor(options: HttpJevClientOptions) { this.options = options; }
 
-  async judge(state: JudgeState, options: { placement: boolean }): Promise<Judgement> {
-    const questions: Record<string, unknown> = Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { type: 'noul', instructions: issue.instructions }]));
+  async judge(state: JudgeState, options: { placement: boolean; issues?: readonly JudgeIssue[] }): Promise<Judgement> {
+    const asked = options.issues ?? JUDGE_ISSUES;
+    const questions: Record<string, unknown> = Object.fromEntries(asked.map(issue => [issue.name, { type: 'noul', instructions: issue.instructions }]));
     if (options.placement) {
       const criteria = Object.fromEntries((this.options.placementOrder ?? PLACEMENT_ORDER).map(name => [name, JUDGE_PLACEMENT.criteria[name]]));
       questions.placement = { type: 'choice', instructions: JUDGE_PLACEMENT.instructions, criteria };
@@ -52,16 +53,16 @@ export class HttpJevClient implements JudgeClient {
       if (error instanceof JudgeError) throw error;
       throw new JudgeError(controller.signal.aborted ? 'timeout' : 'unreachable');
     } finally { clearTimeout(timer); }
-    return parseAnswer(text, options.placement);
+    return parseAnswer(text, options.placement, asked);
   }
 }
 
-function parseAnswer(text: string, placement: boolean): Judgement {
+function parseAnswer(text: string, placement: boolean, asked: readonly JudgeIssue[]): Judgement {
   let body: { answers?: Record<string, { noul?: unknown; choice?: unknown; probabilities?: Record<string, unknown> }> };
   try { body = JSON.parse(text); } catch { throw new JudgeError('malformed'); }
   const answers = body?.answers;
   if (!answers || typeof answers !== 'object') throw new JudgeError('malformed');
-  const issues = JUDGE_ISSUES.map(issue => {
+  const issues = asked.map(issue => {
     const score = answers[issue.name]?.noul;
     if (!probability(score)) throw new JudgeError('malformed');
     return { name: issue.name, label: issue.label, score };
