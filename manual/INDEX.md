@@ -19,6 +19,8 @@
 | 出来事 sources_updated の attention を読む（届いた依頼、`kind` が `agent_request`・`agent_answer`） | `/manual/inbox.md` |
 | 裏に回ったコマンド（`run_shell` の `wait_seconds`）の終わりを知る、出力を読む | `/manual/jobs.md` |
 | 出来事 sources_updated の attention を読む（裏に回ったコマンドの終わり、`kind` が `shell_finished`） | `/manual/jobs.md` |
+| 関所に断られた要求の承認待ちの答えを知る、マスターに答えてもらう | `/manual/sentinel.md` |
+| 出来事 sources_updated の attention を読む（関所の承認待ちが閉じた、`kind` が `approval_closed`） | `/manual/sentinel.md` |
 | マスターがチャットに添えた PDF を読む | `/manual/slack.md` の「PDF を読む」 |
 
 `/manual/agents/INDEX.md` と `/manual/avatar/images.md` は、サーバーが起動するたびに書き直します。ほかのファイルは、natsumi のコードと一緒に更新されます。

@@ -588,6 +588,7 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 
 ブラウザは、閉じている間の返事・知らせ・承認待ちを Web Push で受けられる（[ADR 0070](adr/0070-web-push-to-the-browser.md)）。
 送り先を決める規則は iPhone と同じで、購読があり、その端末のセッションが生きていて、**いま接続していない**端末に送る。
+ただし関所の承認待ち（関所を置いたインスタンスだけ、[ADR 0096](adr/0096-sentinel-approvals-on-the-dashboard.md)）は、会話の出来事には流れないので、つながっているかを問わず、購読がありセッションが生きているすべての端末に送る。
 
 ### 登録
 
@@ -606,7 +607,7 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
   ブラウザが購読を止められなかったとき（`unsubscribe()` が例外を投げた、または `false` を返した）は、通知は届き続けるので「止めた」と出さない。
   受け取る状態のまま止められなかったことを伝え、同期のたびの登録も続ける。
 - サーバーの VAPID の鍵が作り直されると、古い鍵の購読への push は 401・403 で断られ、サーバーは消さない。ブラウザはページを開いたときに購読の `applicationServerKey` とページの鍵を比べ、違えば購読し直して登録する。
-- タブが開いていてつながっている間は、見えていなくても送らない。
+- タブが開いていてつながっている間は、見えていなくても送らない（関所の承認待ちを除く）。
 
 ### いつ何を送るか
 
@@ -614,6 +615,7 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 | --- | --- |
 | 返事（kind: reply）・知らせ（kind: notice）を記録した | 本文 |
 | 承認待ちができた（`approval.pending`） | 承認待ちの見出しと下書き |
+| 関所の承認待ちができた（関所を置いたインスタンスだけ） | 「関所の承認待ちがあります」と、関所が組んだ 1 文（`summary`）。押すと開くページの `url` |
 
 既読・確認・承認が閉じたことは送らない（ブラウザは届いた push をすべて通知として出す）。1 回だけ送り、送り直さない。
 push service が 404 か 410 を返すと、その購読を消す。
@@ -624,11 +626,13 @@ push は RFC 8291 の `aes128gcm` で購読の鍵に暗号化し、VAPID（RFC 8
 ```json
 {"title":"なつみ","tag":"message-example","text":"猫を描いてみました。（画像 1 枚）","expression":"happy","icon":"https://natsumi.example.net/avatar/happy.png"}
 {"title":"なつみ","tag":"approval-example","text":"承認待ちがあります（work/#dev）\n明日は 10 時からなら大丈夫です。"}
+{"title":"なつみ","tag":"ap-example","text":"関所の承認待ちがあります\ngithub.example.net の pulls.merge（owner=example repo=widgets number=7）","url":"/dashboard/sentinel/approvals/ap-example"}
 ```
 
-- `title` はアバターの表示名、`tag` は messageId か approvalId である。
+- `title` はアバターの表示名、`tag` は messageId か approvalId（関所の承認待ちでは、関所の承認待ちの id）である。
 - `text`・`expression`・`icon` は iPhone の `e` の平文と同じ規則で作る（上記「e の暗号」の切り方と画像の印）。1 つの record（平文 3993 バイト）に収まらなければ、さらに短く切る。
 - service worker は `title` と `text` と `icon` で通知を出し、`tag` で同じ行の通知をまとめる。押されたら、開いているタブを前に出すか、`/` を開く。
+  `url` が関所の承認待ちのページ（`/dashboard/sentinel/approvals/<id>`）なら、そのページを開く。ほかの `url` は使わない。
 
 ## 承認と外部実行
 
