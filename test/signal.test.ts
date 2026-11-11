@@ -171,21 +171,26 @@ test('files the owner sends are put in /work/signal, never over one another, and
   api.files.set('aaa.pdf', Buffer.from('%PDF-1'));
   api.files.set('bbb.pdf', Buffer.from('%PDF-2'));
   api.files.set('ccc.jpg', Buffer.from('jpeg'));
+  api.files.set('ddd.pdf', Buffer.from('%PDF-4'));
   const owner = new SignalOwner({ api, owner: OWNER, workDirectory: work, say: ({ text }) => { said.push(text); } });
   const pdf = (id: string) => ({ id, contentType: 'application/pdf', filename: 'report.pdf', size: 6 });
   // Two files of one name in one message, then a photo with no words, then one the daemon no longer has.
   await owner.handle({ envelope: text('読める？', { attachments: [pdf('aaa.pdf'), pdf('bbb.pdf')] }), account: BOT });
   await owner.handle({ envelope: text('', { message: null, attachments: [{ id: 'ccc.jpg', contentType: 'image/jpeg', size: 4 }] }), account: BOT });
   await owner.handle({ envelope: text('これも', { attachments: [{ id: 'gone.png', filename: '../../etc/写真.png' }] }), account: BOT });
+  // A name in Japanese with spaces is kept as sent; a leading dot is dropped so the file is not hidden.
+  await owner.handle({ envelope: text('', { message: null, attachments: [{ id: 'ddd.pdf', contentType: 'application/pdf', filename: '.生活記録表 10_19〜11_15.pdf', size: 6 }] }), account: BOT });
   assert.deepEqual(said, [
-    '読める？\n（添付「report.pdf」: /work/signal/20261002T112611Z-report.pdf、application/pdf、1 KB。本文は pdftotext、ページの画像は pdftoppm -png -r 100 で作って view で見る）\n'
-      + '（添付「report.pdf」: /work/signal/20261002T112611Z-report-2.pdf、application/pdf、1 KB。本文は pdftotext、ページの画像は pdftoppm -png -r 100 で作って view で見る）',
-    '（添付「添付 1」: /work/signal/20261002T112611Z-ccc.jpg、image/jpeg、1 KB）',
+    '読める？\n（添付「report.pdf」: /work/signal/20261002T112611Z/report.pdf、application/pdf、1 KB。本文は pdftotext、ページの画像は pdftoppm -png -r 100 で作って view で見る）\n'
+      + '（添付「report.pdf」: /work/signal/20261002T112611Z/report-2.pdf、application/pdf、1 KB。本文は pdftotext、ページの画像は pdftoppm -png -r 100 で作って view で見る）',
+    '（添付「添付 1」: /work/signal/20261002T112611Z/ccc.jpg、image/jpeg、1 KB）',
     'これも\n（添付「../../etc/写真.png」は受け取れませんでした: Signal から取り出せませんでした）',
+    '（添付「.生活記録表 10_19〜11_15.pdf」: /work/signal/20261002T112611Z/生活記録表 10_19〜11_15.pdf、application/pdf、1 KB。本文は pdftotext、ページの画像は pdftoppm -png -r 100 で作って view で見る）',
   ]);
-  assert.equal((await readFile(join(work, 'signal', '20261002T112611Z-report.pdf'))).toString(), '%PDF-1');
-  assert.equal((await readFile(join(work, 'signal', '20261002T112611Z-report-2.pdf'))).toString(), '%PDF-2');
-  assert.deepEqual(api.readMarks, [1_790_940_371_225, 1_790_940_371_225, 1_790_940_371_225]);
+  assert.equal((await readFile(join(work, 'signal', '20261002T112611Z', 'report.pdf'))).toString(), '%PDF-1');
+  assert.equal((await readFile(join(work, 'signal', '20261002T112611Z', 'report-2.pdf'))).toString(), '%PDF-2');
+  assert.equal((await readFile(join(work, 'signal', '20261002T112611Z', '生活記録表 10_19〜11_15.pdf'))).toString(), '%PDF-4');
+  assert.deepEqual(api.readMarks, [1_790_940_371_225, 1_790_940_371_225, 1_790_940_371_225, 1_790_940_371_225]);
 });
 
 test('her replies go to Signal only when asked on Signal; notices and replies to nothing go too, and images fall back to text', async () => {
