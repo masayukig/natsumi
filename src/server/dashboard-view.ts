@@ -30,6 +30,9 @@ export const SLEEP_PATH = '/dashboard/sleep';
 export const POSTBOX_PATH = '/dashboard/postbox';
 /** What changed in the parts of the goals that need the owner's consent (ADR 0090), from memory's git history. */
 export const GOALS_PATH = '/dashboard/goals';
+/** The sentinel's approvals (ADR 0096), only where the config names its socket. */
+export const SENTINEL_PATH = '/dashboard/sentinel';
+export const SENTINEL_LABEL = '関所';
 /** The fragments the script refreshes: without a live session they answer 401, as the script cannot follow a login. */
 export const REFRESHED_PATHS: ReadonlySet<string> = new Set([STATUS_PATH, WAITS_LIVE_PATH]);
 
@@ -39,7 +42,7 @@ export const turnPath = (turnId: string) => `${TURNS_PATH}/${encodeURIComponent(
 export const checkPath = (checkId: string) => `${CHECKS_PATH}/${encodeURIComponent(checkId)}`;
 
 /** The sections of the dashboard. Those not built yet are listed as coming, so the frame does not move when they are. */
-const SECTIONS: { label: string; href?: string }[] = [
+const SECTIONS: { label: string; href?: string; sentinel?: boolean }[] = [
   { label: 'いまの状態', href: '/dashboard' },
   { label: 'ターン', href: TURNS_PATH },
   { label: '失敗と待ち', href: WAITS_PATH },
@@ -50,6 +53,7 @@ const SECTIONS: { label: string; href?: string }[] = [
   { label: '一行メモ', href: MEMOS_PATH },
   { label: 'ポッポさん', href: DOVE_PATH },
   { label: '承認の履歴', href: APPROVALS_PATH },
+  { label: SENTINEL_LABEL, href: SENTINEL_PATH, sentinel: true },
   { label: '端末', href: DEVICES_PATH },
   { label: '統計', href: STATS_PATH },
   { label: 'ファイル', href: FILES_PATH },
@@ -60,14 +64,18 @@ export interface DashboardStatus {
   server: { healthy: boolean; reason: string; startedAt?: string; updatedAt?: string };
   loop: LoopDashboardState;
   timeZone: string;
+  /** Whether the sentinel's events are followed now; absent where the config names no sentinel (ADR 0096). */
+  sentinel?: { connected: boolean };
 }
 
 /**
  * A whole page: the header, the navigation, the logout and `main`. Pages before login have no navigation. The header and
- * the title carry the ID of the avatar the server started with (ADR 0057); natsumi's when left out.
+ * the title carry the ID of the avatar the server started with (ADR 0057); natsumi's when left out. The sentinel's
+ * window is in the navigation of its own pages and of the current state, and only where it is on (ADR 0096).
  */
-export function page(title: string, main: Html, options: { signedIn: boolean; current?: string; avatarId?: string } = { signedIn: true }): Html {
+export function page(title: string, main: Html, options: { signedIn: boolean; current?: string; avatarId?: string; sentinel?: boolean } = { signedIn: true }): Html {
   const avatarId = options.avatarId ?? DEFAULT_SELF.id;
+  const sections = SECTIONS.filter(section => !section.sentinel || options.sentinel);
   return html`<!doctype html>
 <html lang="ja">
 <head>
@@ -82,7 +90,7 @@ export function page(title: string, main: Html, options: { signedIn: boolean; cu
 <body>
 <header class="top">
 <h1>${avatarId}</h1>
-${options.signedIn && html`<nav aria-label="ダッシュボード"><ul>${SECTIONS.map(section => html`<li>${section.href
+${options.signedIn && html`<nav aria-label="ダッシュボード"><ul>${sections.map(section => html`<li>${section.href
     ? html`<a href="${section.href}"${section.label === options.current ? html` aria-current="page"` : ''}>${section.label}</a>`
     : html`<span class="soon">${section.label}<small>準備中</small></span>`}</li>`)}</ul></nav>
 <nav aria-label="ほかの画面"><ul><li><a href="/">話す</a></li><li><a href="/settings">設定</a></li></ul></nav>
@@ -98,11 +106,11 @@ ${main}
 
 /** The dashboard's first page: the current state, refreshed in place by the script. */
 export function statusPage(status: DashboardStatus, avatarId?: string): Html {
-  return page('いまの状態', renderStatus(status), { signedIn: true, current: 'いまの状態', avatarId });
+  return page('いまの状態', renderStatus(status), { signedIn: true, current: 'いまの状態', avatarId, sentinel: status.sentinel !== undefined });
 }
 
 /** The current-state section, also served alone for the script to put in place. */
-export function renderStatus({ server, loop, timeZone }: DashboardStatus): Html {
+export function renderStatus({ server, loop, timeZone, sentinel }: DashboardStatus): Html {
   const at = (iso: string | null | undefined) => iso ? localTime(iso, timeZone) : '';
   const { routes, context, turn } = loop;
   const inUse = routes.routes.find(route => route.name === routes.current);
@@ -132,6 +140,8 @@ ${context.tokens === null && html` <small>compaction の閾値 ${number(context.
 <div><dt>実行中のターン</dt><dd>${turn === null ? 'なし' : html`<a href="${turnPath(turn.turnId)}"><strong>${PHASES[turn.phase]}</strong></a>
 <code>${turn.eventKinds}</code> <small>${at(turn.startedAt)} から</small>`}</dd></div>
 <div><dt>キュー</dt><dd><strong>${loop.queueLength}</strong> 件</dd></div>
+${sentinel && html`<div><dt>${SENTINEL_LABEL}</dt><dd>${sentinel.connected ? html`<span class="ok">つながっている</span>` : html`<span class="bad">つながらない</span>`}
+<a href="${SENTINEL_PATH}">承認待ちと許し</a></dd></div>`}
 </dl>
 </section>`;
 }
