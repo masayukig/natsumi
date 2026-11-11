@@ -1,0 +1,65 @@
+# Fork only. Once a day, merges upstream's main into this fork's main and pushes the merge only when the fork's checks
+# pass on it, so that keeping up with upstream does not wait on a person. A conflict or a failing check fails the job
+# (GitHub mails the owner) and pushes nothing; the owner then syncs by hand. A release (a version tag) and a
+# deployment are still made by hand.
+# A push with GITHUB_TOKEN may not change a workflow file, so a merge that brings one fails at the push: sync by hand.
+name: Upstream sync
+
+on:
+  schedule:
+    # 04:00 in Japan.
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags https://github.com/yuanying/natsumi.git main
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo "Nothing new upstream." >> "$GITHUB_STEP_SUMMARY"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "new=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "Upstream commits merged:"
+            git log --oneline HEAD..FETCH_HEAD
+          } >> "$GITHUB_STEP_SUMMARY"
+          git merge --no-edit -m "Merge upstream main ($(git rev-parse --short FETCH_HEAD)) into fork main" FETCH_HEAD
+      # ponytail: the steps of ci.yml, copied, since a push with GITHUB_TOKEN starts no other workflow. Keep them alike.
+      - if: steps.merge.outputs.new == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24.22.2"
+          cache: npm
+      - if: steps.merge.outputs.new == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - if: steps.merge.outputs.new == 'true'
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+          npx playwright install --with-deps --only-shell chromium
+          npm run test:browser
+      - if: steps.merge.outputs.new == 'true'
+        run: git push origin HEAD:main
