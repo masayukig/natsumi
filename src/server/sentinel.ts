@@ -195,8 +195,9 @@ export class SentinelWatcher {
 }
 
 /**
- * The file of a closed approval: the facts the sentinel gave of it — what was asked, how it ended, the choice and the
- * grants it made with their ends — without the request's body or fingerprint, which she sent herself.
+ * The file of a closed approval: the facts the sentinel gave of it — what was asked and what its connector looked up,
+ * how it ended, the choice and the grants it made with their ends — without the request's body or fingerprint, which
+ * she sent herself.
  */
 function closedFile(approval: SentinelApproval, grants: ReadonlyMap<string, SentinelGrant>): Record<string, unknown> {
   const choice = approval.choice === undefined ? undefined : approval.choices.find(candidate => candidate.id === approval.choice);
@@ -207,7 +208,7 @@ function closedFile(approval: SentinelApproval, grants: ReadonlyMap<string, Sent
       destination: item.destination, ...(item.method ? { method: item.method } : {}), ...(item.path ? { path: item.path } : {}),
       ...(item.query ? { query: item.query } : {}), ...(item.operation ? { operation: item.operation } : {}),
       ...(item.params.length > 0 ? { params: item.params } : {}), ...(item.target.length > 0 ? { target: item.target } : {}),
-      ...(item.targetText ? { targetText: item.targetText } : {}),
+      ...(item.targetText ? { targetText: item.targetText } : {}), ...(item.facts.length > 0 ? { facts: item.facts } : {}),
     })),
     ...(choice ? { choice } : approval.choice ? { choice: { id: approval.choice } } : {}),
     grants: approval.grants.map(id => {

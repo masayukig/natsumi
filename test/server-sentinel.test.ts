@@ -100,6 +100,19 @@ test('one approval shows its facts and a form of the choices the sentinel gave',
   assert.equal((await f.fetch('/dashboard/sentinel/approvals/..%2Fgrants', withCookie(cookie))).status, 404);
 }));
 
+test('an approval of several items shows each, with the facts its connector looked up as plain text', () => withSentinel(async (f, fake, cookie) => {
+  const [first] = fakeApproval().items;
+  fake.create(fakeApproval({ items: [
+    { ...first, facts: [{ name: 'head', value: '<b>abc123</b>' }] },
+    { destination: 'github.example.test', operation: 'git.push', params: [{ name: 'ref', value: 'refs/tags/v1.0.0' }] },
+  ] }), false);
+  const res = await f.fetch('/dashboard/sentinel/approvals/ap-0001', withCookie(cookie));
+  assert.equal(res.status, 200, res.text);
+  assert.ok(res.text.includes('1 つ目') && res.text.includes('2 つ目'));
+  assert.ok(res.text.includes('&lt;b&gt;abc123&lt;/b&gt;') && !res.text.includes('<b>abc123'), 'a fact is plain text');
+  assert.ok(res.text.includes('git.push') && res.text.includes('refs/tags/v1.0.0'));
+}));
+
 test('an answer is the Origin-checked POST of a live session, passed to the sentinel as it is', () => withSentinel(async (f, fake, cookie) => {
   fake.create(fakeApproval(), false);
   const path = '/dashboard/sentinel/approvals/ap-0001/answer';

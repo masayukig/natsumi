@@ -35,7 +35,7 @@
 | `state` | 上の表と同じ |
 | `created`・`expires`・`answered` | 作った時刻、答えを待つ期限、答えた時刻（UTC。期限切れには `answered` が無い） |
 | `summary` | 関所が組んだ 1 文 |
-| `items` | 中身の並び。宛先（`destination`）、要求の `method`・`path`・`query`、操作（`operation`）と引数（`params`）、対象（`targetText`） |
+| `items` | 中身の並び（git の push では、許しの無い ref ごとに 1 つ）。宛先（`destination`）、要求の `method`・`path`・`query`、操作（`operation`）と引数（`params`）、対象（`targetText`）、関所が上流に引いた事実（`facts`。head の SHA など。無いこともある） |
 | `choice` | 許したときの範囲。`id`（`once`、`1h`・`1d` などの長さ、`forever`）、`scope`（`once` か `timed`）、`seconds`、`label` |
 | `grants` | 許して出た許しの並び。`id`・`scope`・`expires`（期限が無ければ無い）・`summary` |
 

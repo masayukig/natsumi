@@ -115,3 +115,21 @@ test('the events are read a line at a time: hello first, then what the sentinel 
   assert.deepEqual(seen, ['hello', 'ping', 'approval.created ap-0001', 'approval.closed ap-0001'],
     'a type it does not know and an approval it cannot read are passed over');
 }));
+
+// natsumi-sentinel #8: a request may have several items (a push, one a ref), an item may carry the facts its connector
+// looked up, and the sentinel may add fields; none of it is required and none of it breaks the reading.
+test('several items, the facts of an item, and fields not known yet are all read without fail', () => withSentinel(async (fake, client) => {
+  const [first] = fakeApproval().items;
+  fake.create(fakeApproval({ items: [
+    { ...first, facts: [{ name: 'head', value: 'a'.repeat(40) }, { name: 'onDefaultBranch', value: 'true' }, { name: 42 }], somethingNew: { nested: true } },
+    { destination: 'github.example.test', operation: 'git.push', params: [{ name: 'ref', value: 'refs/heads/main' }] },
+  ], somethingElse: 'x' } as never), false);
+  const listed = await client.approvals();
+  assert.equal(listed.kind, 'ok');
+  if (listed.kind !== 'ok') return;
+  const items = listed.value[0]!.items;
+  assert.equal(items.length, 2);
+  assert.deepEqual(items[0]!.facts, [{ name: 'head', value: 'a'.repeat(40) }, { name: 'onDefaultBranch', value: 'true' }], 'a fact not of the shape is passed over');
+  assert.deepEqual(items[1]!.facts, [], 'an item without facts has none');
+  assert.equal(items[1]!.operation, 'git.push');
+}));

@@ -98,7 +98,7 @@ test('an approval that closes is put under /sources/sentinel/approvals with its 
   try {
     const watcher = s.watch();
     await waitFor(() => watcher.connected && s.fake.streamCount === 1, 'the stream');
-    s.fake.create(fakeApproval());
+    s.fake.create(fakeApproval({ items: [{ ...fakeApproval().items[0]!, facts: [{ name: 'head', value: 'abc123' }] }] }));
     s.fake.close('ap-0001', 'allowed', '1h');
     await waitFor(() => s.attentions.length === 1, 'the attention');
     const file = JSON.parse(await readFile(join(s.directory, 'approvals', 'ap-0001.json'), 'utf8')) as Record<string, unknown>;
@@ -107,7 +107,7 @@ test('an approval that closes is put under /sources/sentinel/approvals with its 
       answered: '2026-01-01T00:05:00Z', summary: 'github.example.test の pulls.merge（owner=example repo=widgets number=7）',
       items: [{ destination: 'github.example.test', method: 'PUT', path: '/repos/example/widgets/pulls/7/merge', operation: 'pulls.merge',
         params: [{ name: 'owner', value: 'example' }, { name: 'repo', value: 'widgets' }, { name: 'number', value: '7' }],
-        target: ['owner', 'repo'], targetText: 'owner=example repo=widgets' }],
+        target: ['owner', 'repo'], targetText: 'owner=example repo=widgets', facts: [{ name: 'head', value: 'abc123' }] }],
       choice: { id: '1h', scope: 'timed', seconds: 3600, label: 'example/widgets の pulls.merge を 1 時間' },
       grants: [{ id: 'gr-0001', scope: 'timed', expires: '2026-01-01T01:05:00Z', summary: 'example/widgets の pulls.merge を 1 時間' }],
     }, 'the facts the sentinel gave, without the body or the fingerprint of the request');

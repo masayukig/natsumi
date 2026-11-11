@@ -83,6 +83,8 @@ ${item.targetText && html`<div><dt>対象</dt><dd class="words">${item.targetTex
 ${item.method && html`<div><dt>要求</dt><dd><code>${item.method}</code> <code>${item.path ?? ''}</code>${item.query && html`<br><small>query</small> <code>${item.query}</code>`}</dd></div>`}
 ${item.params.length > 0 && html`<div><dt>引数</dt><dd><div class="table"><table class="list"><tbody>${item.params.map(param => html`<tr>
 <th>${param.name}</th><td class="words">${param.value}</td></tr>`)}</tbody></table></div></dd></div>`}
+${item.facts.length > 0 && html`<div><dt>関所が引いた事実</dt><dd><div class="table"><table class="list"><tbody>${item.facts.map(fact => html`<tr>
+<th>${fact.name}</th><td class="words">${fact.value}</td></tr>`)}</tbody></table></div></dd></div>`}
 ${item.body && html`<div><dt>本文</dt><dd>${item.body.binary ? html`<small>文字でない本文</small>` : html`<pre>${item.body.text}</pre>`}
 <small>${item.body.size} バイト</small>${item.body.truncated && html`<small class="bad">頭だけ（関所が読む上限まで）</small>`}</dd></div>`}
 </dl>

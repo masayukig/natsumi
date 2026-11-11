@@ -19,6 +19,8 @@ export type SentinelResult<T> = { kind: 'ok'; value: T } | { kind: 'refused'; st
 
 export interface SentinelBody { text: string; size: number; sha256: string; truncated: boolean; binary: boolean }
 export interface SentinelParam { name: string; value: string }
+/** A fact a connector looked up upstream (a head SHA, whether a tag's commit is on the default branch): shown, never matched. */
+export type SentinelFact = SentinelParam;
 /** One item of an approval: the facts of a request asked, or of one operation asked for beforehand. */
 export interface SentinelItem {
   destination: string;
@@ -30,6 +32,8 @@ export interface SentinelItem {
   target: string[];
   targetText?: string;
   body?: SentinelBody;
+  /** Empty when the sentinel gave none: most approvals have none. */
+  facts: SentinelFact[];
 }
 export interface SentinelChoice { id: string; scope: string; seconds: number; label: string }
 export interface SentinelApproval {
@@ -257,17 +261,22 @@ function readBody(value: unknown): SentinelBody | undefined {
 function readItem(value: unknown): SentinelItem | undefined {
   const destination = text(field(value, 'destination'));
   if (destination === undefined) return undefined;
-  const params = Array.isArray(field(value, 'params')) ? (field(value, 'params') as unknown[]).flatMap(param => {
-    const name = text(field(param, 'name'));
-    const paramValue = text(field(param, 'value'));
-    return name === undefined || paramValue === undefined ? [] : [{ name, value: paramValue }];
-  }) : [];
   const body = readBody(field(value, 'body'));
   return {
     destination, ...optional('method', text(field(value, 'method'))), ...optional('path', text(field(value, 'path'))),
     ...optional('query', text(field(value, 'query'))), ...optional('operation', text(field(value, 'operation'))),
-    params, target: texts(field(value, 'target')), ...optional('targetText', text(field(value, 'targetText'))), ...(body ? { body } : {}),
+    params: pairs(field(value, 'params')), target: texts(field(value, 'target')), ...optional('targetText', text(field(value, 'targetText'))),
+    ...(body ? { body } : {}), facts: pairs(field(value, 'facts')),
   };
+}
+
+/** A list of `{"name", "value"}`, both strings; an entry of another shape is passed over. */
+function pairs(value: unknown): SentinelParam[] {
+  return Array.isArray(value) ? value.flatMap(entry => {
+    const name = text(field(entry, 'name'));
+    const pairValue = text(field(entry, 'value'));
+    return name === undefined || pairValue === undefined ? [] : [{ name, value: pairValue }];
+  }) : [];
 }
 
 function readChoice(value: unknown): SentinelChoice | undefined {
