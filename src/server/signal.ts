@@ -564,15 +564,21 @@ export class SignalApprovals {
   private log(line: string): void { this.options.log?.(`signal: ${line}`); }
 }
 
-/** `20261002T132440Z-<the sender's name, or the daemon's id>.<extension>`, of safe characters only. */
-function fileName(filename: unknown, id: string, at: number): { stem: string; extension: string } {
+/**
+ * `20261002T132440Z/<the sender's name, or the daemon's id>.<extension>`: the name kept as the owner sent it (letters
+ * of any script and spaces stay), so that it is the name an agent she hands the file to uses too. Only what could
+ * leave the directory or hide the file is taken out: slashes, control characters, leading dots and spaces.
+ */
+function fileName(filename: unknown, id: string, at: number): { directory: string; stem: string; extension: string } {
   const pick = (value: unknown) => typeof value === 'string' ? posix.basename(value.replaceAll('\\', '/')) : '';
-  const stemOf = (value: string) => value.replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 64);
+  const stemOf = (value: string) => value.replace(/\.[^.]*$/, '').replace(/[\u0000-\u001f\u007f/\\]+/g, '-')
+    .replace(/^[\s.-]+|[\s.]+$/g, '').slice(0, 100);
   const extensionOf = (value: string) => /\.([A-Za-z0-9]{1,8})$/.exec(value)?.[1]?.toLowerCase();
   const stamp = new Date(at).toISOString().replace(/\.\d+Z$/, 'Z').replaceAll(/[-:]/g, '');
   const given = pick(filename);
   return {
-    stem: `${stamp}-${stemOf(given) || stemOf(pick(id)) || 'file'}`,
+    directory: stamp,
+    stem: stemOf(given) || stemOf(pick(id)) || 'file',
     extension: extensionOf(given) ?? extensionOf(pick(id)) ?? 'bin',
   };
 }
@@ -581,23 +587,26 @@ function fileName(filename: unknown, id: string, at: number): { stem: string; ex
  * Writes one file under /work/signal, as agent-files.ts does for an agent's images: never over another file (a name
  * taken gets -2, -3, …) and never through a link that leads out of /work, since the directory is natsumi's to change.
  */
-async function placeFile(workDirectory: string, data: Buffer, name: { stem: string; extension: string }):
+async function placeFile(workDirectory: string, data: Buffer, name: { directory: string; stem: string; extension: string }):
   Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   const outside = { ok: false as const, reason: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY} が ${WORK_PATH} の外を指しています` };
   let root: string;
   try { root = await realpath(workDirectory); } catch { return { ok: false, reason: `${WORK_PATH} がありません` }; }
-  const directory = join(root, SIGNAL_FILE_DIRECTORY);
+  const parent = join(root, SIGNAL_FILE_DIRECTORY);
+  const directory = join(parent, name.directory);
   try {
-    if (!isWithin(await realPathAllowingMissing(directory), root)) return outside;
-    await makeSharedDirectory(directory);
-    if (!isWithin(await realpath(directory), root)) return outside;
+    for (const each of [parent, directory]) {
+      if (!isWithin(await realPathAllowingMissing(each), root)) return outside;
+      await makeSharedDirectory(each);
+      if (!isWithin(await realpath(each), root)) return outside;
+    }
   } catch { return { ok: false, reason: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY} を作れませんでした` }; }
   for (let n = 1; n < 100; n++) {
     const file = `${name.stem}${n === 1 ? '' : `-${n}`}.${name.extension}`;
     try {
       // `wx` makes a new file or fails: it never writes over one, and never through a link left in its place.
       await writeFile(join(directory, file), data, { flag: 'wx', mode: SHARED_FILE_MODE });
-      return { ok: true, path: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY}/${file}` };
+      return { ok: true, path: `${WORK_PATH}/${SIGNAL_FILE_DIRECTORY}/${name.directory}/${file}` };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') break;
     }
