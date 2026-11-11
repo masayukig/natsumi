@@ -144,6 +144,8 @@ export interface WebPushRequest { endpoint: string; headers: Record<string, stri
 export interface WebPushNotifierOptions {
   loop: { subscribe(listener: (event: PushEvent) => void): () => void };
   approvals?: { subscribe(listener: (event: PushEvent) => void): () => void };
+  /** The sentinel's approvals that open (ADR 0096), `sentinel.approval`; sent whether or not the browser is connected. */
+  sentinel?: { subscribe(listener: (event: PushEvent) => void): () => void };
   subscriptions: WebPushSubscriptions;
   vapid: VapidKey;
   /** The VAPID `sub`: the public origin. */
@@ -165,6 +167,9 @@ export interface WebPushNotifierOptions {
  * Sends the iPhone's alerts (a reply, a notice, an approval waiting) to the browsers that subscribed and are not
  * connected (ADR 0070). Background pushes are not sent: a browser must show every push it gets. A push is sent once;
  * a 404 or 410 drops the subscription, anything else is logged.
+ *
+ * The sentinel's approvals waiting (ADR 0096) go to every subscribed browser with a live session, connected or not:
+ * they never reach the conversation, so a connected browser has nothing else to show them by.
  */
 export class WebPushNotifier {
   private readonly options: WebPushNotifierOptions;
@@ -172,6 +177,7 @@ export class WebPushNotifier {
   private readonly send: (request: WebPushRequest) => Promise<number>;
   private readonly unsubscribe: () => void;
   private readonly unsubscribeApprovals: () => void;
+  private readonly unsubscribeSentinel: () => void;
   private closed = false;
 
   constructor(options: WebPushNotifierOptions) {
@@ -188,12 +194,14 @@ export class WebPushNotifier {
     };
     this.unsubscribe = options.loop.subscribe(listener);
     this.unsubscribeApprovals = options.approvals?.subscribe(listener) ?? (() => {});
+    this.unsubscribeSentinel = options.sentinel?.subscribe(listener) ?? (() => {});
   }
 
   close(): void {
     this.closed = true;
     this.unsubscribe();
     this.unsubscribeApprovals();
+    this.unsubscribeSentinel();
   }
 
   private handle({ type, payload }: PushEvent) {
@@ -212,12 +220,19 @@ export class WebPushNotifier {
       if (typeof approvalId !== 'string' || typeof text !== 'string' || typeof target?.channel !== 'string') return;
       const heading = `${pushAlert('approval', this.name)!.body}（${target.channel}）`;
       this.dispatch(webPushPayload(this.name, approvalId, { text: `${heading}\n${text}` }));
+      return;
+    }
+    if (type === 'sentinel.approval') {
+      const { approvalId, summary } = payload as { approvalId?: unknown; summary?: unknown };
+      if (typeof approvalId !== 'string' || typeof summary !== 'string' || !/^ap-[A-Za-z0-9_-]{1,100}$/.test(approvalId)) return;
+      this.dispatch(webPushPayload(this.name, approvalId, { text: `${SENTINEL_ALERT}\n${summary}` },
+        `/dashboard/sentinel/approvals/${approvalId}`), { connectedToo: true });
     }
   }
 
-  private dispatch(plaintext: Buffer) {
+  private dispatch(plaintext: Buffer, options: { connectedToo?: boolean } = {}) {
     for (const target of this.options.subscriptions.targets(this.options.allowedUserId)) {
-      if (this.options.isConnected(target.deviceId)) continue;
+      if (!options.connectedToo && this.options.isConnected(target.deviceId)) continue;
       void this.deliver(target, plaintext).catch(() => { /* a store closed on the way out; nothing to tell */ });
     }
   }
@@ -248,13 +263,16 @@ export class WebPushNotifier {
   }
 }
 
+/** The heading of a sentinel's approval waiting (ADR 0096), above the sentinel's own summary of it. */
+export const SENTINEL_ALERT = '関所の承認待ちがあります';
+
 /**
  * What the service worker shows: `{ title, tag, text, expression, icon }`, the line cut as for the iPhone and further
- * when it would not fit one record.
+ * when it would not fit one record; and the page a click opens, a path of this origin, when there is one.
  */
-export function webPushPayload(title: string, tag: string, line: Parameters<typeof pushPlaintext>[0]): Buffer {
+export function webPushPayload(title: string, tag: string, line: Parameters<typeof pushPlaintext>[0], url?: string): Buffer {
   for (let maxChars = PUSH_TEXT_MAX_CHARS; ; maxChars = Math.floor(maxChars / 2)) {
-    const payload = Buffer.from(JSON.stringify({ title, tag, ...JSON.parse(pushPlaintext(line, maxChars).toString('utf8')) }));
+    const payload = Buffer.from(JSON.stringify({ title, tag, ...JSON.parse(pushPlaintext(line, maxChars).toString('utf8')), ...(url ? { url } : {}) }));
     if (payload.length <= WEB_PUSH_PLAINTEXT_MAX_BYTES || maxChars <= 1) return payload;
   }
 }

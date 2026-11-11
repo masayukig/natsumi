@@ -202,3 +202,27 @@ test('the reader of imports sees the ones it must: multi-line, type-only and re-
   assert.ok(edges.includes('src/server/judge.ts'), 'a type-only import');
   assert.ok(importsOf(join(ROOT, 'src/server/connections.ts')).some(edge => edge.to === 'src/server/device-streams.ts'));
 });
+
+// ADR 0096: the model is given no tool that reaches the sentinel's approvals socket. Only the watcher, the dashboard and
+// the composition take its client, and nothing the thinking loop is built from takes any of them.
+test('the sentinel\'s approvals socket is reached by the watcher, the dashboard and the composition alone', () => {
+  const CLIENT = 'src/server/sentinel-client.ts';
+  const SENTINEL = ['src/server/sentinel.ts', 'src/server/dashboard-sentinel.ts', CLIENT];
+  for (const file of SENTINEL) assert.ok(graph.has(file), `${file} exists`);
+  const allowed = new Set(['src/server/sentinel.ts', 'src/server/dashboard.ts', 'src/server/dashboard-sentinel.ts', ...COMPOSITION]);
+  for (const [file, edges] of graph) {
+    for (const edge of internal(edges)) {
+      if (edge.to === CLIENT) assert.ok(allowed.has(file), `${file} imports ${CLIENT}`);
+    }
+  }
+  // Everything the loop reaches, followed import by import from the loop itself.
+  const reached = new Set<string>();
+  const queue = ['src/server/thinking-loop.ts'];
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    if (reached.has(file)) continue;
+    reached.add(file);
+    for (const edge of internal(graph.get(file) ?? [])) queue.push(edge.to);
+  }
+  for (const file of SENTINEL) assert.ok(!reached.has(file), `the thinking loop reaches ${file}`);
+});

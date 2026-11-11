@@ -89,6 +89,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
    - `webhooks`（省略可）: 外の仕組み（クラスタの Alertmanager、GitHub など）から webhook を受け取るための設定です。下記「webhook を受け取る」を見てください。
    - `inbox`（省略可）: ほかのエージェント（ほかのなつみ、Claude・Pi など）から A2A で依頼を受けるための設定です。下記「ほかのエージェントから依頼を受ける（A2A の受け口）」を見てください。
+   - `sentinel`（省略可）: 関所（natsumi-sentinel）の承認待ちに、ダッシュボードから答えるための設定です。下記「関所の承認待ちに答える」を見てください。
    - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
      係のターンの上限 `modelCalls`（既定 100 回）と `timeoutMinutes`（既定 60 分）。経路と上限は、動いている最中に `/settings` で上書きできます（下の「ブラウザで話す・設定を変える」）。一晩は工程に分かれ、上限は工程ごとにまるごと使えます
@@ -558,7 +559,7 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
 - ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
   以前の `/dashboard` だけの cookie を持つブラウザは、`/dashboard` を開いたときに新しい cookie へ移し替えます。
   ページの「ログアウト」は、そのブラウザのセッションだけを終わらせます。
-- 読み取り専用です（例外は、予約の削除と睡眠薬）。経路や畳み込みの切り替え、承認は、アプリとコマンド、ブラウザの `/` と `/settings` で行います。上のリンク（「話す」「設定」）から移れます。
+- 読み取り専用です（例外は、予約の削除と睡眠薬と、関所を置いたインスタンスの関所への答えと許しの取り消し）。経路や畳み込みの切り替え、承認は、アプリとコマンド、ブラウザの `/` と `/settings` で行います。上のリンク（「話す」「設定」）から移れます。
 - いまの状態の欄は、サーバーの生死（`.natsumi/status.json` の heartbeat）、使っている経路と候補、畳み込みの on/off、
   文脈の大きさと compaction の閾値、最後の compaction、実行中のターン、出来事のキューの長さを出し、10 秒ごとに更新します。
   文脈の大きさは、ターンの終わりに測った値です。実行中のターンからは、その詳細へ移れます。
@@ -630,6 +631,38 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
     Markdown の中の HTML はそのまま文字として出します。リンクは `http`・`https` と、同じ場所の中への相対パスだけを残し、画像は同じ場所の中への相対パスのものだけを出します。
   - どのファイルにも「ダウンロード」（`?download=1`）があり、全体を取り出せます。
   - ターンの詳細では、`read` の引数のパスが上の場所の中なら、そのファイルへのリンクになります。リンク先は今の中身で、そのターンの時点のものではありません。
+
+### 関所の承認待ちに答える
+
+関所（[natsumi-sentinel](https://github.com/yuanying/natsumi-sentinel)）を同じ Pod に置いたインスタンスでは、関所が本人に聞く（ask）にした要求に、
+ダッシュボードの関所の画面（`/dashboard/sentinel`）から答えます（[ADR 0095](docs/adr/0095-letting-her-act-and-noticing-quickly.md)、[ADR 0096](docs/adr/0096-sentinel-approvals-on-the-dashboard.md)）。
+config に関所の承認の口の socket を書いたときだけ有効です。書かなければ、画面は無く（404）、読みものの更新元 `sentinel` もありません。
+
+```json
+"sentinel": { "socket": "/run/natsumi-sentinel/approvals.sock" }
+```
+
+| 項目 | 必須 | 既定 | 中身 |
+| --- | --- | --- | --- |
+| `sentinel.socket` | ○ | | 関所の承認を受け付ける口（`-approvals-socket`）の Unix socket。絶対パス |
+
+- socket は、サーバーと関所のコンテナだけが mount する場所に置きます。作業環境には mount しません。関所は相手のプロセスの UID でサーバーだけを受け付けるので、
+  関所の `-approvals-peer-uid` をサーバーが動く UID にします。
+- サーバーは関所の写しを持たず、画面を開くたびに socket で関所に聞きます。持つのは、知らせを二重に出さないための承認待ちの id だけです（`.natsumi/state.sqlite` の `sentinel_approvals`、migration 39）。
+- 画面（「関所」。いまの状態の欄と関所の画面のナビゲーションから移れます）:
+  - 承認待ちの一覧（古い順）と 1 件の中身。関所が事実から組んだ文（`summary`）、中身ごと（git の push では ref ごと）の宛先・操作・対象・引数・要求の本文の頭と、関所が上流に引いた事実（head の SHA など。あるときだけ）を出します。どれも平文として出し、HTML・Markdown・リンクとしては読みません。
+  - 1 件のページのフォームで答えます。「許す」は関所が示した範囲の選択肢（1 回だけ・1 時間 など）から 1 つを選び、「断る」はその承認待ちだけを断ります。同じ承認待ちに 2 度目に答えると、関所が断り（409）、その言葉をそのまま出します。
+  - 効いている許しの一覧と期限。1 件ずつ、尋ねるページを通して取り消します。
+  - 監査の記録（`/dashboard/sentinel/records`）。関所の記録を新しい順に 50 件ずつ読みます。1 件を開くと、すべての欄と要求の本文の頭を出します。読むだけです。
+- 答えと取り消しは、ログインしているブラウザから、同じオリジンのフォームの POST でだけ受け付けます（Origin が `publicOrigin` と一致しなければ 403）。会話・WebSocket・アプリ・Slack からは答えられません。モデルに渡すツールもありません。
+- 承認待ちができると、Web Push の購読があってセッションが生きているブラウザすべてに通知します。会話の画面がつながっていても送ります（iPhone には送りません）。
+  通知を押すと、その承認待ちのページが開きます。1 回だけ送り、送り直しません。
+- 承認待ちが閉じる（許した・断った・期限が過ぎた）と、`/sources/sentinel/approvals/<id>.json` を置き、更新元 `sentinel` の `attention`（`kind` は `approval_closed`）で natsumi に知らせます。
+  許しの取り消しは知らせません。ファイルの読み方は [manual/sentinel.md](manual/sentinel.md) にあります。
+- socket につながらないときも、サーバーは止まらずに起動し、つなぎ直しを続けます。そのあいだ画面は「関所につながらない」と出し、答えも取り消しも受け付けません。
+  つながり直したら、関所に答えを待っている承認待ちを聞き、まだ知らせていないものを知らせ、知らせた後に閉じたものを置きます。
+  つながっていない間に作られて閉じた承認待ちは、知らせも置きもしません。
+- 版を戻すとき: migration 39 を当てた後で前の版に戻すと、状態 DB の版が新しすぎるとして起動を止めます（ほかの migration と同じ）。
 
 ### GitHub OAuth App を作る
 
@@ -1137,7 +1170,7 @@ natsumi はツール `reply_to_agent` で返します。返事は送り手が Ge
 
 ### 読みものの更新（sources_updated）
 
-`/sources` の下の読みもの（Slack と、外のエージェントの返事と、webhook で届いたものと、ほかのエージェントから届いた依頼）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
+`/sources` の下の読みもの（Slack と、外のエージェントの返事と、webhook で届いたものと、ほかのエージェントから届いた依頼と、関所の承認待ちの答え）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
 （[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)、[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。
 
 - サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。

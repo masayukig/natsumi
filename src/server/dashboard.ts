@@ -21,6 +21,11 @@ import {
 } from './dashboard-view.ts';
 import { statsPage, statsTokens } from './dashboard-charts.ts';
 import { sleepPage } from './dashboard-sleep.ts';
+import {
+  SENTINEL_PATH, SENTINEL_RECORDS_PATH, sentinelApprovalPage, sentinelApprovalPath, sentinelGrantPage, sentinelPage, sentinelRecordPage,
+  sentinelRecordsPage, sentinelRefusedPage, sentinelUnreachablePage,
+} from './dashboard-sentinel.ts';
+import { APPROVAL_ID, GRANT_ID, type SentinelClient, type SentinelResult } from './sentinel-client.ts';
 import { readStats, statsPeriod } from './dashboard-stats.ts';
 import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
@@ -45,10 +50,11 @@ import { findTurn, listMemoTurns, listTurns, readMemo, readTurn, turnImages } fr
  * The login is the app's GitHub login, ending with a session in the browser's cookie (ADR 0058, `browser/`), the one
  * the chat and the settings use too. A browser that still has the dashboard's cookie of before is moved to it here.
  *
- * Nothing here changes state but three POSTs whose Origin must be the public origin: the logout, the owner's cancel
- * of one self-check (ADR 0064), made through the loop's own `SelfChecks.cancel`, and the sleeping pill (ADR 0077), given
- * through the loop as the WebSocket's `sleep.take` gives it. The chat and the settings change state over the WebSocket,
- * not here (ADR 0058).
+ * Nothing here changes state but the POSTs whose Origin must be the public origin: the logout, the owner's cancel
+ * of one self-check (ADR 0064), made through the loop's own `SelfChecks.cancel`, the sleeping pill (ADR 0077), given
+ * through the loop as the WebSocket's `sleep.take` gives it, and where the config names the sentinel, the owner's answer
+ * to one of its approvals and the revoke of one of its grants (ADR 0096), passed to its socket as they are. The chat and
+ * the settings change state over the WebSocket, not here (ADR 0058).
  */
 
 /**
@@ -99,6 +105,14 @@ export interface DashboardOptions {
   /** Whether a device has a live connection now; the devices list shows it. */
   isConnected: (deviceId: string) => boolean;
   now: () => number;
+  /** The sentinel's approvals socket, where the config names it (ADR 0096). Without it there is nothing under /dashboard/sentinel. */
+  sentinel?: DashboardSentinel;
+}
+
+/** The sentinel as the dashboard reaches it: its socket, asked on every page, and whether its events are followed now. */
+export interface DashboardSentinel {
+  client: SentinelClient;
+  connected(): boolean;
 }
 
 /** `assets/dashboard` beside `src/` in a checkout, and beside `dist/` in the image. */
@@ -120,6 +134,16 @@ const TURN_ROUTE = /^\/dashboard\/turns\/([^/]+)(?:\/images\/(0|[1-9][0-9]{0,5})
 /** A self-check's page, or its cancel; the ID is one `SelfChecks` makes (`check-` and a UUID), or nothing is looked up. */
 const CHECK_ID = /^check-[A-Za-z0-9-]{1,80}$/;
 const CHECK_ROUTE = /^\/dashboard\/checks\/(check-[A-Za-z0-9-]{1,80})(\/cancel)?$/;
+/** The sentinel's POSTs (ADR 0096): an approval's answer, and a grant's revoke. The ids are the sentinel's shapes. */
+const SENTINEL_POST = /^\/dashboard\/sentinel\/(?:approvals\/(ap-[A-Za-z0-9_-]{1,100})\/answer|grants\/(gr-[A-Za-z0-9_-]{1,100})\/revoke)$/;
+const SENTINEL_APPROVAL = /^\/dashboard\/sentinel\/approvals\/([^/]+)$/;
+const SENTINEL_GRANT = /^\/dashboard\/sentinel\/grants\/([^/]+)$/;
+const SENTINEL_RECORD = /^\/dashboard\/sentinel\/records\/([1-9][0-9]{0,15})$/;
+/** A choice as the sentinel names them (`once`, `1h`, `30d`, `forever`): handed on as it is, never read. */
+const CHOICE = /^[A-Za-z0-9_-]{1,32}$/;
+/** A form of the answer holds two short fields; anything longer is not one. */
+const MAX_FORM_BYTES = 4096;
+const RECORDS_PER_PAGE = 50;
 
 type Headers = Record<string, string | string[]>;
 
@@ -154,6 +178,11 @@ export class Dashboard {
     if (path === LOGOUT_PATH) {
       if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
       return this.logout(request, response);
+    }
+    const sentinelPost = this.options.sentinel ? SENTINEL_POST.exec(path) : null;
+    if (sentinelPost) {
+      if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
+      return sentinelPost[1] ? this.answerSentinel(request, response, sentinelPost[1]) : this.revokeGrant(request, response, sentinelPost[2]!);
     }
     const check = CHECK_ROUTE.exec(path);
     if (check?.[2]) {
@@ -210,6 +239,7 @@ export class Dashboard {
       return send(response, 200, devicesPage(view, session.sessionId, this.options.timeZone, this.options.avatarId), renewed);
     }
     if (path === STATS_PATH) return this.stats(response, url, renewed);
+    if (this.options.sentinel && (path === SENTINEL_PATH || path.startsWith(`${SENTINEL_PATH}/`))) return this.sentinel(response, url, this.options.sentinel, renewed);
     if (path === FILES_PATH) return send(response, 200, filesIndexPage(this.options.name, this.options.avatarId), renewed);
     if (path.startsWith(`${FILES_PATH}/`)) return this.files(response, url, renewed);
     const turn = TURN_ROUTE.exec(path);
@@ -386,6 +416,103 @@ export class Dashboard {
     };
   }
 
+  /**
+   * The sentinel's pages (ADR 0096), each read from its socket as it is opened: what waits and the grants, one approval,
+   * the page that asks before a revoke, and the records a page at a time. A socket that is not there says so.
+   */
+  private async sentinel(response: ServerResponse, url: URL, sentinel: DashboardSentinel, headers: Headers): Promise<void> {
+    const { client } = sentinel;
+    const { timeZone, avatarId } = this.options;
+    const path = url.pathname;
+    const notFound = () => send(response, 404, this.message('見つかりません', true), headers);
+    const failed = (result: Exclude<SentinelResult<unknown>, { kind: 'ok' }>) => result.kind === 'unreachable'
+      ? send(response, 503, sentinelUnreachablePage(avatarId), headers)
+      : result.status === 404 ? notFound()
+      : send(response, 502, sentinelRefusedPage('関所が答えませんでした', result.status, result.error, SENTINEL_PATH, avatarId), headers);
+    if (path === SENTINEL_PATH) {
+      const [approvals, grants] = await Promise.all([client.approvals(), client.grants()]);
+      if (approvals.kind !== 'ok') return failed(approvals);
+      if (grants.kind !== 'ok') return failed(grants);
+      const revoked = url.searchParams.get('revoked');
+      return send(response, 200, sentinelPage({ approvals: approvals.value, grants: grants.value,
+        ...(revoked && GRANT_ID.test(revoked) ? { revoked } : {}) }, timeZone, avatarId), headers);
+    }
+    const approval = SENTINEL_APPROVAL.exec(path);
+    if (approval) {
+      if (!APPROVAL_ID.test(approval[1]!)) return notFound();
+      const found = await client.approval(approval[1]!);
+      if (found.kind !== 'ok') return failed(found);
+      return send(response, 200, sentinelApprovalPage({ approval: found.value, answered: url.searchParams.get('answered') === '1' }, timeZone, avatarId), headers);
+    }
+    const grant = SENTINEL_GRANT.exec(path);
+    if (grant) {
+      if (!GRANT_ID.test(grant[1]!)) return notFound();
+      const grants = await client.grants();
+      if (grants.kind !== 'ok') return failed(grants);
+      const found = grants.value.find(candidate => candidate.id === grant[1]);
+      return found ? send(response, 200, sentinelGrantPage(found, timeZone, avatarId), headers) : notFound();
+    }
+    if (path === SENTINEL_RECORDS_PATH) {
+      const before = url.searchParams.getAll('before');
+      if (before.length > 1 || (before.length === 1 && !/^[1-9][0-9]{0,15}$/.test(before[0]!))) return notFound();
+      const from = before.length === 1 ? Number(before[0]) : undefined;
+      const records = await client.records({ ...(from === undefined ? {} : { before: from }), limit: RECORDS_PER_PAGE });
+      if (records.kind !== 'ok') return failed(records);
+      return send(response, 200, sentinelRecordsPage({ ...records.value, ...(from === undefined ? {} : { before: from }) }, timeZone, avatarId), headers);
+    }
+    const record = SENTINEL_RECORD.exec(path);
+    if (record) {
+      const found = await client.record(Number(record[1]));
+      if (found.kind !== 'ok') return failed(found);
+      return send(response, 200, sentinelRecordPage(found.value, timeZone, avatarId), headers);
+    }
+    notFound();
+  }
+
+  /**
+   * The owner's answer to one of the sentinel's approvals (ADR 0096), guarded as a self-check's cancel is: the Origin
+   * must be the public origin and the session live, and a POST never starts a login. The answer is handed to the
+   * sentinel as it is; what the sentinel refuses is told in its own words, and nothing is taken when it is not there.
+   */
+  private async answerSentinel(request: IncomingMessage, response: ServerResponse, id: string): Promise<void> {
+    const { avatarId } = this.options;
+    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, this.message('答えられませんでした'));
+    const session = this.options.browser.session(request, { legacy: true });
+    if (!session) return send(response, 403, this.message('ログインが切れました。もう一度開いてください'));
+    const renewed: Headers = { 'set-cookie': this.options.browser.renewed(session) };
+    const form = await readForm(request);
+    const answers = form?.getAll('answer') ?? [];
+    const choices = form?.getAll('choice') ?? [];
+    const answer = answers.length !== 1 ? undefined : answers[0] === 'deny' ? { answer: 'deny' as const }
+      : answers[0] === 'allow' && choices.length === 1 && CHOICE.test(choices[0]!) ? { answer: 'allow' as const, choice: choices[0]! } : undefined;
+    if (!answer) return send(response, 400, this.message('答えの形が違います', true), renewed);
+    const result = await this.options.sentinel!.client.answer(id, answer);
+    if (result.kind === 'ok') {
+      response.writeHead(303, { location: `${sentinelApprovalPath(id)}?answered=1`, ...renewed }).end();
+      return;
+    }
+    if (result.kind === 'unreachable') return send(response, 503, sentinelUnreachablePage(avatarId), renewed);
+    send(response, refusedStatus(result.status), sentinelRefusedPage('関所が答えを受け付けませんでした', result.status, result.error,
+      sentinelApprovalPath(id), avatarId), renewed);
+  }
+
+  /** The revoke of one of the sentinel's grants (ADR 0096), from the page that asks first, guarded as the answer is. */
+  private async revokeGrant(request: IncomingMessage, response: ServerResponse, id: string): Promise<void> {
+    const { avatarId } = this.options;
+    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, this.message('取り消せませんでした'));
+    const session = this.options.browser.session(request, { legacy: true });
+    if (!session) return send(response, 403, this.message('ログインが切れました。もう一度開いてください'));
+    const renewed: Headers = { 'set-cookie': this.options.browser.renewed(session) };
+    const result = await this.options.sentinel!.client.revoke(id);
+    if (result.kind === 'ok') {
+      response.writeHead(303, { location: `${SENTINEL_PATH}?revoked=${encodeURIComponent(id)}`, ...renewed }).end();
+      return;
+    }
+    if (result.kind === 'unreachable') return send(response, 503, sentinelUnreachablePage(avatarId), renewed);
+    send(response, refusedStatus(result.status), sentinelRefusedPage('関所が取り消しを受け付けませんでした', result.status, result.error,
+      SENTINEL_PATH, avatarId), renewed);
+  }
+
   /** The callback's answer to a browser's login, which goes back to the page it began at (ADR 0058). */
   finishLogin(response: ServerResponse, outcome: BrowserOutcome): void {
     setSecurityHeaders(response);
@@ -421,6 +548,7 @@ export class Dashboard {
       server: { ...health, ...(status ? { startedAt: status.startedAt, updatedAt: status.updatedAt } : {}) },
       loop: this.options.loop.dashboardState(),
       timeZone: this.options.timeZone,
+      ...(this.options.sentinel ? { sentinel: { connected: this.options.sentinel.connected() } } : {}),
     };
   }
 }
@@ -428,6 +556,24 @@ export class Dashboard {
 function setSecurityHeaders(response: ServerResponse) {
   response.setHeader('content-security-policy', DASHBOARD_CSP);
   response.setHeader('x-frame-options', 'DENY');
+}
+
+/** The sentinel's refusal passed on with its own status when it is one a browser reads as a refusal, or as a bad gateway. */
+function refusedStatus(status: number): number {
+  return [400, 403, 404, 409, 503].includes(status) ? status : 502;
+}
+
+/** The body of a form POST, or undefined when it is not one or is longer than a form of the dashboard's can be. */
+async function readForm(request: IncomingMessage): Promise<URLSearchParams | undefined> {
+  if (!(request.headers['content-type'] ?? '').toLowerCase().startsWith('application/x-www-form-urlencoded')) return undefined;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_FORM_BYTES) return undefined;
+    chunks.push(chunk as Buffer);
+  }
+  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
 }
 
 function send(response: ServerResponse, status: number, body: Html, headers: Headers = {}) {

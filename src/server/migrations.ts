@@ -1179,4 +1179,19 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 39,
+    name: 'sentinel-approvals',
+    sql: `
+      -- The sentinel's approvals this server has told of (ADR 0096). The approvals themselves are the sentinel's: only
+      -- what keeps a tale from being told twice is kept here. notified_at is when the Web Push of one that opened was sent
+      -- (NULL for one first seen closed); closed_at is when its file was put under sources/sentinel/approvals and marked
+      -- for her. A row is never removed.
+      CREATE TABLE sentinel_approvals (
+        approval_id TEXT PRIMARY KEY,
+        notified_at TEXT,
+        closed_at TEXT
+      ) STRICT;
+    `,
+  },
 ];

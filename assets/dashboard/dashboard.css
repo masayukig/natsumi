@@ -243,3 +243,9 @@ img.file { display: block; max-width: 100%; height: auto; border-radius: 6px; bo
   .facts > div { grid-template-columns: 1fr; gap: 0.1rem; }
   main { padding: 0.75rem; }
 }
+
+/* The sentinel's approvals (ADR 0096): a choice a line, and the sentinel's words kept as they came. */
+#sentinel-approval fieldset { margin: 0.75rem 0; padding: 0.5rem 0.8rem; border: 1px solid var(--line); border-radius: 6px; }
+#sentinel-approval fieldset label { display: block; padding: 0.2rem 0; }
+#sentinel-approval form button { margin-right: 0.5rem; }
+.facts dd.words, p.words { white-space: pre-wrap; overflow-wrap: anywhere; }

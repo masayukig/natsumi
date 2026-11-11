@@ -45,6 +45,8 @@ import { InboxEndpoint, inboxSenders } from './a2a-server.ts';
 import { AssertionVerifier, audienceOf } from './gated-assertion.ts';
 import { INBOX_REGISTRATION, INBOX_SOURCE, Inbox } from './inbox.ts';
 import { JOBS_REGISTRATION, JOBS_SOURCE, ShellJobs } from './shell-jobs.ts';
+import { SentinelClient } from './sentinel-client.ts';
+import { SENTINEL_REGISTRATION, SENTINEL_SOURCE, SentinelWatcher } from './sentinel.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -174,6 +176,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let hub: ConnectionHub | undefined;
   let notifier: PushNotifier | undefined;
   let webNotifier: WebPushNotifier | undefined;
+  let sentinelWatcher: SentinelWatcher | undefined;
   let apns: ApnsClient | undefined;
   let loop: ThinkingLoop | undefined;
   let listener: Listener | undefined;
@@ -194,6 +197,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     webNotifier?.close();
+    sentinelWatcher?.close();
     apns?.close();
     await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
     try {
@@ -260,9 +264,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
     // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. What the
     // webhooks send is written there too (ADR 0091), and what the agents ask her (ADR 0089). With a workspace, her
-    // commands left running are put there as they end (ADR 0094).
+    // commands left running are put there as they end (ADR 0094). With the sentinel, its approvals that close (ADR 0096).
     const workspace = config.loop.workspaceSocket !== undefined;
-    let sources: Sources | undefined = archive || config.a2a || config.webhooks || config.inbox || workspace ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    let sources: Sources | undefined = archive || config.a2a || config.webhooks || config.inbox || workspace || config.sentinel ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
@@ -270,6 +274,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     if (config.webhooks) sources?.register(WEBHOOKS_REGISTRATION);
     if (config.inbox) sources?.register(INBOX_REGISTRATION);
     if (workspace) sources?.register(JOBS_REGISTRATION);
+    if (config.sentinel) sources?.register(SENTINEL_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -469,9 +474,18 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     } else {
       log('push: apns is not configured; registrations are kept and nothing is sent');
     }
-    // Pushes to the browsers that are away (ADR 0070): the VAPID key is the server's own, so this needs no config.
+    // The sentinel's approvals (ADR 0096): its socket asked by the dashboard, and its events followed from here, in the
+    // background. A socket that is not there never holds the start; it is tried again until it is.
+    const sentinelClient = config.sentinel ? new SentinelClient({ socketPath: config.sentinel.socket }) : undefined;
+    const sentinelSources = sources;
+    const theSentinel = sentinelWatcher = sentinelClient ? new SentinelWatcher({ client: sentinelClient, db,
+      directory: join(dataDirectory, SOURCES_DIRECTORY, SENTINEL_SOURCE), now, log,
+      ...(sentinelSources ? { sources: { recordAttention: attention => sentinelSources.recordAttention(attention), notify: () => sentinelSources.notify() } } : {}) })
+      : undefined;
+    // Pushes to the browsers that are away (ADR 0070): the VAPID key is the server's own, so this needs no config. The
+    // sentinel's approvals go to the connected ones too.
     webNotifier = new WebPushNotifier({
-      loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), subscriptions, vapid, subject: config.publicOrigin, allowedUserId,
+      loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), ...(theSentinel ? { sentinel: theSentinel } : {}), subscriptions, vapid, subject: config.publicOrigin, allowedUserId,
       isConnected: deviceId => connections.isConnected(deviceId), log, now, name: avatar.name, iconOrigin: config.publicOrigin,
       ...(options.webPush?.send ? { send: options.webPush.send } : {}),
     });
@@ -480,7 +494,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       name: avatar.name, avatarId: avatar.id,
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
-      pillStopStartingAfterMinutes: config.curator.pillStopStartingAfterMinutes, isConnected: deviceId => connections.isConnected(deviceId), now });
+      pillStopStartingAfterMinutes: config.curator.pillStopStartingAfterMinutes, isConnected: deviceId => connections.isConnected(deviceId), now,
+      ...(sentinelClient && theSentinel ? { sentinel: { client: sentinelClient, connected: () => theSentinel.connected } } : {}) });
+    theSentinel?.start();
     // The way in over A2A (ADR 0089): each sender by its token, or by gated's assertion of its subject, checked against
     // the keys gated publishes and the host of the public URL.
     const inboxConfig = config.inbox;
