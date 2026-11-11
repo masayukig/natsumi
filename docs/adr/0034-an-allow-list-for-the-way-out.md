@@ -1,7 +1,7 @@
 # 0034. 出口を許可リストで絞る
 
 - Date: 2026-09-24
-- Status: Accepted（出口の proxy に、loopback で平文の HTTP を受け、行き先を固定して token を付ける画像生成の中継を足す点は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加。loopback で受けて GitHub の ssh へ送る中継を足す点は [ADR 0073](0073-skills-from-the-owner-and-her-own.md) で追加（ADR 0044 の画像生成の中継と同じ形）。「作業環境の外向きは、今は全部拒否する」は、作業環境から中継へ出る形を選んだインスタンスに限り、試験用のクラスタのノードの tcp 22 を開け、認証を付ける中継を API ごとに足す形に [ADR 0085](0085-relays-that-add-the-keys-for-the-workspace.md) で決め直し。作業環境用の SNI の許可リストの見込みは同 ADR で取り下げ）
+- Status: Accepted（出口の proxy に、loopback で平文の HTTP を受け、行き先を固定して token を付ける画像生成の中継を足す点は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加。loopback で受けて GitHub の ssh へ送る中継を足す点は [ADR 0073](0073-skills-from-the-owner-and-her-own.md) で追加（ADR 0044 の画像生成の中継と同じ形）。「作業環境の外向きは、今は全部拒否する」は、作業環境から中継へ出る形を選んだインスタンスに限り、試験用のクラスタのノードの tcp 22 を開け、認証を付ける中継を API ごとに足す形に [ADR 0085](0085-relays-that-add-the-keys-for-the-workspace.md) で決め直し。作業環境用の SNI の許可リストの見込みは同 ADR で取り下げ。関所を選んだインスタンスに限り、作業環境の UID の外向き（名前解決を含む）をすべて関所へ回すことは [ADR 0095](0095-letting-her-act-and-noticing-quickly.md) で置き換え（サーバーの外向きと、規則を初期化のコンテナだけが張ることは変わらない））
 
 ## Context
 

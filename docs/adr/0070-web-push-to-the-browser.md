@@ -1,7 +1,7 @@
 # 0070. ブラウザにも Web Push で通知を届ける
 
 - Date: 2026-10-01
-- Status: Accepted
+- Status: Accepted（送るものに関所の承認待ちを加え、その送り先を、つながっているかを問わず購読があってセッションが生きているブラウザすべてとすることは [ADR 0096](0096-sentinel-approvals-on-the-dashboard.md) で追加）
 
 ## Context
 
