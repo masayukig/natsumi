@@ -1186,3 +1186,13 @@ test('the way in is at the public URL’s /a2a/, named by its card, and checks g
   }
   rejects({ ...base(), inbox: { ...inbox(), extra: true } }, 'inbox.extra', /unknown/);
 });
+
+// The sentinel's approvals (ADR 0096): on only where the config names its socket.
+test('the sentinel is off unless its section names the approvals socket by absolute path', () => {
+  assert.equal('sentinel' in parseConfig(base()), false);
+  assert.deepEqual(parseConfig({ ...base(), sentinel: { socket: '/run/natsumi-sentinel/approvals.sock' } }).sentinel,
+    { socket: '/run/natsumi-sentinel/approvals.sock' });
+  for (const socket of ['run/approvals.sock', '', 42, undefined]) rejects({ ...base(), sentinel: { socket } }, 'sentinel.socket');
+  rejects({ ...base(), sentinel: { socket: '/run/natsumi-sentinel/approvals.sock', peerUid: 1000 } }, 'sentinel.peerUid', /unknown/);
+  rejects({ ...base(), sentinel: '/run/natsumi-sentinel/approvals.sock' }, 'sentinel');
+});

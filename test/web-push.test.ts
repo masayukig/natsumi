@@ -232,3 +232,33 @@ test('an answer that comes after the notifier has closed touches nothing, even w
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.deepEqual(logs, []);
 });
+
+// The sentinel's approvals waiting (ADR 0096): every browser with a subscription and a live session, connected or not.
+test('a sentinel approval waiting goes to every subscribed browser with a live session, the connected ones too, and opens its page', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'natsumi-vapid-'));
+  const vapid = await loadVapidKey(join(dir, 'key.pem'));
+  await rm(dir, { recursive: true, force: true });
+  const db = database();
+  const subscriptions = new WebPushSubscriptions(db, () => NOW);
+  const sentinelListeners: ((event: PushEvent) => void)[] = [];
+  const sent: WebPushRequest[] = [];
+  const notifier = new WebPushNotifier({
+    loop: { subscribe: () => () => {} }, sentinel: { subscribe: listener => { sentinelListeners.push(listener); return () => {}; } },
+    subscriptions, vapid, subject: 'https://natsumi.example.test', allowedUserId: OWNER, isConnected: deviceId => deviceId === 'device-here',
+    log: () => {}, now: () => NOW, send: async request => { sent.push(request); return 201; },
+  });
+  const away = browserKeys();
+  const here = browserKeys();
+  for (const id of ['device-away', 'device-here', 'device-revoked']) device(db, id, id === 'device-revoked');
+  subscriptions.save('device-away', parseSubscription(subscriptionJson('https://push.example.test/away', away))!);
+  subscriptions.save('device-here', parseSubscription(subscriptionJson('https://push.example.test/here', here))!);
+  subscriptions.save('device-revoked', parseSubscription(subscriptionJson('https://push.example.test/revoked', browserKeys()))!);
+
+  for (const listener of sentinelListeners) listener({ type: 'sentinel.approval', payload: { approvalId: 'ap-0001', summary: 'example/widgets の pulls.merge' } });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(sent.map(request => request.endpoint).sort(), ['https://push.example.test/away', 'https://push.example.test/here']);
+  const pushed = JSON.parse(decrypt(sent.find(request => request.endpoint.endsWith('/here'))!.body, here).toString());
+  assert.deepEqual(pushed, { title: 'なつみ', tag: 'ap-0001', text: '関所の承認待ちがあります\nexample/widgets の pulls.merge',
+    url: '/dashboard/sentinel/approvals/ap-0001' });
+  notifier.close();
+});

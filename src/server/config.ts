@@ -556,7 +556,15 @@ export interface ServerConfig {
   avatar?: AvatarConfig;
   /** The tools this instance has of its own (ADR 0075). Absent when none is declared, so the tools stay as they were. */
   tools?: DeclaredToolConfig[];
+  /** The sentinel's approvals (ADR 0096). Absent, there is no approvals window and no source `sentinel`. */
+  sentinel?: SentinelConfig;
 }
+
+/**
+ * The sentinel's approvals socket (ADR 0096): the Unix socket of its way in for the owner's answers, mounted into the
+ * server's container and the sentinel's alone. The sentinel tells this server from any other by the UID it runs as.
+ */
+export interface SentinelConfig { socket: string }
 
 /**
  * A tool declared in the config (ADR 0075): a program under /tools that the workspace runner starts with the model's
@@ -636,6 +644,7 @@ const SECTIONS = {
   inbox: parseInbox,
   avatar: parseAvatar,
   tools: (value: unknown, path: string) => parseTools(value, path),
+  sentinel: parseSentinel,
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -686,6 +695,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.webhooks === undefined ? {} : { webhooks: SECTIONS.webhooks(root.webhooks, 'webhooks') }),
     ...(root.inbox === undefined ? {} : { inbox: SECTIONS.inbox(root.inbox, 'inbox') }),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
+    ...(root.sentinel === undefined ? {} : { sentinel: SECTIONS.sentinel(root.sentinel, 'sentinel') }),
   };
   const tools = root.tools === undefined ? [] : SECTIONS.tools(root.tools, 'tools');
   if (tools.length > 0) {
@@ -1452,6 +1462,12 @@ function parseSources(value: unknown, path: string): SourcesConfig {
   }
   return { activity: { k, minMinutes: least as number, maxMinutes: most as number, windowMinutes: window as number,
     quietMeanMinutes: quiet as number }, historyDays: days as number };
+}
+
+function parseSentinel(value: unknown, path: string): SentinelConfig {
+  const sentinel = object(value, path);
+  onlyKeys(sentinel, path, ['socket']);
+  return { socket: absolutePath(sentinel.socket, `${path}.socket`) };
 }
 
 function parseSkills(value: unknown, path: string): SkillsConfig {

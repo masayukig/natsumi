@@ -116,6 +116,8 @@ export interface FixtureOptions {
   webBundle?: (root: string) => string;
   /** Stands in for the push services of Web Push (ADR 0070). */
   webPush?: { send: (request: WebPushRequest) => Promise<number> };
+  /** The sentinel section (ADR 0096): the approvals socket of a stand-in. */
+  sentinel?: { socket: string };
 }
 
 export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
@@ -144,7 +146,8 @@ export async function startFixture(options: FixtureOptions = {}) {
     const webhooks = options.webhooks ? await options.webhooks(root) : undefined;
     await writeFile(configFile, JSON.stringify({ ...config, ...(slack ? { slack: slack.section } : {}),
       ...(options.loop ? { loop: options.loop } : {}), ...(options.curator ? { curator: options.curator } : {}), ...(avatar ? { avatar } : {}),
-      ...(options.uploads ? { uploads: options.uploads } : {}), ...(webhooks ? { webhooks } : {}) }));
+      ...(options.uploads ? { uploads: options.uploads } : {}), ...(webhooks ? { webhooks } : {}),
+      ...(options.sentinel ? { sentinel: options.sentinel } : {}) }));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),
