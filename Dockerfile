@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:24.22.2-trixie-slim AS build
+FROM node:24.22.3-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ RUN npm run build
 
 # Holds the network namespace of the fixed-IPv6 layout (compose.ipv6.example.yaml) and sets the interface token.
 # Only this image carries iproute2, and only its container gets NET_ADMIN. Built on the same base to share layers.
-FROM node:24.22.2-trixie-slim AS ipv6-netns
+FROM node:24.22.3-trixie-slim AS ipv6-netns
 RUN apt-get update \
   && apt-get install -y --no-install-recommends iproute2 \
   && rm -rf /var/lib/apt/lists/*
@@ -70,7 +70,7 @@ RUN sed -i 's/^GOTOOLCHAIN=.*/GOTOOLCHAIN=local/' /usr/local/go/go.env \
 # interpreter, libraries, headers and default gems are gathered into /out/local to be laid over /usr/local, and the
 # bundle and bundler it ships into /out/bundler, out of PATH, behind the wrapper in the workspace. Its ENV (GEM_HOME and
 # BUNDLE_*) is not taken: the runner passes none of it (ADR 0019). Renovate moves the tag and the digest together.
-FROM ruby:4.0.9-slim-trixie@sha256:22cfdec4c490b9e7e4913527a126ddc34bf30cf5432711f70eb1aa4b3ac388a5 AS ruby
+FROM ruby:4.0.9-slim-trixie@sha256:d8cb2c0714bdaba0f318af897a01d2dbde3cfa8e62d47e99cea55feb13c0e90d AS ruby
 RUN mkdir -p /out/local/lib /out/local/include /out/bundler \
   && cp -a /usr/local/bin /usr/local/etc /out/local/ \
   && cp -a /usr/local/lib/ruby /usr/local/lib/libruby.so* /usr/local/lib/pkgconfig /out/local/lib/ \
@@ -143,7 +143,7 @@ WORKDIR /work
 ENTRYPOINT ["/usr/libexec/natsumi-workspace-runner"]
 CMD ["serve"]
 
-FROM node:24.22.2-trixie-slim
+FROM node:24.22.3-trixie-slim
 ENV NODE_ENV=production
 # git commits the memory repository (ADR 0018). Committing is the server's alone: natsumi has git in the workspace
 # container above, but there /memory/.git is mounted read-only, so she can read the history and not write it.
