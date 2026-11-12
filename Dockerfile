@@ -70,7 +70,7 @@ RUN sed -i 's/^GOTOOLCHAIN=.*/GOTOOLCHAIN=local/' /usr/local/go/go.env \
 # interpreter, libraries, headers and default gems are gathered into /out/local to be laid over /usr/local, and the
 # bundle and bundler it ships into /out/bundler, out of PATH, behind the wrapper in the workspace. Its ENV (GEM_HOME and
 # BUNDLE_*) is not taken: the runner passes none of it (ADR 0019). Renovate moves the tag and the digest together.
-FROM ruby:4.0.9-slim-trixie@sha256:22cfdec4c490b9e7e4913527a126ddc34bf30cf5432711f70eb1aa4b3ac388a5 AS ruby
+FROM ruby:4.0.9-slim-trixie@sha256:d8cb2c0714bdaba0f318af897a01d2dbde3cfa8e62d47e99cea55feb13c0e90d AS ruby
 RUN mkdir -p /out/local/lib /out/local/include /out/bundler \
   && cp -a /usr/local/bin /usr/local/etc /out/local/ \
   && cp -a /usr/local/lib/ruby /usr/local/lib/libruby.so* /usr/local/lib/pkgconfig /out/local/lib/ \
