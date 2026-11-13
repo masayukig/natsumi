@@ -1,7 +1,7 @@
 # 0085. 作業環境から鍵の要る API とノードへ、鍵を見せずに中継で出る
 
 - Date: 2026-10-30
-- Status: Accepted（2026-10-30: 作業環境の image に入れるコマンドを全員に入れると決めたことを「実装で決めたこと」の節に加えた。関所を選んだインスタンスに限り、作業環境の loopback の中継と「作業環境の SNI の許可リストは作らない」を、関所と authd に [ADR 0095](0095-letting-her-act-and-noticing-quickly.md) で置き換え（作業環境とモデルが鍵を見ないこと、ssh-agent、`run_shell` の説明は変わらない））
+- Status: Accepted（2026-10-30: 作業環境の image に入れるコマンドを全員に入れると決めたことを「実装で決めたこと」の節に加えた。関所を選んだインスタンスに限り、作業環境の loopback の中継と「作業環境の SNI の許可リストは作らない」を、関所と authd に [ADR 0095](0095-letting-her-act-and-noticing-quickly.md) で置き換え（作業環境とモデルが鍵を見ないこと、ssh-agent、`run_shell` の説明は変わらない）。「`gh` は入れない」を、全員の作業環境の image に `gh` を入れる形に [ADR 0099](0099-gh-in-the-workspace.md) で置き換え）
 
 ## Context
 
@@ -153,7 +153,7 @@ ADR 0044 の画像生成の中継と同じ形を、API ごとに足す。
 
 - **コマンドは全員の作業環境の image に入れる。** 入れるのは `kubectl`・ssh の client（`openssh-client`）・`curl` である。
   - 中継を選ばないインスタンスでは、作業環境の外向きが全部閉じているので、入っていてもどこにもつながらない。選んだインスタンスにだけ届ける形（別の image、mount）は、配置の仕組みを増やすだけで守りを強めない。
-  - `git`・`jq` は既に入っている。`gh` は入れない。GitHub の API は中継の loopback の平文の HTTP で呼ぶので、`curl` で足りる。
+  - `git`・`jq` は既に入っている。`gh` は入れない。GitHub の API は中継の loopback の平文の HTTP で呼ぶので、`curl` で足りる。（`gh` は [ADR 0099](0099-gh-in-the-workspace.md) で入れることにした）
 - **`kubectl` は版を固定して公式の配布から取る。** Debian のパッケージには無い。版はクラスタの minor（v1.37）に合わせ、dl.k8s.io の `.sha256` で確かめる。
   版は Dockerfile の `ARG KUBECTL_VERSION` に書き、Renovate が Kubernetes のリリースとして上げる。patch はほかの依存と同じく自動でマージし、minor はクラスタの版と合わせて人が取り込む。
 - **PATH の ssh はラッパーにする。** ssh は起動時に自分の UID の行を `/etc/passwd` から引き、無ければ `No user exists for uid` で止まる。`-F` の設定でも避けられない。
