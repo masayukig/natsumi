@@ -35,6 +35,14 @@
       "matchStrings": ["ARG SOPS_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "getsops/sops",
       "datasourceTemplate": "github-releases"
+    },
+    {
+      "description": "gh in the workspace image (ADR 0099) is fetched from its GitHub releases at the version on its ARG line, which no manager reads. It is read here as a release of cli/cli",
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG GH_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "cli/cli",
+      "datasourceTemplate": "github-releases"
     }
   ],
   "packageRules": [
