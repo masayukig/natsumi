@@ -1,6 +1,9 @@
 import { localTime, page, SENTINEL_LABEL, SENTINEL_PATH } from './dashboard-view.ts';
 import { html, type Html } from './html.ts';
-import type { SentinelApproval, SentinelGrant, SentinelItem, SentinelRecord } from './sentinel-client.ts';
+import type {
+  SentinelApproval, SentinelChoice, SentinelChosenOptions, SentinelGrant, SentinelItem, SentinelOption, SentinelOptions, SentinelRecord,
+  SentinelRefusedName,
+} from './sentinel-client.ts';
 
 /**
  * The pages of the sentinel's approvals (ADR 0096), under /dashboard/sentinel: what waits for the owner's answer, the
@@ -14,6 +17,15 @@ export const SENTINEL_RECORDS_PATH = `${SENTINEL_PATH}/records`;
 export const sentinelApprovalPath = (id: string) => `${SENTINEL_PATH}/approvals/${encodeURIComponent(id)}`;
 export const sentinelGrantPath = (id: string) => `${SENTINEL_PATH}/grants/${encodeURIComponent(id)}`;
 export const sentinelRecordPath = (id: number) => `${SENTINEL_RECORDS_PATH}/${id}`;
+/** A name refused, and the grant from it (ADR 0098): the page that offers the grant, and the POST that takes it. */
+export const SENTINEL_REFUSED_PATH = `${SENTINEL_PATH}/refused`;
+export const SENTINEL_REFUSED_GRANT_PATH = `${SENTINEL_REFUSED_PATH}/grant`;
+export const sentinelRefusedPath = (source: string, name: string) => `${SENTINEL_REFUSED_PATH}?${new URLSearchParams({ source, name })}`;
+/**
+ * The one handling of a destination grant that has no access to choose: it neither opens nor looks, so reads and writes
+ * both go through (natsumi-sentinel ADR-0008). The only meaning of the sentinel's options the server keeps (ADR 0098).
+ */
+export const PASSTHROUGH = 'passthrough';
 
 const STATES: Record<string, Html> = {
   open: html`<span class="note">答えを待っている</span>`,
@@ -21,8 +33,13 @@ const STATES: Record<string, Html> = {
   denied: html`<span class="bad">断った</span>`,
   expired: html`<span class="bad">答えの無いまま期限が過ぎた</span>`,
 };
-const KINDS: Record<string, string> = { request: '要求が ask になった', beforehand: '先に頼まれた一覧' };
+const KINDS: Record<string, string> = { request: '要求が ask になった', beforehand: '先に頼まれた一覧', destination: '先に頼まれた宛先' };
 const SCOPES: Record<string, string> = { once: '1 回', timed: '期限付き' };
+/**
+ * The mark of a name inside (ADR 0098): the sentinel tells it as a flag (`inside` of a name refused, the fact `inside`
+ * of an item), with no words of its own, so this is the page's.
+ */
+const INSIDE = html` <small class="note">内側の名前</small>`;
 
 function frame(title: string, main: Html, avatarId?: string): Html {
   return page(title, main, { signedIn: true, current: SENTINEL_LABEL, sentinel: true, avatarId });
@@ -42,8 +59,31 @@ function table(head: Html, rows: Html[], empty: string): Html {
 export interface SentinelOverview {
   approvals: SentinelApproval[];
   grants: SentinelGrant[];
+  /**
+   * The names refused (ADR 0098); `unreadable` when the sentinel has them but could not give them now, and absent when
+   * it is of the version before them, which leaves the page as it was.
+   */
+  refusedNames?: SentinelRefusedName[] | 'unreadable';
   /** The grant just revoked, for a word on it. */
   revoked?: string;
+  /** The destination grant just given from a name refused. */
+  granted?: string;
+}
+
+/** A destination grant's facts in a line: the name and how it goes, as the sentinel's ids. */
+function destinationLine(grant: SentinelGrant): Html {
+  return html`<br><small><code>${grant.name ?? ''}</code> ${[grant.unit, grant.handling, grant.access].filter(Boolean).join(' ')}</small>`;
+}
+
+function refusedNamesSection(names: SentinelOverview['refusedNames'], at: (iso: string | undefined) => string): Html {
+  if (names === undefined) return html``;
+  return html`<h3>断った名前</h3>
+<p><small>振り分けに無いので関所が断った名前です。関所は承認待ちにせず、知らせもしません。ここから宛先の許しを出せます。</small></p>
+${names === 'unreadable' ? html`<p class="bad">断った名前の一覧を読めませんでした。</p>`
+    : table(html`<th>名前</th><th>向け直し元</th><th>回数</th><th>最初</th><th>最後</th><th>中身</th><th></th>`, names.map(name => html`<tr>
+<td><code>${name.name}</code>${name.inside && INSIDE}</td><td><code>${name.source}</code></td><td>${name.count}</td><td>${at(name.first)}</td><td>${at(name.last)}</td>
+<td class="words">${name.summary}</td><td><a href="${sentinelRefusedPath(name.source, name.name)}">許しを出す</a></td></tr>`),
+    '断った名前はありません。')}`;
 }
 
 /** What waits for an answer, oldest first, and the grants in force, each with its page; and the way to the records. */
@@ -52,6 +92,7 @@ export function sentinelPage(view: SentinelOverview, timeZone: string, avatarId?
   const main = html`<section id="sentinel">
 <h2>関所</h2>
 ${view.revoked && html`<p class="note">許し <code>${view.revoked}</code> を取り消しました。</p>`}
+${view.granted && html`<p class="note">宛先の許し <code>${view.granted}</code> を出しました。</p>`}
 <p><small>ペネロペの要求のうち関所が本人に聞いたものと、本人が出した許しです。答えと取り消しはこの画面からだけ出せます。中身の文は関所が事実から組んだものです。</small></p>
 
 <h3>承認待ち</h3>
@@ -64,9 +105,11 @@ ${table(html`<th>作った時刻</th><th>期限</th><th>中身</th><th>種類</t
 <h3>効いている許し</h3>
 ${table(html`<th>範囲</th><th>期限</th><th>中身</th><th>出した承認待ち</th><th></th>`, view.grants.map(grant => html`<tr>
 <td>${SCOPES[grant.scope] ?? grant.scope}<br><small><code>${grant.id}</code></small></td><td>${grant.expires ? at(grant.expires) : '期限なし'}</td>
-<td class="words">${grant.summary}${grant.target && html`<br><small>${grant.destination ?? ''} ${grant.operation ?? ''} ${grant.target}</small>`}</td>
+<td class="words">${grant.summary}${grant.target && html`<br><small>${grant.destination ?? ''} ${grant.operation ?? ''} ${grant.target}</small>`}${grant.kind === 'destination' && destinationLine(grant)}</td>
 <td>${grant.approval && html`<a href="${sentinelApprovalPath(grant.approval)}"><code>${grant.approval}</code></a>`}</td>
 <td><a href="${sentinelGrantPath(grant.id)}">取り消す</a></td></tr>`), '効いている許しはありません。')}
+
+${refusedNamesSection(view.refusedNames, at)}
 
 <p><a href="${SENTINEL_RECORDS_PATH}">監査の記録を読む</a></p>
 </section>`;
@@ -77,18 +120,52 @@ function itemFacts(item: SentinelItem, index: number, total: number): Html {
   return html`<section class="step">
 ${total > 1 && html`<h3>${index + 1} つ目</h3>`}
 <dl class="facts">
-<div><dt>宛先</dt><dd><code>${item.destination}</code></dd></div>
+<div><dt>宛先</dt><dd><code>${item.destination}</code>${item.facts.some(fact => fact.name === 'inside' && fact.value === 'true') && INSIDE}</dd></div>
 ${item.operation && html`<div><dt>操作</dt><dd><code>${item.operation}</code></dd></div>`}
 ${item.targetText && html`<div><dt>対象</dt><dd class="words">${item.targetText}</dd></div>`}
 ${item.method && html`<div><dt>要求</dt><dd><code>${item.method}</code> <code>${item.path ?? ''}</code>${item.query && html`<br><small>query</small> <code>${item.query}</code>`}</dd></div>`}
 ${item.params.length > 0 && html`<div><dt>引数</dt><dd><div class="table"><table class="list"><tbody>${item.params.map(param => html`<tr>
 <th>${param.name}</th><td class="words">${param.value}</td></tr>`)}</tbody></table></div></dd></div>`}
-${item.facts.length > 0 && html`<div><dt>関所が引いた事実</dt><dd><div class="table"><table class="list"><tbody>${item.facts.map(fact => html`<tr>
-<th>${fact.name}</th><td class="words">${fact.value}</td></tr>`)}</tbody></table></div></dd></div>`}
+${item.facts.length > 0 && html`<div><dt>関所が引いた事実</dt><dd>${factsTable(item.facts)}</dd></div>`}
 ${item.body && html`<div><dt>本文</dt><dd>${item.body.binary ? html`<small>文字でない本文</small>` : html`<pre>${item.body.text}</pre>`}
 <small>${item.body.size} バイト</small>${item.body.truncated && html`<small class="bad">頭だけ（関所が読む上限まで）</small>`}</dd></div>`}
 </dl>
 </section>`;
+}
+
+function choiceFields(choices: SentinelChoice[]): Html {
+  return html`<fieldset><legend>許す範囲</legend>
+${choices.map((choice, index) => html`<label><input type="radio" name="choice" value="${choice.id}"${index === 0 ? html` checked` : ''}> ${choice.label}
+<small>${SCOPES[choice.scope] ?? choice.scope}</small></label>`)}
+</fieldset>`;
+}
+
+/**
+ * The unit, and the handling with its access, of a destination grant (ADR 0098): the sentinel's options in its order and
+ * words, its defaults (the first of each) checked. The handling and the access are one choice, so that a passthrough,
+ * which has no access, cannot be chosen with one.
+ */
+function optionFields(options: SentinelOptions): Html {
+  const treatments = options.handling.flatMap(handling => handling.id === PASSTHROUGH ? [{ value: handling.id, label: html`${handling.label}` }]
+    : options.access.map(access => ({ value: `${handling.id}:${access.id}`, label: html`${handling.label} / ${access.label}` })));
+  return html`<fieldset><legend>単位</legend>
+${options.unit.map((unit, index) => html`<label><input type="radio" name="unit" value="${unit.id}"${index === 0 ? html` checked` : ''}> <span class="words">${unit.label}</span></label>`)}
+</fieldset>
+<fieldset><legend>扱いと読み書き</legend>
+${treatments.map((treatment, index) => html`<label><input type="radio" name="treatment" value="${treatment.value}"${index === 0 ? html` checked` : ''}> <span class="words">${treatment.label}</span></label>`)}
+</fieldset>`;
+}
+
+/** The options chosen, in the sentinel's words where it offered them, as the ids where it did not. */
+function chosenWords(chosen: SentinelChosenOptions, options: SentinelOptions): Html {
+  const words = (list: SentinelOption[], id: string | undefined) => id === undefined ? undefined : list.find(option => option.id === id)?.label ?? id;
+  return html`${[words(options.unit, chosen.unit), [words(options.handling, chosen.handling), words(options.access, chosen.access)]
+    .filter(Boolean).join(' / ')].filter(Boolean).join('、')}`;
+}
+
+function factsTable(facts: { name: string; value: string }[]): Html {
+  return html`<div class="table"><table class="list"><tbody>${facts.map(fact => html`<tr>
+<th>${fact.name}</th><td class="words">${fact.value}</td></tr>`)}</tbody></table></div>`;
 }
 
 export interface SentinelApprovalView {
@@ -110,6 +187,7 @@ ${answered && html`<p class="note">答えを関所に渡しました。</p>`}
 <div><dt>状態</dt><dd>${STATES[approval.state] ?? approval.state}</dd></div>
 ${chosen ? html`<div><dt>許した範囲</dt><dd>${chosen.label}</dd></div>`
     : approval.choice && html`<div><dt>許した範囲</dt><dd><code>${approval.choice}</code></dd></div>`}
+${approval.chosen && approval.options && html`<div><dt>許した単位と扱い</dt><dd class="words">${chosenWords(approval.chosen, approval.options)}</dd></div>`}
 ${approval.grants.length > 0 && html`<div><dt>出した許し</dt><dd>${approval.grants.map(grant => html`<code>${grant}</code> `)}</dd></div>`}
 <div><dt>種類</dt><dd>${KINDS[approval.kind] ?? approval.kind}</dd></div>
 <div><dt>向け直し元</dt><dd><code>${approval.source}</code></dd></div>
@@ -121,10 +199,8 @@ ${approval.answered && html`<div><dt>答えた時刻</dt><dd>${at(approval.answe
 </dl>
 ${approval.items.map((item, index) => itemFacts(item, index, approval.items.length))}
 ${open && html`<form method="post" action="${sentinelApprovalPath(approval.id)}/answer">
-${approval.choices.length > 0 && html`<fieldset><legend>許す範囲</legend>
-${approval.choices.map((choice, index) => html`<label><input type="radio" name="choice" value="${choice.id}"${index === 0 ? html` checked` : ''}> ${choice.label}
-<small>${SCOPES[choice.scope] ?? choice.scope}</small></label>`)}
-</fieldset>`}
+${approval.choices.length > 0 && choiceFields(approval.choices)}
+${approval.choices.length > 0 && approval.options && optionFields(approval.options)}
 ${approval.choices.length > 0 && html`<button type="submit" name="answer" value="allow">許す</button>`}
 <button type="submit" name="answer" value="deny">断る</button>
 <p><small>断るのは、この承認待ちだけです。同じ承認待ちに答えられるのは 1 度だけです。</small></p>
@@ -147,6 +223,10 @@ ${grant.destination && html`<div><dt>宛先</dt><dd><code>${grant.destination}</
 ${grant.operation && html`<div><dt>操作</dt><dd><code>${grant.operation}</code></dd></div>`}
 ${grant.target && html`<div><dt>対象</dt><dd class="words">${grant.target}</dd></div>`}
 ${grant.method && html`<div><dt>要求</dt><dd><code>${grant.method}</code> <code>${grant.path ?? ''}</code></dd></div>`}
+${grant.name && html`<div><dt>名前</dt><dd><code>${grant.name}</code></dd></div>`}
+${grant.unit && html`<div><dt>単位</dt><dd><code>${grant.unit}</code></dd></div>`}
+${grant.handling && html`<div><dt>扱い</dt><dd><code>${grant.handling}</code></dd></div>`}
+${grant.access && html`<div><dt>読み書き</dt><dd><code>${grant.access}</code></dd></div>`}
 <div><dt>向け直し元</dt><dd><code>${grant.source}</code></dd></div>
 <div><dt>出した時刻</dt><dd>${at(grant.created)}</dd></div>
 ${grant.approval && html`<div><dt>出した承認待ち</dt><dd><a href="${sentinelApprovalPath(grant.approval)}"><code>${grant.approval}</code></a></dd></div>`}
@@ -157,6 +237,34 @@ ${grant.approval && html`<div><dt>出した承認待ち</dt><dd><a href="${senti
 <p><a href="${SENTINEL_PATH}">やめる</a></p>
 </section>`;
   return frame('許しの取り消し', main, avatarId);
+}
+
+/** A name refused (ADR 0098): what the sentinel remembers of it, and the form of a destination grant from it. */
+export function sentinelRefusedNamePage(name: SentinelRefusedName, timeZone: string, avatarId?: string): Html {
+  const at = (iso: string | undefined) => when(iso, timeZone);
+  const main = html`<section id="sentinel-refused">
+<h2>断った名前に宛先の許しを出す</h2>
+<p class="words"><strong>${name.summary}</strong></p>
+<dl class="facts">
+<div><dt>名前</dt><dd><code>${name.name}</code>${name.inside && INSIDE}</dd></div>
+${name.domain && html`<div><dt>登録できるドメイン</dt><dd><code>${name.domain}</code></dd></div>`}
+<div><dt>向け直し元</dt><dd><code>${name.source}</code></dd></div>
+<div><dt>回数</dt><dd>${name.count}</dd></div>
+<div><dt>最初</dt><dd>${at(name.first)}</dd></div>
+<div><dt>最後</dt><dd>${at(name.last)}</dd></div>
+</dl>
+${name.choices.length === 0 ? html`<p><small>関所が出せる期限を示していないので、許しを出せません。</small></p>`
+    : html`<form method="post" action="${SENTINEL_REFUSED_GRANT_PATH}">
+<input type="hidden" name="source" value="${name.source}">
+<input type="hidden" name="name" value="${name.name}">
+${choiceFields(name.choices)}
+${optionFields(name.options)}
+<button type="submit">許す</button>
+<p><small>許しは効いている許しの一覧に並び、そこから取り消せます。ペネロペには知らせません。</small></p>
+</form>`}
+<p><a href="${SENTINEL_PATH}">関所へ戻る</a></p>
+</section>`;
+  return frame('断った名前', main, avatarId);
 }
 
 const RECORD_ORDER = ['time', 'source', 'kind', 'treatment', 'verdict', 'reason', 'name', 'address', 'method', 'path', 'query', 'operation',

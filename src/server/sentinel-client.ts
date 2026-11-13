@@ -36,6 +36,15 @@ export interface SentinelItem {
   facts: SentinelFact[];
 }
 export interface SentinelChoice { id: string; scope: string; seconds: number; label: string }
+/** One of the options of a destination grant: the id to hand back and the sentinel's words for it. */
+export interface SentinelOption { id: string; label: string }
+/**
+ * The unit, handling and access a destination grant may take (natsumi-sentinel ADR-0008), each in the sentinel's order,
+ * its default first. Only an approval of a destination and a name refused have them.
+ */
+export interface SentinelOptions { unit: SentinelOption[]; handling: SentinelOption[]; access: SentinelOption[] }
+/** The options chosen, as an answer or a grant carries them; one left out is the sentinel's default. */
+export interface SentinelChosenOptions { unit?: string; handling?: string; access?: string }
 export interface SentinelApproval {
   id: string;
   kind: string;
@@ -50,9 +59,31 @@ export interface SentinelApproval {
   answered?: string;
   choice?: string;
   grants: string[];
+  /** Only on an approval of a destination; absent on any other, and on a sentinel of the version before them. */
+  options?: SentinelOptions;
+  /** The options an approval of a destination was allowed with, their defaults filled in. */
+  chosen?: SentinelChosenOptions;
+}
+/** A name the sentinel refused for not being in its routing table, as it remembers it (natsumi-sentinel ADR-0008). */
+export interface SentinelRefusedName {
+  source: string;
+  name: string;
+  first: string;
+  last: string;
+  count: number;
+  summary: string;
+  choices: SentinelChoice[];
+  options: SentinelOptions;
+  /** The registrable domain of the name, where it has one. */
+  domain?: string;
+  /** Whether the name is under one of the inside domains the environment gives the sentinel. */
+  inside: boolean;
 }
 export interface SentinelGrant {
   id: string;
+  /** `operation` or `destination`; absent on a sentinel of the version before destination grants. */
+  kind?: string;
+  /** Empty for a grant given from the names refused, which no approval made. */
   approval: string;
   source: string;
   scope: string;
@@ -64,6 +95,11 @@ export interface SentinelGrant {
   target?: string;
   method?: string;
   path?: string;
+  /** A destination grant's own: the name or domain, `name` or `domain`, `inspect` or `passthrough`, and `read` or `readwrite`. */
+  name?: string;
+  unit?: string;
+  handling?: string;
+  access?: string;
 }
 /** One of the sentinel's records: its id and time, and its other fields as they came, each a string, number or flag. */
 export interface SentinelRecord {
@@ -110,8 +146,8 @@ export class SentinelClient {
   }
 
   /** The owner's answer, as the sentinel takes it: a choice only with `allow`. A second answer is the sentinel's to refuse. */
-  async answer(id: string, answer: { answer: 'allow'; choice: string } | { answer: 'deny' }): Promise<SentinelResult<SentinelApproval>> {
-    const body = answer.answer === 'allow' ? { answer: 'allow', choice: answer.choice } : { answer: 'deny' };
+  async answer(id: string, answer: { answer: 'allow'; choice: string; options?: SentinelChosenOptions } | { answer: 'deny' }): Promise<SentinelResult<SentinelApproval>> {
+    const body = answer.answer === 'allow' ? { answer: 'allow', choice: answer.choice, ...(answer.options ? { options: answer.options } : {}) } : { answer: 'deny' };
     return mapOk(await this.call('POST', `/v1/approvals/${encodeURIComponent(id)}/answer`, body), readApproval);
   }
 
@@ -122,6 +158,20 @@ export class SentinelClient {
 
   async revoke(id: string): Promise<SentinelResult<SentinelGrant>> {
     return mapOk(await this.call('DELETE', `/v1/grants/${encodeURIComponent(id)}`), value => readGrant(field(value, 'revoked')));
+  }
+
+  /**
+   * The names refused, the latest first. A sentinel of the version before destination grants has no such path and
+   * answers 404, which the caller takes as having none to show.
+   */
+  async refusedNames(): Promise<SentinelResult<SentinelRefusedName[]>> {
+    return mapOk(await this.call('GET', `/v1/refused-names?limit=${MAX_LIST}`), value => listOf(value, 'names', readRefusedName));
+  }
+
+  /** The owner's grant of a name refused: no approval is made, and the sentinel tells nothing of it on the events. */
+  async grantRefusedName(grant: { source: string; name: string; choice: string; options?: SentinelChosenOptions }): Promise<SentinelResult<SentinelGrant>> {
+    const body = { source: grant.source, name: grant.name, choice: grant.choice, ...(grant.options ? { options: grant.options } : {}) };
+    return mapOk(await this.call('POST', '/v1/refused-names/grant', body), value => readGrant(field(value, 'grant')));
   }
 
   /** A page of the records, newest first, from before the id given; `next` is where the page after it starts. */
@@ -294,6 +344,8 @@ function readApproval(value: unknown): SentinelApproval | undefined {
   if (id === undefined || kind === undefined || state === undefined || !APPROVAL_ID.test(id)) return undefined;
   const items = field(value, 'items');
   const choices = field(value, 'choices');
+  const options = kind === 'destination' ? readOptions(field(value, 'options')) : undefined;
+  const chosen = kind === 'destination' ? readChosen(field(value, 'chosen')) : undefined;
   return {
     id, kind, state, source: text(field(value, 'source')) ?? '', created: text(field(value, 'created')) ?? '',
     expires: text(field(value, 'expires')) ?? '', summary: text(field(value, 'summary')) ?? '',
@@ -301,6 +353,43 @@ function readApproval(value: unknown): SentinelApproval | undefined {
     choices: Array.isArray(choices) ? choices.flatMap(choice => readChoice(choice) ?? []) : [],
     requests: count(field(value, 'requests')) ?? 0, ...optional('answered', text(field(value, 'answered'))),
     ...optional('choice', text(field(value, 'choice'))), grants: texts(field(value, 'grants')),
+    ...(options ? { options } : {}), ...(chosen ? { chosen } : {}),
+  };
+}
+
+/** The options chosen, as ids; none when there is none of them. */
+function readChosen(value: unknown): SentinelChosenOptions | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const chosen = { ...optional('unit', text(field(value, 'unit'))), ...optional('handling', text(field(value, 'handling'))),
+    ...optional('access', text(field(value, 'access'))) };
+  return Object.keys(chosen).length > 0 ? chosen : undefined;
+}
+
+function readOptionList(value: unknown): SentinelOption[] {
+  return Array.isArray(value) ? value.flatMap(entry => {
+    const id = text(field(entry, 'id'));
+    const label = text(field(entry, 'label'));
+    return id === undefined || id === '' || label === undefined ? [] : [{ id, label }];
+  }) : [];
+}
+
+/** The options as the sentinel offers them, or none when there is no unit or no handling to choose. */
+function readOptions(value: unknown): SentinelOptions | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const options = { unit: readOptionList(field(value, 'unit')), handling: readOptionList(field(value, 'handling')), access: readOptionList(field(value, 'access')) };
+  return options.unit.length > 0 && options.handling.length > 0 ? options : undefined;
+}
+
+function readRefusedName(value: unknown): SentinelRefusedName | undefined {
+  const source = text(field(value, 'source'));
+  const name = text(field(value, 'name'));
+  const options = readOptions(field(value, 'options'));
+  if (!source || !name || !options) return undefined;
+  const choices = field(value, 'choices');
+  return {
+    source, name, first: text(field(value, 'first')) ?? '', last: text(field(value, 'last')) ?? '', count: count(field(value, 'count')) ?? 0,
+    summary: text(field(value, 'summary')) ?? '', choices: Array.isArray(choices) ? choices.flatMap(choice => readChoice(choice) ?? []) : [],
+    options, ...optional('domain', text(field(value, 'domain'))), inside: field(value, 'inside') === true,
   };
 }
 
@@ -308,11 +397,13 @@ function readGrant(value: unknown): SentinelGrant | undefined {
   const id = text(field(value, 'id'));
   if (id === undefined || !GRANT_ID.test(id)) return undefined;
   return {
-    id, approval: text(field(value, 'approval')) ?? '', source: text(field(value, 'source')) ?? '', scope: text(field(value, 'scope')) ?? '',
+    id, ...optional('kind', text(field(value, 'kind'))), approval: text(field(value, 'approval')) ?? '', source: text(field(value, 'source')) ?? '', scope: text(field(value, 'scope')) ?? '',
     created: text(field(value, 'created')) ?? '', ...optional('expires', text(field(value, 'expires'))), summary: text(field(value, 'summary')) ?? '',
     ...optional('destination', text(field(value, 'destination'))), ...optional('operation', text(field(value, 'operation'))),
     ...optional('target', text(field(value, 'target'))), ...optional('method', text(field(value, 'method'))),
-    ...optional('path', text(field(value, 'path'))),
+    ...optional('path', text(field(value, 'path'))), ...optional('name', text(field(value, 'name'))),
+    ...optional('unit', text(field(value, 'unit'))), ...optional('handling', text(field(value, 'handling'))),
+    ...optional('access', text(field(value, 'access'))),
   };
 }
 

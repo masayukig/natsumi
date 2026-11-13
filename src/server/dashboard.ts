@@ -22,10 +22,10 @@ import {
 import { statsPage, statsTokens } from './dashboard-charts.ts';
 import { sleepPage } from './dashboard-sleep.ts';
 import {
-  SENTINEL_PATH, SENTINEL_RECORDS_PATH, sentinelApprovalPage, sentinelApprovalPath, sentinelGrantPage, sentinelPage, sentinelRecordPage,
-  sentinelRecordsPage, sentinelRefusedPage, sentinelUnreachablePage,
+  PASSTHROUGH, SENTINEL_PATH, SENTINEL_RECORDS_PATH, SENTINEL_REFUSED_GRANT_PATH, SENTINEL_REFUSED_PATH, sentinelApprovalPage, sentinelApprovalPath,
+  sentinelGrantPage, sentinelPage, sentinelRecordPage, sentinelRecordsPage, sentinelRefusedNamePage, sentinelRefusedPage, sentinelUnreachablePage,
 } from './dashboard-sentinel.ts';
-import { APPROVAL_ID, GRANT_ID, type SentinelClient, type SentinelResult } from './sentinel-client.ts';
+import { APPROVAL_ID, GRANT_ID, type SentinelChosenOptions, type SentinelClient, type SentinelResult } from './sentinel-client.ts';
 import { readStats, statsPeriod } from './dashboard-stats.ts';
 import { turnPage, turnsPage } from './dashboard-turns.ts';
 import { DASHBOARD_PATH, type BrowserOutcome, type GitHubLogin, type Outcome } from './github-login.ts';
@@ -141,7 +141,13 @@ const SENTINEL_GRANT = /^\/dashboard\/sentinel\/grants\/([^/]+)$/;
 const SENTINEL_RECORD = /^\/dashboard\/sentinel\/records\/([1-9][0-9]{0,15})$/;
 /** A choice as the sentinel names them (`once`, `1h`, `30d`, `forever`): handed on as it is, never read. */
 const CHOICE = /^[A-Za-z0-9_-]{1,32}$/;
-/** A form of the answer holds two short fields; anything longer is not one. */
+/** A unit as the sentinel names them (`name`, `domain:example.test`): handed on as it is, never read. */
+const UNIT = /^[A-Za-z0-9_-]{1,32}(?::[A-Za-z0-9._-]{1,253})?$/;
+/** The handling and its access as one field of the form (`inspect:read`), or a passthrough alone, which has no access. */
+const TREATMENT = /^([A-Za-z0-9_-]{1,32})(?::([A-Za-z0-9_-]{1,32}))?$/;
+/** A source or a name refused, as the sentinel gave it: some text with no control characters, handed back as it is. */
+const REFUSED_TEXT = /^[^\u0000-\u001f\u007f]{1,300}$/;
+/** A form of the answer holds a few short fields; anything longer is not one. */
 const MAX_FORM_BYTES = 4096;
 const RECORDS_PER_PAGE = 50;
 
@@ -183,6 +189,10 @@ export class Dashboard {
     if (sentinelPost) {
       if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
       return sentinelPost[1] ? this.answerSentinel(request, response, sentinelPost[1]) : this.revokeGrant(request, response, sentinelPost[2]!);
+    }
+    if (this.options.sentinel && path === SENTINEL_REFUSED_GRANT_PATH) {
+      if (method !== 'POST') return send(response, 405, this.message('この方法では受け付けていません'), { allow: 'POST' });
+      return this.grantRefusedName(request, response);
     }
     const check = CHECK_ROUTE.exec(path);
     if (check?.[2]) {
@@ -430,12 +440,24 @@ export class Dashboard {
       : result.status === 404 ? notFound()
       : send(response, 502, sentinelRefusedPage('関所が答えませんでした', result.status, result.error, SENTINEL_PATH, avatarId), headers);
     if (path === SENTINEL_PATH) {
-      const [approvals, grants] = await Promise.all([client.approvals(), client.grants()]);
+      const [approvals, grants, names] = await Promise.all([client.approvals(), client.grants(), client.refusedNames()]);
       if (approvals.kind !== 'ok') return failed(approvals);
       if (grants.kind !== 'ok') return failed(grants);
+      // A sentinel of the version before destination grants, or one with them off, has no list: 404, and nothing shown (ADR 0098).
+      const refusedNames = names.kind === 'ok' ? names.value : names.kind === 'refused' && names.status === 404 ? undefined : 'unreadable' as const;
       const revoked = url.searchParams.get('revoked');
-      return send(response, 200, sentinelPage({ approvals: approvals.value, grants: grants.value,
-        ...(revoked && GRANT_ID.test(revoked) ? { revoked } : {}) }, timeZone, avatarId), headers);
+      const granted = url.searchParams.get('granted');
+      return send(response, 200, sentinelPage({ approvals: approvals.value, grants: grants.value, ...(refusedNames ? { refusedNames } : {}),
+        ...(revoked && GRANT_ID.test(revoked) ? { revoked } : {}), ...(granted && GRANT_ID.test(granted) ? { granted } : {}) }, timeZone, avatarId), headers);
+    }
+    if (path === SENTINEL_REFUSED_PATH) {
+      const sources = url.searchParams.getAll('source');
+      const names = url.searchParams.getAll('name');
+      if (sources.length !== 1 || names.length !== 1) return notFound();
+      const listed = await client.refusedNames();
+      if (listed.kind !== 'ok') return failed(listed);
+      const found = listed.value.find(candidate => candidate.source === sources[0] && candidate.name === names[0]);
+      return found ? send(response, 200, sentinelRefusedNamePage(found, timeZone, avatarId), headers) : notFound();
     }
     const approval = SENTINEL_APPROVAL.exec(path);
     if (approval) {
@@ -483,8 +505,10 @@ export class Dashboard {
     const form = await readForm(request);
     const answers = form?.getAll('answer') ?? [];
     const choices = form?.getAll('choice') ?? [];
+    const options = form ? chosenOptions(form) : 'invalid';
     const answer = answers.length !== 1 ? undefined : answers[0] === 'deny' ? { answer: 'deny' as const }
-      : answers[0] === 'allow' && choices.length === 1 && CHOICE.test(choices[0]!) ? { answer: 'allow' as const, choice: choices[0]! } : undefined;
+      : answers[0] === 'allow' && choices.length === 1 && CHOICE.test(choices[0]!) && options !== 'invalid'
+        ? { answer: 'allow' as const, choice: choices[0]!, ...(options ? { options } : {}) } : undefined;
     if (!answer) return send(response, 400, this.message('答えの形が違います', true), renewed);
     const result = await this.options.sentinel!.client.answer(id, answer);
     if (result.kind === 'ok') {
@@ -494,6 +518,36 @@ export class Dashboard {
     if (result.kind === 'unreachable') return send(response, 503, sentinelUnreachablePage(avatarId), renewed);
     send(response, refusedStatus(result.status), sentinelRefusedPage('関所が答えを受け付けませんでした', result.status, result.error,
       sentinelApprovalPath(id), avatarId), renewed);
+  }
+
+  /**
+   * The owner's destination grant of a name the sentinel refused (ADR 0098), guarded as an answer is. The sentinel makes
+   * no approval of it and tells nothing of it, so there is no push and no file for her.
+   */
+  private async grantRefusedName(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const { avatarId } = this.options;
+    if (request.headers.origin !== this.options.publicOrigin) return send(response, 403, this.message('許しを出せませんでした'));
+    const session = this.options.browser.session(request, { legacy: true });
+    if (!session) return send(response, 403, this.message('ログインが切れました。もう一度開いてください'));
+    const renewed: Headers = { 'set-cookie': this.options.browser.renewed(session) };
+    const form = await readForm(request);
+    const one = (key: string, pattern: RegExp) => {
+      const values = form?.getAll(key) ?? [];
+      return values.length === 1 && pattern.test(values[0]!) ? values[0]! : undefined;
+    };
+    const source = one('source', REFUSED_TEXT);
+    const name = one('name', REFUSED_TEXT);
+    const choice = one('choice', CHOICE);
+    const options = form ? chosenOptions(form) : 'invalid';
+    if (!source || !name || !choice || options === 'invalid') return send(response, 400, this.message('許しの形が違います', true), renewed);
+    const result = await this.options.sentinel!.client.grantRefusedName({ source, name, choice, ...(options ? { options } : {}) });
+    if (result.kind === 'ok') {
+      response.writeHead(303, { location: `${SENTINEL_PATH}?granted=${encodeURIComponent(result.value.id)}`, ...renewed }).end();
+      return;
+    }
+    if (result.kind === 'unreachable') return send(response, 503, sentinelUnreachablePage(avatarId), renewed);
+    send(response, refusedStatus(result.status), sentinelRefusedPage('関所が許しを受け付けませんでした', result.status, result.error,
+      SENTINEL_PATH, avatarId), renewed);
   }
 
   /** The revoke of one of the sentinel's grants (ADR 0096), from the page that asks first, guarded as the answer is. */
@@ -559,6 +613,23 @@ function setSecurityHeaders(response: ServerResponse) {
 }
 
 /** The sentinel's refusal passed on with its own status when it is one a browser reads as a refusal, or as a bad gateway. */
+/**
+ * The unit and the handling with its access of a destination grant, as the form gives them (ADR 0098): none when the
+ * form has neither (an approval of an operation, or a page of the sentinel's version before them), `invalid` when it has
+ * one without the other, either twice, or a passthrough with an access, or another handling without one.
+ */
+function chosenOptions(form: URLSearchParams): SentinelChosenOptions | undefined | 'invalid' {
+  const units = form.getAll('unit');
+  const treatments = form.getAll('treatment');
+  if (units.length === 0 && treatments.length === 0) return undefined;
+  if (units.length !== 1 || treatments.length !== 1 || !UNIT.test(units[0]!)) return 'invalid';
+  const treatment = TREATMENT.exec(treatments[0]!);
+  if (!treatment) return 'invalid';
+  const [, handling, access] = treatment;
+  if ((handling === PASSTHROUGH) !== (access === undefined)) return 'invalid';
+  return { unit: units[0]!, handling: handling!, ...(access ? { access } : {}) };
+}
+
 function refusedStatus(status: number): number {
   return [400, 403, 404, 409, 503].includes(status) ? status : 502;
 }
