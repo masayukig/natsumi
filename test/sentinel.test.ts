@@ -10,7 +10,7 @@ import { SentinelClient } from '../src/server/sentinel-client.ts';
 import { SENTINEL_ATTENTION, SentinelWatcher } from '../src/server/sentinel.ts';
 import type { Attention } from '../src/server/sources.ts';
 import { migrate } from '../src/server/state-db.ts';
-import { FakeSentinel, fakeApproval } from './support/fake-sentinel.ts';
+import { FakeSentinel, fakeApproval, fakeDestinationApproval, fakeRefusedName } from './support/fake-sentinel.ts';
 
 /**
  * The sentinel's events, followed for as long as the server runs (ADR 0096): an approval that opens is told to the
@@ -153,5 +153,26 @@ test('a stream that goes quiet past the pings is given up on and opened again', 
     const watcher = s.watch();
     await waitFor(() => watcher.connected, 'the stream');
     await waitFor(() => s.fake.requests.filter(request => request === 'GET /v1/events').length >= 2, 'the second stream');
+  } finally { await s.cleanup(); }
+});
+
+// ADR 0098: an approval of a destination is told as any approval is; a grant from the names refused makes no approval
+// and no event, so nothing is told of it.
+test('an approval of a destination is told once like any other, and a grant from a name refused tells nothing', async () => {
+  const s = await setup();
+  try {
+    s.fake.destinations = true;
+    const watcher = s.watch();
+    await waitFor(() => watcher.connected && s.fake.streamCount === 1, 'the stream');
+    s.fake.create(fakeDestinationApproval());
+    await waitFor(() => s.pushes.length === 1, 'the push');
+    assert.deepEqual(s.pushes, [{ type: 'sentinel.approval', payload: { approvalId: 'ap-0101', summary: 'penelope が docs.example.test を頼んだ（表に無い名前）' } }]);
+    s.fake.refusedNames = [fakeRefusedName({ name: 'pkg.example.test' })];
+    const granted = await new SentinelClient({ socketPath: s.fake.socketPath })
+      .grantRefusedName({ source: 'penelope', name: 'pkg.example.test', choice: '1d' });
+    assert.equal(granted.kind, 'ok');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(s.pushes.length, 1, 'no push of a grant from the names refused');
+    assert.equal(s.attentions.length, 0, 'and no file for her');
   } finally { await s.cleanup(); }
 });

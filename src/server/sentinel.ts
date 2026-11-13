@@ -211,9 +211,16 @@ function closedFile(approval: SentinelApproval, grants: ReadonlyMap<string, Sent
       ...(item.targetText ? { targetText: item.targetText } : {}), ...(item.facts.length > 0 ? { facts: item.facts } : {}),
     })),
     ...(choice ? { choice } : approval.choice ? { choice: { id: approval.choice } } : {}),
+    ...(approval.chosen ? { chosen: approval.chosen } : {}),
     grants: approval.grants.map(id => {
       const grant = grants.get(id);
-      return grant ? { id, scope: grant.scope, ...(grant.expires ? { expires: grant.expires } : {}), summary: grant.summary } : { id };
+      if (!grant) return { id };
+      // A destination grant (ADR 0098) carries the name it lets through and how; a grant of an operation, as before.
+      const destination = grant.kind === 'destination' ? {
+        kind: grant.kind, ...(grant.name ? { name: grant.name } : {}), ...(grant.unit ? { unit: grant.unit } : {}),
+        ...(grant.handling ? { handling: grant.handling } : {}), ...(grant.access ? { access: grant.access } : {}),
+      } : {};
+      return { id, ...destination, scope: grant.scope, ...(grant.expires ? { expires: grant.expires } : {}), summary: grant.summary };
     }),
   };
 }
