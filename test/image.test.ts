@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -161,13 +161,12 @@ test('the workspace image installs jq', async () => {
 });
 
 // ADR 0085: the CLIs that use the relays are in everyone's workspace. An instance whose way out is closed has them too,
-// and they reach nothing. gh is left out: the GitHub API is plain HTTP to the relay on the loopback, which curl does.
-test('the workspace image installs ssh\'s client, curl and the passwd wrapper ssh runs under, and not gh', async () => {
+// and they reach nothing. gh is not Debian's package: it is fetched at a fixed release (ADR 0099).
+test('the workspace image installs ssh\'s client, curl and the passwd wrapper ssh runs under', async () => {
   const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(await workspaceStage());
   assert.ok(install, 'the workspace stage installs no packages');
   const packages = install[0].split(/\s+/);
   for (const name of ['openssh-client', 'curl', 'ca-certificates', 'libnss-wrapper']) assert.ok(packages.includes(name), `${name}: ${install[0]}`);
-  assert.ok(!packages.includes('gh'), install[0]);
 });
 
 const kubectlStage = async () => {
@@ -291,6 +290,69 @@ test('Renovate reads the version of sops as a release of getsops/sops', async ()
   assert.match(match!.groups!.currentValue!, /^v3\.\d+\.\d+$/);
   assert.equal(manager.depNameTemplate, 'getsops/sops');
   assert.equal(manager.datasourceTemplate, 'github-releases');
+});
+
+// ADR 0099: gh, GitHub's CLI, fetched like sops from its GitHub releases at a fixed version and checked against the
+// checksums published with it. Its archives name the version without the v of the tag Renovate reads, and the
+// architecture as Docker's TARGETARCH does.
+const ghStage = async () => {
+  const text = await dockerfile();
+  const start = text.indexOf(' AS gh\n');
+  assert.notEqual(start, -1, 'no stage fetches gh');
+  return text.slice(start, text.indexOf('\nFROM ', start));
+};
+
+test('the workspace image has gh of a fixed release, checked against its published checksums', async () => {
+  const stage = await ghStage();
+  assert.match(stage, /^ARG GH_VERSION=v2\.\d+\.\d+$/m);
+  assert.match(stage, /^ARG TARGETARCH$/m);
+  assert.match(stage, /https:\/\/github\.com\/cli\/cli\/releases\/download\/\$\{GH_VERSION\}\/gh_\$\{version\}_linux_\$\{TARGETARCH\}\.tar\.gz/);
+  assert.match(stage, /https:\/\/github\.com\/cli\/cli\/releases\/download\/\$\{GH_VERSION\}\/gh_\$\{version\}_checksums\.txt/);
+  assert.match(stage, /sha256sum --check/);
+  const workspace = await workspaceStage();
+  const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(workspace);
+  assert.ok(install, 'the workspace stage installs no packages');
+  assert.ok(!install[0].split(/\s+/).includes('gh'), install[0]);
+});
+
+test('Renovate reads the version of gh as a release of cli/cli', async () => {
+  const config = JSON.parse(await readFile(`${root}renovate.json`, 'utf8')) as {
+    customManagers: { managerFilePatterns: string[]; matchStrings: string[]; depNameTemplate?: string; datasourceTemplate?: string }[];
+  };
+  const text = await dockerfile();
+  const found = config.customManagers.flatMap(manager => manager.matchStrings.map(pattern => ({ manager, match: new RegExp(pattern).exec(text) })))
+    .filter(({ match }) => match?.[0].startsWith('ARG GH_VERSION='));
+  assert.equal(found.length, 1, 'no custom manager, or more than one, reads the gh version');
+  const { manager, match } = found[0]!;
+  assert.deepEqual(manager.managerFilePatterns, ['/^Dockerfile$/']);
+  assert.match(match!.groups!.currentValue!, /^v2\.\d+\.\d+$/);
+  assert.equal(manager.depNameTemplate, 'cli/cli');
+  assert.equal(manager.datasourceTemplate, 'github-releases');
+});
+
+// ADR 0099: gh sends telemetry on every command, a TTY or not, unless GH_TELEMETRY or DO_NOT_TRACK says not to, and its
+// config, where it can be turned off too, is under HOME. The runner passes neither variable (ADR 0019), so the gh in PATH
+// is a wrapper that turns telemetry and the update notice off unless the command line says otherwise.
+test('the workspace image puts gh out of PATH behind the wrapper in PATH', async () => {
+  const workspace = await workspaceStage();
+  assert.match(workspace, /^COPY --from=gh \/out\/gh \/usr\/libexec\/gh$/m);
+  assert.match(workspace, /^COPY --chmod=755 docker\/gh\/gh \/usr\/local\/bin\/gh$/m);
+});
+
+test('the gh in PATH runs the real one with telemetry and the update notice off, unless the command line sets them', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'natsumi-gh-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const stub = join(dir, 'real-gh');
+  await writeFile(stub, '#!/bin/sh\nprintf \'%s\\n\' "args=$*" "telemetry=${GH_TELEMETRY-unset}" "notifier=${GH_NO_UPDATE_NOTIFIER-unset}"\n', { mode: 0o755 });
+  const wrapper = join(dir, 'gh');
+  const text = await readFile(`${root}docker/gh/gh`, 'utf8');
+  assert.ok(text.includes('/usr/libexec/gh'), text);
+  await writeFile(wrapper, text.replaceAll('/usr/libexec/gh', stub), { mode: 0o755 });
+  const run = async (env: Record<string, string>) =>
+    (await promisify(execFile)(wrapper, ['api', 'user', '--jq', '.login'], { env: { PATH: '/usr/bin:/bin', HOME: dir, ...env } })).stdout;
+
+  assert.equal(await run({}), 'args=api user --jq .login\ntelemetry=false\nnotifier=1\n');
+  assert.equal(await run({ GH_TELEMETRY: 'log', GH_NO_UPDATE_NOTIFIER: '' }), 'args=api user --jq .login\ntelemetry=log\nnotifier=\n');
 });
 
 // ADR 0088: Go's toolchain, the one the runner is built with, from the golang image Renovate already moves. The
@@ -548,7 +610,7 @@ const kubeconfig = [
 ].join('\n');
 
 for (const uid of [1000, 1001]) {
-  test(`through the runner as UID ${uid}, kubectl, ssh and curl run with their settings in files and write nothing to HOME`, {
+  test(`through the runner as UID ${uid}, kubectl, ssh, curl and gh run with their settings in files and write nothing to HOME`, {
     skip: hasDocker ? false : 'docker is not available',
     timeout: 30 * 60_000,
   }, async t => {
@@ -568,6 +630,7 @@ for (const uid of [1000, 1001]) {
     assert.match(await run('kubectl version --client'), /^Client Version: v1\.37\.\d+$/m);
     assert.match((await throughRunner(container, 'ssh -V')).stderr, /^OpenSSH_/);
     assert.match(await run('curl --version'), /^curl \d+\.\d+/);
+    assert.match(await run('gh --version'), /^gh version 2\.\d+\.\d+ /m);
 
     const resolved = await run('ssh -G -F /tmp/tools/ssh_config node1');
     for (const line of ['hostname 192.0.2.10', 'user root', 'identityagent /run/ssh-agent/agent.sock', 'userknownhostsfile /tmp/tools/known_hosts']) {

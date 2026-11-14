@@ -653,8 +653,13 @@ config に関所の承認の口の socket を書いたときだけ有効です�
   - 承認待ちの一覧（古い順）と 1 件の中身。関所が事実から組んだ文（`summary`）、中身ごと（git の push では ref ごと）の宛先・操作・対象・引数・要求の本文の頭と、関所が上流に引いた事実（head の SHA など。あるときだけ）を出します。どれも平文として出し、HTML・Markdown・リンクとしては読みません。
   - 1 件のページのフォームで答えます。「許す」は関所が示した範囲の選択肢（1 回だけ・1 時間 など）から 1 つを選び、「断る」はその承認待ちだけを断ります。同じ承認待ちに 2 度目に答えると、関所が断り（409）、その言葉をそのまま出します。
   - 効いている許しの一覧と期限。1 件ずつ、尋ねるページを通して取り消します。
+  - 関所が宛先の許しを持つ版なら（[ADR 0098](docs/adr/0098-sentinel-destination-grants-on-the-dashboard.md)）、振り分けに無いので関所が断った名前の一覧（名前・向け直し元・回数・最初と最後の時刻）を出し、1 件から宛先の許しを出せます（`/dashboard/sentinel/refused`）。
+    断った名前は承認待ちにならず、通知もしません。ペネロペが先に頼んだ宛先は、ほかの承認待ちと同じ一覧に並び、同じように通知します。
+    宛先の許しでは、期限に加えて、関所が示す単位（この名前だけ・ドメインの下すべて）と、扱いと読み書き（開いて見る・読みだけ／読み書き、開かない）を選びます。既定は関所の既定（この名前だけ・開いて見る・読みだけ）です。
+    「開かない」は読み書きとも通るので、読みだけとは組み合わせられません。範囲の文は関所が組んだものをそのまま出します。内側の名前には「内側の名前」の印を付けます。
+    関所が宛先の許しを持たない版か、それを切っていれば、この部分は出ず、ほかは今までどおりです。
   - 監査の記録（`/dashboard/sentinel/records`）。関所の記録を新しい順に 50 件ずつ読みます。1 件を開くと、すべての欄と要求の本文の頭を出します。読むだけです。
-- 答えと取り消しは、ログインしているブラウザから、同じオリジンのフォームの POST でだけ受け付けます（Origin が `publicOrigin` と一致しなければ 403）。会話・WebSocket・アプリ・Slack からは答えられません。モデルに渡すツールもありません。
+- 答え・宛先の許し・取り消しは、ログインしているブラウザから、同じオリジンのフォームの POST でだけ受け付けます（Origin が `publicOrigin` と一致しなければ 403）。会話・WebSocket・アプリ・Slack からは答えられません。モデルに渡すツールもありません。
 - 承認待ちができると、Web Push の購読があってセッションが生きているブラウザすべてに通知します。会話の画面がつながっていても送ります（iPhone には送りません）。
   通知を押すと、その承認待ちのページが開きます。1 回だけ送り、送り直しません。
 - 承認待ちが閉じる（許した・断った・期限が過ぎた）と、`/sources/sentinel/approvals/<id>.json` を置き、更新元 `sentinel` の `attention`（`kind` は `approval_closed`）で natsumi に知らせます。
@@ -1387,11 +1392,12 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
 - 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
   `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、PDF を読む `poppler-utils`（`pdftotext`・`pdftoppm`）と、その日本語などの文字の対応表 `poppler-data`、画像を作る `sdctl`、中継（[ADR 0085](docs/adr/0085-relays-that-add-the-keys-for-the-workspace.md)）を使う `kubectl`・`ssh`・`curl`、
-  Ruby 4.0（公式の build。`ruby`・`bundle`）と C の拡張を build する `gcc`・`make`、secret を暗号化する `sops`・`age`、Go のツールチェーン（`go`・`gofmt`）（[ADR 0088](docs/adr/0088-ruby-sops-and-go-in-the-workspace.md)）、それに runner です。
-  中継を選ばないインスタンスでは外向きが全部閉じているので、`kubectl`・`ssh`・`curl` はどこにもつながらず、gem や Go のモジュールも取れません。
+  Ruby 4.0（公式の build。`ruby`・`bundle`）と C の拡張を build する `gcc`・`make`、secret を暗号化する `sops`・`age`、Go のツールチェーン（`go`・`gofmt`）（[ADR 0088](docs/adr/0088-ruby-sops-and-go-in-the-workspace.md)）、GitHub の CLI の `gh`（[ADR 0099](docs/adr/0099-gh-in-the-workspace.md)）、それに runner です。
+  中継を選ばないインスタンスでは外向きが全部閉じているので、`kubectl`・`ssh`・`curl`・`gh` はどこにもつながらず、gem や Go のモジュールも取れません。
   - `bundle install` は gem を `HOME` の下（Ruby の `Gem.user_dir`）に入れます。PATH の `bundle` は、そこに `GEM_HOME` を向けるラッパーです。
   - sops は age の鍵を `~/.config/sops/age/keys.txt` から読みます。Go の `GOPATH`・`GOCACHE` も `HOME` の下で、`GOTOOLCHAIN` は `local` が既定です。
   - gem の mirror（`bundle config set --global mirror.https://rubygems.org …`）と `GOPROXY`（`go env -w`）は、中継を選んだインスタンスの配置に合わせて設定します。
+  - `gh` は token を持ちません。コマンドの行の `GH_TOKEN` か、`HOME` の下の自分の設定（`gh auth login --with-token`）で受けます。PATH の `gh` はラッパーで、`gh` の telemetry と更新の知らせを切ります。コマンドの行で `GH_TELEMETRY` を付ければそちらが勝ちます。
   **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
 - 書ける場所は 4 つです。ルートは読み取り専用のままです。
 

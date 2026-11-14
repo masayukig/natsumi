@@ -1,7 +1,7 @@
 # 0096. 関所が本人に聞くものの窓口をダッシュボードに置き、答えは /sources で知らせる
 
 - Date: 2026-11-09
-- Status: Accepted（2026-11-11: 承認の画面のパスを `/dashboard/approvals` から `/dashboard/sentinel` に直した。`/dashboard/approvals` は、Slack の投稿の承認の履歴が既に使っている。決定の中身は変えない）
+- Status: Accepted（2026-11-11: 承認の画面のパスを `/dashboard/approvals` から `/dashboard/sentinel` に直した。`/dashboard/approvals` は、Slack の投稿の承認の履歴が既に使っている。決定の中身は変えない。画面に関所が断った名前の一覧と宛先の許しを加え、サーバーが範囲の意味を持たない決まりに「開かない」には読み書きの選択が無いことだけを知る例外を足すことは [ADR 0098](0098-sentinel-destination-grants-on-the-dashboard.md) で改める）
 
 ## Context
 
@@ -163,6 +163,7 @@
 - Related: ADR-0069 外のエージェントの返事は /sources にファイルで置き、sources_updated で知らせる（方針の適用）
 - Related: ADR-0094 コマンドは選んだ秒数だけ待って裏に回し、ターンの中で知らせを待てるようにする（印の差し込みと `wait_for_events`）
 - Related: ADR-0075 インスタンスに特有のツールを config で宣言する（窓口を宣言したツールにも置かない）
+- Related: ADR-0098 関所が断った名前と宛先の許しを承認の画面に足し、範囲の選択肢は関所が示すままに並べる（画面に並べるものと POST を足し、範囲の値を持たない決まりに例外を 1 つ足す）
 - Related: ADR-0097 ask_agent も関所を通し、サーバーは鍵の代わりにサロゲートを持つ（Proposed。通す版では、`ask_agent` の ask の答えもこの窓口で出す）
 
 ## References

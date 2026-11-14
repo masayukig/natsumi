@@ -59,6 +59,24 @@ RUN mkdir /out && cd /out \
   && grep " sops-${SOPS_VERSION}.linux.${TARGETARCH}\$" "sops-${SOPS_VERSION}.checksums.txt" | sha256sum --check \
   && mv "sops-${SOPS_VERSION}.linux.${TARGETARCH}" sops && chmod 755 sops && rm "sops-${SOPS_VERSION}.checksums.txt"
 
+# gh, GitHub's CLI, for the workspace (ADR 0099), a fixed release, checked against the checksums published with it, like
+# sops. Its archives name the version without the tag's v. Renovate reads the version from the ARG line as a release of
+# cli/cli. Only the binary is taken, and the image holds no token.
+FROM debian:trixie-slim AS gh
+ARG GH_VERSION=v2.103.3
+ARG TARGETARCH
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+RUN mkdir /out && cd /tmp \
+  && version="${GH_VERSION#v}" \
+  && curl -fsSLO "https://github.com/cli/cli/releases/download/${GH_VERSION}/gh_${version}_linux_${TARGETARCH}.tar.gz" \
+  && curl -fsSLO "https://github.com/cli/cli/releases/download/${GH_VERSION}/gh_${version}_checksums.txt" \
+  && grep " gh_${version}_linux_${TARGETARCH}.tar.gz\$" "gh_${version}_checksums.txt" | sha256sum --check \
+  && tar -xzf "gh_${version}_linux_${TARGETARCH}.tar.gz" \
+  && install -m 755 "gh_${version}_linux_${TARGETARCH}/bin/gh" /out/gh \
+  && rm -rf "gh_${version}_linux_${TARGETARCH}" "gh_${version}_linux_${TARGETARCH}.tar.gz" "gh_${version}_checksums.txt"
+
 # Go's toolchain for the workspace (ADR 0088): the one the runner and sdctl are built with. GOTOOLCHAIN is local in
 # $GOROOT/go.env, the lowest of Go's defaults, so a go.mod asking for another Go fetches nothing; the environment and
 # `go env -w` still come first. GOPROXY is left as Go ships it, as the relay's port is the deployment's.
@@ -124,6 +142,11 @@ COPY --chmod=755 docker/bundler/bundle /usr/local/bin/bundle
 COPY --chmod=755 docker/bundler/bundle /usr/local/bin/bundler
 # sops reads its age key from ~/.config/sops/age/keys.txt, under HOME, as the runner passes no SOPS_AGE_KEY_FILE.
 COPY --from=sops /out/sops /usr/local/bin/sops
+# gh (ADR 0099), out of PATH behind a wrapper that turns its telemetry and update notice off, as the runner passes no
+# GH_TELEMETRY; see the file. It takes a token from GH_TOKEN on the command line or its config under HOME, and with HOME
+# unwritable it still runs.
+COPY --from=gh /out/gh /usr/libexec/gh
+COPY --chmod=755 docker/gh/gh /usr/local/bin/gh
 # Go in /usr/local/go, as it ships, with go and gofmt linked onto the runner's PATH. GOPATH and GOCACHE are Go's
 # defaults under HOME.
 COPY --from=go /usr/local/go /usr/local/go

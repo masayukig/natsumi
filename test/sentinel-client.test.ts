@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { SentinelClient } from '../src/server/sentinel-client.ts';
-import { FakeSentinel, fakeApproval } from './support/fake-sentinel.ts';
+import { FakeSentinel, fakeApproval, fakeDestinationApproval, fakeRefusedName } from './support/fake-sentinel.ts';
 
 /**
  * The server's side of the sentinel's approvals socket (ADR 0096, natsumi-sentinel `docs/approvals-api.md`): what it asks,
@@ -132,4 +132,48 @@ test('several items, the facts of an item, and fields not known yet are all read
   assert.deepEqual(items[0]!.facts, [{ name: 'head', value: 'a'.repeat(40) }, { name: 'onDefaultBranch', value: 'true' }], 'a fact not of the shape is passed over');
   assert.deepEqual(items[1]!.facts, [], 'an item without facts has none');
   assert.equal(items[1]!.operation, 'git.push');
+}));
+
+// natsumi-sentinel ADR-0008: the names refused and the grant from them, an approval of a destination with its options,
+// and a destination grant's own fields.
+test('the names refused are read, and a sentinel without them answers 404', () => withSentinel(async (fake, client) => {
+  assert.deepEqual(await client.refusedNames(), { kind: 'refused', status: 404, error: 'not found' }, 'the version before them');
+  fake.destinations = true;
+  fake.refusedNames = [fakeRefusedName({ inside: true })];
+  const listed = await client.refusedNames();
+  assert.equal(listed.kind, 'ok');
+  if (listed.kind !== 'ok') return;
+  const [name] = listed.value;
+  assert.deepEqual([name!.source, name!.name, name!.count, name!.first, name!.last], ['penelope', 'docs.example.test', 3, '2026-01-01T00:00:00Z', '2026-01-01T00:04:00Z']);
+  assert.deepEqual(name!.choices.map(choice => choice.id), ['1d', 'forever']);
+  assert.deepEqual(name!.options.unit.map(option => option.id), ['name', 'domain:example.test']);
+  assert.deepEqual(name!.options.handling.map(option => option.id), ['inspect', 'passthrough']);
+  assert.deepEqual([name!.domain, name!.inside], ['example.test', true]);
+  assert.equal(fake.requests.at(-1), 'GET /v1/refused-names?limit=1000');
+
+  const granted = await client.grantRefusedName({ source: 'penelope', name: 'docs.example.test', choice: 'forever', options: { unit: 'name', handling: 'passthrough' } });
+  assert.equal(granted.kind, 'ok');
+  if (granted.kind !== 'ok') return;
+  assert.deepEqual([granted.value.kind, granted.value.name, granted.value.unit, granted.value.handling, granted.value.access, granted.value.approval],
+    ['destination', 'docs.example.test', 'name', 'passthrough', undefined, '']);
+  assert.equal(fake.requests.at(-1), 'POST /v1/refused-names/grant');
+  const listedGrants = await client.grants();
+  assert.equal(listedGrants.kind === 'ok' && listedGrants.value[0]!.kind, 'destination');
+}));
+
+test('an approval of a destination is read with its options, and answered with them', () => withSentinel(async (fake, client) => {
+  fake.destinations = true;
+  fake.create(fakeDestinationApproval(), false);
+  const one = await client.approval('ap-0101');
+  assert.equal(one.kind, 'ok');
+  if (one.kind !== 'ok') return;
+  assert.equal(one.value.kind, 'destination');
+  assert.deepEqual(one.value.options?.access.map(option => option.label), ['読みだけ。書きは聞く', '読み書き']);
+  const answered = await client.answer('ap-0101', { answer: 'allow', choice: '1d', options: { unit: 'domain:example.test', handling: 'inspect', access: 'readwrite' } });
+  assert.equal(answered.kind === 'ok' && answered.value.state, 'allowed');
+  assert.deepEqual(fake.bodies.at(-1), { answer: 'allow', choice: '1d', options: { unit: 'domain:example.test', handling: 'inspect', access: 'readwrite' } });
+  assert.deepEqual(answered.kind === 'ok' && answered.value.chosen, { unit: 'domain:example.test', handling: 'inspect', access: 'readwrite' });
+  fake.create(fakeApproval(), false);
+  const plain = await client.approval('ap-0001');
+  assert.equal(plain.kind === 'ok' && plain.value.options, undefined, 'an approval of an operation has none');
 }));

@@ -1,0 +1,8 @@
+#!/bin/sh
+# The gh in natsumi's PATH (ADR 0099). gh sends telemetry on every command, to a TTY or not, and checks for a newer
+# version once a day. Both are turned off by its environment or by its config under HOME, and the runner gives a command
+# no environment of the image's (ADR 0019). So they are off here unless the command line sets them; the version is the
+# image's, fixed, so a notice of a newer one is nothing she can act on.
+export GH_TELEMETRY="${GH_TELEMETRY-false}"
+export GH_NO_UPDATE_NOTIFIER="${GH_NO_UPDATE_NOTIFIER-1}"
+exec /usr/libexec/gh "$@"
