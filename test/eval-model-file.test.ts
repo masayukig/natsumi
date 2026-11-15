@@ -47,6 +47,26 @@ test('a subscription model needs the login file, and thinking may be turned off'
   });
 });
 
+test('an API key the owner wrote into the login file makes its route ready; one in the environment does not', async () => {
+  await withFiles(async root => {
+    await writeFile(join(root, 'model.json'), JSON.stringify({ pi: {
+      model: { provider: 'anthropic', id: 'claude-sonnet-5-5' }, authPath: join(root, 'auth.json'),
+    } }));
+    const file = await readModelFile(join(root, 'model.json'));
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = SECRET;
+    try {
+      const fromEnvironment = await modelRuntime(file, root, {});
+      assert.equal(await routeReady(fromEnvironment, file.target, false), false);
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved;
+    }
+    await writeFile(join(root, 'auth.json'), JSON.stringify({ anthropic: { type: 'api_key', key: SECRET } }));
+    const runtime = await modelRuntime(file, root, {});
+    assert.equal(await routeReady(runtime, file.target, false), true);
+  });
+});
+
 test('a model file out of shape names the setting and never echoes a value', async () => {
   await withFiles(async root => {
     const cases: [unknown, RegExp][] = [
