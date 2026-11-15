@@ -82,14 +82,16 @@ export function relayFetch(relay: string): typeof globalThis.fetch {
 
 /**
  * Whether a route can be used now: Pi knows its model, and it has its own way in — the resolved key of a compatible
- * endpoint, the placeholder key of a relay, or the OAuth login of a subscription. An API key from the environment
- * never counts for a subscription. The login file is read again on every call, so a login made after startup is seen.
+ * endpoint, the placeholder key of a relay, the OAuth login of a subscription, or an API key the owner wrote into the
+ * login file for that provider (`{"type": "api_key"}`, a pay-as-you-go key such as a Console key for Anthropic). An API
+ * key from the environment never counts. The login file is read again on every call, so a login made after startup is
+ * seen.
  */
 export async function routeReady(runtime: ModelRuntime, target: PiTarget, compatible: boolean): Promise<boolean> {
   if (!runtime.getModel(target.provider, target.model)) return false;
   const runtimeKey = runtime.getProviderAuthStatus(target.provider).source === 'runtime';
   if (compatible || runtimeKey) return runtimeKey;
-  return (await runtime.listCredentials()).some(c => c.providerId === target.provider && c.type === 'oauth');
+  return (await runtime.listCredentials()).some(c => c.providerId === target.provider && (c.type === 'oauth' || c.type === 'api_key'));
 }
 
 /** The context window Pi's own model definitions give a model, without any login. */
