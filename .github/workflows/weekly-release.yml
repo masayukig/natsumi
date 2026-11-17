@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24.22.2"
+          node-version: "24.22.3"
       # The images and the tag are made from github.sha, as on main; for a merged pull request that is the commit the
       # merge left on main, and nothing is released if it is not.
       - if: github.event_name == 'pull_request'
