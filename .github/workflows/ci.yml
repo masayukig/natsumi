@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # lab-ops#2685: ホスト型 runner の無料枠が足りないので、k3s の ARC（ci/natsumi-runners）で回す
+    runs-on: natsumi-runners
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
