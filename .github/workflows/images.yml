@@ -23,7 +23,8 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # lab-ops#2688: k3s の Kata の VM の runner で回す（docker build を使う。docker の置き場は job ごとの RBD）
+    runs-on: natsumi-vm-runners
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
