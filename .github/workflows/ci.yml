@@ -12,8 +12,7 @@ permissions:
 
 jobs:
   test:
-    # lab-ops#2685: k3s の ARC（ci-runners/natsumi-vm-runners）で回す
-    runs-on: natsumi-vm-runners
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
