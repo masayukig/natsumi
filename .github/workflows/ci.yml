@@ -28,7 +28,7 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap ripgrep
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
